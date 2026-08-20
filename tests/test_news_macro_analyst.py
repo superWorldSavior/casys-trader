@@ -162,6 +162,29 @@ def test_news_macro_prompt_contains_global_macro_and_family_context() -> None:
     assert "eu_industrials" in prompt
 
 
+def test_news_macro_prompt_attributes_yahoo_commodity_to_yahoo_finance() -> None:
+    prompt = build_news_macro_prompt(
+        NewsMacroAnalysisRequest(
+            as_of="2026-08-20T07:00:00+00:00",
+            valid_until="2026-08-21T07:00:00+00:00",
+            venue="US",
+            macro_series=(
+                {
+                    "label": "brent_crude_usd",
+                    "series_id": "yahoo/BZ=F",
+                    "period": "2026-08-19",
+                    "value": 67.5,
+                },
+            ),
+        )
+    )
+
+    payload = json.loads(prompt.split("Input JSON:\n", 1)[1])
+    assert payload["source_catalog"]["macro_series:brent_crude_usd"] == (
+        "Yahoo Finance · brent crude usd"
+    )
+
+
 def test_parse_news_macro_completion_ignore_un_point_terminal_apres_prose() -> None:
     """Grok préfixe de la prose : le dernier ``{`` est un POINT (clé ``symbols``)."""
 

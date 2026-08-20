@@ -182,9 +182,19 @@ def build_market_snapshot(
         except MarketError as exc:
             if is_connection_market_error(exc):
                 raise
+            stale_market_data[sym] = {
+                "last_bar_ts": None,
+                "stale_reason": exc.code,
+                "data_age_minutes": None,
+            }
             log.warning("données indisponibles %s: %s", sym, exc.code)
             continue
         if not bars:
+            stale_market_data[sym] = {
+                "last_bar_ts": None,
+                "stale_reason": "no_data",
+                "data_age_minutes": None,
+            }
             log.warning("données vides %s", sym)
             continue
         bars_by_symbol[sym] = bars
@@ -209,7 +219,7 @@ def build_market_snapshot(
 
     try:
         fx_rate_by_ccy = fx_rate_provider(
-            prices.keys(),
+            symbols,
             data_source=data_source,
         )
     except Exception as exc:  # noqa: BLE001 - provider failure must not break the cycle
@@ -242,7 +252,9 @@ def build_market_snapshot(
     tradable_prices = {
         symbol: price for symbol, price in prices.items() if symbol not in stale_market_data
     }
-    tradable_symbols = [symbol for symbol in symbols if symbol not in stale_market_data]
+    tradable_symbols = [
+        symbol for symbol in symbols if symbol in prices and symbol not in stale_market_data
+    ]
     tradable_bars_by_symbol = {
         symbol: bars
         for symbol, bars in bars_by_symbol.items()

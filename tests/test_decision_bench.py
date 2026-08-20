@@ -604,7 +604,6 @@ def test_run_bench_batch_size_one_fait_un_appel_par_cas() -> None:
     def fake_complete(model, prompt, timeout_s):
         prompts.append(prompt)
         decision_id = "d1" if "d1" in prompt else "d2"
-        action = "HOLD" if decision_id == "d1" else "SELL"
         return decision_bench.ModelCompletion(
             provider=model.provider,
             model=model.model,

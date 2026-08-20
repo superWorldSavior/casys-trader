@@ -33,8 +33,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
-
 from trader.application.record.decision_ledger_rows import decision_row_mandate_ref
 from trader.application.universe.selection_attribution import (
     iter_mandate_payloads,
@@ -42,6 +40,8 @@ from trader.application.universe.selection_attribution import (
     selections_from_mandate_payload,
 )
 from trader.domain.semantic.catalog import family_for_symbol
+
+ROOT = Path(__file__).resolve().parent.parent
 
 __all__ = [
     "iter_mandate_payloads",

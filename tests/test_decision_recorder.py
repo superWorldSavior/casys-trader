@@ -212,6 +212,62 @@ def test_decision_recorder_persists_since_open_for_armed_plan_during_session(tmp
     assert rows[0]["market_snapshot"]["to_close_m"] == expected["to_close_m"]
 
 
+def test_decision_recorder_keeps_infra_provenance_with_stale_armed_plan_metadata(tmp_path):
+    recorder = _learning_recorder(tmp_path, learnings=FakeLearnings())
+
+    recorder.record({
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.0,
+        "rationale": "stale_market_data",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "stale_market_data",
+        "decision_source": "infra",
+        "model_called": False,
+        "armed_plan_id": "w1",
+        "armed_plan_order": {"intent": "OPEN_LONG", "action": "BUY", "qty": 10.0},
+    })
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "decisions.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["source"] == "daemon"
+    assert rows[0]["decision_source"] == "infra"
+    assert rows[0]["model_called"] is False
+    assert rows[0]["reason"] == "stale_market_data"
+    assert rows[0]["runtime"]["armed_plan_id"] == "w1"
+
+
+def test_decision_recorder_keeps_genuine_armed_plan_hold_provenance(tmp_path):
+    recorder = _learning_recorder(tmp_path, learnings=FakeLearnings())
+
+    recorder.record({
+        "symbol": "SPY",
+        "action": "HOLD",
+        "qty": 0.0,
+        "confidence": 0.7,
+        "rationale": "armed_plan:w1 — confirmation encore insuffisante",
+        "intent": "HOLD",
+        "executed": False,
+        "reason": "hold",
+        "decision_source": "armed_plan",
+        "model_called": False,
+        "armed_plan_id": "w1",
+        "armed_plan_order": {"intent": "OPEN_LONG", "action": "BUY", "qty": 10.0},
+    })
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "decisions.jsonl").read_text().splitlines()
+    ]
+    assert rows[0]["source"] == "armed_plan"
+    assert rows[0]["decision_source"] == "armed_plan"
+    assert rows[0]["model_called"] is False
+
+
 def test_decision_recorder_persists_none_since_open_outside_session(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()

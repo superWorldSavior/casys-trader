@@ -208,7 +208,7 @@ def test_stale_backoff_without_decision_is_explicitly_deferred(
     ]
 
 
-def test_missing_price_without_decision_is_explicitly_deferred(
+def test_missing_price_is_recorded_as_stale_decision(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -229,8 +229,18 @@ def test_missing_price_without_decision_is_explicitly_deferred(
         process_pilot=pilot,
     )
 
-    assert report["decisions"] == []
-    assert pilot.deferred == [("SPY", {"outcome_code": "no_price"})]
+    assert len(report["decisions"]) == 1
+    decision = report["decisions"][0]
+    assert decision["symbol"] == "SPY"
+    assert decision["action"] == "HOLD"
+    assert decision["reason"] == "stale_market_data"
+    assert decision["stale_reason"] == "no_data"
+    assert decision["last_bar_ts"] is None
+    assert decision["data_age_minutes"] is None
+    assert pilot.deferred == []
+    assert len(pilot.finished) == 1
+    assert pilot.finished[0][0] == "SPY"
+    assert pilot.finished[0][1]["decision_readback"]["status"] == "verified"
 
 
 def test_queue_undecided_symbol_is_explicitly_deferred(

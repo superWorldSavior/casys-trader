@@ -761,6 +761,98 @@ def test_tick_news_macro_analysis_includes_macro_series_global_news_and_family_c
     }
 
 
+def test_tick_news_macro_analysis_excludes_superseded_cpi_and_keeps_imf(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    now = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "macro_series" / "cpi_us_all_items.jsonl",
+        [{"series_id": "BLS/cu/CUSR0000SA0", "period": "2025-01", "value": 319.1}],
+    )
+    _write_jsonl(
+        state_dir / "macro_series" / "cpi_us_imf.jsonl",
+        [{"series_id": "IMF/CPI/M.US.PCPI_IX", "period": "2026-06", "value": 148.2}],
+    )
+    analyst = FakeAnalyst()
+
+    news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=("EU",),
+    )
+
+    request = analyst.requests[0]
+    assert [item["label"] for item in request.macro_series] == ["cpi_us_imf"]
+    assert request.input_refs["macro_series_labels"] == ["cpi_us_imf"]
+    assert request.input_refs["coverage"]["macro_series_count"] == 1
+
+
+def test_tick_news_macro_analysis_uses_latest_admitted_commodity_row_and_omits_unadmitted(
+    tmp_path,
+) -> None:
+    state_dir = tmp_path / "state"
+    config_dir = tmp_path / "config"
+    state_dir.mkdir()
+    config_dir.mkdir()
+    now = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
+    _write_venue_state(state_dir)
+    _write_jsonl(
+        state_dir / "macro_series" / "brent_crude_usd.jsonl",
+        [
+            {
+                "ts_collected": "2026-07-10T06:00:00+00:00",
+                "series_id": "yahoo/BZ=F",
+                "period": "2026-07-09",
+                "value": 68.25,
+            },
+            {
+                "ts_collected": "2026-07-10T07:00:00+00:00",
+                "series_id": "IMF/PCPS/M.W00.POILBRE.USD",
+                "period": "2025-07",
+                "value": 69.10,
+            },
+        ],
+    )
+    _write_jsonl(
+        state_dir / "macro_series" / "gold_usd.jsonl",
+        [
+            {
+                "ts_collected": "2026-07-10T07:00:00+00:00",
+                "series_id": "IMF/PCPS/M.W00.PGOLD.USD",
+                "period": "2025-07",
+                "value": 3300.0,
+            }
+        ],
+    )
+    analyst = FakeAnalyst()
+
+    news_macro_runtime.tick_news_macro_analysis(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        loop_now=now,
+        analyst=analyst,
+        venues=("EU",),
+    )
+
+    request = analyst.requests[0]
+    assert request.macro_series == (
+        {
+            "label": "brent_crude_usd",
+            "series_id": "yahoo/BZ=F",
+            "period": "2026-07-09",
+            "value": 68.25,
+            "ts_collected": "2026-07-10T06:00:00+00:00",
+        },
+    )
+    assert request.input_refs["macro_series_labels"] == ["brent_crude_usd"]
+    assert all(item["label"] != "gold_usd" for item in request.macro_series)
+
+
 def test_tick_news_macro_analysis_can_digest_macro_context_without_symbol_news(tmp_path) -> None:
     state_dir = tmp_path / "state"
     config_dir = tmp_path / "config"
@@ -795,8 +887,8 @@ def test_tick_news_macro_analysis_marks_missing_global_and_stale_macro_as_partia
     now = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
     _write_venue_state(state_dir)
     _write_jsonl(
-        state_dir / "macro_series" / "cpi_us_all_items.jsonl",
-        [{"series_id": "BLS/cu/CUSR0000SA0", "period": "2025-01", "value": 319.1}],
+        state_dir / "macro_series" / "unemployment_rate_us.jsonl",
+        [{"series_id": "BLS/ln/LNS14000000", "period": "2025-01", "value": 4.0}],
     )
     analyst = FakeAnalyst()
 
@@ -814,7 +906,7 @@ def test_tick_news_macro_analysis_marks_missing_global_and_stale_macro_as_partia
     assert coverage["candidates_with_news"] == 0
     assert coverage["global_headlines_status"] == "missing"
     assert coverage["macro_calendar_status"] == "fallback_only"
-    assert coverage["macro_series_stale_labels"] == ["cpi_us_all_items"]
+    assert coverage["macro_series_stale_labels"] == ["unemployment_rate_us"]
 
 
 def test_tick_news_macro_analysis_caps_symbol_news_per_venue(tmp_path) -> None:

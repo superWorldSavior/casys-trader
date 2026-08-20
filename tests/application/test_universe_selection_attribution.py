@@ -51,6 +51,23 @@ class _ErrorSource:
         raise MarketError("fetch_failed", f"{symbol}: 429")
 
 
+class _SelectiveErrorSource(_FakeSource):
+    def __init__(
+        self,
+        bars_by_symbol: dict[str, list[Bar]],
+        *,
+        failed_symbols: set[str],
+    ) -> None:
+        super().__init__(bars_by_symbol)
+        self.failed_symbols = failed_symbols
+
+    def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
+        self.calls.append((symbol, lookback, interval))
+        if symbol in self.failed_symbols:
+            raise MarketError("fetch_failed", f"{symbol}: 429")
+        return list(self.bars_by_symbol.get(symbol, []))
+
+
 def _selection(**overrides) -> UniverseSelection:
     payload = {
         "mandate_id": "m-1",
@@ -724,6 +741,18 @@ def test_pick_sans_barres_allocation_non_evaluable_definitive() -> None:
     assert rows[0].verdict == "non_evaluable"
 
 
+def test_banc_structurellement_sous_le_plancher_reste_non_evaluable() -> None:
+    rows = evaluate_selection(
+        _selection(),
+        _path_bars(100.0, 110.0),
+        horizon_sessions=5,
+        bench_opportunities=[0.01] * (MIN_BENCH_EVALUATED - 1),
+    )
+    allocation = _allocation(rows)
+    assert allocation.verdict == "non_evaluable"
+    assert allocation.bench_n == MIN_BENCH_EVALUATED - 1
+
+
 def test_market_error_ne_persiste_pas_de_non_evaluable() -> None:
     rows = evaluate_selections(
         [_selection(candidate_scope_id="scope-eu")],
@@ -770,6 +799,268 @@ def test_refresh_reessaie_apres_market_error(tmp_path) -> None:
     assert second["evaluated"] >= 1
     assert store.count() >= 1
     assert any(row["verdict_basis"] == "direction" for row in store.load_outcomes())
+
+
+def test_refresh_sans_nouvelle_cle_repare_un_flair_non_persiste(tmp_path) -> None:
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = try_open_universe_selection_store(tmp_path)
+    update_flair_scores = store.update_flair_scores
+    first_update = True
+
+    def fail_once(scores) -> None:
+        nonlocal first_update
+        if first_update:
+            first_update = False
+            raise RuntimeError("interrupted_after_outcome_upsert")
+        update_flair_scores(scores)
+
+    store.update_flair_scores = fail_once
+    source = _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)})
+
+    with pytest.raises(RuntimeError, match="interrupted_after_outcome_upsert"):
+        refresh_selection_outcomes(
+            tmp_path,
+            source,
+            store_opener=lambda _state_dir: store,
+            scope_store_opener=lambda _state_dir: _ScopeReader({}),
+        )
+
+    first_rows = store.load_outcomes()
+    assert {row["verdict_basis"] for row in first_rows} == {"allocation", "direction"}
+    assert all(row["flair_score"] is None for row in first_rows)
+
+    repaired = refresh_selection_outcomes(
+        tmp_path,
+        source,
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+
+    assert repaired["pending"] == 0
+    assert repaired["evaluated"] == 0
+    assert repaired["progressed"] == 0
+    by_basis = {row["verdict_basis"]: row for row in store.load_outcomes()}
+    assert by_basis["direction"]["flair_score"] is not None
+
+
+def test_refresh_reessaie_allocation_apres_market_error_sur_un_membre_du_banc(
+    tmp_path,
+) -> None:
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+                scope_id="scope-eu",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    scope = _fat_scope(n=MIN_BENCH_EVALUATED)
+    bench_symbols = {f"B{index}.PA" for index in range(MIN_BENCH_EVALUATED)}
+    bars_by_symbol = {
+        "AIR.PA": _path_bars(100.0, 110.0),
+        **{symbol: _path_bars(100.0, 101.0) for symbol in bench_symbols},
+    }
+    store = try_open_universe_selection_store(tmp_path)
+
+    first = refresh_selection_outcomes(
+        tmp_path,
+        _SelectiveErrorSource(
+            bars_by_symbol,
+            failed_symbols={f"B{MIN_BENCH_EVALUATED - 1}.PA"},
+        ),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({"scope-eu": scope}),
+    )
+
+    assert first["evaluated"] == 1
+    assert first["progressed"] == 1
+    direction_before = next(
+        row for row in store.load_outcomes() if row["verdict_basis"] == "direction"
+    )
+
+    second = refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource(bars_by_symbol),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({"scope-eu": scope}),
+    )
+
+    assert second["progressed"] == 1
+    by_basis = {row["verdict_basis"]: row for row in store.load_outcomes()}
+    assert set(by_basis) == {"allocation", "direction"}
+    assert by_basis["direction"]["evaluated_at"] == direction_before["evaluated_at"]
+    assert by_basis["allocation"]["verdict"] == "gagnant"
+    assert by_basis["allocation"]["bench_n"] == MIN_BENCH_EVALUATED
+
+
+def test_refresh_garde_un_banc_immature_pending_puis_complete_allocation(
+    tmp_path,
+) -> None:
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+                scope_id="scope-eu",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    scope = _fat_scope(n=MIN_BENCH_EVALUATED)
+    bench_symbols = {f"B{index}.PA" for index in range(MIN_BENCH_EVALUATED)}
+    mature_bars = {
+        "AIR.PA": _path_bars(100.0, 110.0),
+        **{symbol: _path_bars(100.0, 101.0) for symbol in bench_symbols},
+    }
+    immature_bars = {
+        **mature_bars,
+        **{
+            symbol: [_bar("2026-01-01T16:00:00+00:00", 100.0)]
+            for symbol in bench_symbols
+        },
+    }
+    store = try_open_universe_selection_store(tmp_path)
+
+    first = refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource(immature_bars),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({"scope-eu": scope}),
+    )
+
+    assert first["evaluated"] == 1
+    assert first["progressed"] == 1
+    revision = "2026-08-20T00:00:00+00:00"
+    with store._db.transaction() as cur:
+        cur.execute(
+            "UPDATE universe_selection_outcomes SET evaluated_at=? WHERE verdict_basis='direction'",
+            (revision,),
+        )
+
+    still_immature = refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource(
+            {
+                **immature_bars,
+                "AIR.PA": _path_bars(100.0, 90.0),
+            }
+        ),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({"scope-eu": scope}),
+    )
+
+    assert still_immature["evaluated"] == 1
+    assert still_immature["progressed"] == 0
+    assert store.count() == 1
+    assert store.load_outcomes()[0]["evaluated_at"] == revision
+    assert store.load_outcomes()[0]["verdict"] == "gagnant"
+
+    mature = refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource(mature_bars),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({"scope-eu": scope}),
+    )
+
+    assert mature["evaluated"] == 2
+    assert mature["progressed"] == 1
+    by_basis = {row["verdict_basis"]: row for row in store.load_outcomes()}
+    assert set(by_basis) == {"allocation", "direction"}
+    assert by_basis["direction"]["evaluated_at"] == revision
+    assert by_basis["allocation"]["bench_n"] == MIN_BENCH_EVALUATED
+
+
+def test_refresh_cursor_durable_ne_starve_pas_le_129e_retryable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    selections = [
+        _selection(
+            mandate_id=f"m-{index:03d}",
+            symbol=f"S{index:03d}",
+            candidate_scope_id="scope-missing",
+        )
+        for index in range(129)
+    ]
+    monkeypatch.setattr(
+        "trader.application.universe.selection_attribution.load_mandate_selections",
+        lambda _state_dir: selections,
+    )
+    immature = [_bar("2026-01-01T16:00:00+00:00", 100.0)]
+    source = _FakeSource(
+        {
+            **{selection.symbol: immature for selection in selections[:-1]},
+            selections[-1].symbol: _path_bars(100.0, 110.0),
+        }
+    )
+    store = try_open_universe_selection_store(tmp_path)
+
+    first = refresh_selection_outcomes(
+        tmp_path,
+        source,
+        limit=128,
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+
+    assert first["pending"] == 128
+    assert first["progressed"] == 0
+    assert first["cursor"] == 128
+    assert store.selection_refresh_cursor() == 128
+
+    second = refresh_selection_outcomes(
+        tmp_path,
+        source,
+        limit=128,
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+
+    assert second["pending"] == 128
+    assert second["progressed"] == 2
+    assert second["cursor"] == 127
+    assert store.selection_refresh_cursor() == 127
+    rows = store.load_outcomes()
+    assert {row["symbol"] for row in rows} == {"S128"}
+    assert {row["verdict_basis"] for row in rows} == {"allocation", "direction"}
 
 
 def test_refresh_complete_la_direction_quand_allocation_existe(tmp_path) -> None:

@@ -16,6 +16,7 @@ from trader.domain.universe.intelligence import UNCLASSIFIED_FAMILY
 from trader.domain.universe.selection_attribution import (
     DEFAULT_FORWARD_SESSIONS,
     DEFAULT_SHRINKAGE_K,
+    MIN_BENCH_EVALUATED,
     classify_allocation_quality,
     classify_selection_quality,
     directional_action,
@@ -106,6 +107,10 @@ class SelectionOutcomeStore(Protocol):
     def count(self) -> int: ...
 
     def ensure_selection_semantics(self) -> str: ...
+
+    def selection_refresh_cursor(self) -> int: ...
+
+    def set_selection_refresh_cursor(self, cursor: int) -> None: ...
 
 
 class SelectionOutcomeStoreOpener(Protocol):
@@ -391,6 +396,15 @@ def evaluate_selection(
         return rows
     bench = list(bench_opportunities or ())
     evaluated_bench = [float(value) for value in bench if value is not None]
+    if (
+        pick_opp is not None
+        and len(bench) >= MIN_BENCH_EVALUATED
+        and len(evaluated_bench) < MIN_BENCH_EVALUATED
+    ):
+        # Missing/immature bench paths are retryable regardless of whether the
+        # provider returned no path or raised MarketError. A scope whose full
+        # eligible bench is itself below the floor remains structurally final.
+        return rows
     median_opp = float(median(evaluated_bench)) if evaluated_bench else None
     excess = None if pick_opp is None or median_opp is None else pick_opp - median_opp
     rows.append(
@@ -498,9 +512,10 @@ def evaluate_selections(
             for symbol in _candidate_symbols(scope):
                 bars_for(symbol)
             prefetched.add(scope_id)
+        bench_symbols = resolve_bench(selection, scope)
         bench_opportunities = [
             opportunity(forward_return_over_sessions(bars_for(symbol), selection.as_of, horizon_sessions))
-            for symbol in resolve_bench(selection, scope)
+            for symbol in bench_symbols
         ]
         evaluated.extend(
             evaluate_selection(
@@ -882,6 +897,91 @@ def _needed_verdict_bases(selection: UniverseSelection) -> tuple[str, ...]:
     return tuple(bases)
 
 
+def _outcome_key(
+    item: UniverseSelection | EvaluatedSelection | Mapping[str, Any],
+    *,
+    horizon_sessions: int | None = None,
+    verdict_basis: str | None = None,
+) -> tuple[str, str, str, int, str]:
+    if isinstance(item, Mapping):
+        return (
+            str(item.get("mandate_id") or ""),
+            str(item.get("symbol") or ""),
+            str(item.get("as_of") or ""),
+            int(item.get("horizon_sessions") or 0),
+            str(item.get("verdict_basis") or "direction"),
+        )
+    return (
+        item.mandate_id,
+        item.symbol,
+        item.as_of,
+        int(item.horizon_sessions if isinstance(item, EvaluatedSelection) else horizon_sessions or 0),
+        item.verdict_basis if isinstance(item, EvaluatedSelection) else str(verdict_basis or "direction"),
+    )
+
+
+def _selection_is_pending(
+    selection: UniverseSelection,
+    *,
+    existing: set[tuple[str, str, str, int, str]],
+    horizon_sessions: int,
+) -> bool:
+    return any(
+        _outcome_key(
+            selection,
+            horizon_sessions=horizon_sessions,
+            verdict_basis=basis,
+        )
+        not in existing
+        for basis in _needed_verdict_bases(selection)
+    )
+
+
+def _pending_selection_page(
+    selections: Sequence[UniverseSelection],
+    *,
+    existing: set[tuple[str, str, str, int, str]],
+    horizon_sessions: int,
+    limit: int,
+    cursor: int,
+) -> tuple[list[UniverseSelection], int, int]:
+    """Return one stable circular page plus ``(next_cursor, scanned)``."""
+
+    size = len(selections)
+    cap = max(0, int(limit))
+    if size == 0 or cap == 0:
+        return [], 0 if size == 0 else max(0, int(cursor)) % size, 0
+    start = max(0, int(cursor)) % size
+    pending: list[UniverseSelection] = []
+    scanned = 0
+    while scanned < size and len(pending) < cap:
+        selection = selections[(start + scanned) % size]
+        scanned += 1
+        if _selection_is_pending(
+            selection,
+            existing=existing,
+            horizon_sessions=horizon_sessions,
+        ):
+            pending.append(selection)
+    return pending, (start + scanned) % size, scanned
+
+
+def _read_refresh_cursor(store: SelectionOutcomeStore) -> int:
+    reader = getattr(store, "selection_refresh_cursor", None)
+    if not callable(reader):
+        return 0
+    try:
+        return max(0, int(reader()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_refresh_cursor(store: SelectionOutcomeStore, cursor: int) -> None:
+    writer = getattr(store, "set_selection_refresh_cursor", None)
+    if callable(writer):
+        writer(max(0, int(cursor)))
+
+
 def refresh_selection_outcomes(
     state_dir: str | Path,
     data_source: DataSource,
@@ -897,46 +997,42 @@ def refresh_selection_outcomes(
     store = store_opener(state_dir)
     semantics_version = store.ensure_selection_semantics()
     scope_reader = scope_store_opener(state_dir)
-    existing = {
-        (
-            str(row.get("mandate_id") or ""),
-            str(row.get("symbol") or ""),
-            str(row.get("as_of") or ""),
-            int(row.get("horizon_sessions") or 0),
-            str(row.get("verdict_basis") or "direction"),
-        )
-        for row in store.load_outcomes()
-    }
-    pending: list[UniverseSelection] = []
-    for selection in load_mandate_selections(state_dir):
-        missing = any(
-            (
-                selection.mandate_id,
-                selection.symbol,
-                selection.as_of,
-                int(horizon_sessions),
-                basis,
-            )
-            not in existing
-            for basis in _needed_verdict_bases(selection)
-        )
-        if not missing:
-            continue
-        pending.append(selection)
-        if len(pending) >= max(0, int(limit)):
-            break
+    existing = {_outcome_key(row) for row in store.load_outcomes()}
+    selections = load_mandate_selections(state_dir)
+    cursor = _read_refresh_cursor(store)
+    pending, next_cursor, scanned = _pending_selection_page(
+        selections,
+        existing=existing,
+        horizon_sessions=horizon_sessions,
+        limit=limit,
+        cursor=cursor,
+    )
     evaluated = evaluate_selections(
         pending,
         data_source,
         horizon_sessions=horizon_sessions,
         scope_reader=scope_reader,
     )
-    persist_and_score(store, evaluated, shrinkage_k=shrinkage_k)
+    new_evaluated: list[EvaluatedSelection] = []
+    new_keys: set[tuple[str, str, str, int, str]] = set()
+    for item in evaluated:
+        key = _outcome_key(item)
+        if key in existing or key in new_keys:
+            continue
+        new_keys.add(key)
+        new_evaluated.append(item)
+    # Re-score even without a new key: a previous attempt may have committed
+    # its outcome upsert before failing during ``update_flair_scores``.
+    persist_and_score(store, new_evaluated, shrinkage_k=shrinkage_k)
+    _write_refresh_cursor(store, next_cursor)
     return {
         "pending": len(pending),
         "evaluated": len(evaluated),
+        "progressed": len(new_evaluated),
         "stored": store.count(),
-        "bench_unresolved": sum(1 for item in evaluated if item.scope_missing),
+        "bench_unresolved": sum(1 for item in new_evaluated if item.scope_missing),
+        "cursor": next_cursor,
+        "scanned": scanned,
         "semantics_version": semantics_version,
     }
 

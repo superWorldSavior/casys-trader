@@ -357,8 +357,6 @@ def test_ingest_source_externe_prioritaire(tmp_path: Path) -> None:
 # Task 3 : apply_verdicts + compute_outcome_scores
 # ---------------------------------------------------------------------------
 
-import pytest  # noqa: E402 (import en bas de fichier, acceptable dans les tests)
-
 # Fixtures pour le scoring : SYM_A (4W/1L), SYM_B (1W/4L), SYM_C (1W + 1N)
 _SCORING_ROWS_A = [
     {

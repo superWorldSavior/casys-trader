@@ -110,9 +110,15 @@ def _set_risk_metrics(
     quantity: float,
     stop_distance: float | None,
     equity: float,
+    fx_rate: float,
 ) -> None:
     updates["stop_distance"] = stop_distance
-    updates["risk_pct"] = order_admission.risk_pct_for_quantity(quantity, stop_distance, equity)
+    updates["risk_pct"] = order_admission.risk_pct_for_quantity(
+        quantity,
+        stop_distance,
+        equity,
+        fx_rate=fx_rate,
+    )
 
 
 def _append_risk_warning(updates: dict[str, object], warning: dict[str, object]) -> None:
@@ -195,6 +201,7 @@ def assess_risk_admission(
             quantity=risk_quantity,
             stop_distance=None,
             equity=request.equity,
+            fx_rate=request.fx_rate,
         )
         if risk_guarded_open and request.require_hard_stop:
             return RiskAdmissionResult(
@@ -214,6 +221,7 @@ def assess_risk_admission(
             quantity=risk_quantity,
             stop_distance=stop_distance,
             equity=request.equity,
+            fx_rate=request.fx_rate,
         )
         if risk_guarded_open and stop_distance > 0.0:
             max_risk_quantity = gate.max_quantity_at_risk(

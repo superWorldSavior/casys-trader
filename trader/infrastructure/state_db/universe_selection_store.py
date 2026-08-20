@@ -20,6 +20,8 @@ from trader.domain.universe.selection_attribution import (
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.migrations import UNIVERSE_SELECTION_MIGRATIONS
 
+_SELECTION_REFRESH_CURSOR_KEY = "selection_refresh_cursor"
+
 
 def _sides_to_json(value: object) -> str:
     if isinstance(value, str):
@@ -175,6 +177,41 @@ class UniverseSelectionStore:
             return None
         return str(row["value"])
 
+    def selection_refresh_cursor(self) -> int:
+        """Return the durable index of the next mandate selection to inspect."""
+
+        row = self._db.query_one(
+            "SELECT value FROM universe_selection_metadata WHERE key=?",
+            (_SELECTION_REFRESH_CURSOR_KEY,),
+        )
+        if row is None:
+            return 0
+        try:
+            return max(0, int(row["value"]))
+        except (TypeError, ValueError):
+            return 0
+
+    def set_selection_refresh_cursor(
+        self,
+        cursor: int,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """Persist the next bounded refresh position without touching outcomes."""
+
+        clock = now or datetime.now(timezone.utc)
+        with self._db.transaction() as cur:
+            cur.execute(
+                """
+                INSERT INTO universe_selection_metadata(key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                (_SELECTION_REFRESH_CURSOR_KEY, str(max(0, int(cursor))), clock.isoformat()),
+            )
+
     def ensure_selection_semantics(self, *, now: datetime | None = None) -> str:
         """Idempotent bump: purge derived outcomes when the semantics version changes."""
         clock = now or datetime.now(timezone.utc)
@@ -196,6 +233,16 @@ class UniverseSelectionStore:
                     updated_at=excluded.updated_at
                 """,
                 (SELECTION_SEMANTICS_KEY, SELECTION_SEMANTICS_VERSION, updated_at),
+            )
+            cur.execute(
+                """
+                INSERT INTO universe_selection_metadata(key, value, updated_at)
+                VALUES (?, '0', ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value='0',
+                    updated_at=excluded.updated_at
+                """,
+                (_SELECTION_REFRESH_CURSOR_KEY, updated_at),
             )
         return SELECTION_SEMANTICS_VERSION
 

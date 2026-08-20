@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 
+from trader.application.record.decision_entries import INFRA_HOLD_REASONS
 from trader.domain.planning.indicator_watch import summarize_watch
 
 _MAX_RATIONALE_LEN = 200
@@ -17,11 +18,9 @@ _MAX_FLAGS = 5
 DEFAULT_LIMIT = 3
 _ORDER_ACTION_TOOLS = {"strategy_entry", "strategy_close"}
 _SYNTHETIC_HOLD_REASONS = {
+    *INFRA_HOLD_REASONS,
     "quiet_gate",
     "stale_market_data",
-    "no_decision_in_batch",
-    "model_call_budget_exhausted",
-    "model_call_budget_exhausted_after_context",
 }
 
 
@@ -85,25 +84,30 @@ def annotate_learning_feedback(
 
 
 def _is_synthetic_hold(row: dict) -> bool:
-    """Exclut uniquement les HOLD synthétiques, jamais un effet de plan armé.
+    """Exclut les HOLD synthétiques sans masquer un vrai effet de plan armé.
 
     Les lignes récentes exposent explicitement ``decision_source=infra`` et
     ``model_called=false``. Les anciennes lignes d'erreur n'avaient parfois que
-    ``llm_error`` ; ce dernier reste donc un fallback de compatibilité. Un plan
-    armé est au contraire une décision authentique prise plus tôt par l'agent :
-    son effet doit rester visible même si aucun modèle n'est appelé au trigger.
+    ``llm_error`` ; ce dernier reste donc un fallback de compatibilité.
+
+    ``source=armed_plan`` indique seulement que des métadonnées de plan étaient
+    présentes lors de l'écriture. Il ne peut pas annuler une provenance infra ou
+    une raison synthétique explicite. Un vrai plan armé porte en revanche
+    ``decision_source=armed_plan`` et reste visible malgré ``model_called=false``.
     """
     if str(row.get("action") or "").upper() != "HOLD":
         return False
-    decision_source = str(row.get("decision_source") or "").lower()
-    if decision_source == "armed_plan" or str(row.get("source") or "").lower() == "armed_plan":
-        return False
-    return (
+    decision_source = str(row.get("decision_source") or "").strip().lower()
+    reason = str(row.get("reason") or "").strip().lower()
+    if (
         decision_source == "infra"
-        or row.get("model_called") is False
         or row.get("llm_error") is not None
-        or str(row.get("reason") or "").strip().lower() in _SYNTHETIC_HOLD_REASONS
-    )
+        or reason in _SYNTHETIC_HOLD_REASONS
+    ):
+        return True
+    if decision_source == "armed_plan":
+        return False
+    return row.get("model_called") is False
 
 
 def _nested_decision(row: dict) -> dict:

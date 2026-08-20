@@ -412,11 +412,16 @@ non l'agent à des `allowed_sides` directionnels quand sa vue est tranchée
 **État d'implémentation (2026-08-16).** Lots 1-6 livrés : juge allocation contre
 le banc (médiane, bande d'égalité, sticky exclus), unité de jugement
 `active|fallback` (prepared exclu, rafales dédupliquées), lecture de scope par
-id, store v7 (`bench_v2`) à clé unique élargie, refresh à deux bases avec
+id, store v7 (`bench_v3`) à clé unique élargie, refresh à deux bases avec
 pending d'horizon immature, digest deux blocs (allocation / direction,
 `selector=agent` seulement) et commande analytics `bench` (agent vs baseline).
-Le premier rejugement complet a lieu au prochain sync daemon (purge `bench_v2`
-puis replay). Le digest allocation n'entre dans le prompt univers qu'une fois
+Le passage `bench_v2` → `bench_v3` purge les verdicts dérivés puis les rejoue :
+un banc assez large mais incomplet ou immature reste désormais pending ; un
+scope historique introuvable ou un banc éligible structurellement sous le
+plancher reste terminal. Un cursor circulaire durable évite d'affamer les
+retryables au-delà du batch. Le refresh n'upsert que les bases nouvelles et ne
+révise donc plus une direction déjà persistée en attendant son allocation.
+Le digest allocation n'entre dans le prompt univers qu'une fois
 `min_n=5` atteint. Grain venue d'abord (picks agent vs banc, et
 `vs_baseline` si la hotlist déterministe a aussi n≥5) ; familles/rôles
 ensuite. Les FLAIR agent et baseline restent des pools séparés.

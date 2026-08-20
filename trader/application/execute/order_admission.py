@@ -248,14 +248,28 @@ def projected_scale_in_risk_basis(
     return total_quantity, scale_in_price
 
 
-def risk_pct_for_quantity(quantity: float, stop_distance: float | None, equity: float) -> float | None:
+def risk_pct_for_quantity(
+    quantity: float,
+    stop_distance: float | None,
+    equity: float,
+    *,
+    fx_rate: float = 1.0,
+) -> float | None:
+    """Return equity risk in USD for a native-price stop distance.
+
+    ``fx_rate`` is USD per native currency unit.  The default preserves the
+    historical USD-symbol behaviour.
+    """
+
     if stop_distance is None:
         return None
     if not math.isfinite(quantity) or not math.isfinite(stop_distance) or stop_distance < 0:
         return None
     if not math.isfinite(equity) or equity <= 0:
         return None
-    risk_pct = quantity * stop_distance / equity
+    if not math.isfinite(fx_rate) or fx_rate <= 0:
+        return None
+    risk_pct = quantity * stop_distance * fx_rate / equity
     return risk_pct if math.isfinite(risk_pct) else None
 
 
@@ -265,9 +279,15 @@ def set_entry_risk_metrics(
     quantity: float,
     stop_distance: float | None,
     equity: float,
+    fx_rate: float = 1.0,
 ) -> None:
     entry["stop_distance"] = stop_distance
-    entry["risk_pct"] = risk_pct_for_quantity(quantity, stop_distance, equity)
+    entry["risk_pct"] = risk_pct_for_quantity(
+        quantity,
+        stop_distance,
+        equity,
+        fx_rate=fx_rate,
+    )
 
 
 def qty_from_risk_pct(

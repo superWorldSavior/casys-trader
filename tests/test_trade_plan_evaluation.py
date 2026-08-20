@@ -2,6 +2,8 @@ import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
+import pytest
+
 from trader import agent_tools
 from trader.agent.protocol import parsing
 from trader.agent.tools import AgentToolCall, ToolContext, validate_tool_call
@@ -95,6 +97,42 @@ def test_multi_target_fractions_fees_and_fx_use_actual_sizing() -> None:
     assert result.economics.fees_if_win_usd is not None
     assert result.economics.fees_if_win_usd > 0.0
     assert result.economics.expected_value_usd is not None
+
+
+def test_non_usd_risk_pct_is_fx_aware_without_changing_sizing_or_gates() -> None:
+    fx_rate = 0.03140506342913764
+    equity = 99_672.76
+    stop_distance_native = 20.0
+    requested_risk_pct = 0.003
+    result = TradePlanEvaluator(
+        _context(
+            price=1_070.0,
+            fx_rate=fx_rate,
+            equity=equity,
+            max_quantity=2_000.0,
+        )
+    ).evaluate(
+        TradePlanCandidate(
+            symbol="2404.TW",
+            direction="long",
+            confidence=0.70,
+            risk_pct=requested_risk_pct,
+            exit_plan={
+                "hard_stop": 1_050.0,
+                "take_profits": [{"price": 1_110.0, "fraction": 1.0}],
+            },
+        )
+    )
+
+    expected_quantity = requested_risk_pct * equity / (stop_distance_native * fx_rate)
+    expected_max_risk_quantity = 0.01 * equity / (stop_distance_native * fx_rate)
+    assert result.order_quantity == pytest.approx(expected_quantity)
+    assert result.max_risk_quantity == pytest.approx(expected_max_risk_quantity)
+    # Omitting FX here produced 0.095526 (9.55%) instead of the requested 0.30%.
+    assert result.risk_pct == pytest.approx(0.003)
+    assert result.risk_approved is True
+    assert result.final_gate_approved is True
+    assert result.executable_by_gates is True
 
 
 def test_evaluate_short_risk_sizing_resolves_quantity_and_r_multiple() -> None:

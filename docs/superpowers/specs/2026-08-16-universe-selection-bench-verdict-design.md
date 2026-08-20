@@ -67,16 +67,20 @@ verdict          = gagnant  si excess > +SIGNIFICANT_RETURN_BAND
   6 sticky présents dans `candidates[]`. Le banc = candidats non retenus **hors
   `sticky_context_at_close`** — on ne juge pas l'agent sur un choix interdit.
 - **Garde de suffisance** (garde de données, pas critère de succès) : si le banc
-  évalué (candidats non retenus, hors sticky, avec barres complètes sur
-  l'horizon) compte moins de `MIN_BENCH_EVALUATED = 8` membres →
-  `non_evaluable` structurel.
+  éligible (candidats non retenus, hors sticky) compte moins de
+  `MIN_BENCH_EVALUATED = 8` membres → `non_evaluable` structurel. Si le banc
+  éligible atteint ce plancher mais que moins de 8 trajectoires sont évaluables
+  sur l'horizon → `pending`, sans ligne allocation persistée. Le prochain
+  passage rejoue cette base lorsque les barres manquantes ou l'horizon
+  deviennent disponibles.
 - Propriété clé : un sélecteur aléatoire bat la médiane du banc ~1 fois sur 2 →
   **base rate allocation ≈ 0,5 par construction, parmi les verdicts décisifs**
   (WIN/LOSS — les `neutre` de la bande d'égalité sont exclus du base rate FLAIR
   comme partout, `scoring.py:59-64`). Le lift FLAIR mesure directement le
   talent d'allocation. La couverture est *structurelle* (toute sélection est
-  jugeable), pas 100 % garantie : barres manquantes et bancs trop maigres
-  produisent des `non_evaluable` résiduels.
+  jugeable), pas 100 % garantie : un scope historique introuvable ou un banc
+  éligible structurellement trop maigre produit un `non_evaluable` ; un banc
+  assez large mais incomplet ou encore immature reste `pending`.
 
 ### 2.3 FLAIR par base — base rates séparés
 
@@ -105,6 +109,13 @@ persistés depuis le 2026-07-10, mandats depuis le **2026-07-17**,
 `candidate_scope_id` présent sur 100 % de l'historique. Ligne dont le scope est
 introuvable → `allocation` = `non_evaluable` structurel, compteur
 `bench_unresolved` dans le résultat du refresh.
+
+La sémantique courante est `bench_v3` (2026-08-20). Le bump depuis
+`bench_v2` purge les verdicts dérivés puis relance le rejugement : `bench_v2`
+pouvait figer un banc transitoirement incomplet en `non_evaluable`, tandis que
+`bench_v3` réserve ce verdict aux cas structurels (scope introuvable ou banc
+éligible sous le plancher). Le même bump remet à zéro le cursor de refresh
+durable.
 
 ### 2.6 Store — migration v7
 
@@ -156,7 +167,10 @@ double-compte prepared/active. Règles :
   `:450-466`) — persister un `non_evaluable` d'horizon non écoulé le figerait à
   jamais. On n'upsert une ligne `allocation` que lorsque l'horizon est écoulé
   (barre J+5 disponible) ou pour un `non_evaluable` **structurel définitif**
-  (scope introuvable, banc < `MIN_BENCH_EVALUATED` sur données complètes).
+  (scope introuvable ou banc éligible sous le plancher). Dès que le banc
+  éligible contient au moins `MIN_BENCH_EVALUATED` membres, une couverture
+  évaluée sous ce plancher reste `pending`, y compris après une erreur marché
+  transitoire.
   C'est le comportement actuel du juge directionnel (`evaluate_selection()`
   `:163-166` skip si forward None) — à préserver pour la base allocation.
 
@@ -177,6 +191,12 @@ activation J est fréquent) — réutiliser l'infra de scan
   1y — même chemin que `evaluate_selections()` (`:181-206`). **Cache
   d'opportunités par `(candidate_scope_id, horizon)`** : un scope référencé par
   plusieurs mandats n'est évalué qu'une fois par batch.
+- Le refresh est borné par `limit` et parcourt l'historique avec un cursor
+  circulaire durable dans `universe_selection_metadata`. Même lorsqu'une page
+  pleine ne produit aucun nouveau verdict, le passage planifié suivant reprend
+  après cette page : les retryables situés au-delà de la limite ne sont pas
+  affamés. Seules les bases absentes sont upsertées ; une direction déjà jugée
+  n'est pas révisée pendant l'attente de son allocation.
 - ⚠️ Yahoo sans retry 429 (`yahoo_client.py:129-135`, timeout 10 s) et
   `scripts/universe_selection_analytics.py:36-38` tape un `YFinanceDataSource`
   nu : le replay complet (~40 × N scopes) doit passer par le DataSource

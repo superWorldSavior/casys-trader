@@ -23,7 +23,7 @@ from trader.domain.market_data import Bar
 DEFAULT_FORWARD_SESSIONS = 5
 DEFAULT_SHRINKAGE_K = 5.0
 MIN_BENCH_EVALUATED = 8
-SELECTION_SEMANTICS_VERSION = "bench_v2"
+SELECTION_SEMANTICS_VERSION = "bench_v3"
 SELECTION_SEMANTICS_KEY = "selection_semantics_version"
 _DEFAULT_VERDICT_BASIS = "direction"
 

@@ -454,7 +454,9 @@ def test_plan_arme_declenche_stale_trace_l_ordre_dans_le_ledger_meme_si_backoff(
         for line in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert rows[0]["source"] == "armed_plan"
+    assert rows[0]["source"] == "daemon"
+    assert rows[0]["decision_source"] == "infra"
+    assert rows[0]["model_called"] is False
     assert rows[0]["runtime"]["armed_plan_order"] == trigger["order"]
 
 

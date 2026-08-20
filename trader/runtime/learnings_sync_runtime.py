@@ -262,7 +262,13 @@ def _refresh_universe_selections(
     """Score mandate selections with the same market judge. Never raise."""
 
     if get_bars is None:
-        return {"pending": 0, "evaluated": 0, "stored": 0, "skipped": "data_source_unavailable"}
+        return {
+            "pending": 0,
+            "evaluated": 0,
+            "progressed": 0,
+            "stored": 0,
+            "skipped": "data_source_unavailable",
+        }
     try:
         from trader.application.universe.selection_attribution import (
             refresh_selection_outcomes,
@@ -285,7 +291,13 @@ def _refresh_universe_selections(
         )
     except Exception as exc:  # noqa: BLE001 - universe FLAIR is advisory
         log.warning("[learnings_sync] universe selections failed: %s", exc)
-        return {"pending": 0, "evaluated": 0, "stored": 0, "error": f"{type(exc).__name__}:{exc}"}
+        return {
+            "pending": 0,
+            "evaluated": 0,
+            "progressed": 0,
+            "stored": 0,
+            "error": f"{type(exc).__name__}:{exc}",
+        }
 
 
 def _refresh_situation_notes(
@@ -411,7 +423,9 @@ def run_learning_sync(
                 or int(outcomes.get("global_rule_citations_updated") or 0) >= outcome_batch_size
             )
         ) or bool(
-            isinstance(universe, dict) and int(universe.get("pending") or 0) >= outcome_batch_size
+            isinstance(universe, dict)
+            and int(universe.get("progressed") or 0) > 0
+            and int(universe.get("pending") or 0) >= outcome_batch_size
         ) or bool(
             isinstance(situation, dict)
             and int(situation.get("evaluated") or 0) > 0

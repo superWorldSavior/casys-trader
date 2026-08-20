@@ -9,7 +9,10 @@ from trader.application.universe.selection_attribution import (
     EvaluatedSelection,
     persist_and_score,
 )
-from trader.domain.universe.selection_attribution import SELECTION_SEMANTICS_VERSION
+from trader.domain.universe.selection_attribution import (
+    SELECTION_SEMANTICS_KEY,
+    SELECTION_SEMANTICS_VERSION,
+)
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.migrations import (
     UNIVERSE_SELECTION_MIGRATION,
@@ -227,13 +230,29 @@ def test_semantics_bump_purge_les_outcomes_et_reste_idempotent(tmp_path: Path) -
             }
         ]
     )
+    with store._db.transaction() as cur:
+        cur.execute(
+            """
+            INSERT INTO universe_selection_metadata(key, value, updated_at)
+            VALUES (?, 'bench_v2', '2026-08-19T00:00:00+00:00')
+            """,
+            (SELECTION_SEMANTICS_KEY,),
+        )
+    store.set_selection_refresh_cursor(
+        73,
+        now=datetime(2026, 8, 19, tzinfo=timezone.utc),
+    )
     assert store.count() == 1
+    assert store.selection_semantics_version() == "bench_v2"
+    assert store.selection_refresh_cursor() == 73
 
     first = store.ensure_selection_semantics()
     second = store.ensure_selection_semantics()
+    assert SELECTION_SEMANTICS_VERSION == "bench_v3"
     assert first == second == SELECTION_SEMANTICS_VERSION
     assert store.count() == 0
     assert store.selection_semantics_version() == SELECTION_SEMANTICS_VERSION
+    assert store.selection_refresh_cursor() == 0
 
 
 def test_deux_evaluations_successives_ne_dupliquent_pas(tmp_path: Path) -> None:

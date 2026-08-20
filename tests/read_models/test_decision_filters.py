@@ -46,6 +46,18 @@ def test_classifies_risk_stale_and_batch_rows() -> None:
         )
         is True
     )
+    assert (
+        _is_batch_row(
+            _decision(
+                "STALE-ARMED",
+                reason="stale_market_data",
+                decision_source="infra",
+                model_called=False,
+                source="armed_plan",
+            )
+        )
+        is True
+    )
     assert _is_batch_row(_decision("F", decision_source="llm", model_called=True)) is False
 
 

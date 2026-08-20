@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, TypeAlias
 
-from trader.application.record.decision_entries import has_exploitable_llm_rationale
+from trader.application.record.decision_entries import (
+    INFRA_HOLD_REASONS,
+    has_exploitable_llm_rationale,
+)
 from trader.application.record.decision_ledger_rows import build_decision_row
 from trader.application.record.tool_outcomes import finalize_action_tool_outcomes
 from trader.domain import decision_identity
@@ -62,6 +65,38 @@ _TRADE_ACTIONS = frozenset(
     }
 )
 _REFUSED_THESIS_SIDES = frozenset({"long", "short"})
+_SYNTHETIC_HOLD_REASONS = frozenset(
+    {
+        *INFRA_HOLD_REASONS,
+        "quiet_gate",
+        "stale_market_data",
+    }
+)
+
+
+def _is_synthetic_hold(decision_entry: DecisionEntry) -> bool:
+    """Keep explicit infra evidence authoritative over armed-plan metadata."""
+    if str(decision_entry.get("action") or "").upper() != "HOLD":
+        return False
+    decision_source = str(decision_entry.get("decision_source") or "").strip().lower()
+    reason = str(decision_entry.get("reason") or "").strip().lower()
+    if (
+        decision_source == "infra"
+        or reason in _SYNTHETIC_HOLD_REASONS
+        or decision_entry.get("llm_error") is not None
+    ):
+        return True
+    if decision_source == "armed_plan":
+        # A triggered plan is an authentic prior agent decision and normally
+        # does not call the model again.
+        return False
+    return decision_entry.get("model_called") is False
+
+
+def _ledger_source(decision_entry: DecisionEntry) -> str:
+    if _is_synthetic_hold(decision_entry):
+        return "daemon"
+    return "armed_plan" if decision_entry.get("armed_plan_id") else "daemon"
 
 
 def _is_llm_rationale_candidate(decision_entry: DecisionEntry) -> bool:
@@ -257,7 +292,7 @@ class DecisionRecorder:
             self.report,
             decision_entry,
             sequence=sequence,
-            source="armed_plan" if decision_entry.get("armed_plan_id") else "daemon",
+            source=_ledger_source(decision_entry),
         )
         appended = self.decision_ledger_store.append(row)
         log.debug(

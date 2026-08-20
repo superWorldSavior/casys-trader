@@ -565,7 +565,12 @@ def test_sync_enchaine_si_le_batch_universe_est_plein(tmp_path, monkeypatch) -> 
 
     monkeypatch.setattr(
         "trader.application.universe.selection_attribution.refresh_selection_outcomes",
-        lambda *_args, **_kwargs: {"pending": 128, "evaluated": 4, "stored": 4},
+        lambda *_args, **_kwargs: {
+            "pending": 128,
+            "evaluated": 4,
+            "progressed": 4,
+            "stored": 4,
+        },
     )
     monkeypatch.setattr(
         "trader.application.analyst.situation_attribution.refresh_situation_outcomes",
@@ -584,3 +589,50 @@ def test_sync_enchaine_si_le_batch_universe_est_plein(tmp_path, monkeypatch) -> 
 
     assert result["more_outcomes"] is True
     assert result["more_work"] is True
+
+
+def test_sync_n_enchaine_pas_si_le_batch_universe_est_plein_sans_progres(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    universe_calls = 0
+
+    def no_progress_then_empty(*_args, **_kwargs):
+        nonlocal universe_calls
+        universe_calls += 1
+        if universe_calls > 1:
+            return {
+                "pending": 0,
+                "evaluated": 0,
+                "progressed": 0,
+                "stored": 0,
+            }
+        return {
+            "pending": 128,
+            "evaluated": 0,
+            "progressed": 0,
+            "stored": 0,
+        }
+
+    monkeypatch.setattr(
+        "trader.application.universe.selection_attribution.refresh_selection_outcomes",
+        no_progress_then_empty,
+    )
+    monkeypatch.setattr(
+        "trader.application.analyst.situation_attribution.refresh_situation_outcomes",
+        lambda *_args, **_kwargs: {"pending": 0, "evaluated": 0, "stored": 0},
+    )
+
+    runner = LearningSyncRunner(
+        state_dir=state_dir,
+        get_bars=lambda *_args, **_kwargs: _bars(started, final=103.0),
+        now_fn=lambda: started,
+    )
+    triggered = runner.trigger(reason="test", force=True)
+    triggered["_thread"].join(timeout=2)
+
+    assert universe_calls == 1
+    assert runner.status()["running"] is False

@@ -26,7 +26,9 @@ def build_news_macro_source_catalog(request: NewsMacroAnalysisRequest) -> dict[s
     for item in request.macro_series:
         label = str(item.get("label") or "").strip()
         if label:
-            catalog[f"macro_series:{label}"] = f"DBnomics · {label.replace('_', ' ')}"
+            catalog[f"macro_series:{label}"] = (
+                f"{_macro_series_provider(item)} · {label.replace('_', ' ')}"
+            )
     for item in request.geopolitical_events:
         ref = str(item.get("url") or "").strip()
         if ref:
@@ -45,6 +47,20 @@ def build_news_macro_source_catalog(request: NewsMacroAnalysisRequest) -> dict[s
         if ref:
             catalog[ref] = f"Company micro brief · {symbol}"
     return catalog
+
+
+def _macro_series_provider(item: dict) -> str:
+    """Resolve provenance from the collector-owned series identifier.
+
+    DBnomics identifiers start with the upstream dataset provider (ECB, IMF,
+    FED, ...), whereas the direct commodity collector emits ``yahoo/<ticker>``.
+    The identifier, not the output filename, is therefore the stable source of
+    truth for attribution.
+    """
+
+    series_id = str(item.get("series_id") or "").strip()
+    provider = series_id.partition("/")[0].casefold()
+    return "Yahoo Finance" if provider == "yahoo" else "DBnomics"
 
 
 def _news_source_label(item: dict) -> str:

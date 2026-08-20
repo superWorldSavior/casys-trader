@@ -36,6 +36,26 @@ def _default_connection_error(_: MarketError) -> bool:
     return False
 
 
+def _completed_daily_bars(
+    bars: list,
+    *,
+    symbol: str,
+    now: datetime,
+) -> list | None:
+    """Drop the current incomplete daily session; reject malformed timestamps."""
+
+    completed_session = market.last_completed_session_date(now, symbol=symbol)
+    completed: list = []
+    for bar in bars:
+        try:
+            timestamp = datetime.fromisoformat(str(bar.ts).replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            return None
+        if timestamp.date() <= completed_session:
+            completed.append(bar)
+    return completed
+
+
 def _usable_watch_bars(
     bars: list,
     *,
@@ -44,16 +64,27 @@ def _usable_watch_bars(
     now: datetime,
     kind: str,
 ) -> list | None:
-    """Return fetched bars if fresh enough to evaluate, else None (treat as absent)."""
+    """Return bars usable by a watch, or None when stale.
+
+    Daily watches follow completed-session semantics; intraday keeps its age budget.
+    """
     if not bars:
         return bars
-    freshness = market.assess_freshness(
-        bars,
-        now=now,
-        max_age_minutes=market.freshness_budget_minutes(interval),
-    )
+    usable = bars
+    if interval.strip().lower() == "1d":
+        usable = _completed_daily_bars(bars, symbol=symbol, now=now)
+        if usable is None:
+            log.debug("%s bars invalid timestamp %s/%s", kind, symbol, interval)
+            return None
+        freshness = market.assess_daily_freshness(usable, now=now, symbol=symbol)
+    else:
+        freshness = market.assess_freshness(
+            usable,
+            now=now,
+            max_age_minutes=market.freshness_budget_minutes(interval),
+        )
     if freshness.fresh:
-        return bars
+        return usable
     age = None if freshness.age_minutes is None else round(freshness.age_minutes, 1)
     log.debug(
         "%s bars stale %s/%s reason=%s age=%s",
@@ -153,9 +184,18 @@ def scan_exit_watches(
         return []
 
     warning = log.warning if log_warning is None else log_warning
-    bars_by_key: dict[tuple[str, str], list] = {
-        (symbol, bars_interval): bars for symbol, bars in bars_by_symbol.items()
-    }
+    bars_by_key: dict[tuple[str, str], list] = {}
+    for symbol, bars in bars_by_symbol.items():
+        usable = bars
+        if bars_interval.strip().lower() == "1d":
+            usable = _usable_watch_bars(
+                bars,
+                symbol=symbol,
+                interval=bars_interval,
+                now=now,
+                kind="exit_watch",
+            )
+        bars_by_key[(symbol, bars_interval)] = [] if usable is None else usable
     for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
         key = (symbol, interval)
         if key in bars_by_key:

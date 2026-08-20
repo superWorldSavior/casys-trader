@@ -15,6 +15,8 @@ from typing import Any, Callable
 from trader.application.analyst import NewsMacroAnalysisRequest, run_news_macro_analysis
 from trader.domain.semantic.catalog import family_for_symbol
 from trader.domain.universe import candidate_scope_id, project_company_briefs_to_universe_context
+from trader.infrastructure.market_sources import commodity_prices
+from trader.infrastructure.market_sources import macro_series as macro_series_source
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
@@ -49,6 +51,19 @@ DEFAULT_MAX_MACRO_SERIES = 30
 DEFAULT_MACRO_SERIES_STALE_DAYS = 90
 DEFAULT_ASYNC_STOP_TIMEOUT_S = 1.0
 DEFAULT_MAX_GDELT_EVENTS = 60
+
+# The collectors are the canonical registry of series which may feed the
+# analyst.  Historical JSONL files and rows deliberately remain on disk after
+# a source replacement, so admission must bind both the output label and the
+# current collector-owned series identifier.
+_ACTIVE_MACRO_SERIES_IDS_BY_LABEL = {
+    str(item.get("label") or "").strip(): str(
+        item.get("series_id") or item.get("id") or ""
+    ).strip()
+    for item in (*macro_series_source.SERIES, *commodity_prices.COMMODITIES)
+    if str(item.get("label") or "").strip()
+    and str(item.get("series_id") or item.get("id") or "").strip()
+}
 
 
 def _default_logger() -> logging.Logger:
@@ -670,7 +685,10 @@ def _read_macro_series_snapshot(base_dir: Path) -> list[dict]:
         return []
     rows: list[dict] = []
     for path in sorted(base_dir.glob("*.jsonl")):
-        row = _read_last_jsonl_object(path)
+        allowed_series_id = _ACTIVE_MACRO_SERIES_IDS_BY_LABEL.get(path.stem)
+        if allowed_series_id is None:
+            continue
+        row = _read_last_jsonl_object(path, allowed_series_id=allowed_series_id)
         if row is None:
             continue
         compact = _compact_macro_series_row(path.stem, row)
@@ -681,7 +699,7 @@ def _read_macro_series_snapshot(base_dir: Path) -> list[dict]:
     return rows
 
 
-def _read_last_jsonl_object(path: Path) -> dict | None:
+def _read_last_jsonl_object(path: Path, *, allowed_series_id: str) -> dict | None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -694,7 +712,7 @@ def _read_last_jsonl_object(path: Path) -> dict | None:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(row, dict):
+        if isinstance(row, dict) and row.get("series_id") == allowed_series_id:
             return row
     return None
 

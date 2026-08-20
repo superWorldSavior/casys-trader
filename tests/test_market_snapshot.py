@@ -8,7 +8,7 @@ from trader.application.cycle.market_snapshot import (
     MissingFxRate,
     build_market_snapshot,
 )
-from trader.market.market_data import Bar
+from trader.market.market_data import Bar, MarketError
 
 
 NOW = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
@@ -153,6 +153,69 @@ def test_market_snapshot_captures_runtime_source_and_requests_fx_rates():
     assert source.calls[0] == ("2330.TW", "5d", "15m")
     assert ("2330.TW", "1y", "1d") in source.calls
     assert ("TWD=X", "2d", "1d") not in source.calls
+
+
+@pytest.mark.parametrize(
+    ("symbol", "rates"),
+    [
+        ("SPY", {"USD": 1.0}),
+        ("2330.TW", {"USD": 1.0, "TWD": 0.031}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("failure", "expected_reason"),
+    [
+        ("exception", "all_sources_failed"),
+        ("empty", "no_data"),
+    ],
+)
+def test_market_snapshot_runtime_unavailable_is_stale_and_not_tradable(
+    symbol: str,
+    rates: dict[str, float],
+    failure: str,
+    expected_reason: str,
+) -> None:
+    class RuntimeUnavailableSource(FakeSource):
+        def get_bars(self, requested_symbol: str, lookback: str, interval: str) -> list[Bar]:
+            if interval == "15m":
+                self.calls.append((requested_symbol, lookback, interval))
+                if failure == "exception":
+                    raise MarketError("all_sources_failed", f"{requested_symbol}: indisponible")
+                return []
+            return super().get_bars(requested_symbol, lookback, interval)
+
+    source = RuntimeUnavailableSource()
+    fx_calls: list[list[str]] = []
+
+    def fx_rate_provider(symbols, *, data_source) -> dict[str, float]:
+        assert data_source is source
+        fx_calls.append(list(symbols))
+        return rates
+
+    snapshot = build_market_snapshot(
+        symbols=[symbol],
+        data_source=source,
+        now=NOW,
+        max_market_data_age_minutes=40.0,
+        runtime_interval="15m",
+        runtime_lookback="5d",
+        fx_rate_provider=fx_rate_provider,
+        plan_store=None,
+    )
+
+    assert snapshot.stale_market_data[symbol] == {
+        "last_bar_ts": None,
+        "stale_reason": expected_reason,
+        "data_age_minutes": None,
+    }
+    assert fx_calls == [[symbol]]
+    assert symbol not in snapshot.prices
+    assert symbol not in snapshot.bars_by_symbol
+    assert symbol not in snapshot.tradable_prices
+    assert symbol not in snapshot.tradable_symbols
+    assert symbol not in snapshot.tradable_bars_by_symbol
+    if symbol == "2330.TW":
+        assert snapshot.rate_for_symbol(symbol) == 0.031
 
 
 def test_market_snapshot_rate_lookup_is_derived_method_not_captured_field() -> None:

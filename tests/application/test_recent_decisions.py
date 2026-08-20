@@ -80,6 +80,16 @@ def test_exclut_hold_infra_sans_evincer_effet_plan_arme():
         _row(
             "AAPL",
             "HOLD",
+            rationale="stale_market_data",
+            reason="stale_market_data",
+            decision_source="infra",
+            source="armed_plan",
+            model_called=False,
+            runtime={"armed_plan_id": "stale-plan"},
+        ),
+        _row(
+            "AAPL",
+            "HOLD",
             rationale="armed_plan:AAPL:breakout",
             decision_source="armed_plan",
             source="armed_plan",
