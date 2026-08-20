@@ -270,17 +270,18 @@ class ProcessLifecycle:
         latest: ProcessEvent,
         history: Sequence[ProcessEvent],
     ) -> bool:
-        """Allow a new bundle only after explicitly cancelling inert old work."""
+        """Allow a new bundle only after explicitly cancelling reconciled old work.
+
+        A verified schedule receipt is a readback of a durable, non-execution
+        effect.  It is safe to supersede only when every receipt in that event
+        explicitly says ``status=verified``.  Unknown, pending, or malformed
+        receipts remain fail-closed: this pilot has no generic recovery
+        protocol for them.
+        """
 
         if not _bundle_sha256(latest.version_pins) or not _bundle_sha256(self._version_pins):
             return False
-        return bool(history) and all(
-            event.terminal_result is None
-            and event.outcome_code != "recovery_required"
-            and event.effect_status in {None, "not_applied", "not_applied_dry_run"}
-            and not event.effect_refs
-            for event in history
-        )
+        return bool(history) and all(_event_is_safe_to_supersede(event) for event in history)
 
     def _close_superseded_instance(self, latest: ProcessEvent) -> None:
         """Record an explicit terminal event before admitting the new bundle."""
@@ -384,6 +385,21 @@ def _bundle_sha256(version_pins: Mapping[str, Any] | None) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return value.strip()
+
+
+def _event_is_safe_to_supersede(event: ProcessEvent) -> bool:
+    """Whether an old open-event can be explicitly cancelled on bundle change."""
+
+    if event.terminal_result is not None or event.outcome_code == "recovery_required":
+        return False
+    if event.effect_status in {None, "not_applied", "not_applied_dry_run"}:
+        return not event.effect_refs
+    if event.effect_status != "verified" or not event.effect_refs:
+        return False
+    return all(
+        isinstance(ref, Mapping) and ref.get("status") == "verified"
+        for ref in event.effect_refs
+    )
 
 
 def _decision_closure_evidence_is_correlated(

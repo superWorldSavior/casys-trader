@@ -239,6 +239,69 @@ def test_no_effect_open_instance_is_explicitly_superseded_on_bundle_change(tmp_p
     assert new_events[0].version_pins == {"bundle_sha256": "bundle-2"}
 
 
+def test_verified_schedule_readback_open_instance_is_superseded_on_bundle_change(tmp_path: Path) -> None:
+    lifecycle, store = _lifecycle(tmp_path, bundle="bundle-1")
+    first = lifecycle.admit_or_resume("AAPL")
+    lifecycle.defer(
+        first,
+        outcome_code="stale_backoff",
+        effect_status="verified",
+        effect_refs=[
+            {
+                "type": "schedule_readback",
+                "status": "verified",
+                "symbol": "AAPL",
+                "next_wake": "2026-08-09T01:00:00+00:00",
+            }
+        ],
+    )
+    changed, _ = _lifecycle(
+        tmp_path,
+        bundle="bundle-2",
+        runtime_run_id="runtime-2",
+        store=store,
+    )
+
+    admitted = changed.admit_or_resume("AAPL")
+
+    old_events = store.read_instance(first.identity.process_instance_id)
+    assert old_events[-1].event_type == "instance_closed"
+    assert old_events[-1].outcome_code == "governance_version_superseded"
+    assert admitted.identity.process_instance_id != first.identity.process_instance_id
+
+
+@pytest.mark.parametrize(
+    ("effect_status", "effect_refs"),
+    [
+        ("unknown", [{"type": "schedule_readback", "status": "verified"}]),
+        ("verified", [{"type": "schedule_readback", "status": "pending"}]),
+        ("verified", []),
+    ],
+)
+def test_unknown_or_unverified_open_effect_blocks_bundle_supersession(
+    tmp_path: Path,
+    effect_status: str,
+    effect_refs: list[dict[str, str]],
+) -> None:
+    lifecycle, store = _lifecycle(tmp_path, bundle="bundle-1")
+    first = lifecycle.admit_or_resume("AAPL")
+    lifecycle.defer(
+        first,
+        outcome_code="stale_backoff",
+        effect_status=effect_status,
+        effect_refs=effect_refs,
+    )
+    changed, _ = _lifecycle(
+        tmp_path,
+        bundle="bundle-2",
+        runtime_run_id="runtime-2",
+        store=store,
+    )
+
+    with pytest.raises(OpenProcessVersionMismatch):
+        changed.admit_or_resume("AAPL")
+
+
 def test_effectful_open_instance_still_rejects_bundle_change(tmp_path: Path) -> None:
     lifecycle, store = _lifecycle(tmp_path, bundle="bundle-1")
     first = lifecycle.admit_or_resume("AAPL")
