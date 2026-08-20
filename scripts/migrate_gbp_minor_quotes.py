@@ -1013,6 +1013,7 @@ def apply(
         raise MigrationRefused("chemin de backup déjà existant")
     _backup_sqlite(db_path, db_backup)
     shutil.copy2(performance_path, perf_backup)
+    os.chmod(perf_backup, 0o600)
 
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     conn.row_factory = sqlite3.Row

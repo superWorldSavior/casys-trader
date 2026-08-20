@@ -119,6 +119,10 @@ def test_dry_run_reconciles_exact_manifest_without_mutation(tmp_path: Path) -> N
 
 def test_apply_normalizes_attests_verifies_and_is_idempotent(tmp_path: Path) -> None:
     db_path, performance_path = _state(tmp_path)
+    db_path.chmod(0o644)
+    performance_path.chmod(0o644)
+    assert db_path.stat().st_mode & 0o777 == 0o644
+    assert performance_path.stat().st_mode & 0o777 == 0o644
     preflight = _preflight(db_path, performance_path)
     original_first_line = performance_path.read_text(encoding="utf-8").splitlines()[0]
 
@@ -128,6 +132,8 @@ def test_apply_normalizes_attests_verifies_and_is_idempotent(tmp_path: Path) -> 
     assert report["verification"]["status"] == "verified"
     assert Path(report["db_backup"]).exists()
     assert Path(report["performance_backup"]).exists()
+    assert Path(report["db_backup"]).stat().st_mode & 0o777 == 0o600
+    assert Path(report["performance_backup"]).stat().st_mode & 0o777 == 0o600
     conn = sqlite3.connect(db_path)
     prices = [
         row[0]
