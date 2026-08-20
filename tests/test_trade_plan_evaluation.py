@@ -14,6 +14,7 @@ from trader.application.execute.trade_plan_evaluation import (
     validate_decision_trade_evaluations,
     validate_trade_evaluation_reference,
 )
+from trader.domain.contracts import Commission
 from trader.domain.decisions import Decision
 from trader.domain.execution.risk_gate import RiskGate
 from trader.domain.risk import RiskLimits
@@ -69,10 +70,75 @@ def test_evaluate_long_bracket_computes_net_economics_and_stable_id() -> None:
     assert result.order_quantity == 100.0
     assert result.risk_pct == 0.005
     assert result.economics.status == "positive"
+    assert result.economics.cost_scope == "broker_commission_only"
+    assert result.economics.cost_estimate_is_all_in is False
     assert result.economics.p_break_even is not None
     assert 0.33 < result.economics.p_break_even < 0.34
     assert result.evaluation_id == repeated.evaluation_id
     assert result.evaluation_id and result.evaluation_id.startswith("tpe_")
+    assert any(
+        warning["code"] == "transaction_cost_estimate_incomplete"
+        and warning["cost_scope"] == "broker_commission_only"
+        for warning in result.warnings
+    )
+
+
+@pytest.mark.parametrize(
+    "amount",
+    [float("nan"), float("inf"), float("-inf"), -0.01],
+)
+def test_economics_invalid_commission_amount_fail_closed(amount: float) -> None:
+    class InvalidAmountModel:
+        def calculate(self, order, price):
+            return Commission(amount=amount, currency="USD", model="invalid_amount")
+
+    result = TradePlanEvaluator(
+        _context(commission_model=InvalidAmountModel())
+    ).evaluate(
+        TradePlanCandidate(
+            symbol="AAPL",
+            direction="long",
+            confidence=0.60,
+            quantity=100.0,
+            exit_plan={
+                "hard_stop": 95.0,
+                "take_profits": [{"price": 110.0, "fraction": 1.0}],
+            },
+        )
+    )
+
+    assert result.valid is True
+    assert result.economics.status == "unknown"
+    assert {warning["code"] for warning in result.warnings} == {
+        "commission_unavailable"
+    }
+
+
+def test_economics_third_commission_currency_fail_closed() -> None:
+    class ThirdCurrencyModel:
+        def calculate(self, order, price):
+            return Commission(amount=1.0, currency="EUR", model="third_currency")
+
+    result = TradePlanEvaluator(
+        _context(commission_model=ThirdCurrencyModel())
+    ).evaluate(
+        TradePlanCandidate(
+            symbol="AAPL",
+            direction="long",
+            confidence=0.60,
+            quantity=100.0,
+            exit_plan={
+                "hard_stop": 95.0,
+                "take_profits": [{"price": 110.0, "fraction": 1.0}],
+            },
+        )
+    )
+
+    assert result.valid is True
+    assert result.economics.status == "unknown"
+    assert {warning["code"] for warning in result.warnings} == {
+        "commission_unavailable"
+    }
 
 
 def test_multi_target_fractions_fees_and_fx_use_actual_sizing() -> None:
@@ -247,6 +313,8 @@ def test_evaluate_trade_plan_tool_returns_compact_evaluation() -> None:
     assert result.result["valid"] is True
     assert result.result["evaluation_id"].startswith("tpe_")
     assert result.result["economics"]["p_break_even"] is not None
+    assert result.result["economics"]["cost_scope"] == "broker_commission_only"
+    assert result.result["economics"]["cost_estimate_is_all_in"] is False
 
 
 def test_tool_evaluation_matches_parsed_limit_entry_and_normalized_thesis() -> None:

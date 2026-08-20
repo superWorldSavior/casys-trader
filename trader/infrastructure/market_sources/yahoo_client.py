@@ -1,12 +1,16 @@
 """Client HTTP direct Yahoo Finance — endpoint public v8 chart.
 
 Frontière I/O PURE : parle à l'endpoint v8 et traduit la réponse JSON en barres
-brutes. Ne juge JAMAIS une barre individuelle (close<=0, NaN) — c'est la
-responsabilité du métier en aval (`market_data_yf.get_bars`). L'ajustement OHLC
-reste opt-in pour les consommateurs historiques comme le radar. Un `null` Yahoo
-est traduit *fidèlement* en NaN (traduction, pas jugement) ; seule l'absence
-totale de données, une erreur de la réponse ou un échec de transport lève
-MarketError. Résultat : la validité d'une barre reste décidée à un SEUL endroit.
+brutes exprimées dans l'unité monétaire majeure de la devise. En particulier,
+Yahoo identifie explicitement certaines cotations londoniennes en pence
+(``GBp``/``GBX``) : leurs prix sont normalisés en livres, sans jamais inférer
+l'unité depuis le suffixe du symbole. Ne juge JAMAIS une barre individuelle
+(close<=0, NaN) — c'est la responsabilité du métier en aval
+(`market_data_yf.get_bars`). L'ajustement OHLC reste opt-in pour les
+consommateurs historiques comme le radar. Un `null` Yahoo est traduit
+*fidèlement* en NaN (traduction, pas jugement) ; seule l'absence totale de
+données, une erreur de la réponse ou un échec de transport lève MarketError.
+Résultat : la validité d'une barre reste décidée à un SEUL endroit.
 
 Remplace la dépendance `yfinance` : même source (endpoint `v8/finance/chart`
 que le package tape en interne), mais contrôle total des erreurs (mappées en
@@ -33,7 +37,7 @@ _TIMEOUT_S = 10.0
 
 @dataclass(frozen=True)
 class RawBar:
-    """Barre Yahoo non jugée : open/high/low/close/volume peuvent être NaN."""
+    """Barre Yahoo non jugée, prix en unité majeure ; champs possiblement NaN."""
 
     ts: str  # ISO 8601, timezone de la place de cotation
     open: float
@@ -70,6 +74,8 @@ def fetch_ohlc(
     Returns:
         Barres dans l'ordre chronologique. Une barre par timestamp renvoyé,
         valeurs manquantes (``null``) traduites en NaN — jamais filtrées ici.
+        Les OHLC/Adj Close explicitement marqués ``GBp`` ou ``GBX`` par Yahoo
+        sont convertis en GBP ; le volume reste inchangé.
         Avec ``auto_adjust=True``, OHLC suit exactement le ratio
         ``Adj Close / Close`` utilisé historiquement par yfinance.
         Si ``indicators.quote`` est absent/vide alors que des timestamps
@@ -101,7 +107,9 @@ def fetch_ohlc(
         if not timestamps:
             raise MarketError("no_data", f"{symbol}: aucune barre (range={lookback}, interval={interval})")
 
-        tz = _exchange_tz(result.get("meta") or {})
+        meta = result.get("meta") or {}
+        tz = _exchange_tz(meta)
+        price_scale = _price_scale(meta)
         indicators = result.get("indicators") or {}
         quote = ((indicators.get("quote") or [{}]) or [{}])[0]
         opens, highs = quote.get("open") or [], quote.get("high") or []
@@ -123,6 +131,7 @@ def fetch_ohlc(
                 volumes=volumes,
                 adjcloses=adjcloses,
                 auto_adjust=auto_adjust,
+                price_scale=price_scale,
             )
             for i, ts in enumerate(timestamps)
         ]
@@ -147,13 +156,18 @@ def _bar_at(
     volumes: list,
     adjcloses: list | None,
     auto_adjust: bool,
+    price_scale: float,
 ) -> RawBar:
-    raw_open = _at(opens, index)
-    raw_high = _at(highs, index)
-    raw_low = _at(lows, index)
-    raw_close = _at(closes, index)
+    raw_open = _at(opens, index) * price_scale
+    raw_high = _at(highs, index) * price_scale
+    raw_low = _at(lows, index) * price_scale
+    raw_close = _at(closes, index) * price_scale
     if auto_adjust:
-        adjusted_close = _at(adjcloses, index) if adjcloses is not None else raw_close
+        adjusted_close = (
+            _at(adjcloses, index) * price_scale
+            if adjcloses is not None
+            else raw_close
+        )
         ratio = adjusted_close / raw_close if raw_close else math.nan
         open_value = raw_open * ratio
         high_value = raw_high * ratio
@@ -180,6 +194,16 @@ def _at(arr: list, i: int) -> float:
         return math.nan
     value = arr[i]
     return math.nan if value is None else float(value)
+
+
+def _price_scale(meta: dict) -> float:
+    """Convertit seulement les unités Yahoo explicites de pence vers GBP.
+
+    ``GBp`` est sensible à la casse : le normaliser avant comparaison le
+    confondrait avec ``GBP`` et diviserait à tort une cotation déjà en livres.
+    ``GBX`` est l'autre code Yahoo rencontré pour les pence sterling.
+    """
+    return 0.01 if meta.get("currency") in {"GBp", "GBX"} else 1.0
 
 
 def _exchange_tz(meta: dict) -> timezone | ZoneInfo:

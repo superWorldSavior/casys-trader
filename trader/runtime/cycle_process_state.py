@@ -1,4 +1,4 @@
-"""State shared between successive cycles of one daemon process."""
+"""State shared between cycles and partly restored across daemon restarts."""
 
 from __future__ import annotations
 
@@ -10,11 +10,12 @@ from datetime import datetime
 class CycleProcessState:
     """Cross-cycle memory for one daemon process.
 
-    ``last_llm_at`` is the relevance-gate cadence clock. The daemon restores it
-    from SQLite at boot and writes it back after each effective LLM review so a
-    restart does not treat every symbol as never seen. Material fingerprints
-    stay process-local: after restart a present regime/signal has no trusted
-    prior identity and therefore conservatively wakes the LLM once.
+    ``last_llm_at`` is the relevance-gate cadence clock. With the canonical
+    SQLite backend, the daemon atomically persists and restores it together with
+    ``last_wake_reasons`` and ``last_wake_fingerprints`` after each effective LLM
+    review. Legacy or corrupt persisted context is ignored fail-open, so an
+    untrusted regime/signal identity wakes the LLM once. Gross-rejection feedback
+    remains process-local.
     """
 
     last_llm_at: dict[tuple[str, str], datetime] = field(default_factory=dict)

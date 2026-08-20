@@ -20,6 +20,7 @@ class PositionRow:
     last: float | None
     notional: float
     pnl: float
+    pnl_basis: str
     pnl_pct: float
     stop_dist: float | None
     stop_left_pct: float | None
@@ -37,7 +38,10 @@ class PortfolioPositionsProjection:
     gross_short: float
     gross: float
     net_long: float
-    unrealized_total: float
+    unrealized_total: float | None
+    unrealized_basis: str
+    unrealized_net_coverage: int
+    unrealized_positions: int
 
 
 def pnl_pct(holding: dict) -> float:
@@ -72,7 +76,7 @@ def project_portfolio_positions(
     rows: list[PositionRow] = []
     gross_long = 0.0
     gross_short = 0.0
-    unrealized_total = 0.0
+    unrealized = f.aggregate_holding_pnl(holdings)
 
     for holding in holdings:
         symbol = f.holding_symbol(holding)
@@ -87,8 +91,6 @@ def project_portfolio_positions(
             gross_long += notional
         else:
             gross_short += notional
-        unrealized_total += pnl
-
         rows.append(
             PositionRow(
                 symbol=symbol,
@@ -98,6 +100,9 @@ def project_portfolio_positions(
                 last=last,
                 notional=notional,
                 pnl=pnl,
+                pnl_basis=(
+                    "net" if f.holding_net_pnl(holding) is not None else "gross"
+                ),
                 pnl_pct=pnl_pct(holding),
                 stop_dist=f.stop_distance_pct(plan, last) if plan else None,
                 stop_left_pct=f.stop_left_pct(plan, last) if plan else None,
@@ -114,7 +119,10 @@ def project_portfolio_positions(
         gross_short=gross_short,
         gross=gross,
         net_long=gross_long - gross_short,
-        unrealized_total=unrealized_total,
+        unrealized_total=unrealized.amount,
+        unrealized_basis=unrealized.basis,
+        unrealized_net_coverage=unrealized.net_coverage,
+        unrealized_positions=unrealized.positions,
     )
 
 

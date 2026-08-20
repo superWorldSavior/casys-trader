@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -11,20 +10,20 @@ from trader.application.record.learning_outcomes import (
     score_outcome,
 )
 from trader.domain.market_data import Bar
+from trader.reporting.read_models.trade_history import (
+    aggregate_position_cycles,
+    compute_round_trips,
+)
 
 UTC = timezone.utc
 
 
-@dataclass(frozen=True)
-class InMemoryPerformanceRows:
-    rows: list[dict]
-
-    def read_rows(self) -> list[dict]:
-        return self.rows
-
-
 def _outcomes(rows: list[dict]) -> dict[str, float]:
-    return realised_entry_outcomes(InMemoryPerformanceRows(rows))
+    try:
+        trips = compute_round_trips(fills=rows)
+    except ValueError:
+        return {}
+    return realised_entry_outcomes(aggregate_position_cycles(trips))
 
 
 def _fill(
@@ -35,7 +34,10 @@ def _fill(
     price: float,
     decision_id: str,
     *,
-    commission: float = 0.0,
+    commission: object = 0.0,
+    fx_rate: object = 1.0,
+    commission_model: object = "ibkr_us_stock_tiered",
+    commission_currency: object = "USD",
 ) -> dict:
     return {
         "ts": ts,
@@ -45,7 +47,9 @@ def _fill(
         "price": price,
         "decision_id": decision_id,
         "commission": commission,
-        "fx_rate": 1.0,
+        "commission_model": commission_model,
+        "commission_currency": commission_currency,
+        "fx_rate": fx_rate,
     }
 
 
@@ -101,6 +105,103 @@ def test_interleaved_symbols_keep_independent_fifo_lots() -> None:
     )
 
     assert result == {"qqq": pytest.approx(0.1), "spy": pytest.approx(0.1)}
+
+
+def test_realised_return_uses_each_fill_fx_and_native_commission() -> None:
+    result = _outcomes(
+        [
+            _fill(
+                "2026-07-01",
+                "AIR.PA",
+                "BUY",
+                10,
+                100,
+                "eur-entry",
+                commission=1.0,
+                fx_rate=1.1,
+                commission_model="ibkr_europe_stock_tiered",
+                commission_currency="EUR",
+            ),
+            _fill(
+                "2026-07-02",
+                "AIR.PA",
+                "SELL",
+                10,
+                110,
+                "eur-exit",
+                commission=1.0,
+                fx_rate=1.2,
+                commission_model="ibkr_europe_stock_tiered",
+                commission_currency="EUR",
+            ),
+        ]
+    )
+
+    # Entry deployment: 100 * 10 * 1.1 = 1,100 USD.
+    # Gross: 1,320 - 1,100 = 220 USD. Fees: 1.1 + 1.2 = 2.3 USD.
+    assert result["eur-entry"] == pytest.approx(217.7 / 1_100.0)
+
+
+def test_scale_in_decisions_share_the_completed_cycle_net_return() -> None:
+    result = _outcomes(
+        [
+            _fill("2026-07-01", "SPY", "BUY", 5, 100, "entry-a", commission=0.5),
+            _fill("2026-07-02", "SPY", "BUY", 5, 120, "entry-b", commission=0.5),
+            _fill("2026-07-03", "SPY", "SELL", 10, 121, "exit", commission=1.0),
+        ]
+    )
+
+    expected = 108.0 / 1_100.0
+    assert result == {
+        "entry-a": pytest.approx(expected),
+        "entry-b": pytest.approx(expected),
+    }
+
+
+def test_explicit_zero_commission_with_valid_contract_is_proven() -> None:
+    result = _outcomes(
+        [
+            _fill("2026-07-01", "SPY", "BUY", 1, 100, "entry"),
+            _fill("2026-07-02", "SPY", "SELL", 1, 110, "exit"),
+        ]
+    )
+
+    assert result == {"entry": pytest.approx(0.1)}
+
+
+@pytest.mark.parametrize(
+    "invalid_fields",
+    [
+        {"commission": None},
+        {"commission": float("nan")},
+        {"commission": -0.01},
+        {"commission_model": "none"},
+        {"commission_model": "ibkr_unknown"},
+        {"commission_currency": None},
+        {"commission_currency": "EUR"},
+        {"fx_rate": None},
+        {"fx_rate": 0.0},
+        {"fx_rate": float("nan")},
+    ],
+)
+def test_unproven_entry_fee_or_fx_keeps_learning_pending(
+    invalid_fields: dict[str, object],
+) -> None:
+    entry = _fill("2026-07-01", "SPY", "BUY", 1, 100, "entry")
+    entry.update(invalid_fields)
+
+    assert _outcomes(
+        [entry, _fill("2026-07-02", "SPY", "SELL", 1, 110, "exit")]
+    ) == {}
+
+
+def test_unproven_exit_leg_keeps_the_whole_cycle_pending() -> None:
+    exit_fill = _fill("2026-07-02", "SPY", "SELL", 1, 110, "exit")
+    exit_fill["commission"] = None
+
+    assert _outcomes(
+        [_fill("2026-07-01", "SPY", "BUY", 1, 100, "entry"), exit_fill]
+    ) == {}
 
 
 def test_non_finite_or_invalid_fills_are_ignored() -> None:

@@ -1,6 +1,11 @@
+import gzip
+import json
+
 import pytest
 
+from trader.reporting.read_models import confidence_calibration
 from trader.reporting.read_models.confidence_calibration import (
+    build_confidence_calibration,
     build_confidence_calibration_from_rows,
     compact_confidence_calibration,
 )
@@ -11,7 +16,15 @@ def _trip(decision_id: str, confidence: float, pnl: float, *, side: str = "LONG"
         "entry_decision_id": decision_id,
         "entry_decision_ids": [decision_id],
         "entry_confidence": confidence,
+        "gross_pnl": pnl,
+        "commission": 0.0,
         "pnl": pnl,
+        "commission_quality": {
+            "status": "available",
+            "reason": None,
+            "models": [],
+            "reasons": [],
+        },
         "side": side,
     }
 
@@ -137,4 +150,120 @@ def test_compact_projection_is_bounded() -> None:
 
     assert compact["n"] == 2
     assert len(compact["cohorts"]) == 2
+    assert compact["commission_quality"]["status"] == "available"
     assert compact["detail_scope"] == "confidence_calibration"
+
+
+def test_incomplete_commission_cycle_is_excluded_with_explicit_quality() -> None:
+    unavailable = {
+        **_trip("d2", 0.9, -20.0),
+        "pnl": None,
+        "commission": None,
+        "commission_quality": {
+            "status": "unavailable",
+            "reason": "commission_not_modeled",
+            "models": ["none"],
+            "reasons": ["commission_not_modeled"],
+        },
+    }
+
+    result = build_confidence_calibration_from_rows(
+        [_trip("d1", 0.6, 10.0), unavailable],
+        [_decision("d1"), _decision("d2")],
+        min_cohort_size=1,
+    )
+
+    assert result["n"] == 1
+    assert result["commission_quality"] == {
+        "status": "unavailable",
+        "reason": "commission_not_modeled",
+        "counts": {"total": 2, "available": 1, "unavailable": 1},
+        "models": ["none"],
+        "model_counts": {"none": 1},
+        "reasons": ["commission_not_modeled"],
+        "reason_counts": {"commission_not_modeled": 1},
+    }
+    assert result["quality"]["status"] == "partial"
+
+
+@pytest.mark.parametrize("failure", ["directory", "invalid_utf8"])
+def test_decision_history_read_errors_are_advisory_and_explicit(
+    tmp_path, failure: str, monkeypatch
+) -> None:
+    decisions_path = tmp_path / "decisions.jsonl"
+    if failure == "directory":
+        decisions_path.mkdir()
+    else:
+        decisions_path.write_bytes(b"\xff\xfe")
+
+    monkeypatch.setattr(
+        confidence_calibration,
+        "compute_round_trips",
+        lambda _: [_trip("d1", 0.6, 10.0)],
+    )
+
+    result = build_confidence_calibration(tmp_path, min_cohort_size=1)
+
+    assert result["n"] == 1
+    assert result["quality"]["status"] == "unavailable"
+    assert result["decision_rows_quality"]["status"] == "unavailable"
+    assert result["decision_rows_quality"]["reason"] == (
+        "decision_ledger_unreadable"
+    )
+
+
+def test_decision_history_reads_referenced_ids_from_gzip_archive(
+    tmp_path, monkeypatch
+) -> None:
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    with gzip.open(
+        archive / "decisions-2026-06.jsonl.gz", "wt", encoding="utf-8"
+    ) as handle:
+        handle.write(json.dumps(_decision("d1", setup="archived_breakout")) + "\n")
+    monkeypatch.setattr(
+        confidence_calibration,
+        "compute_round_trips",
+        lambda _: [_trip("d1", 0.6, 10.0)],
+    )
+
+    result = build_confidence_calibration(tmp_path, min_cohort_size=1)
+
+    fine = next(
+        row
+        for row in result["cohorts"]
+        if row["level"] == "setup+regime+side+horizon"
+    )
+    assert fine["dimensions"]["setup"] == "archived_breakout"
+    assert result["decision_rows_quality"]["status"] == "available"
+    assert result["decision_rows_quality"]["rows_found"] == 1
+
+
+def test_live_decision_deduplicates_and_supersedes_archived_copy(
+    tmp_path, monkeypatch
+) -> None:
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    with gzip.open(
+        archive / "decisions-2026-06.jsonl.gz", "wt", encoding="utf-8"
+    ) as handle:
+        handle.write(json.dumps(_decision("d1", setup="old_setup")) + "\n")
+    (tmp_path / "decisions.jsonl").write_text(
+        json.dumps(_decision("d1", setup="live_setup")) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        confidence_calibration,
+        "compute_round_trips",
+        lambda _: [_trip("d1", 0.6, 10.0)],
+    )
+
+    result = build_confidence_calibration(tmp_path, min_cohort_size=1)
+
+    fine = next(
+        row
+        for row in result["cohorts"]
+        if row["level"] == "setup+regime+side+horizon"
+    )
+    assert fine["dimensions"]["setup"] == "live_setup"
+    assert result["decision_rows_quality"]["duplicate_rows"] == 1

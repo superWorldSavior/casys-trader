@@ -154,6 +154,24 @@ class QueueRuntimes:
     execute: ExecuteQueueRuntime
 
 
+def _stop_pool_after_failed_start(
+    pool: StartablePool | None,
+    *,
+    queue_name: str,
+    logger: LoggerLike,
+) -> None:
+    if pool is None:
+        return
+    try:
+        pool.stop()
+    except Exception as exc:  # noqa: BLE001 - preserve the causal boot failure
+        logger.warning(
+            "[%s] cleanup du pool après échec de boot impossible: %s",
+            queue_name,
+            exc,
+        )
+
+
 def start_decide_queue(
     *,
     enabled: bool,
@@ -219,7 +237,15 @@ def start_decide_queue(
         now_fn=time.time,
         lease_ms=lease_ms,
     )
-    pool.start()
+    try:
+        pool.start()
+    except BaseException:
+        _stop_pool_after_failed_start(
+            pool,
+            queue_name="queue_decide",
+            logger=log,
+        )
+        raise
     log.info(
         "[queue_decide] pool démarré num_workers=%d db=%s",
         parallelism,
@@ -279,7 +305,15 @@ def start_execute_queue(
         num_workers=1,
         now_fn=time.time,
     )
-    pool.start()
+    try:
+        pool.start()
+    except BaseException:
+        _stop_pool_after_failed_start(
+            pool,
+            queue_name="queue_execute",
+            logger=log,
+        )
+        raise
     log.info("[queue_execute] pool démarré db=%s", ledger.path)
     return ExecuteQueueRuntime(
         enabled=True,
@@ -456,6 +490,7 @@ def start_queue_runtimes(
     now_ms_fn: NowMs = default_now_ms,
     logger: LoggerLike | None = None,
 ) -> QueueRuntimes:
+    log = logger or _default_logger()
     decide = start_decide_queue(
         enabled=decide_enabled,
         state_dir=state_dir,
@@ -466,14 +501,22 @@ def start_queue_runtimes(
         decision_timeout_s=decision_timeout_s,
         tool_services=decide_tool_services,
         now_ms_fn=now_ms_fn,
-        logger=logger,
+        logger=log,
     )
-    execute = start_execute_queue(
-        enabled_raw=execute_enabled_raw,
-        state_backend=state_backend,
-        state_dir=state_dir,
-        commission_model=commission_model,
-        now_ms_fn=now_ms_fn,
-        logger=logger,
-    )
+    try:
+        execute = start_execute_queue(
+            enabled_raw=execute_enabled_raw,
+            state_backend=state_backend,
+            state_dir=state_dir,
+            commission_model=commission_model,
+            now_ms_fn=now_ms_fn,
+            logger=log,
+        )
+    except BaseException:
+        _stop_pool_after_failed_start(
+            decide.pool,
+            queue_name="queue_decide",
+            logger=log,
+        )
+        raise
     return QueueRuntimes(decide=decide, execute=execute)

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import importlib.abc
+import json
+import sqlite3
 import sys
 from datetime import UTC, datetime
 
 from trader.tui import (
     _build_attribution_panel,
+    _build_kpi_band,
+    _build_kpi_compact,
     _build_positions_panel,
     _load_scheduler_data_safe,
     build_closed_trades_table,
@@ -25,6 +28,17 @@ def _render_plain(renderable, *, width: int = 160) -> str:
     with console.capture() as capture:
         console.print(renderable)
     return capture.get()
+
+
+def test_kpi_compact_does_not_turn_unknown_trade_count_into_zero() -> None:
+    output = _render_plain(_build_kpi_compact({}, []))
+
+    assert "Trades: —" in output
+    assert "Trades: 0" not in output
+
+    large_output = _render_plain(_build_kpi_band({}))
+    assert "Trades" in large_output
+    assert "—" in large_output
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +175,8 @@ def test_positions_affiche_le_pnl_latent_net_avec_frais_et_brut_secondaires() ->
     assert "$110.0000" not in output
     assert "brut +100.00" in output
     assert "frais -1.75" in output
+    assert "entrée + sortie estimées" in output
+    assert "hors taxes/place" in output
 
 
 def test_positions_debruitees_valeur_usd_sans_prix_natifs() -> None:
@@ -233,7 +249,7 @@ def test_positions_stop_et_solde_depuis_le_plan() -> None:
     assert "50%" in output             # moitié soldée (10 → 5)
 
 
-def test_positions_sans_pnl_net_garde_l_affichage_brut_historique() -> None:
+def test_positions_sans_pnl_net_identifie_explicitement_le_brut() -> None:
     holdings = [
         {
             "symbol": "AAPL",
@@ -247,7 +263,8 @@ def test_positions_sans_pnl_net_garde_l_affichage_brut_historique() -> None:
     output = _render_plain(_build_positions_panel(holdings))
 
     assert "+100.00" in output
-    assert "brut" not in output
+    assert "brut" in output
+    assert "net indisponible" in output
     assert "frais" not in output
 
 
@@ -284,6 +301,44 @@ def test_build_view_total_latent_utilise_le_net_et_detaille_les_frais() -> None:
     assert "PnL latent USD" in output
     assert "+47.00" in output
     assert "dont frais -3.00" in output
+    assert "entrée + sortie estimées" in output
+    assert "hors taxes/place" in output
+
+
+def test_build_view_ne_melange_jamais_net_connu_et_brut_incomplet() -> None:
+    state = {
+        **_FULL_STATE,
+        "portfolio": {
+            **_FULL_STATE["portfolio"],
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 10.0,
+                    "avg_price": 100.0,
+                    "last_price": 110.0,
+                    "unrealized_pnl": 100.0,
+                    "round_trip_fee": 2.0,
+                    "unrealized_pnl_net": 98.0,
+                },
+                {
+                    "symbol": "TSLA",
+                    "quantity": 5.0,
+                    "avg_price": 100.0,
+                    "last_price": 110.0,
+                    "unrealized_pnl": 50.0,
+                    "unrealized_pnl_net": None,
+                },
+            ],
+        },
+    }
+
+    output = _render_plain(build_view(state), width=220)
+
+    assert "PnL latent USD brut" in output
+    assert "+150.00" in output
+    assert "+148.00" not in output
+    assert "net —" in output
+    assert "frais 1/2" in output
 
 
 def test_build_view_affiche_le_capital_non_engage_plutot_que_le_produit_des_shorts() -> None:
@@ -342,18 +397,82 @@ def test_attribution_affiche_le_realise_net_avec_frais_et_brut_secondaires() -> 
         "realized_pnl": 42.50,
         "total_commissions": 3.75,
         "realized_gross_pnl": 46.25,
+        "commission_quality": {"status": "available"},
         "by_confidence": [
-            {"bucket": "0.7-0.85", "n": 1, "win_rate": 1.0, "total_pnl": 42.50}
+            {
+                "bucket": "0.7-0.85",
+                "n": 1,
+                "win_rate": 1.0,
+                "total_pnl": 42.50,
+                "commission_quality": {"status": "available"},
+            }
         ],
     }
 
     output = _render_plain(_build_attribution_panel(attribution))
 
-    assert "P&L réalisé USD" in output
-    assert "P&L USD +42.50" in output
+    assert "P&L net courtage USD" in output
+    assert "net USD +42.50" in output
     assert "+42.50" in output
     assert "dont frais -3.75" in output
+    assert "hors taxes/place" in output
     assert "brut +46.25" in output
+
+
+def test_attribution_incomplete_keeps_gross_without_inventing_net_or_win() -> None:
+    attribution = {
+        "n_closed_trades": 2,
+        "realized_gross_pnl": 10.0,
+        "realized_pnl": None,
+        "total_commissions": None,
+        "win_rate": None,
+        "commission_quality": {
+            "status": "unavailable",
+            "counts": {"total": 2, "available": 1, "unavailable": 1},
+            "reasons": ["commission_not_modeled"],
+        },
+        "by_confidence": [
+            {
+                "bucket": "0.7-0.85",
+                "n": 2,
+                "total_gross_pnl": 10.0,
+                "total_pnl": None,
+                "win_rate": None,
+                "commission_quality": {"status": "unavailable"},
+            }
+        ],
+    }
+
+    output = _render_plain(_build_attribution_panel(attribution))
+
+    assert "P&L brut réalisé USD" in output
+    assert "+10.00" in output
+    assert "Net courtage / win rate : indisponibles" in output
+    assert "commission_not_modeled" in output
+    assert "net USD +0.00" not in output
+
+
+def test_closed_trade_incomplete_shows_gross_and_never_zero_net() -> None:
+    trip = {
+        "symbol": "AAPL",
+        "side": "LONG",
+        "entry_price": 100.0,
+        "exit_price": 110.0,
+        "gross_pnl": 10.0,
+        "commission": None,
+        "pnl": None,
+        "commission_quality": {
+            "status": "unavailable",
+            "reason": "commission_not_modeled",
+        },
+    }
+
+    output = _render_plain(build_closed_trades_table([trip], {}))
+
+    assert "net —" in output
+    assert "brut +10.00" in output
+    assert "frais indisponibles" in output
+    assert "net +0.00" not in output
 
 
 def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
@@ -366,6 +485,7 @@ def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
             "gross_pnl": 10.0,
             "commission": 1.5,
             "pnl": 8.5,
+            "commission_quality": {"status": "available"},
             "exit_ts": "2026-06-21T12:00:00+00:00",
             "exit_reason": "llm_exit",
             "holding_minutes": 60.0,
@@ -378,6 +498,7 @@ def test_trades_clotures_affichent_net_local_avec_brut_et_frais() -> None:
     assert "+8.50" in output
     assert "brut +10.00" in output
     assert "frais -1.50" in output
+    assert "hors taxes/place" in output
 
 
 def test_trades_clotures_distinguent_prix_natifs_et_net_usd() -> None:
@@ -546,6 +667,95 @@ def test_load_runtime_state_retombe_sur_last_report_si_current_absent(tmp_path) 
 
     assert state["ts"] == "last"
     assert state["source"] == "last_report"
+
+
+def test_load_runtime_state_equity_curve_uses_strict_gbp_cutoff(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    cutoff = "2026-01-02T00:00:00+00:00"
+    scope = (
+        "gbp_minor_quotes_v1:scope:v1:2:1:2:"
+        f"{'a' * 64}:{'b' * 64}"
+    )
+    with sqlite3.connect(state_dir / "casys.db") as conn:
+        conn.execute(
+            "CREATE TABLE state_imports(store TEXT PRIMARY KEY, imported_at TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO state_imports(store, imported_at) VALUES (?, ?)",
+            [("gbp_minor_quotes_v1", cutoff), (scope, cutoff)],
+        )
+
+    history_path = state_dir / "history.jsonl"
+    history_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-01-01T10:00:00+00:00",
+                        "equity": 999_999.0,
+                    }
+                ),
+                # A legacy non-finite value is irrelevant when its timestamp
+                # proves that it predates the authoritative cutoff.
+                '{"ts":"2026-01-01T11:00:00+00:00","equity":NaN}',
+                json.dumps({"ts": cutoff, "equity": 888_888.0}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    no_fresh_points = load_runtime_state(state_dir=state_dir)
+
+    assert no_fresh_points["equity_curve"] == []
+
+    with history_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n"
+            + json.dumps(
+                {"ts": "2026-01-02T01:00:00+00:00", "equity": 100_100.0}
+            )
+            + "\n"
+            + json.dumps(
+                {"ts": "2026-01-02T02:00:00+00:00", "equity": 100_200.0}
+            )
+        )
+
+    refreshed = load_runtime_state(state_dir=state_dir)
+
+    assert refreshed["equity_curve"] == [100_100.0, 100_200.0]
+
+
+def test_load_runtime_state_equity_curve_fails_closed_on_partial_gbp_sentinel(
+    tmp_path,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    with sqlite3.connect(state_dir / "casys.db") as conn:
+        conn.execute(
+            "CREATE TABLE state_imports(store TEXT PRIMARY KEY, imported_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO state_imports(store, imported_at) VALUES (?, ?)",
+            ("gbp_minor_quotes_v1", "2026-01-02T00:00:00+00:00"),
+        )
+    (state_dir / "history.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {"ts": "2026-01-03T01:00:00+00:00", "equity": 100_100.0}
+                ),
+                json.dumps(
+                    {"ts": "2026-01-03T02:00:00+00:00", "equity": 100_200.0}
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    state = load_runtime_state(state_dir=state_dir)
+
+    assert state["equity_curve"] == []
 
 
 def test_load_runtime_state_compte_pending_learnings_sans_importer_consolidator(tmp_path, monkeypatch) -> None:

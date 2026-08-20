@@ -450,6 +450,15 @@ def _experiment_context() -> dict:
             "require_hard_stop": False,
         },
         commission_model="ibkr",
+        model_profiles={
+            "acpx": {
+                "configured_model": "gpt-5.6-luna",
+                "transport": "acpx",
+                "agent": "codex",
+                "reasoning_effort": "medium",
+                "profile_fingerprint": "sha256:" + "b" * 64,
+            }
+        },
     )
 
 
@@ -530,6 +539,12 @@ def test_armed_plan_inherits_origin_experiment_identity() -> None:
         "provider": "acpx",
         "model": "gpt-5.6-luna",
         "preset": "codex-luna-medium",
+        "execution_profile": {
+            "transport": "acpx",
+            "agent": "codex",
+            "reasoning_effort": "medium",
+            "profile_fingerprint": "sha256:" + "b" * 64,
+        },
     }
 
 

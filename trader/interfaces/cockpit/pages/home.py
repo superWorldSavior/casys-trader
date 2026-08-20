@@ -103,10 +103,13 @@ def build_equity_summary(state: dict, *, width: int = 40) -> RenderableType:
     snap = equity_snapshot(state)
     headline = Text()
     headline.append(f.fmt_money(snap.equity), style=f"bold {CASYS_FG}")
-    if snap.equity > 0:
+    if snap.return_pct is not None:
         style = CASYS_SUCCESS if snap.return_pct >= 0 else CASYS_ERROR
         headline.append(f" {f.fmt_pct(snap.return_pct, decimals=2)}", style=style)
-    headline.append(f" · cash free {snap.cash_pct:.0f}%", style=CASYS_FAINT)
+    headline.append(
+        f" · cash free {f.fmt_pct(snap.cash_pct, decimals=0, signed=False)}",
+        style=CASYS_FAINT,
+    )
     return Group(
         headline, build_equity_chart(f.equity_curve(state), width=max(20, width), height=5)
     )

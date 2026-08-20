@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -127,8 +129,7 @@ def split_env(text: str) -> tuple[list[str], str | None, list[str]]:
 def render_block(name: str, pairs: dict[str, str]) -> list[str]:
     return [
         f"# >>> casys:model-preset={name} >>>",
-        "# Bloc GÉNÉRÉ par scripts/model_preset.py — éditer ops/model-presets/"
-        f"{name}.env, pas ici.",
+        f"# Bloc GÉNÉRÉ par scripts/model_preset.py — éditer ops/model-presets/{name}.env, pas ici.",
         *(f"{key}={value}" for key, value in pairs.items()),
         END_MARK,
     ]
@@ -145,32 +146,14 @@ def plan_apply(name: str) -> dict:
 
     # Une clé gérée qui traîne HORS bloc gagnerait sur le bloc : le loader du
     # daemon (trader.agent.llm.load_dotenv) garde la PREMIÈRE occurrence.
-    stripped = [
-        line
-        for line in (*before, *after)
-        if (m := _ASSIGN_RE.match(line)) and m.group("key") in managed
-    ]
-    kept_before = [
-        line
-        for line in before
-        if not ((m := _ASSIGN_RE.match(line)) and m.group("key") in managed)
-    ]
-    kept_after = [
-        line
-        for line in after
-        if not ((m := _ASSIGN_RE.match(line)) and m.group("key") in managed)
-    ]
+    stripped = [line for line in (*before, *after) if (m := _ASSIGN_RE.match(line)) and m.group("key") in managed]
+    kept_before = [line for line in before if not ((m := _ASSIGN_RE.match(line)) and m.group("key") in managed)]
+    kept_after = [line for line in after if not ((m := _ASSIGN_RE.match(line)) and m.group("key") in managed)]
 
     changes = [
-        {"key": key, "from": current.get(key), "to": value}
-        for key, value in pairs.items()
-        if current.get(key) != value
+        {"key": key, "from": current.get(key), "to": value} for key, value in pairs.items() if current.get(key) != value
     ]
-    removed = [
-        {"key": key, "from": current[key]}
-        for key in sorted(managed - set(pairs))
-        if key in current
-    ]
+    removed = [{"key": key, "from": current[key]} for key in sorted(managed - set(pairs)) if key in current]
 
     body = [*kept_before]
     if body and body[-1].strip():
@@ -213,6 +196,26 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _atomic_write_private(path: Path, text: str) -> None:
+    """Remplace ``path`` atomiquement par un fichier privé et durable."""
+
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(raw_tmp)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def cmd_apply(args: argparse.Namespace) -> int:
     plan = plan_apply(args.name)
     if args.json:
@@ -233,7 +236,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
     backup = ENV_PATH.parent / ".env.bak"
     if ENV_PATH.is_file():
-        backup.write_text(ENV_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        _atomic_write_private(backup, ENV_PATH.read_text(encoding="utf-8"))
     ENV_PATH.write_text(plan["new_text"], encoding="utf-8")
     if not args.json:
         print(f"écrit : {ENV_PATH} (sauvegarde : {backup})")

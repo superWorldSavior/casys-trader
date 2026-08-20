@@ -54,11 +54,17 @@ def build_company_micro_router_from_env(
     acpx_agent: str | None = None,
     model: str | None = None,
 ) -> llm.LlmRouter:
+    # The standalone ``company-intelligence`` CLI does not preload ``.env``
+    # (unlike the daemon).  Load it before resolving the role-specific knobs so
+    # both entrypoints build the same company-micro profile.  Existing process
+    # environment remains authoritative because ``load_dotenv`` does not
+    # override it.
+    llm.load_dotenv(env_path)
     resolved_bin = acpx_bin or os.getenv("TRADER_COMPANY_MICRO_ACPX_BIN") or "acpx"
     resolved_agent = acpx_agent or os.getenv("TRADER_COMPANY_MICRO_ACPX_AGENT")
     resolved_model = model or os.getenv("TRADER_COMPANY_MICRO_MODEL") or DEFAULT_COMPANY_MICRO_MODEL
     return llm.build_default_router_from_env(
-        env_path=env_path,
+        env_path=None,
         acpx_bin=resolved_bin,
         spark_model=resolved_model,
         spark_fallback_model=None,

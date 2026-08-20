@@ -25,6 +25,7 @@ _SUMMARY_KEYS = (
     "realized_pnl",
     "realized_gross_pnl",
     "total_commissions",
+    "commission_quality",
     "win_rate",
     "avg_pnl",
     "avg_holding_minutes",
@@ -50,7 +51,12 @@ def _handle_get_attribution(call: AgentToolCall, context: ToolContext) -> dict:
         return {"error": "unavailable"}
     if scope == "summary":
         summary = context.attribution.get("summary")
-        if not isinstance(summary, dict):
+        if isinstance(summary, dict):
+            summary = dict(summary)
+            for key in _SUMMARY_KEYS:
+                if key not in summary and key in context.attribution:
+                    summary[key] = context.attribution[key]
+        else:
             summary = {
                 key: context.attribution[key]
                 for key in _SUMMARY_KEYS

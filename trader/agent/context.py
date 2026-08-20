@@ -182,12 +182,13 @@ def build_market_cockpit(
         r, vol, z, er, ac, rs, sz : indicateurs numériques (COCKPIT_INDICATORS)
         reg, vs, st, cndle : régime de marché (classify_regime)
         htf, aligned, sig : signaux multi-horizon pré-calculés (cp3)
-        be, fee : break-even frais (bps) et coût aller-retour — seulement si
+        be, fee : break-even et coût aller-retour modélisés — seulement si
                   `fee_estimator` est fourni (sinon colonnes absentes)
 
-    `fee_estimator(symbol, price) -> {"be_bps", "fee_rt", "currency"} | None`
-    traduit le coût de transaction au prix courant. Les colonnes frais sont
-    appendées en fin de ligne pour ne pas décaler l'offset de `rank_by_abs`.
+    `fee_estimator(symbol, price)` doit aussi déclarer `cost_scope` et
+    `cost_estimate_is_all_in`. Les champs historiques de ligne restent stables,
+    mais le cockpit expose la complétude au niveau racine pour que l'agent ne
+    confonde jamais une commission broker avec un coût de transaction all-in.
     """
     # On calcule les indicateurs affichables + ceux nécessaires au classifieur.
     daily_bars_by_symbol = daily_bars_by_symbol or {}
@@ -230,6 +231,8 @@ def build_market_cockpit(
         cols = [*cols, "be_ref_bps", "fee", "fee_ccy"]
     cols = [*cols, "ccy", "fx_usd", "risk_budget_native", "max_order_native"]
     rows: list[list] = []
+    fee_scopes: set[str] = set()
+    fee_all_in_flags: list[bool] = []
     for symbol in symbols:
         item = snapshot.get(symbol, {"family": None, "indicators": {}})
         indicators = item["indicators"]
@@ -279,6 +282,12 @@ def build_market_cockpit(
                 # Valeurs numériques (parsing agent) + devise séparée. be_ref_bps =
                 # break-even au notionnel de référence, PAS au sizing réel de l'ordre.
                 row += [cost["be_bps"], cost["fee_rt"], cost["currency"]]
+                fee_scopes.add(
+                    str(cost.get("cost_scope") or "commission_model_only")
+                )
+                fee_all_in_flags.append(
+                    cost.get("cost_estimate_is_all_in", False) is True
+                )
         # Estampillage devise : ccy, taux FX informatif, budgets natifs pré-calculés.
         # Les valeurs d'analyse (p, indicateurs, swings) restent en devise native —
         # seuls risk_budget_native et max_order_native sont des montants convertis.
@@ -329,15 +338,23 @@ def build_market_cockpit(
         },
     }
     if fee_estimator is not None:
-        # be_ref_bps=break-even aller-retour en bps POUR UN ORDRE DE fee_ref_notional
-        # (mouvement min du prix pour couvrir les frais); un ordre plus petit coûte
-        # plus. fee=coût aller-retour (numérique), fee_ccy=devise.
+        # be_ref_bps=break-even aller-retour modélisé en bps POUR UN ORDRE DE
+        # fee_ref_notional. La complétude est séparée des valeurs numériques afin
+        # de préserver le contrat des lignes existantes.
         result["schema"] = (
             schema
-            + ",be_ref_bps=break-even_roundtrip_bps_at_fee_ref_notional,"
-            "fee=roundtrip_cost,fee_ccy=currency"
+            + ",be_ref_bps=modeled_break_even_roundtrip_bps_at_fee_ref_notional,"
+            "fee=modeled_roundtrip_cost,fee_ccy=currency"
         )
         result["fee_ref_notional"] = fee_ref_notional
+        result["fee_scope"] = (
+            next(iter(fee_scopes))
+            if len(fee_scopes) == 1
+            else ("mixed" if fee_scopes else "unknown")
+        )
+        result["fee_estimate_is_all_in"] = bool(fee_all_in_flags) and all(
+            fee_all_in_flags
+        )
     return result
 
 

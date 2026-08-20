@@ -1439,9 +1439,11 @@ def test_schema_migrates_curation_and_global_rule_tables_additively(tmp_path: Pa
     assert {"global_rules", "global_rule_citations"} <= tables
 
 
-def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path) -> None:
-    db_path = tmp_path / "legacy-v1.db"
-    jsonl = tmp_path / "legacy-v1.jsonl"
+def test_benchmark_v3_migration_invalidates_v2_derived_feedback_once(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-v2.db"
+    jsonl = tmp_path / "legacy-v2.jsonl"
     _write_jsonl(jsonl, [_ROWS[2]])
     store = LearningsStore(db_path)
     store.ingest_jsonl(jsonl, source="runtime")
@@ -1476,13 +1478,13 @@ def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path
         """
         UPDATE notes
         SET outcome_score=0.4, q_value=0.7, q_updates=9,
-            outcome_semantics_version=1,
+            outcome_semantics_version=2,
             curated_revision=curation_revision
         """
     )
-    store._conn.execute("UPDATE recalls SET outcome_semantics_version=1")
+    store._conn.execute("UPDATE recalls SET outcome_semantics_version=2")
     store._conn.execute(
-        "UPDATE global_rule_citations SET outcome_semantics_version=1"
+        "UPDATE global_rule_citations SET outcome_semantics_version=2"
     )
     store._conn.execute(
         "UPDATE global_rules SET q_value=-0.6, q_updates=8"
@@ -1491,7 +1493,10 @@ def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path
         store._conn.execute("SELECT curation_revision FROM notes").fetchone()[0]
     )
     store._conn.execute(
-        "DELETE FROM learnings_metadata WHERE key='outcome_semantics_version'"
+        """
+        UPDATE learnings_metadata SET value='2'
+        WHERE key='outcome_semantics_version'
+        """
     )
     store._conn.commit()
     store.close()
@@ -1522,7 +1527,7 @@ def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path
 
     assert tuple(note) == (
         None,
-        0.05,
+        None,
         None,
         None,
         0.0,
@@ -1552,7 +1557,7 @@ def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path
     fresh_jsonl = tmp_path / "fresh-after-migration.jsonl"
     fresh_row = {
         **_ROWS[0],
-        "decision_id": "fresh-after-v2-migration",
+        "decision_id": "fresh-after-v3-migration",
         "ts": "2026-07-11T00:00:00+00:00",
     }
     _write_jsonl(fresh_jsonl, [fresh_row])
@@ -1566,7 +1571,7 @@ def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path
     assert [
         candidate["decision_id"]
         for candidate in migrated.select_curation_candidates()
-    ] == ["fresh-after-v2-migration"]
+    ] == ["fresh-after-v3-migration"]
     migrated.close()
 
     reopened = LearningsStore(db_path)
@@ -1575,7 +1580,9 @@ def test_benchmark_v2_migration_invalidates_derived_feedback_once(tmp_path: Path
     ).fetchone()[0] == revision_before + 1
 
 
-def test_fresh_store_is_marked_v2_without_resetting_later_ingestion(tmp_path: Path) -> None:
+def test_fresh_store_is_marked_current_without_resetting_later_ingestion(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "fresh.db"
     store = LearningsStore(db_path)
     jsonl = tmp_path / "fresh.jsonl"

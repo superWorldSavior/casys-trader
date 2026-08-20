@@ -2,7 +2,30 @@ import json
 
 from trader.application.record.decision_ledger_rows import decision_row_mandate_ref
 from trader.reporting.ledger import decision_ledger
-from trader.support.metadata.experiment import build_experiment_context
+from trader.support.metadata.experiment import (
+    ID_PREFIX,
+    SCHEMA_VERSION as EXPERIMENT_SCHEMA_VERSION,
+    build_experiment_context,
+)
+
+
+def _model_profiles() -> dict:
+    return {
+        "spark": {
+            "configured_model": "gpt-5.3-codex-spark/medium",
+            "transport": "acpx",
+            "agent": "codex",
+            "reasoning_effort": "medium",
+            "profile_fingerprint": "sha256:" + "b" * 64,
+        },
+        "acpx-claude-sonnet": {
+            "configured_model": "sonnet",
+            "transport": "acpx",
+            "agent": "claude",
+            "reasoning_effort": "provider-default",
+            "profile_fingerprint": "sha256:" + "b" * 64,
+        },
+    }
 
 
 def _report(decisions: list[dict] | None = None) -> dict:
@@ -35,6 +58,7 @@ def _report(decisions: list[dict] | None = None) -> dict:
                 "require_hard_stop": False,
             },
             commission_model="ibkr",
+            model_profiles=_model_profiles(),
         ),
         "decisions": decisions or [],
     }
@@ -76,17 +100,23 @@ def test_build_decision_row_normalise_une_decision_pour_audit() -> None:
     assert row["reason"] == "hold"
     assert row["code_version"]["git_commit_short"] == "abcdef123456"
     assert row["code_version"]["git_branch"] == "main"
-    assert row["experiment_id"].startswith("exp:v1:")
+    assert row["experiment_id"].startswith(ID_PREFIX)
     assert row["experiment_components"]["model"] == {
         "provider": "spark",
         "model": "gpt-5.3-codex-spark/medium",
         "preset": "codex-luna-medium",
+        "execution_profile": {
+            "transport": "acpx",
+            "agent": "codex",
+            "reasoning_effort": "medium",
+            "profile_fingerprint": "sha256:" + "b" * 64,
+        },
     }
     assert row["experiment_components"]["execution"] == {
         "commission_model": "ibkr"
     }
     assert row["experiment_status"] == {
-        "schema_version": 1,
+        "schema_version": EXPERIMENT_SCHEMA_VERSION,
         "decision_grade": True,
         "issues": [],
     }

@@ -49,6 +49,8 @@ def _cockpit(symbol_count: int = 48) -> dict:
             "abs_sz": [["S23", 3.0]],
         },
         "fee_ref_notional": 10_000.0,
+        "fee_scope": "broker_commission_only",
+        "fee_estimate_is_all_in": False,
     }
 
 
@@ -88,7 +90,12 @@ def _shared_context() -> dict:
             "n_closed_trades": 40,
             "n_closed_position_cycles": 40,
             "n_exit_legs": 57,
-            "realized_pnl": 123.0,
+            "realized_pnl": None,
+            "commission_quality": {
+                "status": "unavailable",
+                "counts": {"total": 40, "available": 30, "unavailable": 10},
+                "reasons": ["commission_not_modeled"],
+            },
             "by_confidence": [{"bucket": "0.7-0.8", "n": 10}],
             "by_exit_reason": [{"reason": "stop", "n": 8}],
             "recent_trips": [
@@ -131,6 +138,9 @@ def test_projection_focalise_le_push_sans_muter_le_snapshot() -> None:
     assert projected["attribution"]["mechanism_grain"] == "exit_leg"
     assert projected["attribution"]["n_closed_position_cycles"] == 40
     assert projected["attribution"]["n_exit_legs"] == 57
+    assert projected["attribution"]["commission_quality"]["status"] == (
+        "unavailable"
+    )
     assert "by_confidence" not in projected["attribution"]
     assert "by_exit_reason" not in projected["attribution"]
     assert set(projected["stale_market_data"]) == {"TARGET"}
@@ -148,6 +158,9 @@ def test_projection_focalise_le_push_sans_muter_le_snapshot() -> None:
     assert all(row[1] == "focus" for row in cockpit["focus"]["rows"])
     assert cockpit["scope"]["source_universe_rows"] == 48
     assert cockpit["scope"]["details_via_tool"] == "get_indicator_context"
+    assert cockpit["fee_ref_notional"] == 10_000.0
+    assert cockpit["fee_scope"] == "broker_commission_only"
+    assert cockpit["fee_estimate_is_all_in"] is False
 
 
 def test_projection_reduit_fortement_un_contexte_global_repetitif() -> None:

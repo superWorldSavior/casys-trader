@@ -456,6 +456,8 @@ def test_cockpit_avec_fee_estimator_ajoute_be_ref_bps_fee_fee_ccy_en_fin_de_lign
     assert cols[-7:-4] == ["be_ref_bps", "fee", "fee_ccy"]
     assert cols[-4:] == ["ccy", "fx_usd", "risk_budget_native", "max_order_native"]
     assert result["fee_ref_notional"] == 10_000.0
+    assert result["fee_scope"] == "commission_model_only"
+    assert result["fee_estimate_is_all_in"] is False
     assert "be_ref_bps" in result["schema"]
 
     spy_row = next(row for row in result["rows"] if row[0] == "SPY")

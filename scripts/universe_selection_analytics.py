@@ -20,15 +20,18 @@ le port ``DataSource`` (YFinance par défaut), upsert les verdicts, recalcule
 FLAIR, puis imprime le même résumé.
 
 ``trader`` joint les décisions exécutées porteuses d'un ``mandate_ref``
-(``state/decisions.jsonl``) aux round-trips FIFO
-(``state/model_performance.jsonl``) : n, win rate et P&L net par famille et
-par rôle, comparés aux trades sans ``mandate_ref`` sur la même période.
+(archives gzip + ``state/decisions.jsonl``) aux cycles de position flat-to-flat
+(``state/model_performance.jsonl``) : n, P&L brut et, seulement si les
+commissions sont complètes, win rate/P&L net par famille et par rôle, comparés
+aux trades dont la décision disponible n'a pas de ``mandate_ref`` sur la même
+période. Les cycles sans décision attribuable restent séparés.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -82,9 +85,7 @@ def run_bench(state_dir: Path, *, horizon: int | None) -> dict[str, Any]:
     from trader.application.universe.selection_attribution import compare_selection_selectors
 
     rows = _horizon_rows(state_dir, horizon=horizon)
-    horizons = sorted(
-        {int(row["horizon_sessions"]) for row in rows if row.get("horizon_sessions") is not None}
-    )
+    horizons = sorted({int(row["horizon_sessions"]) for row in rows if row.get("horizon_sessions") is not None})
     return {
         "horizon_sessions": horizons[0] if len(horizons) == 1 else None,
         "horizons": horizons,
@@ -121,11 +122,7 @@ def run_evaluate(
         scope_reader=CandidateScopeStore(state_dir / "candidate_scopes"),
     )
     persist_and_score(store, evaluated, shrinkage_k=shrinkage_k)
-    rows = [
-        row
-        for row in store.load_outcomes()
-        if int(row.get("horizon_sessions") or 0) == horizon
-    ]
+    rows = [row for row in store.load_outcomes() if int(row.get("horizon_sessions") or 0) == horizon]
     summary = summarize_outcomes(rows)
     summary["n_evaluated_this_run"] = len(evaluated)
     return summary
@@ -154,10 +151,13 @@ def _read_jsonl_dicts(path: Path) -> list[dict[str, Any]]:
 
 def _round_trips(state_dir: Path) -> list[dict[str, Any]]:
     try:
-        from trader.reporting.read_models.trade_history import compute_round_trips
+        from trader.reporting.read_models.trade_history import (
+            aggregate_position_cycles,
+            compute_round_trips,
+        )
     except ImportError:
         return []
-    return list(compute_round_trips(state_dir))
+    return aggregate_position_cycles(compute_round_trips(state_dir))
 
 
 def _fill_decision_ids(state_dir: Path) -> dict[tuple[str, str], str]:
@@ -171,18 +171,44 @@ def _fill_decision_ids(state_dir: Path) -> dict[tuple[str, str], str]:
     return index
 
 
-def _decisions_by_id(state_dir: Path) -> dict[str, dict[str, Any]]:
-    indexed: dict[str, dict[str, Any]] = {}
-    for row in _read_jsonl_dicts(state_dir / "decisions.jsonl"):
-        decision_id = str(row.get("decision_id") or "").strip()
-        if decision_id:
-            indexed[decision_id] = row
-    return indexed
+def _decisions_by_id(
+    state_dir: Path,
+    decision_ids: frozenset[str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    from trader.reporting.read_models.trade_history import (
+        _read_decision_rows_by_id,
+    )
+
+    rows_by_id, source_quality = _read_decision_rows_by_id(
+        state_dir,
+        decision_ids=decision_ids,
+    )
+    indexed = {decision_id: rows[-1] for decision_id, rows in rows_by_id.items() if rows}
+    missing = sorted(decision_ids - indexed.keys())
+    duplicate_rows = sum(max(0, len(rows) - 1) for rows in rows_by_id.values())
+    quality = {
+        **source_quality,
+        "rows_requested": len(decision_ids),
+        "rows_found": len(indexed),
+        "rows_missing": len(missing),
+        "duplicate_rows": duplicate_rows,
+    }
+    if quality.get("status") == "available" and missing:
+        quality.update(
+            {
+                "status": "partial",
+                "reason": "decision_history_rows_missing",
+                "missing_decision_ids": missing,
+            }
+        )
+    return indexed, quality
 
 
-def _executed_decisions_by_symbol_ts(state_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
+def _executed_decisions_by_symbol_ts(
+    decisions: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
     indexed: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in _read_jsonl_dicts(state_dir / "decisions.jsonl"):
+    for row in decisions:
         if row.get("executed") is not True:
             continue
         symbol = str(row.get("symbol") or "").strip()
@@ -205,14 +231,60 @@ def _mandate_selection_index(state_dir: Path) -> dict[tuple[str, str], dict[str,
 
 def _trade_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(rows)
-    if n == 0:
-        return {"n": 0, "win_rate": None, "net_pnl": 0.0}
-    pnls = [float(row["pnl"]) for row in rows]
-    wins = sum(1 for pnl in pnls if pnl > 0.0)
+    net_values: list[float] = []
+    gross_values: list[float] = []
+    models: set[str] = set()
+    reasons: set[str] = set()
+    for row in rows:
+        raw_net = row.get("pnl")
+        try:
+            net = float(raw_net) if raw_net is not None else None
+        except (OverflowError, TypeError, ValueError):
+            net = None
+        if net is not None and math.isfinite(net):
+            net_values.append(net)
+
+        raw_gross = row.get("gross_pnl")
+        try:
+            gross = float(raw_gross) if raw_gross is not None else None
+        except (OverflowError, TypeError, ValueError):
+            gross = None
+        if gross is not None and math.isfinite(gross):
+            gross_values.append(gross)
+
+        quality = row.get("commission_quality")
+        if not isinstance(quality, dict) or quality.get("status") == "available":
+            continue
+        raw_models = quality.get("models")
+        if isinstance(raw_models, list):
+            models.update(str(value) for value in raw_models)
+        raw_reasons = quality.get("reasons")
+        if isinstance(raw_reasons, list):
+            reasons.update(str(value) for value in raw_reasons)
+        elif quality.get("reason"):
+            reasons.add(str(quality["reason"]))
+
+    net_complete = len(net_values) == n
+    gross_complete = len(gross_values) == n
+    wins = sum(1 for pnl in net_values if pnl > 0.0)
     return {
         "n": n,
-        "win_rate": wins / n,
-        "net_pnl": sum(pnls),
+        "win_rate": (wins / n) if n and net_complete else None,
+        "net_pnl": sum(net_values) if net_complete else None,
+        "gross_pnl": sum(gross_values) if gross_complete else None,
+        "economics_quality": {
+            "status": "complete" if net_complete else "incomplete",
+            "reason": (None if net_complete else "commission_or_net_economics_incomplete"),
+            "models": sorted(models),
+            "reasons": sorted(reasons),
+            "trips": n,
+            "net_known": len(net_values),
+            "net_unknown": n - len(net_values),
+            "gross_known": len(gross_values),
+            "gross_unknown": n - len(gross_values),
+            "gross_pnl_available": gross_complete,
+            "commission_and_net_available": net_complete,
+        },
     }
 
 
@@ -233,21 +305,54 @@ def _group_stats(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     return grouped
 
 
-def _annotate_trips(state_dir: Path) -> list[dict[str, Any]]:
+def _annotate_trips(
+    state_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     trips = _round_trips(state_dir)
-    decisions = _decisions_by_id(state_dir)
-    by_symbol_ts = _executed_decisions_by_symbol_ts(state_dir)
     fill_ids = _fill_decision_ids(state_dir)
+    requested_ids: set[str] = set()
+    for trip in trips:
+        raw_ids = trip.get("entry_decision_ids")
+        if isinstance(raw_ids, list):
+            requested_ids.update(decision_id for value in raw_ids if (decision_id := str(value or "").strip()))
+        direct_id = str(trip.get("entry_decision_id") or "").strip()
+        if direct_id:
+            requested_ids.add(direct_id)
+        fill_id = fill_ids.get(
+            (
+                str(trip.get("symbol") or ""),
+                str(trip.get("entry_ts") or ""),
+            ),
+            "",
+        )
+        if fill_id:
+            requested_ids.add(fill_id)
+    decisions, decision_rows_quality = _decisions_by_id(
+        state_dir,
+        frozenset(requested_ids),
+    )
+    by_symbol_ts = _executed_decisions_by_symbol_ts(list(decisions.values()))
     selections = _mandate_selection_index(state_dir)
     annotated: list[dict[str, Any]] = []
     for trip in trips:
         symbol = str(trip.get("symbol") or "")
         entry_ts = str(trip.get("entry_ts") or "")
-        decision_id = fill_ids.get((symbol, entry_ts), "")
+        decision_id = str(trip.get("entry_decision_id") or "").strip()
+        if not decision_id:
+            decision_id = fill_ids.get((symbol, entry_ts), "")
         decision = decisions.get(decision_id) or by_symbol_ts.get((symbol, entry_ts)) or {}
         if not decision_id:
             decision_id = str(decision.get("decision_id") or "")
         mandate_ref = decision_row_mandate_ref(decision)
+        attribution_status = (
+            "available"
+            if decision
+            else (
+                "decision_history_unavailable"
+                if decision_rows_quality.get("status") == "unavailable"
+                else "decision_missing"
+            )
+        )
         family = ""
         role = ""
         if isinstance(mandate_ref, dict):
@@ -260,25 +365,24 @@ def _annotate_trips(state_dir: Path) -> list[dict[str, Any]]:
                 **trip,
                 "decision_id": decision_id,
                 "mandate_ref": mandate_ref,
+                "mandate_attribution_status": attribution_status,
                 "family": family,
                 "role": role,
             }
         )
-    return annotated
+    return annotated, decision_rows_quality
 
 
 def run_trader(state_dir: Path) -> dict[str, Any]:
-    """Join executed mandate-bearing decisions to FIFO round-trips."""
+    """Joint les décisions archivées/vives aux cycles flat-to-flat."""
 
-    trips = _annotate_trips(state_dir)
+    trips, decision_rows_quality = _annotate_trips(state_dir)
     with_ref = [row for row in trips if row.get("mandate_ref")]
-    without_ref = [row for row in trips if not row.get("mandate_ref")]
-    timestamps = [
-        str(row.get(key) or "")
-        for row in trips
-        for key in ("entry_ts", "exit_ts")
-        if row.get(key)
+    without_ref = [
+        row for row in trips if row.get("mandate_attribution_status") == "available" and not row.get("mandate_ref")
     ]
+    unattributed = [row for row in trips if row.get("mandate_attribution_status") != "available"]
+    timestamps = [str(row.get(key) or "") for row in trips for key in ("entry_ts", "exit_ts") if row.get(key)]
     return {
         "period": {
             "start": min(timestamps) if timestamps else None,
@@ -286,8 +390,14 @@ def run_trader(state_dir: Path) -> dict[str, Any]:
         },
         "with_mandate_ref": _trade_stats(with_ref),
         "without_mandate_ref": _trade_stats(without_ref),
+        "unattributed": _trade_stats(unattributed),
+        "decision_rows_quality": decision_rows_quality,
         "by_family": _group_stats(with_ref, "family"),
         "by_role": _group_stats(with_ref, "role"),
+        "method": {
+            "outcome_unit": "flat_to_flat_position_cycle",
+            "decision_history": "archive_gzip_then_live_last_row_wins",
+        },
     }
 
 
@@ -297,14 +407,27 @@ def _format_rate(value: float | None) -> str:
     return f"{value:.2f}"
 
 
-def _format_pnl(value: float) -> str:
-    return f"{value:.2f}"
+def _format_pnl(value: object) -> str:
+    try:
+        parsed = float(value) if value is not None else None
+    except (OverflowError, TypeError, ValueError):
+        parsed = None
+    return f"{parsed:.2f}" if parsed is not None and math.isfinite(parsed) else "n/a"
+
+
+def _format_economics_coverage(stats: dict[str, Any]) -> str:
+    quality = stats.get("economics_quality")
+    if not isinstance(quality, dict):
+        return "net ?/?"
+    return f"net {quality.get('net_known', 0)}/{quality.get('trips', 0)}"
 
 
 def _format_trader_report(payload: dict[str, Any]) -> str:
     period = payload.get("period") or {}
     with_ref = payload.get("with_mandate_ref") or {}
     without_ref = payload.get("without_mandate_ref") or {}
+    unattributed = payload.get("unattributed") or {}
+    decision_quality = payload.get("decision_rows_quality") or {}
     lines = [
         "Attribution trader × mandate_ref",
         f"période: {period.get('start') or '—'} → {period.get('end') or '—'}",
@@ -313,13 +436,30 @@ def _format_trader_report(payload: dict[str, Any]) -> str:
             "avec mandate_ref   "
             f"n={with_ref.get('n', 0)}  "
             f"win_rate={_format_rate(with_ref.get('win_rate'))}  "
-            f"pnl_net={_format_pnl(float(with_ref.get('net_pnl') or 0.0))}"
+            f"pnl_net={_format_pnl(with_ref.get('net_pnl'))}  "
+            f"pnl_brut={_format_pnl(with_ref.get('gross_pnl'))}  "
+            f"{_format_economics_coverage(with_ref)}"
         ),
         (
             "sans mandate_ref   "
             f"n={without_ref.get('n', 0)}  "
             f"win_rate={_format_rate(without_ref.get('win_rate'))}  "
-            f"pnl_net={_format_pnl(float(without_ref.get('net_pnl') or 0.0))}"
+            f"pnl_net={_format_pnl(without_ref.get('net_pnl'))}  "
+            f"pnl_brut={_format_pnl(without_ref.get('gross_pnl'))}  "
+            f"{_format_economics_coverage(without_ref)}"
+        ),
+        (
+            "sans décision attribuable   "
+            f"n={unattributed.get('n', 0)}  "
+            f"pnl_brut={_format_pnl(unattributed.get('gross_pnl'))}  "
+            f"{_format_economics_coverage(unattributed)}"
+        ),
+        (
+            "couverture décisions   "
+            f"status={decision_quality.get('status', 'unavailable')}  "
+            f"rows={decision_quality.get('rows_found', 0)}/"
+            f"{decision_quality.get('rows_requested', 0)}  "
+            f"duplicates={decision_quality.get('duplicate_rows', 0)}"
         ),
         "",
         "par famille",
@@ -331,7 +471,9 @@ def _format_trader_report(payload: dict[str, Any]) -> str:
         lines.append(
             f"  {item['family']:<20} n={item['n']}  "
             f"win_rate={_format_rate(item.get('win_rate'))}  "
-            f"pnl_net={_format_pnl(float(item.get('net_pnl') or 0.0))}"
+            f"pnl_net={_format_pnl(item.get('net_pnl'))}  "
+            f"pnl_brut={_format_pnl(item.get('gross_pnl'))}  "
+            f"{_format_economics_coverage(item)}"
         )
     lines.extend(["", "par rôle"])
     roles = payload.get("by_role") or []
@@ -341,7 +483,9 @@ def _format_trader_report(payload: dict[str, Any]) -> str:
         lines.append(
             f"  {item['role']:<20} n={item['n']}  "
             f"win_rate={_format_rate(item.get('win_rate'))}  "
-            f"pnl_net={_format_pnl(float(item.get('net_pnl') or 0.0))}"
+            f"pnl_net={_format_pnl(item.get('net_pnl'))}  "
+            f"pnl_brut={_format_pnl(item.get('gross_pnl'))}  "
+            f"{_format_economics_coverage(item)}"
         )
     return "\n".join(lines) + "\n"
 

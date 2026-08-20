@@ -12,7 +12,6 @@ from trader.interfaces.ui.panels.common import (
     _fmt_fee_cost,
     _holding_notional_usd,
     _holding_round_trip_fee_for_display,
-    _holding_unrealized_pnl_for_display,
     sparkline,
 )
 from trader.interfaces.ui.panels.decisions_panels import (
@@ -82,16 +81,56 @@ def build_view(
     # ------------------------------------------------------------------
     equity = _safe_float(portfolio.get("equity"), default=None)
     if equity is None:
-        equity = _safe_float(kpis.get("equity"), default=0.0) or 0.0
+        equity = _safe_float(kpis.get("equity"), default=None)
     gross_exposure = _safe_float(portfolio.get("gross_exposure_usd"), default=None)
-    if gross_exposure is None:
+    if gross_exposure is None and isinstance(portfolio.get("holdings"), list):
         gross_exposure = sum(_holding_notional_usd(holding) for holding in holdings)
-    capital_uncommitted = max(0.0, equity - gross_exposure)
+    capital_uncommitted = (
+        max(0.0, equity - gross_exposure)
+        if equity is not None and gross_exposure is not None
+        else None
+    )
+    if capital_uncommitted is None:
+        for raw_cash in (
+            portfolio.get("cash_available"),
+            portfolio.get("cash"),
+            kpis.get("cash"),
+        ):
+            capital_uncommitted = _safe_float(raw_cash, default=None)
+            if capital_uncommitted is not None:
+                break
     ret_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
     if ret_pct is None:
-        total_return = _safe_float(kpis.get("total_return"), default=0.0) or 0.0
-        ret_pct = total_return * 100.0
-    unrealized_total = sum(_holding_unrealized_pnl_for_display(h) for h in holdings)
+        total_return = _safe_float(kpis.get("total_return"), default=None)
+        ret_pct = total_return * 100.0 if total_return is not None else None
+    gross_unrealized = [
+        _safe_float(holding.get("unrealized_pnl"), default=None)
+        for holding in holdings
+    ]
+    net_unrealized = [
+        _safe_float(
+            holding.get("unrealized_pnl_after_broker_fees"),
+            default=None,
+        )
+        if holding.get("unrealized_pnl_after_broker_fees") is not None
+        else _safe_float(holding.get("unrealized_pnl_net"), default=None)
+        for holding in holdings
+    ]
+    net_coverage = sum(value is not None for value in net_unrealized)
+    net_complete = bool(holdings) and net_coverage == len(holdings)
+    gross_complete = all(value is not None for value in gross_unrealized)
+    if not holdings:
+        unrealized_total: float | None = 0.0
+        unrealized_is_gross = False
+    elif net_complete:
+        unrealized_total = sum(value for value in net_unrealized if value is not None)
+        unrealized_is_gross = False
+    elif gross_complete:
+        unrealized_total = sum(value for value in gross_unrealized if value is not None)
+        unrealized_is_gross = True
+    else:
+        unrealized_total = None
+        unrealized_is_gross = True
     unrealized_fees = [
         fee
         for h in holdings
@@ -128,27 +167,63 @@ def build_view(
     else:
         halted_label = Text("")
 
-    ret_style = palette["pnl_positive"] if ret_pct >= 0 else palette["pnl_negative"]
-    unrealized_style = (
-        palette["pnl_positive"] if unrealized_total >= 0 else palette["pnl_negative"]
+    ret_style = (
+        palette["dim"]
+        if ret_pct is None
+        else (
+            palette["pnl_positive"]
+            if ret_pct >= 0
+            else palette["pnl_negative"]
+        )
     )
+    unrealized_style = (
+        palette["dim"]
+        if unrealized_total is None
+        else (
+            palette["pnl_positive"]
+            if unrealized_total >= 0
+            else palette["pnl_negative"]
+        )
+    )
+    if unrealized_is_gross and holdings:
+        unrealized_detail = (
+            f" (net — · frais {net_coverage}/{len(holdings)})   "
+        )
+    elif unrealized_fees and len(unrealized_fees) == len(holdings):
+        unrealized_detail = (
+            f" (dont frais {_fmt_fee_cost(unrealized_fee_total)}, "
+            "entrée + sortie estimées; hors taxes/place)   "
+        )
+    elif holdings:
+        unrealized_detail = " (net après courtage; détail des frais incomplet)   "
+    else:
+        unrealized_detail = "   "
     inline_curve = sparkline(equity_curve[-32:]) if equity_curve else ""
     header_lines = Text.assemble(
         ("Équité $ : ", "bold"),
-        (f"${equity:,.2f}", f"bold {palette['kpi_default']}"),
+        (
+            f"${equity:,.2f}" if equity is not None else "—",
+            f"bold {palette['kpi_default']}",
+        ),
         (f"  {inline_curve}   " if inline_curve else "   ", palette["kpi_default"]),
         ("Capital non engagé $ : ", "bold"),
-        (f"${capital_uncommitted:,.2f}   ", palette["kpi_default"]),
-        ("Rendement : ", "bold"),
-        (f"{ret_pct:+.2f}%   ", ret_style),
-        ("PnL latent USD : ", "bold"),
-        (f"${unrealized_total:+,.2f}", unrealized_style),
         (
-            f" (dont frais {_fmt_fee_cost(unrealized_fee_total)})   "
-            if unrealized_fees
-            else "   ",
-            palette["dim"],
+            f"${capital_uncommitted:,.2f}   "
+            if capital_uncommitted is not None
+            else "—   ",
+            palette["kpi_default"],
         ),
+        ("Rendement : ", "bold"),
+        (f"{ret_pct:+.2f}%   " if ret_pct is not None else "—   ", ret_style),
+        (
+            "PnL latent USD brut : " if unrealized_is_gross else "PnL latent USD : ",
+            "bold",
+        ),
+        (
+            f"${unrealized_total:+,.2f}" if unrealized_total is not None else "—",
+            unrealized_style,
+        ),
+        (unrealized_detail, palette["dim"]),
         ("Mode : ", "bold"),
         mode_label,
         ("   Kill-switch : ", "bold"),

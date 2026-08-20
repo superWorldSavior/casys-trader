@@ -187,18 +187,35 @@ def build_kpi_band(state: dict, *, now: datetime, width: int | None = None) -> T
 
     equity_value = Text()
     equity_value.append(f.fmt_money(snap.equity), style=f"bold {CASYS_FG}")
-    if snap.equity > 0:
+    if snap.return_pct is not None:
         style = CASYS_SUCCESS if snap.return_pct >= 0 else CASYS_ERROR
         equity_value.append(f" {f.fmt_pct(snap.return_pct, decimals=2)}", style=style)
 
     cash_value = Text()
     cash_value.append(f.fmt_money(snap.cash), style=CASYS_MUTED)
-    cash_value.append(f" {snap.cash_pct:.0f}%", style=CASYS_DIM)
+    cash_value.append(
+        f" {f.fmt_pct(snap.cash_pct, decimals=0, signed=False)}", style=CASYS_DIM
+    )
 
+    unrealized_style = (
+        CASYS_FAINT
+        if snap.unrealized is None
+        else (CASYS_SUCCESS if snap.unrealized >= 0 else CASYS_ERROR)
+    )
     unrealized_value = Text(
         f.fmt_signed_money(snap.unrealized),
-        style=CASYS_SUCCESS if snap.unrealized >= 0 else CASYS_ERROR,
+        style=unrealized_style,
     )
+    if snap.unrealized_basis == "gross":
+        unrealized_value.append(
+            f" gross · net — · {snap.unrealized_net_coverage}/{snap.unrealized_positions}",
+            style=CASYS_DIM,
+        )
+    elif snap.unrealized_basis == "unavailable":
+        unrealized_value.append(
+            f" net — · gross — · {snap.unrealized_net_coverage}/{snap.unrealized_positions}",
+            style=CASYS_DIM,
+        )
 
     cycle_value = Text()
     if cycle.running:

@@ -300,7 +300,10 @@ class TestBuildClosedTradesTable:
                 "side": "LONG",
                 "entry_price": 180.0,
                 "exit_price": 184.25,
+                "gross_pnl": 43.5,
+                "commission": 1.0,
                 "pnl": 42.5,
+                "commission_quality": {"status": "available"},
                 "exit_reason": "take_profit:tp1",
                 "holding_minutes": 135.0,
                 "exit_ts": "2026-06-15T15:05:12+00:00",
@@ -310,7 +313,10 @@ class TestBuildClosedTradesTable:
                 "side": "SHORT",
                 "entry_price": 900.0,
                 "exit_price": 905.0,
+                "gross_pnl": -24.0,
+                "commission": 1.0,
                 "pnl": -25.0,
+                "commission_quality": {"status": "available"},
                 "exit_reason": "trailing_stop_extraordinairement_long_a_tronquer",
                 "holding_minutes": 9.0,
                 "exit_ts": "2026-06-15T14:00:00+00:00",
@@ -336,7 +342,9 @@ class TestBuildClosedTradesTable:
         assert "-25.00" in rendered
         assert "trailing_stop_extraordinairement_long_a_tronquer" not in rendered
         assert "..." in rendered
-        net_col = next(col for col in result.columns if col.header == "Net USD")
+        net_col = next(
+            col for col in result.columns if col.header == "Net USD / brut"
+        )
         assert net_col._cells[0].style == PALETTE_DARK["pnl_positive"]
         assert net_col._cells[1].style == PALETTE_DARK["pnl_negative"]
 
@@ -453,14 +461,13 @@ class TestComputeRealizedPnlByFill:
         assert abs(result[3] - (-100.0)) < 0.01  # SELL NVDA : (180-200)*5
 
     def test_fill_sans_commission(self):
-        """Fill sans champ commission ne doit pas lever (commission = 0)."""
+        """Un fill sans commission ne doit pas être certifié net à zéro frais."""
         fills = [
             {"symbol": "AAPL", "side": "BUY", "quantity": 10.0, "price": 100.0},
             {"symbol": "AAPL", "side": "SELL", "quantity": 10.0, "price": 110.0},
         ]
         result = compute_realized_pnl_by_fill(fills)
-        assert result[1] is not None
-        assert abs(result[1] - 100.0) < 0.01
+        assert result == [None, None]
 
 
 # ---------------------------------------------------------------------------

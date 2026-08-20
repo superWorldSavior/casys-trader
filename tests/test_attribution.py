@@ -9,7 +9,24 @@ def _write_perf(state_dir: Path, rows: list[dict]) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     with (state_dir / "model_performance.jsonl").open("w", encoding="utf-8") as f:
         for row in rows:
-            f.write(json.dumps(row) + "\n")
+            symbol = str(row.get("symbol") or "")
+            if symbol.endswith(".TW"):
+                model = "ibkr_taiwan_stock_tiered"
+                currency = "TWD"
+            else:
+                model = "ibkr_us_stock_tiered"
+                currency = "USD"
+            f.write(
+                json.dumps(
+                    {
+                        "commission": 0.0,
+                        "commission_model": model,
+                        "commission_currency": currency,
+                        **row,
+                    }
+                )
+                + "\n"
+            )
 
 
 def test_round_trip_long_simple(tmp_path) -> None:
@@ -81,6 +98,45 @@ def test_round_trip_soustrait_les_commissions_entree_et_sortie(tmp_path) -> None
     assert trips[0]["commission"] == 0.70
     assert trips[0]["pnl"] == 9.30
     assert compute_attribution(tmp_path)["realized_pnl"] == 9.30
+
+
+def test_legacy_projection_without_commission_provenance_keeps_only_gross(
+    tmp_path,
+) -> None:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "ts": "2026-06-05T10:00:00+00:00",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1,
+            "price": 100.0,
+            "confidence": 0.8,
+        },
+        {
+            "ts": "2026-06-05T11:00:00+00:00",
+            "symbol": "SPY",
+            "action": "SELL",
+            "quantity": 1,
+            "price": 110.0,
+        },
+    ]
+    (tmp_path / "model_performance.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    trip = compute_round_trips(tmp_path)[0]
+    attr = compute_attribution(tmp_path)
+
+    assert trip["gross_pnl"] == 10.0
+    assert trip["commission"] is None
+    assert trip["pnl"] is None
+    assert trip["commission_quality"]["status"] == "unavailable"
+    assert trip["commission_quality"]["reason"] == "commission_not_recorded"
+    assert attr["realized_gross_pnl"] == 10.0
+    assert attr["realized_pnl"] is None
+    assert attr["win_rate"] is None
 
 
 def test_reduction_partielle_prorate_la_commission_d_entree(tmp_path) -> None:
@@ -416,6 +472,58 @@ def test_compute_attribution_expose_brut_et_frais(tmp_path) -> None:
     assert scalp["total_commission"] == 0.70
 
 
+def test_compute_attribution_preserves_gross_and_counts_when_commission_unknown(
+    tmp_path, monkeypatch
+) -> None:
+    leg = {
+        "symbol": "AAPL",
+        "side": "LONG",
+        "quantity": 1.0,
+        "entry_price": 100.0,
+        "exit_price": 110.0,
+        "gross_pnl": 10.0,
+        "commission": None,
+        "pnl": None,
+        "commission_quality": {
+            "status": "unavailable",
+            "reason": "commission_not_modeled",
+            "models": ["none"],
+            "reasons": ["commission_not_modeled"],
+        },
+        "entry_ts": "2026-06-05T10:00:00+00:00",
+        "exit_ts": "2026-06-05T11:00:00+00:00",
+        "holding_minutes": 60.0,
+        "entry_confidence": 0.8,
+        "exit_reason": "manual",
+        "position_cycle_id": "AAPL:1",
+        "position_cycle_closed": True,
+    }
+    monkeypatch.setattr(attribution, "compute_round_trips", lambda _: [leg])
+
+    attr = compute_attribution(tmp_path)
+
+    assert attr["n_closed_trades"] == 1
+    assert attr["realized_gross_pnl"] == 10.0
+    assert attr["realized_pnl"] is None
+    assert attr["total_commissions"] is None
+    assert attr["win_rate"] is None
+    assert attr["avg_pnl"] is None
+    assert attr["commission_quality"]["counts"] == {
+        "total": 1,
+        "available": 0,
+        "unavailable": 1,
+    }
+    assert attr["commission_quality"]["reasons"] == [
+        "commission_not_modeled"
+    ]
+    assert attr["by_confidence"][0]["total_pnl"] is None
+    assert attr["by_confidence"][0]["total_gross_pnl"] == 10.0
+    assert attr["by_exit_reason"][0]["total_pnl"] is None
+    assert attr["recent_trips"][0]["commission_quality"]["status"] == (
+        "unavailable"
+    )
+
+
 def test_select_hard_stop_symbols_applique_les_filtres_regime(tmp_path) -> None:
     _write_perf(
         tmp_path,
@@ -536,6 +644,110 @@ def test_hard_stop_diagnostics_marque_stop_trop_tot_si_reprise_apres_stop(tmp_pa
     assert case["worst_after_stop_pnl"] == -60.0
 
 
+def test_hard_stop_with_unknown_commission_is_explicitly_gross_only(
+    tmp_path,
+) -> None:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "ts": "2026-06-05T10:00:00+00:00",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 10,
+            "price": 100.0,
+            "confidence": 0.8,
+        },
+        {
+            "ts": "2026-06-05T11:00:00+00:00",
+            "symbol": "SPY",
+            "action": "SELL",
+            "quantity": 10,
+            "price": 95.0,
+            "exit_reason": "hard_stop",
+        },
+    ]
+    (tmp_path / "model_performance.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    diagnostic = compute_hard_stop_diagnostics(
+        tmp_path,
+        {
+            "SPY": [
+                {
+                    "ts": "2026-06-05T12:00:00+00:00",
+                    "high": 108.0,
+                    "low": 94.0,
+                    "close": 106.0,
+                }
+            ]
+        },
+    )
+
+    case = diagnostic["cases"][0]
+    assert case["actual_gross_pnl"] == -50.0
+    assert case["actual_pnl"] is None
+    assert case["hold_to_lookahead_gross_pnl"] == 60.0
+    assert case["hold_to_lookahead_pnl"] is None
+    assert case["verdict"] == "stop_too_early"
+    assert case["verdict_basis"] == "gross_pnl"
+    assert diagnostic["summary"]["commission_quality"]["status"] == (
+        "unavailable"
+    )
+    assert diagnostic["summary"]["actual_pnl"] is None
+
+
+def test_hard_stop_non_usd_counterfactual_requires_an_fx_rate(tmp_path) -> None:
+    _write_perf(
+        tmp_path,
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "2379.TW",
+                "action": "BUY",
+                "quantity": 10,
+                "price": 100.0,
+                "fx_rate": 0.031,
+                "confidence": 0.8,
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "2379.TW",
+                "action": "SELL",
+                "quantity": 10,
+                "price": 95.0,
+                "fx_rate": 0.031,
+                "exit_reason": "hard_stop",
+            },
+        ],
+    )
+
+    diagnostic = compute_hard_stop_diagnostics(
+        tmp_path,
+        {
+            "2379.TW": [
+                {
+                    "ts": "2026-06-05T12:00:00+00:00",
+                    "high": 108.0,
+                    "low": 94.0,
+                    "close": 106.0,
+                }
+            ]
+        },
+    )
+
+    case = diagnostic["cases"][0]
+    assert case["actual_gross_pnl"] == -1.55
+    assert case["verdict"] is None
+    assert case["hold_to_lookahead_gross_pnl"] is None
+    assert case["hold_to_lookahead_pnl"] is None
+    assert case["counterfactual_quality"] == {
+        "status": "unavailable",
+        "reason": "counterfactual_fx_rate_unavailable",
+    }
+
+
 def test_hard_stop_diagnostics_marque_stop_utile_si_le_marche_continue_contre_la_position(tmp_path) -> None:
     _write_perf(
         tmp_path,
@@ -621,6 +833,8 @@ def test_hard_stop_diagnostics_marque_inconnu_sans_barres_futures(tmp_path) -> N
 
     assert diagnostic["summary"]["hard_stops"] == 1
     assert diagnostic["summary"]["unknown"] == 1
+    assert diagnostic["summary"]["hold_to_lookahead_gross_pnl"] is None
+    assert diagnostic["summary"]["hold_to_lookahead_pnl"] is None
     assert diagnostic["cases"][0]["verdict"] == "unknown_no_future_bars"
     assert diagnostic["cases"][0]["future_bars"] == 0
 
@@ -655,7 +869,9 @@ def test_ignore_lignes_corrompues_non_dict_et_champs_manquants(tmp_path) -> None
 
     trips = compute_round_trips(tmp_path)
     assert len(trips) == 1
-    assert trips[0]["pnl"] == 100.0
+    assert trips[0]["gross_pnl"] == 100.0
+    assert trips[0]["pnl"] is None
+    assert trips[0]["commission_quality"]["status"] == "unavailable"
     # ne doit pas crasher malgré les lignes non-dict
     assert compute_attribution(tmp_path)["n_closed_trades"] == 1
 

@@ -9,6 +9,7 @@ Builders PURS : (state[, now]) → renderable, sans I/O, sans horloge implicite.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from rich.console import Group, RenderableType
@@ -89,6 +90,30 @@ def _fmt_qty(qty: float) -> str:
     return f"{abs_qty:g}"
 
 
+def _commission_metrics_available(row: Mapping[str, object], *fields: str) -> bool:
+    quality = row.get("commission_quality")
+    return (
+        isinstance(quality, Mapping)
+        and quality.get("status") == "available"
+        and all(_safe_float(row.get(field), default=None) is not None for field in fields)
+    )
+
+
+def _commission_quality_reason(row: Mapping[str, object]) -> str:
+    quality = row.get("commission_quality")
+    if not isinstance(quality, Mapping):
+        return "commission quality unavailable"
+    reasons = quality.get("reasons")
+    values = (
+        [str(value) for value in reasons if str(value)]
+        if isinstance(reasons, list)
+        else []
+    )
+    if not values and quality.get("reason"):
+        values = [str(quality["reason"])]
+    return ", ".join(values) if values else "commission quality unavailable"
+
+
 # ---------------------------------------------------------------------------
 # EXPOSURE builder (pure, no `now` needed)
 # ---------------------------------------------------------------------------
@@ -124,14 +149,16 @@ def build_exposure(state: dict) -> RenderableType:
 
     # Net / gross footnote
     net = exp.net
-    equity_val = max(snap.equity, 1.0)
-    gross_pct = exp.gross / equity_val * 100.0
     net_label = "long" if net >= 0 else "short"
     nl_style = CASYS_SUCCESS if net >= 0 else CASYS_ERROR
     net_footnote = Text()
     net_footnote.append("net ", style=CASYS_DIM)
     net_footnote.append(f"{net_label} ${abs(net) / 1000:.1f}k", style=nl_style)
-    net_footnote.append(f" · gross {gross_pct:.0f}% of equity", style=CASYS_DIM)
+    if snap.equity is not None and snap.equity > 0:
+        gross_pct = exp.gross / snap.equity * 100.0
+        net_footnote.append(f" · gross {gross_pct:.0f}% of equity", style=CASYS_DIM)
+    else:
+        net_footnote.append(" · equity unavailable", style=CASYS_DIM)
 
     # Venue breakdown
     parts: list[RenderableType] = [grid, net_footnote]
@@ -183,8 +210,40 @@ def build_fx(state: dict, *, now: datetime) -> RenderableType:
     ts_label = f.hhmm(state.get("ts"))
     if ts_label == "—":
         ts_label = now.strftime("%H:%M")
+    portfolio = f.safe_dict(state.get("portfolio"))
+    active_holdings = [
+        holding
+        for holding in _safe_list_of_dicts(portfolio.get("holdings"))
+        if (_safe_float(holding.get("quantity"), default=0.0) or 0.0) != 0.0
+    ]
+    cost_scoped_holdings = [
+        holding
+        for holding in active_holdings
+        if str(holding.get("transaction_cost_scope") or "").strip()
+        and _safe_float(
+            holding.get("round_trip_cost_estimate", holding.get("round_trip_fee")),
+            default=None,
+        )
+        is not None
+    ]
+    cost_scopes = {
+        str(holding.get("transaction_cost_scope") or "").strip()
+        for holding in cost_scoped_holdings
+    }
+    if (
+        active_holdings
+        and len(cost_scoped_holdings) == len(active_holdings)
+        and cost_scopes == {"broker_commission_only"}
+    ):
+        pnl_cost_note = (
+            "P&L uses estimated entry + exit broker commissions; not all-in"
+        )
+    elif active_holdings:
+        pnl_cost_note = "P&L cost coverage incomplete; unmodeled holdings remain gross"
+    else:
+        pnl_cost_note = "P&L cost estimate unavailable"
     footnote = Text(
-        f"refreshed {ts_label} UTC · P&L is always net of fees, in USD",
+        f"refreshed {ts_label} UTC · {pnl_cost_note}",
         style=CASYS_FAINT,
     )
     return Group(row, footnote)
@@ -232,8 +291,26 @@ def build_closed_trades(
         symbol = str(trip.get("symbol") or "—")
         side = str(trip.get("side") or "LONG").upper()
         side_long = side == "LONG"
-        pnl = _safe_float(trip.get("pnl"), default=0.0) or 0.0
-        pnl_style = CASYS_SUCCESS if pnl >= 0 else CASYS_ERROR
+        row_available = _commission_metrics_available(trip, "pnl", "commission")
+        pnl = _safe_float(trip.get("pnl"), default=None)
+        gross_pnl = _safe_float(trip.get("gross_pnl"), default=None)
+        display_value = pnl if row_available else gross_pnl
+        pnl_style = (
+            CASYS_SUCCESS
+            if display_value is not None and display_value >= 0
+            else CASYS_ERROR
+            if display_value is not None
+            else CASYS_FAINT
+        )
+        pnl_label = (
+            f.fmt_signed(pnl)
+            if row_available and pnl is not None
+            else (
+                f"g {f.fmt_signed(gross_pnl)}"
+                if gross_pnl is not None
+                else "net n/a"
+            )
+        )
         holding_m = trip.get("holding_minutes")
         reason_raw = str(trip.get("exit_reason") or "—")[:reason_w]
 
@@ -241,22 +318,53 @@ def build_closed_trades(
             Text(_fmt_date_exit(trip.get("exit_ts")), style=CASYS_FAINT),
             Text(symbol, style=f"bold {CASYS_FG}"),
             Text("L" if side_long else "S", style=CASYS_SUCCESS if side_long else CASYS_ERROR),
-            Text(f.fmt_signed(pnl), style=pnl_style),
+            Text(pnl_label, style=pnl_style),
             Text(reason_raw, style=CASYS_DIM),
         ]
         if wide:
             row_cells.append(Text(f.duration_m(holding_m), style=CASYS_FAINT))
         grid.add_row(*row_cells)
 
-    realized_pnl = _safe_float(attribution.get("realized_pnl"), default=0.0) or 0.0
-    total_fees = _safe_float(attribution.get("total_commissions"), default=0.0) or 0.0
+    economics_available = _commission_metrics_available(
+        attribution,
+        "realized_pnl",
+        "total_commissions",
+    )
+    realized_pnl = _safe_float(attribution.get("realized_pnl"), default=None)
+    realized_gross_pnl = _safe_float(
+        attribution.get("realized_gross_pnl"), default=None
+    )
+    total_fees = _safe_float(attribution.get("total_commissions"), default=None)
     n_closed = int(attribution.get("n_closed_trades") or 0)
 
     sep = Text("─" * 38, style=CASYS_HAIRLINE)
     footer = Text()
-    footer.append("realized ", style=CASYS_DIM)
-    footer.append(f.fmt_signed_money(realized_pnl), style=CASYS_SUCCESS if realized_pnl >= 0 else CASYS_ERROR)
-    footer.append(f" · fees ${total_fees:,.0f}", style=CASYS_DIM)
+    if economics_available and realized_pnl is not None and total_fees is not None:
+        footer.append("net realized ", style=CASYS_DIM)
+        footer.append(
+            f.fmt_signed_money(realized_pnl),
+            style=CASYS_SUCCESS if realized_pnl >= 0 else CASYS_ERROR,
+        )
+        footer.append(
+            f" · broker fees ${total_fees:,.0f} · not all-in",
+            style=CASYS_DIM,
+        )
+    else:
+        footer.append("gross realized ", style=CASYS_DIM)
+        if realized_gross_pnl is None:
+            footer.append("unavailable", style=CASYS_FAINT)
+        else:
+            footer.append(
+                f.fmt_signed_money(realized_gross_pnl),
+                style=(
+                    CASYS_SUCCESS if realized_gross_pnl >= 0 else CASYS_ERROR
+                ),
+            )
+        footer.append(
+            " · net/broker fees unavailable · "
+            f"{_commission_quality_reason(attribution)}",
+            style=CASYS_DIM,
+        )
     footer.append(f" · {n_closed} trips", style=CASYS_DIM)
 
     return Group(grid, sep, footer)
@@ -409,7 +517,10 @@ class PortfolioPage(ResizeRefresh, Static):
                 "AVG": Text(f.fmt_compact(row.avg, decimals=2), style=CASYS_DIM),
                 "LAST": Text(f.fmt_compact(row.last, decimals=2), style=CASYS_MUTED),
                 "VALUE $": Text(f"${row.notional:,.0f}" if row.notional else "—", style=CASYS_FG),
-                "P&L $": Text(f.fmt_signed(row.pnl), style=pnl_style),
+                "P&L $": Text(
+                    f"{f.fmt_signed(row.pnl)}{' gross' if row.pnl_basis == 'gross' else ''}",
+                    style=pnl_style,
+                ),
                 "P&L %": Text(f"{row.pnl_pct:+.1f}%", style=pnl_style),
                 "STOP LEFT": Text(stop_str, style=CASYS_DIM),
                 "DATA": _data_cell(state, row.symbol),
@@ -439,10 +550,28 @@ class PortfolioPage(ResizeRefresh, Static):
             style=CASYS_SUCCESS if projection.net_long >= 0 else CASYS_ERROR,
         )
         footer.append(" · unrealized ", style=CASYS_DIM)
-        footer.append(
-            f.fmt_signed(projection.unrealized_total),
-            style=CASYS_SUCCESS if projection.unrealized_total >= 0 else CASYS_ERROR,
+        unrealized_style = (
+            CASYS_FAINT
+            if projection.unrealized_total is None
+            else (
+                CASYS_SUCCESS
+                if projection.unrealized_total >= 0
+                else CASYS_ERROR
+            )
         )
+        footer.append(f.fmt_signed(projection.unrealized_total), style=unrealized_style)
+        if projection.unrealized_basis == "gross":
+            footer.append(
+                " gross · net unavailable "
+                f"({projection.unrealized_net_coverage}/{projection.unrealized_positions})",
+                style=CASYS_FAINT,
+            )
+        elif projection.unrealized_basis == "unavailable":
+            footer.append(
+                " unavailable · net/gross incomplete "
+                f"({projection.unrealized_net_coverage}/{projection.unrealized_positions})",
+                style=CASYS_FAINT,
+            )
         footer.append(" · enter inspect symbol", style=CASYS_FAINT)
         self.query_one("#positions-footer", Static).update(footer)
 

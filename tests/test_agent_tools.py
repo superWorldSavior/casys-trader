@@ -429,6 +429,28 @@ def test_get_attribution_scope_summary_et_symbol():
     assert result2.result == {"rows": [{"symbol": "2330.TW", "n": 2}]}
 
 
+def test_get_attribution_merges_quality_into_legacy_nested_summary() -> None:
+    ctx = _providers_context()
+    ctx.attribution["commission_quality"] = {
+        "status": "unavailable",
+        "counts": {"total": 12, "available": 10, "unavailable": 2},
+        "reasons": ["commission_not_modeled"],
+    }
+
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(
+            id="quality",
+            tool="get_attribution",
+            args={"scope": "summary"},
+        ),
+        ctx,
+    )
+
+    assert result.result["summary"]["commission_quality"]["status"] == (
+        "unavailable"
+    )
+
+
 def test_get_attribution_exposes_calibration_only_on_pull():
     calibration = {
         "n": 3,
@@ -459,8 +481,13 @@ def test_get_attribution_supporte_le_schema_reel_du_read_model():
         allowed_symbols=frozenset({"2330.TW"}),
         attribution={
             "n_closed_trades": 3,
-            "realized_pnl": 42.0,
-            "win_rate": 2 / 3,
+            "realized_pnl": None,
+            "win_rate": None,
+            "commission_quality": {
+                "status": "unavailable",
+                "counts": {"total": 3, "available": 2, "unavailable": 1},
+                "reasons": ["commission_not_modeled"],
+            },
             "recent_trips": [
                 {"symbol": "2330.TW", "pnl": 12.0},
                 {"symbol": "SPY", "pnl": 30.0},
@@ -475,8 +502,13 @@ def test_get_attribution_supporte_le_schema_reel_du_read_model():
     assert summary.result == {
         "summary": {
             "n_closed_trades": 3,
-            "realized_pnl": 42.0,
-            "win_rate": 2 / 3,
+            "realized_pnl": None,
+            "win_rate": None,
+            "commission_quality": {
+                "status": "unavailable",
+                "counts": {"total": 3, "available": 2, "unavailable": 1},
+                "reasons": ["commission_not_modeled"],
+            },
         }
     }
 

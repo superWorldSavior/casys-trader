@@ -7,7 +7,7 @@ from pathlib import Path
 
 from trader.infrastructure.state_db.connection import open_state_db
 from trader.infrastructure.state_db.llm_gate_store import LlmGateStore
-from trader.infrastructure.state_db.migrations import LLM_GATE_MIGRATION
+from trader.infrastructure.state_db.migrations import LLM_GATE_MIGRATIONS
 from trader.runtime import daemon
 from trader.runtime.cycle_process_state import CycleProcessState
 
@@ -16,10 +16,7 @@ def _flat_bars_factory(now_iso: str):
     from trader.market.market_data import Bar
 
     def factory(symbol, lookback, interval):
-        return [
-            Bar(ts=now_iso, open=100.0, high=100.1, low=99.9, close=100.0, volume=1000.0)
-            for _ in range(4)
-        ]
+        return [Bar(ts=now_iso, open=100.0, high=100.1, low=99.9, close=100.0, volume=1000.0) for _ in range(4)]
 
     return factory
 
@@ -64,19 +61,21 @@ def test_run_cycle_persists_last_llm_at_and_hydrate_restores_it(
     assert process_state.last_llm_at[key] == now
 
     db = open_state_db(state_dir / "casys.db")
-    db.apply_migrations([LLM_GATE_MIGRATION])
-    persisted = LlmGateStore(db).load_all()
-    assert persisted[key] == now
+    db.apply_migrations(list(LLM_GATE_MIGRATIONS))
+    persisted = LlmGateStore(db).load_state()
+    assert persisted.last_llm_at[key] == now
+    assert persisted.last_wake_reasons[key] == ()
+    assert persisted.last_wake_fingerprints[key] == {}
 
     restarted = CycleProcessState()
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     daemon._hydrate_last_llm_at(restarted)
     assert restarted.last_llm_at[key] == now
+    assert restarted.last_wake_reasons[key] == ()
+    assert restarted.last_wake_fingerprints[key] == {}
 
 
-def test_llm_gate_store_degrades_to_memory_when_backend_is_not_sqlite(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_llm_gate_store_degrades_to_memory_when_backend_is_not_sqlite(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(daemon, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(daemon, "CANONICAL_STATE_BACKEND", "json")
 
@@ -86,6 +85,8 @@ def test_llm_gate_store_degrades_to_memory_when_backend_is_not_sqlite(
     process_state = CycleProcessState()
     daemon._hydrate_last_llm_at(process_state)
     assert process_state.last_llm_at == {}
+    assert process_state.last_wake_reasons == {}
+    assert process_state.last_wake_fingerprints == {}
 
 
 def test_hydrate_last_llm_at_loads_existing_rows(tmp_path: Path, monkeypatch) -> None:

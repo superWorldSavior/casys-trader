@@ -125,6 +125,26 @@ def _debounced(
     )
 
 
+def _disappeared_persistent_reason(
+    *,
+    current_fingerprints: Mapping[str, str],
+    last_wake_fingerprints: Mapping[str, str] | None,
+) -> str | None:
+    """Return the first material reason that disappeared since the last review.
+
+    Fingerprints are recorded only after a real LLM review.  For a held symbol,
+    losing a previously reviewed regime or HTF signal is therefore a material
+    transition, just like a new or inverted fingerprint.  Once that transition
+    is reviewed, the daemon records the current (missing) fingerprint and the
+    disappearance no longer wakes subsequent cycles.
+    """
+    previous = last_wake_fingerprints or {}
+    for reason in ("regime", "signal"):
+        if previous.get(reason) and reason not in current_fingerprints:
+            return reason
+    return None
+
+
 def symbol_needs_llm(
     *,
     agent_requested_wake: bool,
@@ -165,6 +185,12 @@ def symbol_needs_llm(
         ):
             return True, "position"
         position_debounced = True
+        disappeared_reason = _disappeared_persistent_reason(
+            current_fingerprints=current_fingerprints,
+            last_wake_fingerprints=last_wake_fingerprints,
+        )
+        if disappeared_reason is not None:
+            return True, disappeared_reason
     if family_regime_strong and not _debounced(
         last_wake_reasons,
         "regime",

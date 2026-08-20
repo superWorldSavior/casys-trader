@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -100,6 +101,47 @@ def collect_stale_sessions(root: Path, cutoff: datetime) -> dict[str, list[Path]
     return by_month
 
 
+def _archive_variant(destination: Path, index: int) -> Path:
+    """Retourne le nom mensuel canonique, puis ses variantes numérotées."""
+
+    if index == 0:
+        return destination
+    suffix = ".tar.zst"
+    base = destination.name[: -len(suffix)] if destination.name.endswith(suffix) else destination.name
+    return destination.with_name(f"{base}.{index}{suffix}")
+
+
+def _next_available_archive(destination: Path) -> Path:
+    """Premier nom libre observé, utile au rapport dry-run."""
+
+    index = 0
+    while True:
+        candidate = _archive_variant(destination, index)
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def _publish_archive(staged: Path, destination: Path) -> Path:
+    """Publie ``staged`` sans jamais remplacer une archive existante.
+
+    Le hard-link est une création atomique et exclusive. Comme le temporaire est
+    créé dans le répertoire de destination, les deux chemins sont sur le même
+    système de fichiers. Une exécution concurrente qui prend le nom attendu fait
+    simplement essayer la variante numérotée suivante.
+    """
+
+    index = 0
+    while True:
+        candidate = _archive_variant(destination, index)
+        try:
+            os.link(staged, candidate)
+        except FileExistsError:
+            index += 1
+            continue
+        return candidate
+
+
 def archive_month(paths: list[Path], destination: Path, *, apply: bool) -> dict:
     """Écrit ``destination`` (tar.zst) puis supprime les sources. Fail-closed.
 
@@ -113,7 +155,7 @@ def archive_month(paths: list[Path], destination: Path, *, apply: bool) -> dict:
         "files": len(paths),
         "raw_size": raw_size,
         "raw_size_human": _human(raw_size),
-        "archive": str(destination),
+        "archive": str(_next_available_archive(destination)),
         "applied": False,
     }
     if not apply:
@@ -133,14 +175,15 @@ def archive_month(paths: list[Path], destination: Path, *, apply: bool) -> dict:
         )
         # Preuve de lisibilité avant de toucher aux sources.
         subprocess.run([zstd, "-t", "-q", str(staged)], check=True)
-        shutil.move(str(staged), str(destination))
+        published = _publish_archive(staged, destination)
 
     for path in paths:
         path.unlink(missing_ok=True)
 
-    packed = destination.stat().st_size
+    packed = published.stat().st_size
     result.update(
         applied=True,
+        archive=str(published),
         archive_size=packed,
         archive_size_human=_human(packed),
         ratio=round(raw_size / packed, 1) if packed else None,
@@ -226,16 +269,14 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     # Extraire les tokens AVANT l'archive des sessions et la purge sqlite.
-    # Additif et idempotent : on le fait aussi en dry-run (rien n'est détruit).
-    report["llm_usage"] = _extract_llm_usage_before_purge()
+    # L'extraction est additive : un vrai dry-run ne doit donc jamais l'appeler.
+    report["llm_usage"] = (
+        _extract_llm_usage_before_purge() if args.apply else {"applied": False, "appended": 0, "reason": "dry_run"}
+    )
 
     if args.only != "logs":
         for month, paths in sorted(collect_stale_sessions(ACPX_SESSIONS, cutoff).items()):
             destination = ARCHIVE_ROOT / f"acpx-sessions-{month}.tar.zst"
-            if destination.exists():
-                # Un mois déjà archivé ne doit pas être écrasé : les sessions
-                # restantes de ce mois attendront le prochain nom libre.
-                destination = ARCHIVE_ROOT / f"acpx-sessions-{month}.{len(paths)}.tar.zst"
             report["sessions"].append(archive_month(paths, destination, apply=args.apply))
 
     if args.only != "sessions":

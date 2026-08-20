@@ -11,6 +11,7 @@ Conventions du design « Decision Journal » :
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from trader.domain.market import fx
@@ -213,11 +214,63 @@ def holding_notional(holding: dict) -> float:
     return abs(qty * price * fx_rate)
 
 
+def holding_net_pnl(holding: dict) -> float | None:
+    after_broker_fees = _safe_float(
+        holding.get("unrealized_pnl_after_broker_fees"),
+        default=None,
+    )
+    if after_broker_fees is not None:
+        return after_broker_fees
+    return _safe_float(holding.get("unrealized_pnl_net"), default=None)
+
+
+def holding_gross_pnl(holding: dict) -> float | None:
+    return _safe_float(holding.get("unrealized_pnl"), default=None)
+
+
 def holding_pnl(holding: dict) -> float:
-    net = _safe_float(holding.get("unrealized_pnl_net"), default=None)
+    net = holding_net_pnl(holding)
     if net is not None:
         return net
-    return _safe_float(holding.get("unrealized_pnl"), default=0.0) or 0.0
+    return holding_gross_pnl(holding) or 0.0
+
+
+@dataclass(frozen=True)
+class HoldingPnlAggregate:
+    amount: float | None
+    basis: str
+    net_coverage: int
+    positions: int
+
+
+def aggregate_holding_pnl(holdings: list[dict]) -> HoldingPnlAggregate:
+    """Aggregate net only with full coverage; otherwise use complete gross."""
+
+    if not holdings:
+        return HoldingPnlAggregate(0.0, "net", 0, 0)
+    net_values = [holding_net_pnl(holding) for holding in holdings]
+    net_coverage = sum(value is not None for value in net_values)
+    if net_coverage == len(holdings):
+        return HoldingPnlAggregate(
+            sum(value for value in net_values if value is not None),
+            "net",
+            net_coverage,
+            len(holdings),
+        )
+    gross_values = [holding_gross_pnl(holding) for holding in holdings]
+    if all(value is not None for value in gross_values):
+        return HoldingPnlAggregate(
+            sum(value for value in gross_values if value is not None),
+            "gross",
+            net_coverage,
+            len(holdings),
+        )
+    return HoldingPnlAggregate(
+        None,
+        "unavailable",
+        net_coverage,
+        len(holdings),
+    )
 
 
 def price_for_symbol(state: dict, symbol: str) -> float | None:

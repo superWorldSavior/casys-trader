@@ -12,7 +12,9 @@ import math
 
 import pytest
 
+from trader.domain.execution.risk_gate import RiskGate
 from trader.domain.market_data import MarketError
+from trader.domain.risk import RiskLimits
 from trader.infrastructure.market_sources import market_data_yf as mdy
 from trader.infrastructure.market_sources import yahoo_client as yc
 
@@ -28,6 +30,7 @@ def _v8(
     adjcloses=None,
     error=None,
     tz="Europe/Paris",
+    currency=None,
 ):
     indicators = {
         "quote": [{
@@ -37,9 +40,12 @@ def _v8(
     }
     if adjcloses is not None:
         indicators["adjclose"] = [{"adjclose": adjcloses}]
+    meta = {"exchangeTimezoneName": tz}
+    if currency is not None:
+        meta["currency"] = currency
     result = None if error else [{
         "timestamp": timestamps,
-        "meta": {"exchangeTimezoneName": tz},
+        "meta": meta,
         "indicators": indicators,
     }]
     return json.dumps({"chart": {"error": error, "result": result}})
@@ -156,6 +162,112 @@ def test_auto_adjust_is_opt_in_and_default_stays_raw():
     assert bar.high == 120.0
     assert bar.low == 90.0
     assert bar.close == 100.0
+
+
+@pytest.mark.parametrize("currency", ["GBp", "GBX"])
+def test_explicit_pence_currency_normalizes_raw_ohlc_to_gbp_and_keeps_volume(currency):
+    body = _v8(
+        [1],
+        [1_500.0],
+        [1_525.0],
+        [1_475.0],
+        [1_513.0],
+        [2_000_000],
+        currency=currency,
+        tz="Europe/London",
+    )
+
+    (bar,) = yc.fetch_ohlc("RR.L", "1d", "1h", http_get=lambda url: body)
+
+    assert bar.open == pytest.approx(15.0)
+    assert bar.high == pytest.approx(15.25)
+    assert bar.low == pytest.approx(14.75)
+    assert bar.close == pytest.approx(15.13)
+    assert bar.volume == 2_000_000.0
+
+
+def test_explicit_pence_currency_normalizes_adjusted_ohlc_and_adjclose_to_gbp():
+    body = _v8(
+        [1],
+        [1_000.0],
+        [1_200.0],
+        [900.0],
+        [1_000.0],
+        [50_000],
+        adjcloses=[500.0],
+        currency="GBp",
+        tz="Europe/London",
+    )
+
+    (bar,) = yc.fetch_ohlc(
+        "VOD.L",
+        "1mo",
+        "1d",
+        auto_adjust=True,
+        http_get=lambda url: body,
+    )
+
+    assert bar.open == pytest.approx(5.0)
+    assert bar.high == pytest.approx(6.0)
+    assert bar.low == pytest.approx(4.5)
+    assert bar.close == pytest.approx(5.0)
+    assert bar.volume == 50_000.0
+
+
+def test_london_symbol_already_quoted_in_gbp_is_not_scaled_from_suffix():
+    body = _v8(
+        [1],
+        [15.0],
+        [15.25],
+        [14.75],
+        [15.13],
+        [2_000_000],
+        currency="GBP",
+        tz="Europe/London",
+    )
+
+    (bar,) = yc.fetch_ohlc("RR.L", "1d", "1h", http_get=lambda url: body)
+
+    assert (bar.open, bar.high, bar.low, bar.close) == (15.0, 15.25, 14.75, 15.13)
+
+
+def test_pence_normalization_reaches_market_pipeline_and_risk_sizing():
+    body = _v8(
+        [1],
+        [1_500.0],
+        [1_525.0],
+        [1_475.0],
+        [1_513.0],
+        [2_000_000],
+        currency="GBp",
+        tz="Europe/London",
+    )
+
+    bars = mdy.get_bars(
+        "RR.L",
+        "1d",
+        "1h",
+        fetch=lambda symbol, lookback, interval: yc.fetch_ohlc(
+            symbol,
+            lookback,
+            interval,
+            http_get=lambda url: body,
+        ),
+    )
+    gate = RiskGate(
+        RiskLimits(
+            max_position_value=100_000.0,
+            max_gross_exposure=200_000.0,
+            max_order_value=50_000.0,
+            min_equity=0.0,
+        )
+    )
+
+    quantity = gate.max_order_quantity_at_price(bars[-1].close, fx_rate=1.25)
+
+    assert bars[-1].close == pytest.approx(15.13)
+    assert quantity == pytest.approx(50_000.0 / (15.13 * 1.25))
+    assert quantity > 2_000.0
 
 
 def test_chart_error_raises_fetch_failed():

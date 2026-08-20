@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from trader.domain.contracts import Commission
 from trader.execution.broker import (
     IbkrCommissionModel,
     NoCommissionModel,
@@ -42,6 +43,27 @@ def test_round_trip_cost_us_stock_minimum_par_ordre() -> None:
     assert cost["be_bps"] == 0.70
 
 
+def test_round_trip_cost_us_stock_non_divisor_does_not_fractionalize_full_notional() -> None:
+    # The cockpit derives 131.319 shares from its reference notional.  A mixed
+    # quantity must split whole/fractional components instead of applying 1%
+    # to the complete USD 10k reference amount.
+    quantity = 131.319
+    ref_notional = 10_000.0
+    price = ref_notional / quantity
+
+    cost = round_trip_cost(
+        IbkrCommissionModel(),
+        "AAPL",
+        price=price,
+        ref_notional=ref_notional,
+    )
+
+    assert cost is not None
+    assert cost["fee_rt"] == pytest.approx(1.4)
+    assert cost["be_bps"] == pytest.approx(1.4)
+    assert cost["fee_rt"] < 2.0
+
+
 def test_round_trip_cost_minimum_petit_notionnel_coute_plus_cher() -> None:
     # Même symbole, notionnel 10x plus petit : le minimum par ordre mord davantage,
     # donc be_bps est strictement plus élevé. C'est le piège du scalp à petite taille.
@@ -52,7 +74,13 @@ def test_round_trip_cost_minimum_petit_notionnel_coute_plus_cher() -> None:
 
 def test_round_trip_cost_sans_commission_est_zero() -> None:
     cost = round_trip_cost(NoCommissionModel(), "AAPL", price=200.0, ref_notional=10_000.0)
-    assert cost == {"fee_rt": 0.0, "currency": "USD", "be_bps": 0.0}
+    assert cost == {
+        "fee_rt": 0.0,
+        "currency": "USD",
+        "be_bps": 0.0,
+        "cost_scope": "no_commission_model",
+        "cost_estimate_is_all_in": False,
+    }
 
 
 def test_round_trip_cost_prix_invalide_renvoie_none() -> None:
@@ -87,7 +115,98 @@ def test_round_trip_cost_taiwan_convertit_le_plafond_usd_en_notional_twd() -> No
         "fee_rt": 516.13,
         "currency": "TWD",
         "be_bps": 16.0,
+        "cost_scope": "broker_commission_only",
+        "cost_estimate_is_all_in": False,
     }
+
+
+def test_round_trip_cost_calculates_buy_and_sell_instead_of_doubling_buy() -> None:
+    class SideAwareModel:
+        cost_scope = "broker_plus_known_venue_costs"
+        cost_estimate_is_all_in = False
+
+        def calculate(self, order, price):
+            amount = 1.0 if order.side == "BUY" else 4.0
+            return Commission(amount=amount, currency="USD", model="side_aware")
+
+    cost = round_trip_cost(
+        SideAwareModel(),
+        "AAPL",
+        price=100.0,
+        ref_notional=10_000.0,
+    )
+
+    assert cost == {
+        "fee_rt": 5.0,
+        "currency": "USD",
+        "be_bps": 5.0,
+        "cost_scope": "broker_plus_known_venue_costs",
+        "cost_estimate_is_all_in": False,
+    }
+
+
+def test_round_trip_cost_ambiguous_completeness_metadata_stays_fail_closed() -> None:
+    class AmbiguousMetadataModel:
+        cost_scope = ""
+        cost_estimate_is_all_in = "false"
+
+        def calculate(self, order, price):
+            return Commission(amount=1.0, currency="USD", model="ambiguous")
+
+    cost = round_trip_cost(
+        AmbiguousMetadataModel(),
+        "AAPL",
+        price=100.0,
+        ref_notional=10_000.0,
+    )
+
+    assert cost is not None
+    assert cost["cost_scope"] == "commission_model_only"
+    assert cost["cost_estimate_is_all_in"] is False
+
+
+@pytest.mark.parametrize(
+    "amount",
+    [float("nan"), float("inf"), float("-inf"), -0.01],
+)
+def test_round_trip_cost_invalid_commission_amount_fail_closed(amount: float) -> None:
+    class InvalidAmountModel:
+        def calculate(self, order, price):
+            return Commission(amount=amount, currency="USD", model="invalid_amount")
+
+    assert round_trip_cost(
+        InvalidAmountModel(),
+        "AAPL",
+        price=100.0,
+        ref_notional=10_000.0,
+    ) is None
+
+
+def test_round_trip_cost_incompatible_leg_currencies_fail_closed() -> None:
+    class IncompatibleCurrencyModel:
+        def calculate(self, order, price):
+            currency = "USD" if order.side == "BUY" else "EUR"
+            return Commission(amount=1.0, currency=currency, model="incompatible")
+
+    assert round_trip_cost(
+        IncompatibleCurrencyModel(),
+        "AAPL",
+        price=100.0,
+        ref_notional=10_000.0,
+    ) is None
+
+
+def test_round_trip_cost_third_currency_fail_closed() -> None:
+    class ThirdCurrencyModel:
+        def calculate(self, order, price):
+            return Commission(amount=1.0, currency="EUR", model="third_currency")
+
+    assert round_trip_cost(
+        ThirdCurrencyModel(),
+        "AAPL",
+        price=100.0,
+        ref_notional=10_000.0,
+    ) is None
 
 
 @pytest.mark.parametrize("fx_rate", [None, 0.0, -1.0, float("nan"), float("inf")])

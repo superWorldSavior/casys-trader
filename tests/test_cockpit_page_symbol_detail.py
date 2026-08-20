@@ -169,8 +169,22 @@ _STATE_FULL: dict = {
         },
     ],
     "recent_trips": [
-        {"symbol": "3443.TW", "pnl": 212.0, "exit_reason": "take_profit"},
-        {"symbol": "OTHER.SYM", "pnl": 50.0, "exit_reason": "take_profit"},
+        {
+            "symbol": "3443.TW",
+            "gross_pnl": 220.0,
+            "commission": 8.0,
+            "pnl": 212.0,
+            "commission_quality": {"status": "available"},
+            "exit_reason": "take_profit",
+        },
+        {
+            "symbol": "OTHER.SYM",
+            "gross_pnl": 52.0,
+            "commission": 2.0,
+            "pnl": 50.0,
+            "commission_quality": {"status": "available"},
+            "exit_reason": "take_profit",
+        },
     ],
     "venue_state": {
         "venues": {
@@ -424,20 +438,56 @@ def test_earnings_label_absent() -> None:
 def test_realized_total_sums_only_symbol() -> None:
     state = {
         "recent_trips": [
-            {"symbol": "3443.TW", "pnl": 212.0},
-            {"symbol": "OTHER.SYM", "pnl": 50.0},
-            {"symbol": "3443.TW", "pnl": -80.0},
+            {
+                "symbol": "3443.TW",
+                "gross_pnl": 220.0,
+                "pnl": 212.0,
+                "commission_quality": {"status": "available"},
+            },
+            {
+                "symbol": "OTHER.SYM",
+                "gross_pnl": 52.0,
+                "pnl": 50.0,
+                "commission_quality": {"status": "available"},
+            },
+            {
+                "symbol": "3443.TW",
+                "gross_pnl": -78.0,
+                "pnl": -80.0,
+                "commission_quality": {"status": "available"},
+            },
         ]
     }
-    total, count = _realized_total(state, "3443.TW")
+    total, gross, count = _realized_total(state, "3443.TW")
     assert count == 2
     assert abs(total - 132.0) < 0.01
+    assert gross == 142.0
 
 
 def test_realized_total_empty() -> None:
-    total, count = _realized_total({}, "3443.TW")
+    total, gross, count = _realized_total({}, "3443.TW")
     assert total == 0.0
+    assert gross == 0.0
     assert count == 0
+
+
+def test_realized_total_incomplete_preserves_gross_and_count() -> None:
+    state = {
+        "recent_trips": [
+            {
+                "symbol": "3443.TW",
+                "gross_pnl": 12.0,
+                "pnl": None,
+                "commission_quality": {"status": "unavailable"},
+            }
+        ]
+    }
+
+    net, gross, count = _realized_total(state, "3443.TW")
+
+    assert net is None
+    assert gross == 12.0
+    assert count == 1
 
 
 def test_symbol_watch_returns_first_match() -> None:

@@ -92,5 +92,6 @@ def test_dispatch_run_cycle_forwarde_le_contexte_runtime() -> None:
             "queue_execute_enabled": True,
             "execute_ledger": execute_ledger,
             "worker_cycle_context": worker_cycle_context,
+            "experiment_runtime_identity": None,
         }
     ]

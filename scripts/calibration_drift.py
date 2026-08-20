@@ -12,8 +12,9 @@ Usage :
     uv run python scripts/calibration_drift.py calibration --state-dir PATH --json
 
 Les HOLD synthétiques infra (``benchmark_basis="infra"``) sont exclus des
-stats de calibration. ``compute_round_trips`` ne persiste pas ``decision_id`` :
-le join se fait ensuite via le fill d'ouverture.
+stats de calibration. Les jambes de sortie FIFO sont agrégées en cycles de
+position flat-to-flat avant les statistiques. Le join décisionnel se fait
+ensuite via le fill d'ouverture.
 """
 
 from __future__ import annotations
@@ -31,7 +32,10 @@ from typing import Any
 import duckdb
 
 from trader.domain.decision_benchmark import decision_benchmark_context
-from trader.reporting.read_models.trade_history import compute_round_trips
+from trader.reporting.read_models.trade_history import (
+    aggregate_position_cycles,
+    compute_round_trips,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -240,9 +244,7 @@ def _load_decisions_via_duckdb(journal: Path) -> list[dict[str, Any]]:
         columns = list(relation.columns)
         loaded: list[dict[str, Any]] = []
         for tup in relation.fetchall():
-            loaded.append(
-                {str(col): _duckdb_value(val) for col, val in zip(columns, tup, strict=False)}
-            )
+            loaded.append({str(col): _duckdb_value(val) for col, val in zip(columns, tup, strict=False)})
         return loaded
     finally:
         con.close()
@@ -355,9 +357,7 @@ def _annotate_trips(trips: list[dict[str, Any]], fills: list[dict[str, Any]]) ->
         entry_fx = 1.0
         entry_decision_id = None
         if match is not None:
-            entry_decision_id = _as_text(match.get("decision_id")) or _as_text(
-                match.get("entry_decision_id")
-            )
+            entry_decision_id = _as_text(match.get("decision_id")) or _as_text(match.get("entry_decision_id"))
             parsed_fx = _as_float(match.get("fx_rate"))
             if parsed_fx is not None and parsed_fx > 0:
                 entry_fx = parsed_fx
@@ -384,7 +384,42 @@ def _empty_bucket_stats() -> dict[str, Any]:
         "mean_announced_confidence": None,
         "mean_pnl_bps": None,
         "calibration_gap": None,
+        "pnl_quality": {
+            "status": "unavailable",
+            "n_total": 0,
+            "n_available": 0,
+            "n_unavailable": 0,
+            "coverage_ratio": None,
+        },
     }
+
+
+def _pnl_observations(
+    trips: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], float]], dict[str, Any]]:
+    available: list[tuple[dict[str, Any], float]] = []
+    for trip in trips:
+        pnl = _as_float(trip.get("pnl"))
+        if pnl is not None:
+            available.append((trip, pnl))
+
+    n_total = len(trips)
+    n_available = len(available)
+    n_unavailable = n_total - n_available
+    if n_available == 0:
+        status = "unavailable"
+    elif n_unavailable:
+        status = "partial"
+    else:
+        status = "available"
+    quality = {
+        "status": status,
+        "n_total": n_total,
+        "n_available": n_available,
+        "n_unavailable": n_unavailable,
+        "coverage_ratio": (n_available / n_total) if n_total else None,
+    }
+    return available, quality
 
 
 def _summarize_group(
@@ -394,16 +429,16 @@ def _summarize_group(
     announced_from: str = "decision",
 ) -> dict[str, Any]:
     executed = [row for row in decisions if row.get("executed")]
-    pnls = [_as_float(trip.get("pnl")) for trip in trips]
-    wins = [pnl for pnl in pnls if pnl is not None and pnl > 0]
-    bps_values = [_as_float(trip.get("pnl_bps")) for trip in trips]
+    pnl_observations, pnl_quality = _pnl_observations(trips)
+    wins = [pnl for _, pnl in pnl_observations if pnl > 0]
+    bps_values = [_as_float(trip.get("pnl_bps")) for trip, _ in pnl_observations]
     bps_known = [value for value in bps_values if value is not None]
     if announced_from == "fill":
-        announced = [_as_float(trip.get("entry_confidence")) for trip in trips]
+        announced = [_as_float(trip.get("entry_confidence")) for trip, _ in pnl_observations]
     else:
-        announced = [_as_float(trip.get("announced_confidence")) for trip in trips]
+        announced = [_as_float(trip.get("announced_confidence")) for trip, _ in pnl_observations]
     announced_known = [value for value in announced if value is not None]
-    win_rate = (len(wins) / len(trips)) if trips else None
+    win_rate = len(wins) / len(pnl_observations) if pnl_observations else None
     mean_announced = (sum(announced_known) / len(announced_known)) if announced_known else None
     gap = (mean_announced - win_rate) if mean_announced is not None and win_rate is not None else None
     return {
@@ -414,6 +449,7 @@ def _summarize_group(
         "mean_announced_confidence": mean_announced,
         "mean_pnl_bps": (sum(bps_known) / len(bps_known)) if bps_known else None,
         "calibration_gap": gap,
+        "pnl_quality": pnl_quality,
     }
 
 
@@ -450,7 +486,10 @@ def _load_state(state_dir: Path) -> dict[str, Any]:
     fills: list[dict[str, Any]] = []
     if fills_found:
         fills = _iter_jsonl(fills_path)
-        trips = _annotate_trips(compute_round_trips(state_dir), fills)
+        trips = _annotate_trips(
+            aggregate_position_cycles(compute_round_trips(state_dir)),
+            fills,
+        )
 
     return {
         "decisions": decisions,
@@ -611,7 +650,7 @@ def run_calibration(
         "overall": overall,
         "unmatched_trips": _summarize_group([], unmatched, announced_from="fill"),
         "method": {
-            "round_trips": "trader.reporting.read_models.trade_history.compute_round_trips",
+            "position_cycles": ("trade_history.aggregate_position_cycles(trade_history.compute_round_trips(...))"),
             "decision_id": "fill d'ouverture (decision_id ou entry_decision_id)",
             "infra": "decision_benchmark_context.benchmark_basis == infra",
         },
@@ -726,20 +765,20 @@ def run_drift(
             dominant = None
         changed = bool(previous_dominant and dominant and dominant != previous_dominant)
         week_trips = trips_by_week.get(week, [])
-        wins = [trip for trip in week_trips if (_as_float(trip.get("pnl")) or 0.0) > 0]
+        week_pnl, week_pnl_quality = _pnl_observations(week_trips)
         by_code_version = []
         for version, rows in sorted(version_rows.items(), key=lambda item: (-len(item[1]), item[0])):
-            version_trips = [
-                trip for trip in week_trips if trip.get("entry_code_version") == version
-            ]
+            version_trips = [trip for trip in week_trips if trip.get("entry_code_version") == version]
+            version_pnl, version_pnl_quality = _pnl_observations(version_trips)
             version_stats = _week_decision_stats(rows)
             version_stats.update(
                 {
                     "code_version": version,
                     "n_closed_trips": len(version_trips),
-                    "win_rate": (sum(1 for trip in version_trips if (_as_float(trip.get("pnl")) or 0) > 0) / len(version_trips))
-                    if version_trips
-                    else None,
+                    "win_rate": (
+                        sum(1 for _, pnl in version_pnl if pnl > 0) / len(version_pnl) if version_pnl else None
+                    ),
+                    "pnl_quality": version_pnl_quality,
                 }
             )
             by_code_version.append(version_stats)
@@ -751,7 +790,8 @@ def run_drift(
             "n_infra_excluded": by_week_infra.get(week, 0),
             **_week_decision_stats(llm_rows),
             "n_closed_trips": len(week_trips),
-            "win_rate": (len(wins) / len(week_trips)) if week_trips else None,
+            "win_rate": (sum(1 for _, pnl in week_pnl if pnl > 0) / len(week_pnl) if week_pnl else None),
+            "pnl_quality": week_pnl_quality,
             "by_code_version": by_code_version,
             "fill_only": not llm_rows and bool(week_trips),
         }
@@ -775,6 +815,7 @@ def run_drift(
         "filters": {"since": since, "action": action_filter or None, "venue": venue_filter},
         "inputs": state["inputs"],
         "weeks": weeks,
+        "pnl_quality": _pnl_observations([trip for week_trips in trips_by_week.values() for trip in week_trips])[1],
         "notes": notes,
     }
 
@@ -886,6 +927,7 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
 
 def _render_calibration(payload: dict[str, Any]) -> None:
     overall = payload["overall"]
+    pnl_quality = overall["pnl_quality"]
     print("=== Calibration de confiance ===")
     filters = payload["filters"]
     print(
@@ -899,6 +941,7 @@ def _render_calibration(payload: dict[str, Any]) -> None:
     print(
         f"Exécutées : {overall['n_executed']}   "
         f"trips clos joints : {overall['n_closed_trips']}   "
+        f"PnL disponible : {pnl_quality['n_available']}/{pnl_quality['n_total']}   "
         f"win rate : {_fmt_pct(overall['win_rate'])}   "
         f"gap : {_fmt_num(overall['calibration_gap'], 3)}"
     )
@@ -910,6 +953,7 @@ def _render_calibration(payload: dict[str, Any]) -> None:
                 item["bucket"],
                 str(item["n_executed"]),
                 str(item["n_closed_trips"]),
+                f"{item['pnl_quality']['n_available']}/{item['pnl_quality']['n_total']}",
                 _fmt_pct(item["win_rate"]),
                 _fmt_num(item["mean_pnl_bps"], 1),
                 _fmt_num(item["mean_announced_confidence"], 3),
@@ -917,7 +961,16 @@ def _render_calibration(payload: dict[str, Any]) -> None:
             ]
         )
     _print_table(
-        ["tranche", "n_exec", "n_trips", "win_rate", "pnl_bps", "conf_moy", "gap"],
+        [
+            "tranche",
+            "n_exec",
+            "n_trips",
+            "pnl_ok",
+            "win_rate",
+            "pnl_bps",
+            "conf_moy",
+            "gap",
+        ],
         rows,
     )
     by_action = payload.get("by_action") or {}
@@ -978,6 +1031,7 @@ def _render_drift(payload: dict[str, Any]) -> None:
                 _fmt_num(week.get("confidence_median"), 3),
                 _fmt_pct(week.get("execution_rate")),
                 str(week.get("n_closed_trips") or 0),
+                (f"{week['pnl_quality']['n_available']}/{week['pnl_quality']['n_total']}"),
                 _fmt_pct(week.get("win_rate")),
                 marker.strip(),
             ]
@@ -992,6 +1046,7 @@ def _render_drift(payload: dict[str, Any]) -> None:
             "conf_med",
             "tx_exec",
             "trips",
+            "pnl_ok",
             "win_rate",
             "marqueur",
         ],
@@ -1013,9 +1068,7 @@ def _render_session(payload: dict[str, Any]) -> None:
         f"lignes ont la clé since_open_m, {coverage.get('n_with_value', 0)} renseignée(s)."
     )
     if payload.get("field_too_recent"):
-        print(
-            "Champ trop récent ou jamais valorisé : pas de conclusion sur le fakeout open EU."
-        )
+        print("Champ trop récent ou jamais valorisé : pas de conclusion sur le fakeout open EU.")
     print()
     rows = []
     for item in payload.get("by_since_open") or []:
@@ -1045,10 +1098,7 @@ def _render_session(payload: dict[str, Any]) -> None:
         rows,
     )
     missing = payload.get("missing") or {}
-    print(
-        f"Sans since_open_m : {missing.get('n_decisions', 0)} décision(s), "
-        f"{missing.get('n_trips', 0)} trip(s)."
-    )
+    print(f"Sans since_open_m : {missing.get('n_decisions', 0)} décision(s), {missing.get('n_trips', 0)} trip(s).")
     _render_notes(payload.get("notes") or [])
 
 

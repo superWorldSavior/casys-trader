@@ -68,7 +68,10 @@ _STATE_BASE = {
             "quantity": 5,
             "entry_price": 500.0,
             "exit_price": 510.0,
+            "gross_pnl": 50.0,
+            "commission": 5.0,
             "pnl": 45.0,
+            "commission_quality": {"status": "available"},
             "entry_ts": "2026-07-03T10:00:00+00:00",
             "exit_ts": "2026-07-03T15:00:00+00:00",
             "holding_minutes": 300.0,
@@ -76,7 +79,9 @@ _STATE_BASE = {
     ],
     "attribution": {
         "realized_pnl": 450.0,
+        "realized_gross_pnl": 482.0,
         "total_commissions": 32.0,
+        "commission_quality": {"status": "available"},
         "n_closed_trades": 8,
         "win_rate": 0.625,
     },
@@ -332,6 +337,47 @@ def test_build_fx_refreshed_timestamp():
     assert "01:45" in rendered
     assert "UTC" in rendered
     assert "P&L" in rendered
+    assert "cost estimate unavailable" in rendered
+    assert "estimated entry + exit broker commissions" not in rendered
+
+
+def test_build_fx_with_broker_cost_scope_labels_estimate_as_incomplete() -> None:
+    from trader.interfaces.cockpit.pages.portfolio import build_fx
+
+    state = {
+        "fx_rates": {"EUR": 1.1432},
+        "portfolio": {
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 10.0,
+                    "round_trip_cost_estimate": 0.7,
+                    "transaction_cost_scope": "broker_commission_only",
+                    "transaction_cost_estimate_is_all_in": False,
+                }
+            ]
+        },
+    }
+
+    rendered = _render(build_fx(state, now=NOW))
+
+    assert "estimated entry + exit" in rendered
+    assert "broker commissions" in rendered
+    assert "not all-in" in rendered
+
+
+def test_build_fx_without_cost_metadata_does_not_claim_broker_costs() -> None:
+    from trader.interfaces.cockpit.pages.portfolio import build_fx
+
+    state = {
+        "fx_rates": {"EUR": 1.1432},
+        "portfolio": {"holdings": [{"symbol": "AAPL", "quantity": 10.0}]},
+    }
+
+    rendered = _render(build_fx(state, now=NOW))
+
+    assert "cost coverage incomplete" in rendered
+    assert "estimated entry + exit broker commissions" not in rendered
 
 
 def test_build_fx_fallback_to_now_when_no_ts():
@@ -369,9 +415,59 @@ def test_build_closed_trades_footer_stats():
 
     rendered = _render(build_closed_trades(_STATE_BASE, now=NOW))
     assert "realized" in rendered
-    assert "fees" in rendered
+    assert "broker fees" in rendered
+    assert "not all-in" in rendered
     assert "trips" in rendered
     assert "8 trips" in rendered
+
+
+def test_build_closed_trades_without_fee_metric_does_not_invent_zero() -> None:
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    state = {"recent_trips": _STATE_BASE["recent_trips"], "attribution": {}}
+    rendered = _render(build_closed_trades(state, now=NOW))
+
+    assert "broker fees unavailable" in rendered
+    assert "broker fees $0" not in rendered
+
+
+def test_build_closed_trades_incomplete_shows_gross_not_zero_net() -> None:
+    from trader.interfaces.cockpit.pages.portfolio import build_closed_trades
+
+    state = {
+        "recent_trips": [
+            {
+                "symbol": "SPY",
+                "side": "LONG",
+                "gross_pnl": 10.0,
+                "commission": None,
+                "pnl": None,
+                "commission_quality": {
+                    "status": "unavailable",
+                    "reason": "commission_not_modeled",
+                    "reasons": ["commission_not_modeled"],
+                },
+            }
+        ],
+        "attribution": {
+            "n_closed_trades": 1,
+            "realized_gross_pnl": 10.0,
+            "realized_pnl": None,
+            "total_commissions": None,
+            "commission_quality": {
+                "status": "unavailable",
+                "reason": "commission_not_modeled",
+                "reasons": ["commission_not_modeled"],
+            },
+        },
+    }
+
+    rendered = _render(build_closed_trades(state, now=NOW))
+
+    assert "g +10" in rendered
+    assert "gross realized +$10" in rendered
+    assert "net/broker fees unavailable" in rendered
+    assert "+$0" not in rendered
 
 
 def test_build_closed_trades_attribution_fallback():
@@ -381,13 +477,18 @@ def test_build_closed_trades_attribution_fallback():
     state = {
         "attribution": {
             "realized_pnl": 120.0,
+            "realized_gross_pnl": 135.0,
             "total_commissions": 15.0,
+            "commission_quality": {"status": "available"},
             "n_closed_trades": 4,
             "recent_trips": [
                 {
                     "symbol": "XYZ",
                     "side": "SHORT",
+                    "gross_pnl": -19.0,
+                    "commission": 1.0,
                     "pnl": -20.0,
+                    "commission_quality": {"status": "available"},
                     "exit_ts": "2026-07-04T10:00:00+00:00",
                     "holding_minutes": 120.0,
                 }
@@ -405,10 +506,13 @@ def test_build_closed_trades_side_long():
 
     state = {
         "recent_trips": [
-            {
-                "symbol": "BNP",
-                "side": "LONG",
-                "pnl": 80.0,
+                {
+                    "symbol": "BNP",
+                    "side": "LONG",
+                    "gross_pnl": 81.0,
+                    "commission": 1.0,
+                    "pnl": 80.0,
+                    "commission_quality": {"status": "available"},
                 "exit_ts": "2026-07-05T14:00:00+00:00",
                 "holding_minutes": 90.0,
             }
@@ -702,6 +806,39 @@ def test_project_portfolio_positions_splits_long_and_short_exposure():
     assert projection.unrealized_total == 5.0
 
 
+def test_project_portfolio_positions_never_mixes_partial_net_with_gross():
+    from trader.interfaces.cockpit.projections.portfolio import (
+        project_portfolio_positions,
+    )
+
+    state = {
+        "portfolio": {
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 1,
+                    "last_price": 110.0,
+                    "unrealized_pnl": 100.0,
+                    "unrealized_pnl_net": 98.0,
+                },
+                {
+                    "symbol": "TSLA",
+                    "quantity": 1,
+                    "last_price": 110.0,
+                    "unrealized_pnl": 50.0,
+                },
+            ]
+        }
+    }
+
+    projection = project_portfolio_positions(state)
+
+    assert projection.unrealized_total == 150.0
+    assert projection.unrealized_basis == "gross"
+    assert projection.unrealized_net_coverage == 1
+    assert projection.unrealized_positions == 2
+
+
 def test_project_portfolio_positions_masque_les_residus_de_cloture_a_valeur_nulle():
     from trader.interfaces.cockpit.projections.portfolio import (
         project_portfolio_positions,
@@ -829,6 +966,50 @@ async def test_portfolio_page_update_state_with_data(tmp_path, monkeypatch):
         await pilot.pause()
         page = app.query_one("#portfolio-page", PortfolioPage)
         page.update_state(_STATE_BASE)   # Must not raise
+
+
+@pytest.mark.asyncio
+async def test_portfolio_footer_labels_partial_cost_coverage_as_gross(
+    tmp_path,
+    monkeypatch,
+):
+    from trader.interfaces.cockpit.app import CockpitApp
+    from trader.interfaces.cockpit.pages.portfolio import PortfolioPage
+
+    _patch_app(monkeypatch, tmp_path)
+    app = CockpitApp()
+    state = {
+        "portfolio": {
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 1,
+                    "last_price": 110.0,
+                    "unrealized_pnl": 100.0,
+                    "unrealized_pnl_net": 98.0,
+                },
+                {
+                    "symbol": "TSLA",
+                    "quantity": 1,
+                    "last_price": 110.0,
+                    "unrealized_pnl": 50.0,
+                },
+            ]
+        }
+    }
+    async with app.run_test(size=(200, 55)) as pilot:
+        await pilot.press("2")
+        await pilot.pause()
+        page = app.query_one("#portfolio-page", PortfolioPage)
+        page.update_state(state)
+        await pilot.pause()
+        rendered = app.query_one("#positions-footer").render()
+        plain = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+        assert "+150" in plain
+        assert "+148" not in plain
+        assert "gross" in plain
+        assert "net unavailable (1/2)" in plain
 
 
 @pytest.mark.asyncio

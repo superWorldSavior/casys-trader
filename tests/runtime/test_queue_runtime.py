@@ -504,3 +504,81 @@ def test_start_execute_queue_builds_shared_sqlite_stack(tmp_path: Path) -> None:
         }
     ]
     assert logger.infos == [("[queue_execute] pool démarré db=%s", FakeLedger.instances[0].path)]
+
+
+def test_start_execute_queue_stops_partially_started_pool_on_boot_failure(
+    tmp_path: Path,
+) -> None:
+    _reset_fakes()
+    events: list[str] = []
+
+    class FailingStartPool(FakePool):
+        def start(self) -> None:
+            events.append("execute_start")
+            raise RuntimeError("pool start failed")
+
+        def stop(self) -> None:
+            events.append("execute_stopped")
+
+    with pytest.raises(RuntimeError, match="pool start failed"):
+        queue_runtime.start_execute_queue(
+            enabled_raw=True,
+            state_backend="sqlite",
+            state_dir=tmp_path,
+            commission_model=object(),
+            logger=RecordingLogger(),
+            factories=queue_runtime.ExecuteQueueFactories(
+                open_state_db=lambda path: FakeDb(path),
+                sqlite_broker_cls=FakeBroker,
+                sqlite_plan_store_cls=FakePlanStore,
+                task_ledger_cls=FakeLedger,
+                resource_pools_cls=FakePools,
+                decide_pool_cls=FailingStartPool,
+                make_execute_order_handler=lambda **_kwargs: "handler",
+            ),
+        )
+
+    assert events == ["execute_start", "execute_stopped"]
+
+
+def test_start_queue_runtimes_stops_started_decide_pool_when_execute_boot_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+
+    class Pool:
+        def stop(self) -> None:
+            events.append("decide_stopped")
+
+    decide_runtime = queue_runtime.DecideQueueRuntime(
+        enabled=True,
+        ledger=object(),
+        pool=Pool(),
+    )
+    monkeypatch.setattr(
+        queue_runtime,
+        "start_decide_queue",
+        lambda **_kwargs: decide_runtime,
+    )
+
+    def fail_execute(**_kwargs):
+        events.append("execute_failed")
+        raise RuntimeError("execute boot failed")
+
+    monkeypatch.setattr(queue_runtime, "start_execute_queue", fail_execute)
+
+    with pytest.raises(RuntimeError, match="execute boot failed"):
+        queue_runtime.start_queue_runtimes(
+            state_dir=tmp_path,
+            decide_enabled=True,
+            decision_parallelism=2,
+            decision_batch_size=5,
+            default_decision_batch_size=5,
+            codex_client=object(),
+            execute_enabled_raw=True,
+            state_backend="sqlite",
+            commission_model=object(),
+        )
+
+    assert events == ["execute_failed", "decide_stopped"]

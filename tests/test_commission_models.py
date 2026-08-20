@@ -137,3 +137,110 @@ def test_us_symbol_still_uses_us_schedule() -> None:
 
     assert commission.currency == "USD"
     assert commission.model == "ibkr_us_stock_tiered"
+
+
+@pytest.mark.parametrize(
+    ("quantity", "price"),
+    [
+        (float("nan"), 200.0),
+        (float("inf"), 200.0),
+        (float("-inf"), 200.0),
+        (50.0, float("nan")),
+        (50.0, float("inf")),
+        (50.0, float("-inf")),
+    ],
+)
+def test_non_finite_order_inputs_fail_closed(
+    quantity: float,
+    price: float,
+) -> None:
+    commission = IbkrCommissionModel().calculate(
+        Order("AAPL", "BUY", quantity),
+        price,
+    )
+
+    assert commission.amount == 0.0
+    assert commission.model == "ibkr_invalid_order"
+
+
+@pytest.mark.parametrize(
+    ("quantity", "price", "expected"),
+    [
+        (0.5, 200.0, 1.0),  # 1% of USD 100 notionnel
+        (0.05, 15.0, 0.01),  # 1% of USD 0.75 falls below the USD 0.01 floor
+    ],
+)
+def test_us_fractional_orders_use_the_dedicated_ibkr_schedule(
+    quantity: float,
+    price: float,
+    expected: float,
+) -> None:
+    commission = IbkrCommissionModel().calculate(
+        Order("AAPL", "BUY", quantity),
+        price,
+    )
+
+    assert commission.amount == pytest.approx(expected)
+    assert commission.currency == "USD"
+    assert commission.model == "ibkr_us_fractional_stock"
+
+
+def test_us_mixed_order_prices_only_its_fractional_component_as_fractional() -> None:
+    model = IbkrCommissionModel()
+
+    whole = model.calculate(Order("AAPL", "BUY", 50.0), 200.0)
+    mixed = model.calculate(Order("AAPL", "BUY", 50.0001), 200.0)
+
+    # The USD 0.01 fractional minimum is added to the USD 0.35 whole-share
+    # component.  The full USD 10,000.02 notional must never be charged at 1%.
+    assert whole.amount == pytest.approx(0.35)
+    assert mixed.amount == pytest.approx(0.36)
+    assert mixed.amount - whole.amount == pytest.approx(0.01)
+    assert mixed.model == "ibkr_us_stock_tiered_mixed_fractional"
+
+
+@pytest.mark.parametrize("quantity", [249.9999999999, 250.0000000001])
+def test_us_binary_float_noise_around_integer_does_not_create_fractional_leg(
+    quantity: float,
+) -> None:
+    model = IbkrCommissionModel()
+
+    expected = model.calculate(Order("AAPL", "BUY", 250.0), 200.0)
+    noisy = model.calculate(Order("AAPL", "BUY", quantity), 200.0)
+
+    assert noisy.amount == pytest.approx(expected.amount)
+    assert noisy.model == "ibkr_us_stock_tiered"
+
+
+def test_us_mixed_order_131_319_is_sum_of_whole_and_fractional_components() -> None:
+    model = IbkrCommissionModel()
+    price = 76.15
+
+    mixed = model.calculate(Order("AAPL", "BUY", 131.319), price)
+    whole = model.calculate(Order("AAPL", "BUY", 131.0), price)
+    fractional = model.calculate(Order("AAPL", "BUY", 0.319), price)
+
+    assert mixed.amount == pytest.approx(whole.amount + fractional.amount)
+    assert mixed.amount < 1.0
+
+
+def test_spain_fractional_order_uses_published_fractional_minimum() -> None:
+    commission = IbkrCommissionModel().calculate(
+        Order("SAN.MC", "BUY", 0.5),
+        10.0,
+    )
+
+    assert commission.amount == pytest.approx(1.25)
+    assert commission.currency == "EUR"
+    assert commission.model == "ibkr_spain_stock_fixed_smartrouting_fractional"
+
+
+def test_spain_mixed_order_keeps_whole_share_minimum() -> None:
+    model = IbkrCommissionModel()
+
+    whole = model.calculate(Order("SAN.MC", "BUY", 50.0), 10.0)
+    mixed = model.calculate(Order("SAN.MC", "BUY", 50.0001), 10.0)
+
+    assert whole.amount == pytest.approx(3.0)
+    assert mixed.amount == pytest.approx(3.0)
+    assert mixed.model == "ibkr_spain_stock_fixed_smartrouting"

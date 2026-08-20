@@ -784,10 +784,13 @@ def test_load_runtime_state_inclut_recent_trips_depuis_attribution(tmp_path) -> 
 
     rows = [
         {"ts": "2026-06-15T10:00:00+00:00", "symbol": "AAPL", "action": "BUY",
-         "quantity": 1, "price": 180.0, "confidence": 0.7, "intent": "OPEN_LONG"},
+         "quantity": 1, "price": 180.0, "confidence": 0.7, "intent": "OPEN_LONG",
+         "commission": 0.0, "commission_currency": "USD",
+         "commission_model": "ibkr_us_stock_tiered"},
         {"ts": "2026-06-15T11:00:00+00:00", "symbol": "AAPL", "action": "SELL",
          "quantity": 1, "price": 185.0, "confidence": None, "intent": "PLANNED_EXIT",
-         "exit_reason": "take_profit:tp1"},
+         "exit_reason": "take_profit:tp1", "commission": 0.0,
+         "commission_currency": "USD", "commission_model": "ibkr_us_stock_tiered"},
     ]
     (tmp_path / "model_performance.jsonl").write_text(
         "\n".join(_json.dumps(row) for row in rows),

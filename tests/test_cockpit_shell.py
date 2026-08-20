@@ -23,6 +23,8 @@ from trader.interfaces.cockpit.derive import (
 )
 from trader.interfaces.cockpit.first_run import FirstRunScreen, preflight_checks
 from trader.interfaces.cockpit.modals import ConfirmKill, ConfirmStop, HelpOverlay
+from trader.interfaces.cockpit.pages.home import build_equity_summary
+from trader.interfaces.cockpit.pages.portfolio import build_exposure
 from trader.interfaces.cockpit.shell import (
     NavItem,
     build_footer,
@@ -189,6 +191,74 @@ def test_equity_snapshot_values():
     assert snap.cash_pct == pytest.approx(73.97, abs=0.1)
 
 
+def test_equity_snapshot_keeps_unknown_metrics_unknown() -> None:
+    snap = equity_snapshot({"portfolio": {"holdings": []}, "kpis": {}})
+
+    assert snap.equity is None
+    assert snap.cash is None
+    assert snap.cash_available is None
+    assert snap.cash_ledger is None
+    assert snap.cash_pct is None
+    assert snap.return_pct is None
+    assert snap.pnl_usd is None
+
+
+def test_equity_snapshot_preserves_real_zero_values() -> None:
+    snap = equity_snapshot(
+        {
+            "portfolio": {
+                "equity": 0.0,
+                "cash": 0.0,
+                "cash_available": 0.0,
+                "total_return_pct": 0.0,
+                "holdings": [],
+            },
+            "kpis": {"equity": 999.0, "cash": 888.0, "total_return": 0.5},
+            "starting_cash": 0.0,
+        }
+    )
+
+    assert snap.equity == 0.0
+    assert snap.cash == 0.0
+    assert snap.cash_ledger == 0.0
+    assert snap.return_pct == 0.0
+    assert snap.pnl_usd == 0.0
+    assert snap.cash_pct is None
+
+
+def test_equity_snapshot_and_kpi_never_mix_partial_net_with_gross() -> None:
+    state = {
+        "portfolio": {
+            "holdings": [
+                {
+                    "symbol": "AAPL",
+                    "quantity": 1,
+                    "unrealized_pnl": 100.0,
+                    "unrealized_pnl_net": 98.0,
+                },
+                {
+                    "symbol": "TSLA",
+                    "quantity": 1,
+                    "unrealized_pnl": 50.0,
+                },
+            ]
+        }
+    }
+
+    snap = equity_snapshot(state)
+    rendered = _render(build_kpi_band(state, now=NOW), width=220)
+
+    assert snap.unrealized == 150.0
+    assert snap.unrealized_basis == "gross"
+    assert snap.unrealized_net_coverage == 1
+    assert snap.unrealized_positions == 2
+    assert "+$150" in rendered
+    assert "+$148" not in rendered
+    assert "gross" in rendered
+    assert "net —" in rendered
+    assert "1/2" in rendered
+
+
 def test_cycle_progress_running():
     cycle = cycle_progress(_state_sample())
     assert cycle.running is True
@@ -266,6 +336,20 @@ def test_kpi_band_contents():
     assert "WORKERS" in rendered
     assert "2 active" in rendered
     assert "LLM" not in rendered
+
+
+def test_cockpit_equity_consumers_render_unknown_without_false_zero() -> None:
+    band = _render(build_kpi_band({}, now=NOW), width=160)
+    values = band.splitlines()[1]
+    summary = _render(build_equity_summary({}), width=80)
+    exposure_panel = _render(build_exposure({}), width=100)
+
+    assert values.lstrip().startswith("—")
+    assert "— —" in values
+    assert "— · cash free —" in summary
+    assert "$0" not in summary
+    assert "equity unavailable" in exposure_panel
+    assert "% of equity" not in exposure_panel
 
 
 def test_kpi_band_next_wake_uses_next_future_symbol_wake_when_global_expired():

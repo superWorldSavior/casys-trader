@@ -17,9 +17,12 @@ from trader.application.record.learning_outcomes import (
     realised_entry_outcomes,
     uses_realised_outcome,
 )
-from trader.infrastructure.files.model_performance_jsonl import JsonlModelPerformanceReader
 from trader.infrastructure.files import ledger_rotation
 from trader.infrastructure.state_db.learnings_store import LearningsStore
+from trader.reporting.read_models.trade_history import (
+    aggregate_position_cycles,
+    compute_round_trips,
+)
 from trader.runtime.protocols import LoggerLike
 
 
@@ -171,9 +174,23 @@ def _refresh_outcomes(
         and not uses_realised_outcome(row)
     ]
     bars_by_symbol, errors = _fetch_bars_by_symbol(mature_rows, now=now, get_bars=get_bars)
-    realised_returns = realised_entry_outcomes(
-        JsonlModelPerformanceReader(state_dir / "model_performance.jsonl")
-    )
+    try:
+        realised_cycles = aggregate_position_cycles(
+            compute_round_trips(state_dir, require_canonical=True)
+        )
+    except Exception as exc:  # noqa: BLE001 - advisory replay stays fail-soft
+        log.warning(
+            "[learnings_sync] canonical realised outcomes unavailable: %s",
+            exc,
+        )
+        errors.append(
+            {
+                "code": "canonical_trade_history_unavailable",
+                "detail": type(exc).__name__,
+            }
+        )
+        realised_cycles = []
+    realised_returns = realised_entry_outcomes(realised_cycles)
 
     note_updates: list[dict] = []
     for row in pending_notes:

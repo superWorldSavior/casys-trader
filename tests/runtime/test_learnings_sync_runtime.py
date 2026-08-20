@@ -8,10 +8,17 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pytest
 
+from trader.application.record.learning_outcomes import realised_entry_outcomes
 from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.domain.market_data import Bar
 from trader.domain.situation import NewsMacroBrief
+from trader.infrastructure.state_db.connection import open_state_db
 from trader.infrastructure.state_db.learnings_store import LearningsStore
+from trader.infrastructure.state_db.migrations import import_broker_from_json
+from trader.reporting.read_models.trade_history import (
+    aggregate_position_cycles,
+    compute_round_trips,
+)
 from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
 from trader.runtime.learnings_sync_runtime import (
     LearningSyncRunner,
@@ -46,6 +53,41 @@ def _bars(start: datetime, *, initial: float = 100.0, final: float = 102.0) -> l
 def _write_jsonl(path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _replace_canonical_fills(state_dir, rows: list[dict]) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    db = open_state_db(state_dir / "casys.db")
+    import_broker_from_json(
+        db,
+        state_dir / "_absent_broker.json",
+        starting_cash=100_000.0,
+    )
+    with db.transaction() as cur:
+        cur.execute("DELETE FROM broker_fills")
+        cur.executemany(
+            """
+            INSERT INTO broker_fills(
+                symbol, side, quantity, price, ts, commission,
+                commission_currency, commission_model, fx_rate, decision_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row.get("symbol"),
+                    row.get("side") or row.get("action"),
+                    row.get("quantity"),
+                    row.get("price"),
+                    row.get("ts"),
+                    row.get("commission"),
+                    row.get("commission_currency"),
+                    row.get("commission_model"),
+                    row.get("fx_rate"),
+                    row.get("decision_id"),
+                )
+                for row in rows
+            ],
+        )
 
 
 def test_historical_outcome_lookback_uses_provider_supported_windows() -> None:
@@ -162,13 +204,12 @@ def test_opening_learning_stays_pending_until_its_lot_is_fully_closed(tmp_path) 
             "note": "breakout entry",
         }],
     )
-    _write_jsonl(
-        state_dir / "model_performance.jsonl",
-        [
-            {"ts": started.isoformat(), "symbol": "SPY", "action": "BUY", "quantity": 10, "price": 100, "commission": 1, "fx_rate": 1, "decision_id": decision_id},
-            {"ts": (started + timedelta(days=1)).isoformat(), "symbol": "SPY", "action": "SELL", "quantity": 4, "price": 110, "commission": 0.4, "fx_rate": 1, "decision_id": "exit-1"},
-        ],
-    )
+    performance_rows = [
+            {"ts": started.isoformat(), "symbol": "SPY", "action": "BUY", "quantity": 10, "price": 100, "commission": 1, "commission_model": "ibkr_us_stock_tiered", "commission_currency": "USD", "fx_rate": 1, "decision_id": decision_id},
+            {"ts": (started + timedelta(days=1)).isoformat(), "symbol": "SPY", "action": "SELL", "quantity": 4, "price": 110, "commission": 0.4, "commission_model": "ibkr_us_stock_tiered", "commission_currency": "USD", "fx_rate": 1, "decision_id": "exit-1"},
+    ]
+    _write_jsonl(state_dir / "model_performance.jsonl", performance_rows)
+    _replace_canonical_fills(state_dir, performance_rows)
 
     first = run_learning_sync(
         state_dir=state_dir,
@@ -180,8 +221,10 @@ def test_opening_learning_stays_pending_until_its_lot_is_fully_closed(tmp_path) 
     )
     assert first["outcomes"]["notes_updated"] == 0
 
+    final_exit = {"ts": (started + timedelta(days=2)).isoformat(), "symbol": "SPY", "action": "SELL", "quantity": 6, "price": 105, "commission": 0.6, "commission_model": "ibkr_us_stock_tiered", "commission_currency": "USD", "fx_rate": 1, "decision_id": "exit-2"}
     with (state_dir / "model_performance.jsonl").open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"ts": (started + timedelta(days=2)).isoformat(), "symbol": "SPY", "action": "SELL", "quantity": 6, "price": 105, "commission": 0.6, "fx_rate": 1, "decision_id": "exit-2"}) + "\n")
+        fh.write(json.dumps(final_exit) + "\n")
+    _replace_canonical_fills(state_dir, [*performance_rows, final_exit])
     second = run_learning_sync(
         state_dir=state_dir,
         now=started + timedelta(days=4),
@@ -290,7 +333,7 @@ def test_sync_scores_hold_candidate_with_portfolio_snapshot_from_ledger(tmp_path
     assert forward_return == pytest.approx(0.03)
 
 
-def test_v2_migration_replays_executed_opening_from_realised_lot(tmp_path) -> None:
+def test_v3_migration_replays_executed_opening_from_realised_lot(tmp_path) -> None:
     state_dir = tmp_path / "state"
     started = datetime(2026, 7, 1, 10, tzinfo=UTC)
     decision_id = "2026-07-01T10:00:00+00:00|0|SPY"
@@ -308,9 +351,7 @@ def test_v2_migration_replays_executed_opening_from_realised_lot(tmp_path) -> No
         state_dir / "decisions.jsonl",
         [{**learning, "cycle_ts": learning["ts"]}],
     )
-    _write_jsonl(
-        state_dir / "model_performance.jsonl",
-        [
+    performance_rows = [
             {
                 "ts": started.isoformat(),
                 "symbol": "SPY",
@@ -318,6 +359,8 @@ def test_v2_migration_replays_executed_opening_from_realised_lot(tmp_path) -> No
                 "quantity": 10,
                 "price": 100,
                 "commission": 1,
+                "commission_model": "ibkr_us_stock_tiered",
+                "commission_currency": "USD",
                 "fx_rate": 1,
                 "decision_id": decision_id,
             },
@@ -328,11 +371,14 @@ def test_v2_migration_replays_executed_opening_from_realised_lot(tmp_path) -> No
                 "quantity": 10,
                 "price": 110,
                 "commission": 1,
+                "commission_model": "ibkr_us_stock_tiered",
+                "commission_currency": "USD",
                 "fx_rate": 1,
                 "decision_id": "exit",
             },
-        ],
-    )
+    ]
+    _write_jsonl(state_dir / "model_performance.jsonl", performance_rows)
+    _replace_canonical_fills(state_dir, performance_rows)
     store = LearningsStore(state_dir / "learnings.db")
     store.ingest_jsonl(state_dir / "learnings.jsonl", source="runtime")
     note_id = store._conn.execute("SELECT id FROM notes").fetchone()[0]
@@ -341,9 +387,12 @@ def test_v2_migration_replays_executed_opening_from_realised_lot(tmp_path) -> No
         "verdict": "LOSS",
         "forward_return": -0.05,
     }])
-    store._conn.execute("UPDATE notes SET outcome_semantics_version=1")
+    store._conn.execute("UPDATE notes SET outcome_semantics_version=2")
     store._conn.execute(
-        "DELETE FROM learnings_metadata WHERE key='outcome_semantics_version'"
+        """
+        UPDATE learnings_metadata SET value='2'
+        WHERE key='outcome_semantics_version'
+        """
     )
     store._conn.commit()
     store.close()
@@ -369,6 +418,165 @@ def test_v2_migration_replays_executed_opening_from_realised_lot(tmp_path) -> No
     assert row[0] == "WIN"
     assert row[1] == pytest.approx(0.098)
     assert row[2] == BENCHMARK_SEMANTICS_VERSION
+
+
+def test_v3_migration_keeps_opening_pending_when_sqlite_fees_are_unavailable(
+    tmp_path,
+) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    decision_id = "fee-unavailable-entry"
+    learning = {
+        "decision_id": decision_id,
+        "ts": started.isoformat(),
+        "symbol": "SPY",
+        "action": "BUY",
+        "intent": "OPEN_LONG",
+        "executed": True,
+        "note": "must remain pending without proven broker fees",
+    }
+    _write_jsonl(state_dir / "learnings.jsonl", [learning])
+    canonical_rows = [
+        {
+            "ts": started.isoformat(),
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1,
+            "price": 100,
+            "commission": 0.0,
+            "commission_model": "none",
+            "commission_currency": "USD",
+            "fx_rate": 1.0,
+        },
+        {
+            "ts": (started + timedelta(days=1)).isoformat(),
+            "symbol": "SPY",
+            "action": "SELL",
+            "quantity": 1,
+            "price": 110,
+            "commission": 0.0,
+            "commission_model": "none",
+            "commission_currency": "USD",
+            "fx_rate": 1.0,
+        },
+    ]
+    _replace_canonical_fills(state_dir, canonical_rows)
+    # Exact execution matches may contribute decision metadata only.  Their
+    # optimistic economics must never override the SQLite broker ledger.
+    _write_jsonl(
+        state_dir / "model_performance.jsonl",
+        [
+            {
+                **canonical_rows[0],
+                "decision_id": decision_id,
+                "commission": 0.35,
+                "commission_model": "ibkr_us_stock_tiered",
+            },
+            {
+                **canonical_rows[1],
+                "decision_id": "fee-unavailable-exit",
+                "commission": 0.35,
+                "commission_model": "ibkr_us_stock_tiered",
+            },
+        ],
+    )
+
+    store = LearningsStore(state_dir / "learnings.db")
+    store.ingest_jsonl(state_dir / "learnings.jsonl", source="runtime")
+    note_id = int(store._conn.execute("SELECT id FROM notes").fetchone()[0])
+    store.update_note_outcomes(
+        [{"id": note_id, "verdict": "WIN", "forward_return": 0.10}]
+    )
+    store._conn.execute(
+        """
+        UPDATE notes
+        SET outcome_semantics_version=2, q_value=0.7, q_updates=4
+        """
+    )
+    store._conn.execute(
+        """
+        UPDATE learnings_metadata SET value='2'
+        WHERE key='outcome_semantics_version'
+        """
+    )
+    store._conn.commit()
+    store.close()
+
+    result = run_learning_sync(
+        state_dir=state_dir,
+        now=started + timedelta(days=3),
+        get_bars=None,
+        include_outcomes=True,
+        apply_bootstrap=False,
+        api_key="",
+    )
+
+    conn = sqlite3.connect(state_dir / "learnings.db")
+    row = conn.execute(
+        """
+        SELECT verdict, forward_return, outcome_semantics_version,
+               q_value, q_updates
+        FROM notes
+        """
+    ).fetchone()
+    conn.close()
+    assert result["outcomes"]["notes_updated"] == 0
+    assert row == (None, None, None, 0.0, 0)
+
+
+def test_realised_outcome_uses_sqlite_fx_not_divergent_projection(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    started = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    canonical_rows = [
+        {
+            "ts": started.isoformat(),
+            "symbol": "AIR.PA",
+            "action": "BUY",
+            "quantity": 10,
+            "price": 100,
+            "commission": 1.0,
+            "commission_model": "ibkr_europe_stock_tiered",
+            "commission_currency": "EUR",
+            "fx_rate": 1.1,
+        },
+        {
+            "ts": (started + timedelta(days=1)).isoformat(),
+            "symbol": "AIR.PA",
+            "action": "SELL",
+            "quantity": 10,
+            "price": 110,
+            "commission": 1.0,
+            "commission_model": "ibkr_europe_stock_tiered",
+            "commission_currency": "EUR",
+            "fx_rate": 1.2,
+        },
+    ]
+    _replace_canonical_fills(state_dir, canonical_rows)
+    _write_jsonl(
+        state_dir / "model_performance.jsonl",
+        [
+            {
+                **canonical_rows[0],
+                "decision_id": "eur-entry",
+                "fx_rate": 8.0,
+                "commission": 99.0,
+            },
+            {
+                **canonical_rows[1],
+                "decision_id": "eur-exit",
+                "fx_rate": 9.0,
+                "commission": 99.0,
+            },
+        ],
+    )
+
+    outcomes = realised_entry_outcomes(
+        aggregate_position_cycles(
+            compute_round_trips(state_dir, require_canonical=True)
+        )
+    )
+
+    assert outcomes == {"eur-entry": pytest.approx(217.7 / 1_100.0)}
 
 
 def test_sync_rejects_legacy_bootstrap_without_blocking_live_maintenance(tmp_path) -> None:

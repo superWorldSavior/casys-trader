@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -216,6 +217,8 @@ def test_commande_trader_joint_mandate_ref_et_round_trips(tmp_path: Path, capsys
                 "quantity": 10,
                 "price": 100.0,
                 "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
                 "fx_rate": 1,
                 "decision_id": "d-air",
             },
@@ -226,6 +229,8 @@ def test_commande_trader_joint_mandate_ref_et_round_trips(tmp_path: Path, capsys
                 "quantity": 10,
                 "price": 110.0,
                 "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
                 "fx_rate": 1,
                 "decision_id": "d-air-x",
             },
@@ -236,6 +241,8 @@ def test_commande_trader_joint_mandate_ref_et_round_trips(tmp_path: Path, capsys
                 "quantity": 5,
                 "price": 200.0,
                 "commission": 0,
+                "commission_currency": "USD",
+                "commission_model": "ibkr_us_stock_tiered",
                 "fx_rate": 1,
                 "decision_id": "d-spy",
             },
@@ -246,6 +253,8 @@ def test_commande_trader_joint_mandate_ref_et_round_trips(tmp_path: Path, capsys
                 "quantity": 5,
                 "price": 190.0,
                 "commission": 0,
+                "commission_currency": "USD",
+                "commission_model": "ibkr_us_stock_tiered",
                 "fx_rate": 1,
                 "decision_id": "d-spy-x",
             },
@@ -278,15 +287,326 @@ def test_commande_trader_joint_mandate_ref_et_round_trips(tmp_path: Path, capsys
     assert payload["with_mandate_ref"]["n"] == 1
     assert payload["with_mandate_ref"]["win_rate"] == 1.0
     assert payload["with_mandate_ref"]["net_pnl"] == 100.0
+    assert payload["with_mandate_ref"]["gross_pnl"] == 100.0
+    assert payload["with_mandate_ref"]["economics_quality"]["status"] == "complete"
     assert payload["without_mandate_ref"]["n"] == 1
     assert payload["without_mandate_ref"]["win_rate"] == 0.0
     assert payload["without_mandate_ref"]["net_pnl"] == -50.0
-    assert payload["by_family"] == [
-        {"family": "eu_industrials", "n": 1, "win_rate": 1.0, "net_pnl": 100.0}
-    ]
-    assert payload["by_role"] == [
-        {"role": "core_candidate", "n": 1, "win_rate": 1.0, "net_pnl": 100.0}
-    ]
+    assert payload["by_family"][0]["family"] == "eu_industrials"
+    assert payload["by_family"][0]["win_rate"] == 1.0
+    assert payload["by_family"][0]["net_pnl"] == 100.0
+    assert payload["by_family"][0]["gross_pnl"] == 100.0
+    assert payload["by_role"][0]["role"] == "core_candidate"
+    assert payload["by_role"][0]["win_rate"] == 1.0
+    assert payload["by_role"][0]["net_pnl"] == 100.0
+    assert payload["by_role"][0]["gross_pnl"] == 100.0
+
+
+def test_commande_trader_garde_le_brut_et_explicite_le_net_indisponible(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _write_jsonl(
+        tmp_path / "decisions.jsonl",
+        [
+            {
+                "decision_id": "d-air",
+                "cycle_ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "executed": True,
+                "mandate_ref": {"mandate_id": "m-eu", "venue": "EU"},
+            }
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "quantity": 1,
+                "price": 100.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "none",
+                "fx_rate": 1,
+                "decision_id": "d-air",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 1,
+                "price": 110.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "none",
+                "fx_rate": 1,
+                "decision_id": "d-air-x",
+            },
+        ],
+    )
+
+    assert main(["trader", "--state-dir", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    stats = payload["with_mandate_ref"]
+    assert stats["n"] == 1
+    assert stats["gross_pnl"] == 10.0
+    assert stats["net_pnl"] is None
+    assert stats["win_rate"] is None
+    assert stats["economics_quality"] == {
+        "status": "incomplete",
+        "reason": "commission_or_net_economics_incomplete",
+        "models": ["none"],
+        "reasons": ["commission_not_modeled"],
+        "trips": 1,
+        "net_known": 0,
+        "net_unknown": 1,
+        "gross_known": 1,
+        "gross_unknown": 0,
+        "gross_pnl_available": True,
+        "commission_and_net_available": False,
+    }
+
+
+def test_commande_trader_agrege_les_sorties_partielles_en_un_cycle(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _write_jsonl(
+        tmp_path / "decisions.jsonl",
+        [
+            {
+                "decision_id": "d-partial",
+                "cycle_ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "executed": True,
+                "mandate_ref": {"mandate_id": "m-eu", "venue": "EU"},
+            }
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "quantity": 2,
+                "price": 100.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+                "decision_id": "d-partial",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 1,
+                "price": 90.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+            },
+            {
+                "ts": "2026-06-05T12:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 1,
+                "price": 120.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+            },
+        ],
+    )
+
+    assert main(["trader", "--state-dir", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["with_mandate_ref"]["n"] == 1
+    assert payload["with_mandate_ref"]["win_rate"] == 1.0
+    assert payload["with_mandate_ref"]["net_pnl"] == 10.0
+    assert payload["with_mandate_ref"]["economics_quality"]["net_known"] == 1
+
+
+def test_commande_trader_lit_une_decision_archivee_gzip(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    archived_decision = {
+        "decision_id": "d-archive",
+        "cycle_ts": "2026-06-05T10:00:00+00:00",
+        "symbol": "AIR.PA",
+        "action": "BUY",
+        "executed": True,
+        "mandate_ref": {"mandate_id": "m-archive", "venue": "EU"},
+    }
+    with gzip.open(
+        archive_dir / "decisions-2026-06.jsonl.gz",
+        "wt",
+        encoding="utf-8",
+    ) as handle:
+        handle.write(json.dumps(archived_decision) + "\n")
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "quantity": 1,
+                "price": 100.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+                "decision_id": "d-archive",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 1,
+                "price": 110.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+            },
+        ],
+    )
+
+    assert main(["trader", "--state-dir", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["with_mandate_ref"]["n"] == 1
+    assert payload["without_mandate_ref"]["n"] == 0
+    assert payload["unattributed"]["n"] == 0
+    assert payload["decision_rows_quality"] == {
+        "status": "available",
+        "reason": None,
+        "source": None,
+        "rows_requested": 1,
+        "rows_found": 1,
+        "rows_missing": 0,
+        "duplicate_rows": 0,
+    }
+
+
+def test_commande_trader_deduplique_et_prefere_la_decision_live(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    archived = {
+        "decision_id": "d-duplicate",
+        "cycle_ts": "2026-06-05T10:00:00+00:00",
+        "symbol": "AIR.PA",
+        "action": "BUY",
+        "executed": True,
+        "mandate_ref": {"mandate_id": "m-old", "venue": "EU"},
+    }
+    with gzip.open(
+        archive_dir / "decisions-2026-06.jsonl.gz",
+        "wt",
+        encoding="utf-8",
+    ) as handle:
+        handle.write(json.dumps(archived) + "\n")
+    live = {**archived}
+    live.pop("mandate_ref")
+    _write_jsonl(tmp_path / "decisions.jsonl", [live])
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "quantity": 1,
+                "price": 100.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+                "decision_id": "d-duplicate",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 1,
+                "price": 110.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+            },
+        ],
+    )
+
+    assert main(["trader", "--state-dir", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["with_mandate_ref"]["n"] == 0
+    assert payload["without_mandate_ref"]["n"] == 1
+    assert payload["decision_rows_quality"]["duplicate_rows"] == 1
+
+
+def test_commande_trader_reste_fail_soft_sur_archive_decisions_corrompue(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    (archive_dir / "decisions-2026-06.jsonl.gz").write_bytes(b"not-a-gzip")
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            {
+                "ts": "2026-06-05T10:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "BUY",
+                "quantity": 1,
+                "price": 100.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+                "decision_id": "d-corrupt",
+            },
+            {
+                "ts": "2026-06-05T11:00:00+00:00",
+                "symbol": "AIR.PA",
+                "action": "SELL",
+                "quantity": 1,
+                "price": 110.0,
+                "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
+                "fx_rate": 1,
+            },
+        ],
+    )
+
+    assert main(["trader", "--state-dir", str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["decision_rows_quality"]["status"] == "unavailable"
+    assert payload["decision_rows_quality"]["reason"] == ("decision_ledger_unreadable")
+    assert payload["with_mandate_ref"]["n"] == 0
+    assert payload["without_mandate_ref"]["n"] == 0
+    assert payload["unattributed"]["n"] == 1
 
 
 def test_commande_trader_sortie_lisible(tmp_path: Path, capsys) -> None:
@@ -313,6 +633,8 @@ def test_commande_trader_sortie_lisible(tmp_path: Path, capsys) -> None:
                 "quantity": 1,
                 "price": 100.0,
                 "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
                 "fx_rate": 1,
                 "decision_id": "d-air",
             },
@@ -323,6 +645,8 @@ def test_commande_trader_sortie_lisible(tmp_path: Path, capsys) -> None:
                 "quantity": 1,
                 "price": 110.0,
                 "commission": 0,
+                "commission_currency": "EUR",
+                "commission_model": "ibkr_europe_stock_tiered",
                 "fx_rate": 1,
                 "decision_id": "d-air-x",
             },

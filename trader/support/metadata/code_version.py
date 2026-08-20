@@ -50,7 +50,24 @@ def current_code_version(repo_root: str | Path) -> dict[str, Any]:
     if commit is None:
         return unknown_code_version()
 
-    dirty_files = [line for line in (status or "").splitlines() if line.strip()]
+    # An unavailable status is not an empty status.  Conflating the two would
+    # certify a clean cohort after a timeout, a git error, or an unreadable
+    # worktree.  Keep the known commit for audit display, but make cleanliness
+    # explicitly unknown so experiment attribution fails closed.
+    if status is None:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "source": "git",
+            "git_commit": commit,
+            "git_commit_short": short or commit[:12],
+            "git_commit_date": commit_date,
+            "git_branch": branch,
+            "git_dirty": None,
+            "git_tracked_dirty": None,
+            "git_dirty_files": [],
+        }
+
+    dirty_files = [line for line in status.splitlines() if line.strip()]
     tracked_dirty_files = [
         line for line in dirty_files if not line.startswith("?? ")
     ]

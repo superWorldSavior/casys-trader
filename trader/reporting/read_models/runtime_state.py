@@ -64,28 +64,20 @@ def _format_datetime(value: Any) -> str:
 
 
 def _load_equity_curve(history_path: Path) -> list[float]:
-    """Lit les points d'équité non nuls depuis history.jsonl, sans lever."""
-    if not history_path.exists():
-        return []
-    values: list[float] = []
+    """Lit uniquement la courbe certifiée par l'autorité KPI, sans lever."""
     try:
-        lines = history_path.read_text(encoding="utf-8").splitlines()
+        from trader.reporting.read_models.live_kpis import read_equity_curve
+
+        curve, _quality = read_equity_curve(history_path.parent)
+        values: list[float] = []
+        for _ts, equity in curve:
+            parsed = _safe_float(equity, default=None)
+            if parsed is None:
+                return []
+            values.append(parsed)
+        return values
     except Exception:
         return []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(row, dict) or row.get("equity") is None:
-            continue
-        equity = _safe_float(row.get("equity"), default=None)
-        if equity is not None:
-            values.append(equity)
-    return values
 
 
 def _compute_live_kpis_safe(state_dir: Path) -> dict:

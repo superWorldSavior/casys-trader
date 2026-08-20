@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -77,8 +78,18 @@ def _build_positions_panel(
         avg = _safe_float(h.get("avg_price"), default=0.0) or 0.0
         last = _safe_float(h.get("last_price"), default=0.0) or 0.0
         gross_pnl = _safe_float(h.get("unrealized_pnl"), default=0.0) or 0.0
-        net_pnl = _safe_float(h.get("unrealized_pnl_net"), default=None)
-        round_trip_fee = _safe_float(h.get("round_trip_fee"), default=None)
+        net_pnl = _safe_float(
+            h.get("unrealized_pnl_after_broker_fees"),
+            default=None,
+        )
+        if net_pnl is None:
+            net_pnl = _safe_float(h.get("unrealized_pnl_net"), default=None)
+        round_trip_fee = _safe_float(
+            h.get("round_trip_broker_fee"),
+            default=None,
+        )
+        if round_trip_fee is None:
+            round_trip_fee = _safe_float(h.get("round_trip_fee"), default=None)
         pnl = net_pnl if net_pnl is not None else gross_pnl
         fx_rate = _safe_float(h.get("fx_rate"), default=1.0) or 1.0
         notional = abs(avg * qty * fx_rate)
@@ -88,9 +99,13 @@ def _build_positions_panel(
         if net_pnl is not None and round_trip_fee is not None:
             pnl_text.append("\n")
             pnl_text.append(
-                f"brut {gross_pnl:+,.2f} · frais {_fmt_fee_cost(round_trip_fee)}",
+                f"brut {gross_pnl:+,.2f} · frais {_fmt_fee_cost(round_trip_fee)} "
+                "(entrée + sortie estimées; hors taxes/place)",
                 style=palette["dim"],
             )
+        elif net_pnl is None:
+            pnl_text.append("\n")
+            pnl_text.append("brut · net indisponible", style=palette["dim"])
 
         mkt_cell = _market_badge(symbol, open_venues, palette)
 
@@ -165,40 +180,91 @@ def _confidence_bar(
     )
 
 
+def _commission_metrics_available(row: Mapping[str, object], *fields: str) -> bool:
+    quality = row.get("commission_quality")
+    return (
+        isinstance(quality, Mapping)
+        and quality.get("status") == "available"
+        and all(_safe_float(row.get(field), default=None) is not None for field in fields)
+    )
+
+
+def _commission_quality_label(row: Mapping[str, object]) -> str:
+    quality = row.get("commission_quality")
+    if not isinstance(quality, Mapping):
+        return "qualité commissions indisponible"
+    counts = quality.get("counts")
+    detail = ""
+    if isinstance(counts, Mapping):
+        unavailable = int(counts.get("unavailable") or 0)
+        total = int(counts.get("total") or 0)
+        detail = f" {unavailable}/{total}" if total else ""
+    reasons = quality.get("reasons")
+    reason_values = (
+        [str(value) for value in reasons if str(value)]
+        if isinstance(reasons, list)
+        else []
+    )
+    if not reason_values and quality.get("reason"):
+        reason_values = [str(quality["reason"])]
+    suffix = f" ({', '.join(reason_values)})" if reason_values else ""
+    return f"commissions incomplètes{detail}{suffix}"
+
+
 def _build_attribution_panel(
     attribution: dict, *, palette: Palette = PALETTE_DARK
 ) -> Panel:
-    realized_pnl = _safe_float(attribution.get("realized_pnl"), default=0.0) or 0.0
+    economics_available = _commission_metrics_available(
+        attribution,
+        "realized_pnl",
+        "total_commissions",
+    )
+    realized_pnl = _safe_float(attribution.get("realized_pnl"), default=None)
     total_commissions = _safe_float(attribution.get("total_commissions"), default=None)
     realized_gross_pnl = _safe_float(attribution.get("realized_gross_pnl"), default=None)
-    pnl_style = (
-        palette["pnl_positive"] if realized_pnl >= 0 else palette["pnl_negative"]
+    summary = Text()
+    summary.append("Trades clôturés : ", style="bold")
+    summary.append(
+        _fmt_int(attribution.get("n_closed_trades")),
+        style=palette["kpi_default"],
     )
-    realized_detail_parts: list[str] = []
-    if total_commissions is not None:
-        realized_detail_parts.append(f"dont frais {_fmt_fee_cost(total_commissions)}")
-    if realized_gross_pnl is not None:
-        realized_detail_parts.append(f"brut {_fmt_signed_money(realized_gross_pnl)}")
-    realized_detail = (
-        f" ({' · '.join(realized_detail_parts)})"
-        if realized_detail_parts
-        else ""
+    if economics_available and realized_pnl is not None:
+        pnl_style = (
+            palette["pnl_positive"]
+            if realized_pnl >= 0
+            else palette["pnl_negative"]
+        )
+        summary.append("   P&L net courtage USD : ", style="bold")
+        summary.append(_fmt_signed_money(realized_pnl), style=pnl_style)
+        detail_parts = [
+            f"dont frais {_fmt_fee_cost(total_commissions)}",
+            "hors taxes/place",
+        ]
+        if realized_gross_pnl is not None:
+            detail_parts.insert(
+                0, f"brut {_fmt_signed_money(realized_gross_pnl)}"
+            )
+        summary.append(f" ({' · '.join(detail_parts)})", style=palette["dim"])
+        summary.append("   Win rate net : ", style="bold")
+        summary.append(
+            _fmt_percent(attribution.get("win_rate")),
+            style=palette["kpi_default"],
+        )
+    else:
+        summary.append("   P&L brut réalisé USD : ", style="bold")
+        summary.append(
+            _fmt_signed_money(realized_gross_pnl, default="—"),
+            style=palette["kpi_default"],
+        )
+        summary.append("   Net courtage / win rate : indisponibles", style=palette["dim"])
+        summary.append("\n")
+        summary.append(_commission_quality_label(attribution), style=palette["dim"])
+    summary.append("   Détention moy. : ", style="bold")
+    summary.append(
+        _fmt_number(attribution.get("avg_holding_minutes"), 1),
+        style=palette["kpi_default"],
     )
-    summary = Text.assemble(
-        ("Trades clôturés : ", "bold"),
-        (_fmt_int(attribution.get("n_closed_trades")), palette["kpi_default"]),
-        ("   P&L réalisé USD : ", "bold"),
-        (_fmt_signed_money(realized_pnl), pnl_style),
-        (realized_detail, palette["dim"]),
-        ("   Win rate : ", "bold"),
-        (_fmt_percent(attribution.get("win_rate")), palette["kpi_default"]),
-        ("   Détention moy. : ", "bold"),
-        (
-            _fmt_number(attribution.get("avg_holding_minutes"), 1),
-            palette["kpi_default"],
-        ),
-        (" min", palette["dim"]),
-    )
+    summary.append(" min", style=palette["dim"])
 
     confidence_rows = _safe_list_of_dicts(attribution.get("by_confidence"))
     confidence_table = Table.grid(expand=True)
@@ -207,17 +273,32 @@ def _build_attribution_panel(
     confidence_table.add_column(ratio=3, justify="right")
     if confidence_rows:
         for row in confidence_rows:
-            pnl = _safe_float(row.get("total_pnl"), default=0.0) or 0.0
-            row_pnl_style = (
-                palette["pnl_positive"] if pnl >= 0 else palette["pnl_negative"]
-            )
+            row_available = _commission_metrics_available(row, "total_pnl")
+            pnl = _safe_float(row.get("total_pnl"), default=None)
+            gross = _safe_float(row.get("total_gross_pnl"), default=None)
+            if row_available and pnl is not None:
+                bar = _confidence_bar(row.get("win_rate"), pnl, palette=palette)
+                label = (
+                    f"n={_fmt_int(row.get('n'))}  "
+                    f"win={_fmt_percent(row.get('win_rate'))}  "
+                    f"net USD {_fmt_signed_money(pnl)}"
+                )
+                row_pnl_style = (
+                    palette["pnl_positive"]
+                    if pnl >= 0
+                    else palette["pnl_negative"]
+                )
+            else:
+                bar = Text("qualité indisponible", style=palette["dim"])
+                label = (
+                    f"n={_fmt_int(row.get('n'))}  win=—  "
+                    f"brut USD {_fmt_signed_money(gross, default='—')} · net —"
+                )
+                row_pnl_style = palette["dim"]
             confidence_table.add_row(
                 Text(str(row.get("bucket", "—")), style="bold"),
-                _confidence_bar(row.get("win_rate"), pnl, palette=palette),
-                Text(
-                    f"n={_fmt_int(row.get('n'))}  win={_fmt_percent(row.get('win_rate'))}  P&L USD {_fmt_signed_money(pnl)}",
-                    style=row_pnl_style,
-                ),
+                bar,
+                Text(label, style=row_pnl_style),
             )
     else:
         confidence_table.add_row(Text("—", style=palette["dim"]), Text(""), Text(""))
@@ -233,19 +314,30 @@ def _build_attribution_panel(
     exit_table.add_column("Raison")
     exit_table.add_column("n", justify="right")
     exit_table.add_column("Win", justify="right")
-    exit_table.add_column("P&L USD", justify="right")
+    exit_table.add_column("Net / brut USD", justify="right")
     if exit_rows:
         for row in exit_rows:
-            pnl = _safe_float(row.get("total_pnl"), default=0.0) or 0.0
+            row_available = _commission_metrics_available(row, "total_pnl")
+            pnl = _safe_float(row.get("total_pnl"), default=None)
+            gross = _safe_float(row.get("total_gross_pnl"), default=None)
+            display_value = pnl if row_available else gross
             exit_table.add_row(
                 str(row.get("reason", "—")),
                 _fmt_int(row.get("n")),
-                _fmt_percent(row.get("win_rate")),
+                _fmt_percent(row.get("win_rate")) if row_available else "—",
                 Text(
-                    _fmt_signed_money(pnl),
-                    style=palette["pnl_positive"]
-                    if pnl >= 0
-                    else palette["pnl_negative"],
+                    (
+                        f"net {_fmt_signed_money(pnl)}"
+                        if row_available and pnl is not None
+                        else f"brut {_fmt_signed_money(gross, default='—')} · net —"
+                    ),
+                    style=(
+                        palette["pnl_positive"]
+                        if display_value is not None and display_value >= 0
+                        else palette["pnl_negative"]
+                        if display_value is not None
+                        else palette["dim"]
+                    ),
                 ),
             )
     else:
@@ -345,12 +437,17 @@ def build_closed_trades_table(
     PURE — ne lit aucun fichier. Tolère les trips incomplets ou corrompus.
     """
     table = Table(title="Sorties / Trades clôturés", show_lines=False, expand=True)
+    table.caption = (
+        "Net USD seulement si les commissions broker sont complètes; "
+        "sinon brut USD · hors taxes/place · jamais all-in"
+    )
+    table.caption_style = palette["dim"]
     table.add_column("Heure", no_wrap=True, style=palette["dim"])
     table.add_column("Nom·Ticker", style="bold")
     table.add_column("Dev.", no_wrap=True)
     table.add_column("Sens")
     table.add_column("Entrée→Sortie natif", justify="right")
-    table.add_column("Net USD", justify="right")
+    table.add_column("Net USD / brut", justify="right")
     table.add_column("Raison")
     table.add_column("Durée", justify="right")
 
@@ -369,13 +466,20 @@ def build_closed_trades_table(
             )
         )
 
+        row_available = _commission_metrics_available(trip, "pnl", "commission")
         pnl_value = _safe_float(trip.get("pnl"), default=None)
-        if pnl_value is None:
-            pnl_cell = Text("—", style=palette["dim"])
+        gross_pnl = _safe_float(trip.get("gross_pnl"), default=None)
+        if not row_available or pnl_value is None:
+            pnl_cell = Text("net —", style=palette["dim"])
+            if gross_pnl is not None:
+                pnl_cell.append("\n")
+                pnl_cell.append(
+                    f"brut {_fmt_signed_money(gross_pnl)} · frais indisponibles",
+                    style=palette["dim"],
+                )
         else:
             pnl_style = palette["pnl_positive"] if pnl_value >= 0 else palette["pnl_negative"]
             pnl_cell = Text(_fmt_signed_money(pnl_value, default="—"), style=pnl_style)
-            gross_pnl = _safe_float(trip.get("gross_pnl"), default=None)
             commission = _safe_float(trip.get("commission"), default=None)
             detail_parts: list[str] = []
             if gross_pnl is not None:
@@ -418,6 +522,7 @@ def compute_realized_pnl_by_fill(fills: list[dict]) -> list[float | None]:
     """
     avg_cost: dict[str, float] = {}
     qty: dict[str, float] = {}
+    commission_complete: dict[str, bool] = {}
     result: list[float | None] = []
 
     for fill in fills:
@@ -425,15 +530,26 @@ def compute_realized_pnl_by_fill(fills: list[dict]) -> list[float | None]:
         side = str(fill.get("side") or "")
         fill_qty = _safe_float(fill.get("quantity"), default=0.0) or 0.0
         fill_price = _safe_float(fill.get("price"), default=0.0) or 0.0
-        commission = _safe_float(fill.get("commission"), default=0.0) or 0.0
+        commission = _safe_float(fill.get("commission"), default=None)
+        row_commission_complete = commission is not None and commission >= 0.0
+        commission_for_math = commission if row_commission_complete else 0.0
 
         if side == "BUY":
             old_qty = qty.get(symbol, 0.0)
             old_avg = avg_cost.get(symbol, 0.0)
+            if old_qty <= 0.0:
+                commission_complete[symbol] = True
+            commission_complete[symbol] = (
+                commission_complete.get(symbol, True) and row_commission_complete
+            )
             total_qty = old_qty + fill_qty
             if total_qty > 0:
                 # Commission intégrée dans le coût de base
-                new_avg = (old_qty * old_avg + fill_qty * fill_price + commission) / total_qty
+                new_avg = (
+                    old_qty * old_avg
+                    + fill_qty * fill_price
+                    + commission_for_math
+                ) / total_qty
             else:
                 new_avg = fill_price
             avg_cost[symbol] = new_avg
@@ -442,14 +558,21 @@ def compute_realized_pnl_by_fill(fills: list[dict]) -> list[float | None]:
 
         elif side == "SELL":
             cost = avg_cost.get(symbol)
-            if cost is None:
+            economics_available = (
+                commission_complete.get(symbol, False)
+                and row_commission_complete
+            )
+            if cost is None or not economics_available:
                 # Vente sans achat préalable connu → pas de crash
                 result.append(None)
             else:
-                net = (fill_price - cost) * fill_qty - commission
+                net = (fill_price - cost) * fill_qty - commission_for_math
                 # Décrémenter la quantité (coût moyen inchangé)
-                qty[symbol] = max(0.0, qty.get(symbol, 0.0) - fill_qty)
                 result.append(net)
+            qty[symbol] = max(0.0, qty.get(symbol, 0.0) - fill_qty)
+            if qty[symbol] <= 0.0:
+                avg_cost.pop(symbol, None)
+                commission_complete.pop(symbol, None)
 
         else:
             # Side inconnu → None

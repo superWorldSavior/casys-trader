@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from trader.domain import decision_reason
 
-BENCHMARK_SEMANTICS_VERSION = 2
+BENCHMARK_SEMANTICS_VERSION = 3
 
 _MACHINE_SOURCES = {"infra", "infra_hold"}
 _MACHINE_REASONS = {

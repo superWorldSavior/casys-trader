@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable, Mapping
 
 from trader.reporting.read_models.trade_history import (
+    _read_decision_rows_by_id,
     aggregate_position_cycles,
     compute_round_trips,
 )
@@ -23,19 +23,49 @@ _LEVELS = (
 )
 
 
-def _read_decision_rows(state_dir: Path) -> list[dict]:
-    path = state_dir / "decisions.jsonl"
-    if not path.exists():
-        return []
-    rows: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
+def _entry_decision_ids(trips: Iterable[Mapping[str, object]]) -> frozenset[str]:
+    decision_ids: set[str] = set()
+    for trip in trips:
+        values = trip.get("entry_decision_ids")
+        row_ids: set[str] = set()
+        if isinstance(values, list):
+            row_ids.update(str(value) for value in values if str(value))
+        if not row_ids and trip.get("entry_decision_id"):
+            row_ids.add(str(trip["entry_decision_id"]))
+        decision_ids.update(row_ids)
+    return frozenset(decision_ids)
+
+
+def _read_decision_rows(
+    state_dir: Path,
+    *,
+    decision_ids: frozenset[str],
+) -> tuple[list[dict], dict]:
+    """Read only referenced IDs across gzip archives and the live ledger."""
+
+    rows_by_id, source_quality = _read_decision_rows_by_id(
+        state_dir,
+        decision_ids=decision_ids,
+    )
+    rows = [values[-1] for values in rows_by_id.values() if values]
+    missing = sorted(decision_ids - rows_by_id.keys())
+    duplicate_rows = sum(max(0, len(values) - 1) for values in rows_by_id.values())
+    quality = {
+        **source_quality,
+        "rows_requested": len(decision_ids),
+        "rows_found": len(rows),
+        "rows_missing": len(missing),
+        "duplicate_rows": duplicate_rows,
+    }
+    if quality.get("status") == "available" and missing:
+        quality.update(
+            {
+                "status": "unavailable",
+                "reason": "decision_history_rows_missing",
+                "missing_decision_ids": missing,
+            }
+        )
+    return rows, quality
 
 
 def _text(value: object) -> str:
@@ -134,6 +164,7 @@ def build_confidence_calibration_from_rows(
     decision_rows: Iterable[Mapping[str, object]],
     *,
     min_cohort_size: int = 20,
+    decision_rows_quality: Mapping[str, object] | None = None,
 ) -> dict:
     """Build calibrated cohorts without inferring historical entry regimes."""
 
@@ -145,9 +176,57 @@ def build_confidence_calibration_from_rows(
         if row.get("decision_id")
     }
     observations: list[dict] = []
-    for trip in aggregate_position_cycles(trips):
-        confidence = trip.get("entry_confidence")
+    commission_reasons: Counter[str] = Counter()
+    commission_models: Counter[str] = Counter()
+    cycles = aggregate_position_cycles(trips)
+    commission_available = 0
+    for trip in cycles:
+        commission_quality = trip.get("commission_quality")
         pnl = trip.get("pnl")
+        pnl_is_finite = (
+            isinstance(pnl, (int, float))
+            and not isinstance(pnl, bool)
+            and math.isfinite(float(pnl))
+        )
+        row_commission_available = (
+            isinstance(commission_quality, Mapping)
+            and commission_quality.get("status") == "available"
+            and pnl_is_finite
+        )
+        if row_commission_available:
+            commission_available += 1
+        else:
+            reasons = (
+                commission_quality.get("reasons")
+                if isinstance(commission_quality, Mapping)
+                else None
+            )
+            row_reasons = (
+                [str(value) for value in reasons if str(value)]
+                if isinstance(reasons, list)
+                else []
+            )
+            if not row_reasons and isinstance(commission_quality, Mapping):
+                reason = str(commission_quality.get("reason") or "").strip()
+                if reason:
+                    row_reasons = [reason]
+            if not row_reasons:
+                row_reasons = [
+                    "commission_economic_fields_invalid"
+                    if isinstance(commission_quality, Mapping)
+                    and commission_quality.get("status") == "available"
+                    else "commission_quality_missing"
+                ]
+            commission_reasons.update(set(row_reasons))
+            if isinstance(commission_quality, Mapping):
+                models = commission_quality.get("models")
+                if isinstance(models, list):
+                    commission_models.update(
+                        {str(value) for value in models if str(value)}
+                    )
+            continue
+
+        confidence = trip.get("entry_confidence")
         if not isinstance(confidence, (int, float)) or not isinstance(
             pnl, (int, float)
         ):
@@ -208,15 +287,84 @@ def build_confidence_calibration_from_rows(
             tuple(item["dimensions"].values()),
         ),
     )
+    commission_unavailable = len(cycles) - commission_available
+    aggregate_commission_quality = {
+        "status": (
+            "available" if commission_unavailable == 0 else "unavailable"
+        ),
+        "reason": (
+            None
+            if commission_unavailable == 0
+            else (
+                next(iter(commission_reasons))
+                if len(commission_reasons) == 1
+                else "multiple_commission_quality_failures"
+            )
+        ),
+        "counts": {
+            "total": len(cycles),
+            "available": commission_available,
+            "unavailable": commission_unavailable,
+        },
+        "models": sorted(commission_models),
+        "model_counts": dict(sorted(commission_models.items())),
+        "reasons": sorted(commission_reasons),
+        "reason_counts": dict(sorted(commission_reasons.items())),
+    }
+    decisions_quality = dict(
+        decision_rows_quality
+        or {
+            "status": "available",
+            "reason": None,
+            "rows_total": len(decisions_by_id),
+            "rows_valid": len(decisions_by_id),
+            "rows_invalid": 0,
+        }
+    )
+    quality_reasons = [
+        reason
+        for reason in (
+            aggregate_commission_quality.get("reason"),
+            decisions_quality.get("reason"),
+        )
+        if reason
+    ]
+    decision_ledger_unreadable = decisions_quality.get("reason") in {
+        "decision_ledger_malformed",
+        "decision_ledger_unreadable",
+    }
+    if not quality_reasons:
+        calibration_status = "available"
+    elif decision_ledger_unreadable:
+        calibration_status = "unavailable"
+    elif observations:
+        calibration_status = "partial"
+    else:
+        calibration_status = "unavailable"
     return {
         "n": len(observations),
         "min_cohort_size": min_cohort_size,
         "cohorts": ordered_metrics,
         "fallbacks": assignments,
+        "quality": {
+            "status": calibration_status,
+            "reason": (
+                None
+                if not quality_reasons
+                else (
+                    quality_reasons[0]
+                    if len(set(quality_reasons)) == 1
+                    else "multiple_calibration_quality_failures"
+                )
+            ),
+        },
+        "commission_quality": aggregate_commission_quality,
+        "decision_rows_quality": decisions_quality,
         "policy": {
             "levels": ["+".join(level) if level else "all" for level in _LEVELS],
             "historical_missing_dimensions": _UNKNOWN,
             "outcome": "flat_to_flat_net_pnl_positive",
+            "incomplete_commission_cycles": "excluded",
         },
     }
 
@@ -227,10 +375,16 @@ def build_confidence_calibration(
     min_cohort_size: int = 20,
 ) -> dict:
     state_path = Path(state_dir)
+    trips = compute_round_trips(state_path)
+    decision_rows, decision_rows_quality = _read_decision_rows(
+        state_path,
+        decision_ids=_entry_decision_ids(trips),
+    )
     return build_confidence_calibration_from_rows(
-        compute_round_trips(state_path),
-        _read_decision_rows(state_path),
+        trips,
+        decision_rows,
         min_cohort_size=min_cohort_size,
+        decision_rows_quality=decision_rows_quality,
     )
 
 
@@ -251,6 +405,9 @@ def compact_confidence_calibration(
         "n": int(calibration.get("n") or 0),
         "min_cohort_size": calibration.get("min_cohort_size"),
         "cohorts": selected,
+        "quality": calibration.get("quality"),
+        "commission_quality": calibration.get("commission_quality"),
+        "decision_rows_quality": calibration.get("decision_rows_quality"),
         "detail_scope": "confidence_calibration",
     }
 

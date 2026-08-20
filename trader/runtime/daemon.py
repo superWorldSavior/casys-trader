@@ -20,6 +20,7 @@ import os
 import signal
 import sqlite3
 import time
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,6 +130,7 @@ from trader.runtime.state_writer import RuntimeStateWriter
 from trader.application.portfolio import snapshot as portfolio
 from trader.application.execute.fee_estimate import (
     UNAVAILABLE_COMMISSION_MODELS,
+    cost_scope_for,
     round_trip_cost,
 )
 from trader.application.execute.protocols import CommissionModel
@@ -154,6 +156,7 @@ log = logging.getLogger("casys-trader")
 # de logguer la même erreur indéfiniment. Réinitialisable dans les tests.
 _RECALL_STORE_FAILED: bool = False
 
+
 def evaluate_plan(*args: object, **kwargs: object) -> object:
     """Legacy daemon monkeypatch hook for planned-exit evaluation."""
     return planned_exits_service.evaluate_plan(*args, **kwargs)
@@ -167,6 +170,123 @@ def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
     partagé et peut être plus sélectif. Retourne None s'il n'y a rien à signaler.
     """
     return gross_feedback.summarize_gross_rejections(decisions)
+
+
+def _capture_experiment_runtime_identity() -> dict[str, object]:
+    """Freeze code, preset and effective model profiles for this process."""
+
+    router = llm.build_default_router_from_env(spark_model=codex_client.DEFAULT_MODEL)
+    return {
+        "code_version": code_version.current_code_version(ROOT),
+        "model_preset": experiment_metadata.active_model_preset(ROOT / ".env"),
+        "model_profiles": experiment_metadata.model_profiles_from_backends(
+            router.backends,
+            repo_root=ROOT,
+        ),
+    }
+
+
+def _experiment_runtime_identity_issues(
+    captured: Mapping[str, object],
+) -> list[str]:
+    """Detect on-disk drift without ever adopting it as the process identity."""
+
+    issues: list[str] = []
+    captured_code = captured.get("code_version")
+    captured_code = captured_code if isinstance(captured_code, Mapping) else {}
+    current_code = code_version.current_code_version(ROOT)
+    current_commit = str(current_code.get("git_commit") or "").strip()
+    captured_commit = str(captured_code.get("git_commit") or "").strip()
+    if not current_commit or current_code.get("git_tracked_dirty") is None:
+        issues.append("runtime.code_version:unverifiable_since_boot")
+    else:
+        if current_commit != captured_commit:
+            issues.append("runtime.git_commit:changed_since_boot")
+        if current_code.get("git_tracked_dirty") is not False:
+            issues.append("runtime.git_tracked_worktree:changed_since_boot")
+
+    captured_preset = str(captured.get("model_preset") or "").strip()
+    current_preset = experiment_metadata.active_model_preset(ROOT / ".env")
+    if current_preset is None:
+        issues.append("runtime.model_preset:unverifiable_since_boot")
+    elif current_preset != captured_preset:
+        issues.append("runtime.model_preset:changed_since_boot")
+
+    captured_profiles = captured.get("model_profiles")
+    try:
+        current_router = llm.build_default_router_from_env(
+            spark_model=codex_client.DEFAULT_MODEL
+        )
+        current_profiles = experiment_metadata.model_profiles_from_backends(
+            current_router.backends,
+            repo_root=ROOT,
+        )
+    except Exception:  # noqa: BLE001 - runtime drift must fail closed, never crash a cycle
+        current_profiles = None
+    if (
+        current_profiles is None
+        or not isinstance(captured_profiles, Mapping)
+        or current_profiles != dict(captured_profiles)
+    ):
+        issues.append("runtime.model_profiles:changed_or_unverifiable_since_boot")
+    return issues
+
+
+class _ClaimedDaemonResources:
+    """Track post-PID-claim resources so failed boots unwind like live loops."""
+
+    def __init__(self) -> None:
+        self.pid_file: Path | None = None
+        self.pid: int | None = None
+        self.release_pid_file: Callable[..., None] | None = None
+        self.data_source_handle: object | None = None
+        self.learning_sync_runner: object | None = None
+        self.company_intelligence_runner: object | None = None
+        self.universe_intelligence_runner: object | None = None
+        self.news_macro_runner: object | None = None
+        self.decide_pool: object | None = None
+        self.execute_pool: object | None = None
+        self._shutdown = False
+
+    def arm(
+        self,
+        *,
+        pid_file: Path,
+        pid: int,
+        release_pid_file: Callable[..., None],
+    ) -> None:
+        self.pid_file = pid_file
+        self.pid = pid
+        self.release_pid_file = release_pid_file
+
+    def shutdown(self, *, data_source: object | None = None) -> None:
+        if (
+            self._shutdown
+            or self.pid_file is None
+            or self.pid is None
+            or self.release_pid_file is None
+        ):
+            return
+        self._shutdown = True
+        if self.data_source_handle is not None:
+            try:
+                self.data_source_handle.set(None)
+            except Exception:  # noqa: BLE001 - cleanup remains best-effort
+                pass
+        runtime_shutdown.shutdown_runtime_resources(
+            learning_sync_runner=self.learning_sync_runner,
+            company_intelligence_runner=self.company_intelligence_runner,
+            universe_intelligence_runner=self.universe_intelligence_runner,
+            news_macro_runner=self.news_macro_runner,
+            decide_pool=self.decide_pool,
+            execute_pool=self.execute_pool,
+            data_source=data_source,
+            pid_file=self.pid_file,
+            pid=self.pid,
+            disconnect_quietly=_disconnect_quietly,
+            release_pid_file=self.release_pid_file,
+            logger=log,
+        )
 
 
 # Barres fines (15m) pour coller à la cadence scalping (réveils 5-30 min) et avoir
@@ -194,12 +314,36 @@ def _llm_gate_store():
     return try_open_llm_gate_store(STATE_DIR, CANONICAL_STATE_BACKEND)
 
 
-def _hydrate_last_llm_at(process_state: CycleProcessState) -> None:
-    """Recharge ``last_llm_at`` depuis casys.db (no-op si backend != sqlite)."""
+def _hydrate_llm_gate_state(process_state: CycleProcessState) -> None:
+    """Recharge l'état de revue complet (no-op si backend != sqlite)."""
     store = _llm_gate_store()
     if store is None:
         return
-    process_state.last_llm_at.update(store.load_all())
+    snapshot = store.load_state()
+    process_state.last_llm_at.update(snapshot.last_llm_at)
+    process_state.last_wake_reasons.update(snapshot.last_wake_reasons)
+    process_state.last_wake_fingerprints.update(snapshot.last_wake_fingerprints)
+
+
+def _hydrate_last_llm_at(process_state: CycleProcessState) -> None:
+    """Compatibility alias for the former timestamp-only hydrator."""
+    _hydrate_llm_gate_state(process_state)
+
+
+def _load_meta_performance_payload() -> dict:
+    """Keep this advisory read model from terminating a trading cycle."""
+    try:
+        return meta_performance.compute_meta_performance(STATE_DIR)
+    except Exception as exc:  # noqa: BLE001 - advisory projection is fail-soft
+        log.warning(
+            "[meta_performance] projection indisponible (%s)",
+            type(exc).__name__,
+        )
+        return {
+            "available": False,
+            "reason": "meta_performance_projection_error",
+            "detail": type(exc).__name__,
+        }
 
 
 # Intervalle fin pour les checks de sortie (stop/TP/trailing).
@@ -574,6 +718,7 @@ def run_cycle(
     worker_cycle_context: object | None = None,
     process_state: CycleProcessState | None = None,
     process_pilot: ProcessPilot | None = None,
+    experiment_runtime_identity: Mapping[str, object] | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     process_state = process_state or _DEFAULT_CYCLE_PROCESS_STATE
@@ -658,16 +803,38 @@ def run_cycle(
     # (stop optionnel, position bornée par les seuls fusibles notionnels). Défaut
     # True = guardrail D6 préservé (live-safe). Voir spec exploration-basse-confiance.
     require_hard_stop = bool(risk_cfg.get("require_hard_stop", True))
-    runtime_code_version = code_version.current_code_version(ROOT)
+    captured_runtime_identity = (
+        experiment_runtime_identity
+        if experiment_runtime_identity is not None
+        else _capture_experiment_runtime_identity()
+    )
+    captured_code_version = captured_runtime_identity.get("code_version")
+    runtime_code_version = (
+        dict(captured_code_version)
+        if isinstance(captured_code_version, Mapping)
+        else code_version.unknown_code_version()
+    )
+    captured_model_profiles = captured_runtime_identity.get("model_profiles")
     runtime_experiment_context = experiment_metadata.build_experiment_context(
         code_version=runtime_code_version,
-        model_preset=experiment_metadata.active_model_preset(ROOT / ".env"),
+        model_preset=(
+            str(captured_runtime_identity.get("model_preset") or "").strip()
+            or None
+        ),
         risk_policy={
             **asdict(gate.limits),
             "require_hard_stop": require_hard_stop,
         },
         commission_model=experiment_metadata.commission_model_identity(
             commission_model
+        ),
+        model_profiles=(
+            captured_model_profiles
+            if isinstance(captured_model_profiles, Mapping)
+            else {}
+        ),
+        runtime_issues=_experiment_runtime_identity_issues(
+            captured_runtime_identity
         ),
     )
     mem = agent_memory.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
@@ -843,6 +1010,9 @@ def run_cycle(
         broker, prices, rate_of=snapshot.try_rate_for_symbol
     )
     portfolio_fee_estimator = _build_portfolio_fee_estimator(commission_model)
+    portfolio_fee_cost_scope, portfolio_fee_is_all_in = cost_scope_for(
+        commission_model
+    )
 
     active_families = family_regime.families_for_universe(tradable_symbols)
     # Coût de transaction injecté dans le cockpit : break-even (bps) + coût
@@ -965,7 +1135,7 @@ def run_cycle(
                 "confidence_calibration": confidence_calibration_payload,
             },
         )
-    meta_performance_payload = meta_performance.compute_meta_performance(STATE_DIR)
+    meta_performance_payload = _load_meta_performance_payload()
     if _recall_store is not None:
         try:
             # Make the rules actually projected into this cycle citeable.  This
@@ -986,6 +1156,8 @@ def run_cycle(
         symbols=symbols,
         snap=snap,
         portfolio_fee_estimator=portfolio_fee_estimator,
+        portfolio_fee_estimator_cost_scope=portfolio_fee_cost_scope,
+        portfolio_fee_estimator_is_all_in=portfolio_fee_is_all_in,
         risk_cfg=risk_cfg,
         prices=prices,
         broker=broker,
@@ -1049,7 +1221,11 @@ def run_cycle(
         "indicator_triggers": indicator_triggers,
         "wake_reasons": wake_reasons,
         "decisions": [],
-        "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
+        "portfolio": snap.as_context(
+            fee_estimator=portfolio_fee_estimator,
+            fee_estimator_cost_scope=portfolio_fee_cost_scope,
+            fee_estimator_is_all_in=portfolio_fee_is_all_in,
+        ),
         "prices": {s: round(p, 4) for s, p in prices.items()},
         "stale_market_data": stale_market_data,
         "fx_rates": fx_rate_by_ccy,
@@ -1062,7 +1238,11 @@ def run_cycle(
 
     def refresh_report_portfolio() -> None:
         latest = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
-        report["portfolio"] = latest.as_context(fee_estimator=portfolio_fee_estimator)
+        report["portfolio"] = latest.as_context(
+            fee_estimator=portfolio_fee_estimator,
+            fee_estimator_cost_scope=portfolio_fee_cost_scope,
+            fee_estimator_is_all_in=portfolio_fee_is_all_in,
+        )
 
     _write_current_report(report)
     mandate_txt, memory_txt = mem.read_mandate(), mem.read_memory()
@@ -1472,15 +1652,20 @@ def run_cycle(
             continue
         decision = decisions_by_symbol.get(sym)
         if decision is not None and decision_entries.counts_as_llm_review(decision):
-            process_state.last_llm_at[(str(STATE_DIR), sym)] = now
+            key = (str(STATE_DIR), sym)
+            wake_reasons = quiet_gate.persistent_reasons.get(sym, ())
+            wake_fingerprints = dict(quiet_gate.persistent_fingerprints.get(sym, {}))
             if llm_gate_store is not None:
-                llm_gate_store.record(str(STATE_DIR), sym, now)
-            process_state.last_wake_reasons[(str(STATE_DIR), sym)] = (
-                quiet_gate.persistent_reasons.get(sym, ())
-            )
-            process_state.last_wake_fingerprints[(str(STATE_DIR), sym)] = dict(
-                quiet_gate.persistent_fingerprints.get(sym, {})
-            )
+                llm_gate_store.record(
+                    str(STATE_DIR),
+                    sym,
+                    now,
+                    wake_reasons=wake_reasons,
+                    wake_fingerprints=wake_fingerprints,
+                )
+            process_state.last_llm_at[key] = now
+            process_state.last_wake_reasons[key] = wake_reasons
+            process_state.last_wake_fingerprints[key] = wake_fingerprints
 
     report["model_calls_used"] = model_calls_used
     if process_pilot is not None:
@@ -1654,7 +1839,21 @@ def main(
     *,
     now_fn: Callable[[], datetime] | None = None,
     sleep_fn: Callable[[float], None] | None = None,
-) -> None:
+    _claimed_resources: _ClaimedDaemonResources | None = None,
+) -> int | None:
+    if _claimed_resources is None:
+        claimed_resources = _ClaimedDaemonResources()
+        try:
+            return main(
+                argv,
+                now_fn=now_fn,
+                sleep_fn=sleep_fn,
+                _claimed_resources=claimed_resources,
+            )
+        finally:
+            claimed_resources.shutdown()
+    claimed_resources = _claimed_resources
+
     # Charge le .env AVANT l'argparse pour que les defaults _env_int/_env
     # (CASYS_DECISION_BATCH_PARALLELISM, etc.) le voient. override=False ⇒
     # une var déjà posée en CLI/inline reste prioritaire.
@@ -1688,17 +1887,25 @@ def main(
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     news_feed.set_default_news_archive(STATE_DIR / "news_items")
     _pid_file = STATE_DIR / "daemon.pid"
-    if not claim_pid_file(pid_file=_pid_file, pid=os.getpid()):
-        log.error("daemon déjà vivant (pid file %s) — refus de démarrer un doublon", _pid_file)
-        return 1
 
-    # SIGTERM (systemd stop, kill) doit dérouler le finally comme le SIGINT du
-    # superviseur : sans handler Python termine net — pools non joints, WAL non
-    # flushé, pid file jamais libéré.
+    # Installer SIGTERM avant le claim : claim_pid_file peut avoir publié notre
+    # PID juste avant d'être interrompu. Le handler Python garantit alors le
+    # passage par le finally externe et la libération ownership-safe du fichier.
     def _sigterm_to_exit(signum: int, frame: object) -> None:  # noqa: ARG001
         raise SystemExit(143)
 
     signal.signal(signal.SIGTERM, _sigterm_to_exit)
+
+    # Armer avant le claim ferme aussi la fenêtre où claim_pid_file aurait écrit
+    # notre PID puis levé : release_pid_file reste ownership-safe si le claim est refusé.
+    claimed_resources.arm(
+        pid_file=_pid_file,
+        pid=os.getpid(),
+        release_pid_file=release_pid_file,
+    )
+    if not claim_pid_file(pid_file=_pid_file, pid=os.getpid()):
+        log.error("daemon déjà vivant (pid file %s) — refus de démarrer un doublon", _pid_file)
+        return 1
 
     # Bootstrap ordonné AVANT toute lecture d'état ou rotation runtime :
     # rotation mensuelle JSONL, bootstrap SQLite canonique, puis scheduler.
@@ -1729,8 +1936,9 @@ def main(
     )
     bootstrap = args.bootstrap_all
     process_state = _DEFAULT_CYCLE_PROCESS_STATE
-    _hydrate_last_llm_at(process_state)
+    _hydrate_llm_gate_state(process_state)
     cycle_run = run_cycle
+    experiment_runtime_identity = _capture_experiment_runtime_identity()
 
     def _run_cycle_with_process_state(**kwargs):
         return cycle_run(
@@ -1742,12 +1950,14 @@ def main(
     # Ref partagée vers le data_source courant : les workers de file la lisent via
     # make_indirect_get_bars(handle.get) — jamais de capture de l'objet (remplacé en run).
     _ds_handle = data_source_runtime.DataSourceHandle()
+    claimed_resources.data_source_handle = _ds_handle
     _worker_cycle_context = worker_cycle_context_runtime.WorkerCycleContextHandle()
     _learning_sync_runner = learnings_sync_runtime.LearningSyncRunner(
         state_dir=STATE_DIR,
         get_bars=make_indirect_get_bars(_ds_handle.get),
         logger=log,
     )
+    claimed_resources.learning_sync_runner = _learning_sync_runner
 
     # Services du tour d'outils grain-1 (spec queue tool-round §4, issue #2) :
     # construits au boot, consommés par le handler decide quand agent_tools_enabled.
@@ -1783,9 +1993,15 @@ def main(
     _queue_execute_enabled = _queue_runtimes.execute.enabled
     _execute_ledger = _queue_runtimes.execute.ledger
     _execute_pool = _queue_runtimes.execute.pool
+    claimed_resources.decide_pool = _decide_pool
+    claimed_resources.execute_pool = _execute_pool
     _news_macro_runner = news_macro_runtime.NewsMacroAnalysisRunner()
+    claimed_resources.news_macro_runner = _news_macro_runner
     _universe_intelligence_runner = (
         universe_intelligence_runtime.UniverseIntelligenceRunner()
+    )
+    claimed_resources.universe_intelligence_runner = (
+        _universe_intelligence_runner
     )
 
     def _on_macro_briefs_written(events: tuple[dict, ...]) -> None:
@@ -1815,6 +2031,9 @@ def main(
         state_dir=STATE_DIR,
         logger=log,
         on_brief_written=_on_company_brief_written,
+    )
+    claimed_resources.company_intelligence_runner = (
+        _company_intelligence_runner
     )
     _company_intelligence_runner.trigger(
         scope="current",
@@ -1973,6 +2192,7 @@ def main(
                     queue_execute_enabled=_queue_execute_enabled,
                     execute_ledger=_execute_ledger,
                     worker_cycle_context=_worker_cycle_context,
+                    experiment_runtime_identity=experiment_runtime_identity,
                 )
                 if not due_symbols and not protection_cycle_due:
                     wait = sched.seconds_until_wake(symbols)
@@ -2085,21 +2305,7 @@ def main(
         # successeur, cf bug Maj+X cockpit).
         # Le handle est invalidé AVANT le disconnect : un worker retardataire lit
         # None (-> unavailable) plutôt qu'une source déconnectée.
-        _ds_handle.set(None)
-        runtime_shutdown.shutdown_runtime_resources(
-            learning_sync_runner=_learning_sync_runner,
-            company_intelligence_runner=_company_intelligence_runner,
-            universe_intelligence_runner=_universe_intelligence_runner,
-            news_macro_runner=_news_macro_runner,
-            decide_pool=_decide_pool,
-            execute_pool=_execute_pool,
-            data_source=data_source,
-            pid_file=_pid_file,
-            pid=os.getpid(),
-            disconnect_quietly=_disconnect_quietly,
-            release_pid_file=release_pid_file,
-            logger=log,
-        )
+        claimed_resources.shutdown(data_source=data_source)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from typing import ClassVar
 
 from trader.domain.contracts import Commission, CommissionModelName, Order
 from trader.domain.market import fx
@@ -26,9 +28,15 @@ _EUR_TIERED_SUFFIXES = frozenset(
 _NORDIC_TIERED_SUFFIXES = frozenset({".CO", ".OL", ".ST"})
 _TAIWAN_TIERED_SUFFIXES = frozenset({".T", ".TW", ".TWO"})
 _UNAVAILABLE_MODEL = "ibkr_unpriced_venue"
+_INTEGER_QUANTITY_ABS_TOLERANCE = 1e-9
 
 
 class NoCommissionModel:
+    # Explicitly describes the completeness of projections built from this
+    # model.  Zero configured commission is not an all-in transaction cost.
+    cost_scope: ClassVar[str] = "no_commission_model"
+    cost_estimate_is_all_in: ClassVar[bool] = False
+
     def calculate(self, order: Order, price: float) -> Commission:
         return Commission(amount=0.0)
 
@@ -41,9 +49,14 @@ class IbkrCommissionModel:
     venue/regulatory pass-through fees or taxes (notably Taiwan sell tax).
     """
 
+    cost_scope: ClassVar[str] = "broker_commission_only"
+    cost_estimate_is_all_in: ClassVar[bool] = False
+
     us_stock_per_share: float = 0.0035
     us_stock_min_per_order: float = 0.35
     us_stock_max_trade_value_pct: float = 0.01
+    us_fractional_trade_value_pct: float = 0.01
+    us_fractional_min_per_order: float = 0.01
     fx_bps: float = 0.20
     fx_min_per_order: float = 2.0
     index_cfd_rate: float = 0.0001
@@ -61,9 +74,28 @@ class IbkrCommissionModel:
 
     def calculate(self, order: Order, price: float) -> Commission:
         symbol = order.symbol.upper()
-        quantity = abs(float(order.quantity))
-        notional = abs(quantity * float(price))
-        if quantity <= 0.0 or price <= 0.0:
+        try:
+            quantity = abs(float(order.quantity))
+            price_value = float(price)
+        except (TypeError, ValueError):
+            return Commission(amount=0.0, model="ibkr_invalid_order")
+        if (
+            not math.isfinite(quantity)
+            or quantity <= 0.0
+            or not math.isfinite(price_value)
+            or price_value <= 0.0
+        ):
+            return Commission(amount=0.0, model="ibkr_invalid_order")
+        nearest_integer = round(quantity)
+        if math.isclose(
+            quantity,
+            nearest_integer,
+            rel_tol=0.0,
+            abs_tol=_INTEGER_QUANTITY_ABS_TOLERANCE,
+        ):
+            quantity = float(nearest_integer)
+        notional = quantity * price_value
+        if not math.isfinite(notional):
             return Commission(amount=0.0, model="ibkr_invalid_order")
 
         if symbol.endswith("=X"):
@@ -104,13 +136,25 @@ class IbkrCommissionModel:
                 model="ibkr_europe_stock_tiered",
             )
         if suffix == ".MC":
+            # IBKR publishes the lower EUR 1.25 minimum for a fractional-share
+            # trade.  A mixed order still contains whole shares and must not
+            # gain the lower minimum merely because its quantity has decimals.
+            is_fractional_order = 0.0 < quantity < 1.0
             return Commission(
                 amount=max(
                     notional * self.europe_stock_rate,
-                    self.spain_stock_min_per_order,
+                    (
+                        self.europe_stock_min_per_order
+                        if is_fractional_order
+                        else self.spain_stock_min_per_order
+                    ),
                 ),
                 currency=fx.currency_for(symbol),
-                model="ibkr_spain_stock_fixed_smartrouting",
+                model=(
+                    "ibkr_spain_stock_fixed_smartrouting_fractional"
+                    if is_fractional_order
+                    else "ibkr_spain_stock_fixed_smartrouting"
+                ),
             )
         if suffix == ".L":
             return Commission(
@@ -158,6 +202,38 @@ class IbkrCommissionModel:
                 model=_UNAVAILABLE_MODEL,
             )
         if _looks_like_us_stock_or_etf(symbol):
+            # IBKR executes the whole- and fractional-share components of a
+            # mixed order separately.  Only the fractional component is
+            # charged at the greater of 1% of its value and USD 0.01; applying
+            # that schedule to the complete notional creates a catastrophic
+            # discontinuity for quantities such as 50.0001 shares.
+            whole_quantity = math.floor(quantity)
+            fractional_quantity = quantity - whole_quantity
+            if fractional_quantity > 0.0:
+                fractional_notional = fractional_quantity * price_value
+                fractional_commission = max(
+                    fractional_notional * self.us_fractional_trade_value_pct,
+                    self.us_fractional_min_per_order,
+                )
+                if whole_quantity == 0:
+                    amount = fractional_commission
+                    commission_model = "ibkr_us_fractional_stock"
+                else:
+                    whole_notional = whole_quantity * price_value
+                    whole_commission = min(
+                        max(
+                            whole_quantity * self.us_stock_per_share,
+                            self.us_stock_min_per_order,
+                        ),
+                        whole_notional * self.us_stock_max_trade_value_pct,
+                    )
+                    amount = whole_commission + fractional_commission
+                    commission_model = "ibkr_us_stock_tiered_mixed_fractional"
+                return Commission(
+                    amount=amount,
+                    currency="USD",
+                    model=commission_model,
+                )
             commission = max(quantity * self.us_stock_per_share, self.us_stock_min_per_order)
             max_commission = notional * self.us_stock_max_trade_value_pct
             return Commission(

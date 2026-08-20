@@ -70,6 +70,31 @@ def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path, 
         f.write(_json.dumps({"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
                              "quantity": 10, "price": 110.0, "confidence": None, "intent": "PLANNED_EXIT",
                              "exit_reason": "take_profit"}) + "\n")
+    (state_dir / "broker.json").write_text(
+        _json.dumps(
+            {
+                "cash": 100_100.0,
+                "positions": {},
+                "fills": [
+                    {
+                        "ts": "2026-06-05T10:00:00+00:00",
+                        "symbol": "SPY",
+                        "side": "BUY",
+                        "quantity": 10,
+                        "price": 100.0,
+                    },
+                    {
+                        "ts": "2026-06-05T11:00:00+00:00",
+                        "symbol": "SPY",
+                        "side": "SELL",
+                        "quantity": 10,
+                        "price": 110.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     contexts: list[dict] = []
 
@@ -87,7 +112,16 @@ def test_run_cycle_injecte_lattribution_dans_le_contexte(monkeypatch, tmp_path, 
     assert contexts
     attribution = contexts[0]["attribution"]
     assert attribution["n_closed_trades"] == 1
-    assert attribution["realized_pnl"] == 100.0
+    assert attribution["realized_gross_pnl"] == 100.0
+    assert attribution["realized_pnl"] is None
+    assert attribution["total_commissions"] is None
+    assert attribution["win_rate"] is None
+    assert attribution["commission_quality"]["status"] == "unavailable"
+    assert attribution["commission_quality"]["counts"] == {
+        "total": 1,
+        "available": 0,
+        "unavailable": 1,
+    }
     assert contexts[0]["meta_performance"]["available"] is False
 
 
@@ -120,6 +154,45 @@ def test_run_cycle_passe_le_filtre_regime_a_lattribution(
         f.write(_json.dumps({"ts": "2026-06-10T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
                              "quantity": 1, "price": 112.0, "confidence": None, "intent": "PLANNED_EXIT",
                              "exit_reason": "take_profit"}) + "\n")
+    (state_dir / "broker.json").write_text(
+        _json.dumps(
+            {
+                "cash": 99_962.0,
+                "positions": {},
+                "fills": [
+                    {
+                        "ts": "2026-06-09T10:00:00+00:00",
+                        "symbol": "CL=F",
+                        "side": "BUY",
+                        "quantity": 1,
+                        "price": 100.0,
+                    },
+                    {
+                        "ts": "2026-06-09T11:00:00+00:00",
+                        "symbol": "CL=F",
+                        "side": "SELL",
+                        "quantity": 1,
+                        "price": 50.0,
+                    },
+                    {
+                        "ts": "2026-06-10T10:00:00+00:00",
+                        "symbol": "SPY",
+                        "side": "BUY",
+                        "quantity": 1,
+                        "price": 100.0,
+                    },
+                    {
+                        "ts": "2026-06-10T11:00:00+00:00",
+                        "symbol": "SPY",
+                        "side": "SELL",
+                        "quantity": 1,
+                        "price": 112.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     contexts: list[dict] = []
 
@@ -136,7 +209,9 @@ def test_run_cycle_passe_le_filtre_regime_a_lattribution(
 
     attribution = contexts[0]["attribution"]
     assert attribution["n_closed_trades"] == 1
-    assert attribution["realized_pnl"] == 12.0
+    assert attribution["realized_gross_pnl"] == 12.0
+    assert attribution["realized_pnl"] is None
+    assert attribution["commission_quality"]["status"] == "unavailable"
     assert attribution["by_exit_reason"][0]["reason"] == "take_profit"
     assert attribution["regime"] == {
         "since": "2026-06-10",

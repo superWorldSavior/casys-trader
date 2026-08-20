@@ -7,6 +7,7 @@ from trader.agent.company_micro import (
     DEFAULT_COMPANY_MICRO_MODEL,
     DEFAULT_COMPANY_MICRO_TIMEOUT_S,
     LlmCompanyMicroAnalyst,
+    build_company_micro_router_from_env,
     build_company_micro_prompt,
 )
 from trader.agent.company_micro.analyzer import CompanyMicroAnalystError
@@ -87,6 +88,89 @@ def test_company_micro_keeps_its_analyst_model_default() -> None:
     assert DEFAULT_COMPANY_MICRO_MODEL == "gpt-5.6-sol"
 
 
+def test_company_micro_router_loads_dotenv_before_role_knobs(tmp_path, monkeypatch) -> None:
+    for key in (
+        "TRADER_ACPX_BIN",
+        "TRADER_COMPANY_MICRO_ACPX_BIN",
+        "TRADER_COMPANY_MICRO_ACPX_AGENT",
+        "TRADER_COMPANY_MICRO_MODEL",
+        "TRADER_COMPANY_MICRO_TIMEOUT_S",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TRADER_COMPANY_MICRO_ACPX_BIN=/preset/acpx\n"
+        "TRADER_COMPANY_MICRO_ACPX_AGENT=grok-build\n"
+        "TRADER_COMPANY_MICRO_MODEL=grok-4.6\n"
+        "TRADER_COMPANY_MICRO_TIMEOUT_S=615\n",
+        encoding="utf-8",
+    )
+
+    backend = build_company_micro_router_from_env(env_path=env_path).backends[0]
+    seen: list[int] = []
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            seen.append(timeout_s)
+            return llm.LlmCompletion(provider="fake", model="fake-model", text=_completion())
+
+    LlmCompanyMicroAnalyst(router=Router()).analyze(_request())
+
+    assert backend.acpx_bin == "/preset/acpx"
+    assert backend.agent == "grok-build"
+    assert backend.model == "grok-4.6"
+    assert seen == [615]
+
+
+def test_company_micro_process_and_explicit_knobs_override_dotenv(tmp_path, monkeypatch) -> None:
+    for key in (
+        "TRADER_ACPX_BIN",
+        "TRADER_COMPANY_MICRO_ACPX_BIN",
+        "TRADER_COMPANY_MICRO_ACPX_AGENT",
+        "TRADER_COMPANY_MICRO_MODEL",
+        "TRADER_COMPANY_MICRO_TIMEOUT_S",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TRADER_COMPANY_MICRO_ACPX_BIN=/preset/acpx\n"
+        "TRADER_COMPANY_MICRO_ACPX_AGENT=grok-build\n"
+        "TRADER_COMPANY_MICRO_MODEL=grok-4.6\n"
+        "TRADER_COMPANY_MICRO_TIMEOUT_S=615\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TRADER_COMPANY_MICRO_ACPX_BIN", "/daemon/acpx")
+    monkeypatch.setenv("TRADER_COMPANY_MICRO_ACPX_AGENT", "kimi")
+    monkeypatch.setenv("TRADER_COMPANY_MICRO_MODEL", "kimi-code/kimi-for-coding")
+    monkeypatch.setenv("TRADER_COMPANY_MICRO_TIMEOUT_S", "480")
+
+    process_backend = build_company_micro_router_from_env(env_path=env_path).backends[0]
+
+    backend = build_company_micro_router_from_env(
+        env_path=env_path,
+        acpx_bin="/explicit/acpx",
+        acpx_agent="codex",
+        model="gpt-explicit",
+    ).backends[0]
+    seen: list[int] = []
+
+    class Router:
+        def complete(self, prompt: str, *, timeout_s: int):
+            seen.append(timeout_s)
+            return llm.LlmCompletion(provider="fake", model="fake-model", text=_completion())
+
+    LlmCompanyMicroAnalyst(router=Router()).analyze(_request())
+    LlmCompanyMicroAnalyst(router=Router(), timeout_s=120).analyze(_request())
+
+    assert process_backend.acpx_bin == "/daemon/acpx"
+    assert process_backend.agent == "kimi"
+    assert process_backend.model == "kimi-code/kimi-for-coding"
+    assert backend.acpx_bin == "/explicit/acpx"
+    assert backend.agent == "codex"
+    assert backend.model == "gpt-explicit"
+    assert seen == [480, 120]
+
+
 def test_company_micro_prompt_contains_bounded_authority_and_evidence() -> None:
     prompt = build_company_micro_prompt(_request())
 
@@ -120,20 +204,13 @@ def test_company_micro_prompt_exposes_the_exact_parser_shapes() -> None:
 def test_company_micro_prompt_lists_only_supported_enums() -> None:
     prompt = build_company_micro_prompt(_request())
 
-    assert (
-        "company_thesis.status=strengthening|intact|watch|impaired|broken|untested"
-        in prompt
-    )
-    assert (
-        "selection_view.posture=supports_selection|neutral|argues_against|insufficient_evidence"
-        in prompt
-    )
+    assert "company_thesis.status=strengthening|intact|watch|impaired|broken|untested" in prompt
+    assert "selection_view.posture=supports_selection|neutral|argues_against|insufficient_evidence" in prompt
     assert "security_readiness=not_evaluated|conditional|not_decision_grade" in prompt
     assert (
         "evidence_label=fact_source_reported|fact_provider_standardized|derived_calculation|"
         "issuer_management_claim|analyst_interpretation|missing_required_source|stale_source|"
-        "contradicted_source|unknown"
-        in prompt
+        "contradicted_source|unknown" in prompt
     )
 
 

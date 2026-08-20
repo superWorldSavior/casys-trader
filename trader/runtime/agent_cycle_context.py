@@ -152,6 +152,8 @@ def build_base_context(
     active_families: object,
     requestable_indicator_ids: object,
     recall_store: object | None = None,
+    portfolio_fee_estimator_cost_scope: str | None = None,
+    portfolio_fee_estimator_is_all_in: bool = False,
 ) -> dict:
     """Assemble the complete payload exposed to the decision agent."""
 
@@ -159,7 +161,11 @@ def build_base_context(
         "now": cycle_id,
         "now_human": market.human_clock(now),
         "market_clocks": market.market_clocks(now, symbols),
-        "portfolio": snap.as_context(fee_estimator=portfolio_fee_estimator),
+        "portfolio": snap.as_context(
+            fee_estimator=portfolio_fee_estimator,
+            fee_estimator_cost_scope=portfolio_fee_estimator_cost_scope,
+            fee_estimator_is_all_in=portfolio_fee_estimator_is_all_in,
+        ),
         "risk_limits": risk_cfg,
         "risk_capacity": risk_capacity.risk_capacity_context(
             symbols=[symbol for symbol in symbols if symbol in prices],

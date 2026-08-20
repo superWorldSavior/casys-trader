@@ -75,7 +75,13 @@ def _fill(
     decision_id: str | None = None,
     intent: str = "OPEN_LONG",
     fx_rate: float = 1.0,
+    commission_model: str | None = None,
+    commission_currency: str | None = None,
 ) -> dict:
+    if commission_model is None:
+        commission_model = "ibkr_europe_stock_tiered" if symbol.endswith((".PA", ".DE")) else "ibkr_us_stock_tiered"
+    if commission_currency is None:
+        commission_currency = "EUR" if symbol.endswith((".PA", ".DE")) else "USD"
     row = {
         "ts": ts,
         "symbol": symbol,
@@ -86,6 +92,8 @@ def _fill(
         "intent": intent,
         "fx_rate": fx_rate,
         "commission": 0.0,
+        "commission_model": commission_model,
+        "commission_currency": commission_currency,
     }
     if decision_id is not None:
         row["decision_id"] = decision_id
@@ -105,6 +113,13 @@ def test_fichiers_absents_ne_cassent_pas(tmp_path: Path, capsys) -> None:
     assert payload["inputs"]["fills_found"] is False
     assert payload["overall"]["n_executed"] == 0
     assert payload["overall"]["n_closed_trips"] == 0
+    assert payload["overall"]["pnl_quality"] == {
+        "status": "unavailable",
+        "n_total": 0,
+        "n_available": 0,
+        "n_unavailable": 0,
+        "coverage_ratio": None,
+    }
     assert not list(tmp_path.iterdir())
 
 
@@ -436,6 +451,151 @@ def test_drift_hebdo_marque_le_changement_de_code_version(tmp_path: Path, capsys
     assert w33["n_infra_excluded"] == 1
 
 
+def test_pnl_indisponible_est_exclu_de_calibration_et_drift(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _write_jsonl(
+        tmp_path / "decisions.jsonl",
+        [
+            _decision(
+                decision_id="known-win",
+                symbol="AIR.PA",
+                confidence=0.75,
+                cycle_ts="2026-08-10T08:00:00+00:00",
+            ),
+            _decision(
+                decision_id="unknown-pnl",
+                symbol="MC.PA",
+                confidence=0.95,
+                cycle_ts="2026-08-10T09:00:00+00:00",
+            ),
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            _fill(
+                ts="2026-08-10T08:00:00+00:00",
+                symbol="AIR.PA",
+                action="BUY",
+                price=100.0,
+                decision_id="known-win",
+            ),
+            _fill(
+                ts="2026-08-10T10:00:00+00:00",
+                symbol="AIR.PA",
+                action="SELL",
+                price=110.0,
+                intent="CLOSE",
+            ),
+            _fill(
+                ts="2026-08-10T09:00:00+00:00",
+                symbol="MC.PA",
+                action="BUY",
+                price=100.0,
+                decision_id="unknown-pnl",
+                commission_model="ibkr_unknown",
+            ),
+            _fill(
+                ts="2026-08-10T11:00:00+00:00",
+                symbol="MC.PA",
+                action="SELL",
+                price=120.0,
+                intent="CLOSE",
+                commission_model="ibkr_unknown",
+            ),
+        ],
+    )
+
+    calibration = _run(tmp_path, "calibration", capsys=capsys)
+
+    assert calibration["overall"]["n_closed_trips"] == 2
+    assert calibration["overall"]["win_rate"] == 1.0
+    assert calibration["overall"]["mean_announced_confidence"] == 0.75
+    assert calibration["overall"]["pnl_quality"] == {
+        "status": "partial",
+        "n_total": 2,
+        "n_available": 1,
+        "n_unavailable": 1,
+        "coverage_ratio": 0.5,
+    }
+
+    drift = _run(tmp_path, "drift", capsys=capsys)
+    week = next(item for item in drift["weeks"] if item["iso_week"] == "2026-W33")
+    assert week["n_closed_trips"] == 2
+    assert week["win_rate"] == 1.0
+    assert week["pnl_quality"] == calibration["overall"]["pnl_quality"]
+    version = next(item for item in week["by_code_version"] if item["code_version"] == "aaa111aaa111")
+    assert version["win_rate"] == 1.0
+    assert version["pnl_quality"] == calibration["overall"]["pnl_quality"]
+    assert drift["pnl_quality"] == calibration["overall"]["pnl_quality"]
+
+
+def test_sorties_partielles_forment_un_seul_cycle_gagnant(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _write_jsonl(
+        tmp_path / "decisions.jsonl",
+        [
+            _decision(
+                decision_id="partial-win",
+                symbol="AIR.PA",
+                confidence=0.70,
+                cycle_ts="2026-08-10T08:00:00+00:00",
+            )
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "model_performance.jsonl",
+        [
+            _fill(
+                ts="2026-08-10T08:00:00+00:00",
+                symbol="AIR.PA",
+                action="BUY",
+                price=100.0,
+                quantity=2.0,
+                decision_id="partial-win",
+            ),
+            _fill(
+                ts="2026-08-10T09:00:00+00:00",
+                symbol="AIR.PA",
+                action="SELL",
+                price=90.0,
+                quantity=1.0,
+                intent="CLOSE",
+            ),
+            _fill(
+                ts="2026-08-10T10:00:00+00:00",
+                symbol="AIR.PA",
+                action="SELL",
+                price=120.0,
+                quantity=1.0,
+                intent="CLOSE",
+            ),
+        ],
+    )
+
+    calibration = _run(tmp_path, "calibration", capsys=capsys)
+
+    assert calibration["overall"]["n_closed_trips"] == 1
+    assert calibration["overall"]["win_rate"] == 1.0
+    assert calibration["overall"]["pnl_quality"] == {
+        "status": "available",
+        "n_total": 1,
+        "n_available": 1,
+        "n_unavailable": 0,
+        "coverage_ratio": 1.0,
+    }
+
+    drift = _run(tmp_path, "drift", capsys=capsys)
+    week = next(item for item in drift["weeks"] if item["iso_week"] == "2026-W33")
+    assert week["n_closed_trips"] == 1
+    assert week["win_rate"] == 1.0
+    assert week["pnl_quality"]["n_available"] == 1
+
+
 def test_session_window_buckets_et_effectif_champ_manquant(tmp_path: Path, capsys) -> None:
     _write_jsonl(
         tmp_path / "decisions.jsonl",
@@ -563,9 +723,7 @@ def test_session_window_buckets_et_effectif_champ_manquant(tmp_path: Path, capsy
     assert eu["overall"]["n_closed_trips"] == 4
 
 
-def test_session_window_dit_honnetement_quand_le_champ_est_trop_recent(
-    tmp_path: Path, capsys
-) -> None:
+def test_session_window_dit_honnetement_quand_le_champ_est_trop_recent(tmp_path: Path, capsys) -> None:
     _write_jsonl(
         tmp_path / "decisions.jsonl",
         [

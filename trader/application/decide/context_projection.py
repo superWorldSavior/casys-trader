@@ -58,6 +58,7 @@ _ATTRIBUTION_SUMMARY_KEYS = (
     "realized_pnl",
     "realized_gross_pnl",
     "total_commissions",
+    "commission_quality",
     "win_rate",
     "avg_pnl",
     "avg_holding_minutes",
@@ -336,8 +337,16 @@ def _project_cockpit(raw: object, *, symbol: str, portfolio: object) -> object:
         },
         "highlights": raw.get("highlights"),
     }
-    if "fee_ref_notional" in raw:
-        result["fee_ref_notional"] = raw.get("fee_ref_notional")
+    # Keep the modeled-cost amount and its truth labels together.  Dropping
+    # scope during prompt compaction would make a broker-only estimate look
+    # all-in precisely at the model boundary.
+    for key in (
+        "fee_ref_notional",
+        "fee_scope",
+        "fee_estimate_is_all_in",
+    ):
+        if key in raw:
+            result[key] = raw.get(key)
     return result
 
 

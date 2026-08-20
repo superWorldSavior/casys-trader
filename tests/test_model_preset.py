@@ -9,6 +9,8 @@ changé. La bascule doit retirer ces lignes, pas seulement écrire le bloc.
 
 from __future__ import annotations
 
+import stat
+
 import pytest
 
 from scripts import model_preset
@@ -129,10 +131,52 @@ def test_apply_ecrit_une_sauvegarde(env_file) -> None:
     assert (env_file.parent / ".env.bak").read_text(encoding="utf-8") == "TRADER_MODEL=kimi-code/k3\n"
 
 
+def test_sauvegarde_est_atomique_et_privee(env_file, monkeypatch) -> None:
+    env_file.write_text("TRADER_MODEL=kimi-code/k3\n", encoding="utf-8")
+    backup = env_file.parent / ".env.bak"
+    backup.write_text("ancienne sauvegarde\n", encoding="utf-8")
+    backup.chmod(0o644)
+    real_replace = model_preset.os.replace
+    observed: dict[str, object] = {}
+
+    def inspect_replace(source, destination):
+        staged = model_preset.Path(source)
+        observed["mode"] = stat.S_IMODE(staged.stat().st_mode)
+        observed["content"] = staged.read_text(encoding="utf-8")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(model_preset.os, "replace", inspect_replace)
+
+    _apply("codex-luna-medium", write=True)
+
+    assert observed == {"mode": 0o600, "content": "TRADER_MODEL=kimi-code/k3\n"}
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert not list(env_file.parent.glob("..env.bak.*.tmp"))
+
+
+def test_echec_de_promotion_preserve_l_ancienne_sauvegarde(
+    env_file,
+    monkeypatch,
+) -> None:
+    env_file.write_text("TRADER_MODEL=kimi-code/k3\n", encoding="utf-8")
+    backup = env_file.parent / ".env.bak"
+    backup.write_text("ancienne sauvegarde\n", encoding="utf-8")
+
+    def fail_replace(_source, _destination):
+        raise OSError("promotion impossible")
+
+    monkeypatch.setattr(model_preset.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="promotion impossible"):
+        _apply("codex-luna-medium", write=True)
+
+    assert backup.read_text(encoding="utf-8") == "ancienne sauvegarde\n"
+    assert env_file.read_text(encoding="utf-8") == "TRADER_MODEL=kimi-code/k3\n"
+    assert not list(env_file.parent.glob("..env.bak.*.tmp"))
+
+
 def test_bloc_non_termine_refuse_d_ecrire(env_file) -> None:
-    env_file.write_text(
-        "# >>> casys:model-preset=kimi >>>\nTRADER_MODEL=kimi-code/k3\n", encoding="utf-8"
-    )
+    env_file.write_text("# >>> casys:model-preset=kimi >>>\nTRADER_MODEL=kimi-code/k3\n", encoding="utf-8")
 
     with pytest.raises(model_preset.PresetError) as exc:
         model_preset.plan_apply("codex-luna-medium")

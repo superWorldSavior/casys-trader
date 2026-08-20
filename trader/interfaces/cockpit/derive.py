@@ -26,24 +26,40 @@ from trader.support.coercion import (
 
 @dataclass(frozen=True)
 class EquitySnapshot:
-    equity: float = 0.0
-    cash: float = 0.0
-    cash_available: float = 0.0
-    cash_ledger: float = 0.0
-    cash_pct: float = 0.0
-    return_pct: float = 0.0  # en points de %
-    pnl_usd: float = 0.0
-    unrealized: float = 0.0
+    equity: float | None = None
+    cash: float | None = None
+    cash_available: float | None = None
+    cash_ledger: float | None = None
+    cash_pct: float | None = None
+    return_pct: float | None = None  # en points de %
+    pnl_usd: float | None = None
+    unrealized: float | None = 0.0
+    unrealized_basis: str = "net"
+    unrealized_net_coverage: int = 0
+    unrealized_positions: int = 0
 
 
-def _cash_available_from_holdings(portfolio: dict, kpis: dict) -> tuple[float, float]:
-    cash_ledger = _safe_float(
-        portfolio.get("cash_ledger") or portfolio.get("cash") or kpis.get("cash"),
-        default=0.0,
-    ) or 0.0
+def _first_finite(*values: object) -> float | None:
+    for value in values:
+        number = _safe_float(value, default=None)
+        if number is not None:
+            return number
+    return None
+
+
+def _cash_available_from_holdings(
+    portfolio: dict, kpis: dict
+) -> tuple[float | None, float | None]:
+    cash_ledger = _first_finite(
+        portfolio.get("cash_ledger"),
+        portfolio.get("cash"),
+        kpis.get("cash"),
+    )
     explicit_available = _safe_float(portfolio.get("cash_available"), default=None)
     if explicit_available is not None:
         return explicit_available, cash_ledger
+    if cash_ledger is None:
+        return None, None
 
     short_exposure = 0.0
     for holding in _safe_list_of_dicts(portfolio.get("holdings")):
@@ -55,22 +71,35 @@ def _cash_available_from_holdings(portfolio: dict, kpis: dict) -> tuple[float, f
 def equity_snapshot(state: dict) -> EquitySnapshot:
     portfolio = f.safe_dict(state.get("portfolio"))
     kpis = f.safe_dict(state.get("kpis"))
-    equity = _safe_float(portfolio.get("equity") or kpis.get("equity"), default=0.0) or 0.0
+    equity = _first_finite(portfolio.get("equity"), kpis.get("equity"))
     cash_available, cash_ledger = _cash_available_from_holdings(portfolio, kpis)
-    starting = _safe_float(state.get("starting_cash"), default=cash_ledger) or cash_ledger
+    starting = _safe_float(state.get("starting_cash"), default=None)
     return_pct = _safe_float(portfolio.get("total_return_pct"), default=None)
     if return_pct is None:
-        return_pct = (_safe_float(kpis.get("total_return"), default=0.0) or 0.0) * 100.0
+        total_return = _safe_float(kpis.get("total_return"), default=None)
+        return_pct = total_return * 100.0 if total_return is not None else None
     holdings = _safe_list_of_dicts(portfolio.get("holdings"))
+    unrealized = f.aggregate_holding_pnl(holdings)
     return EquitySnapshot(
         equity=equity,
         cash=cash_available,
         cash_available=cash_available,
         cash_ledger=cash_ledger,
-        cash_pct=(cash_available / equity * 100.0) if equity else 0.0,
+        cash_pct=(
+            cash_available / equity * 100.0
+            if cash_available is not None and equity not in (None, 0.0)
+            else None
+        ),
         return_pct=return_pct,
-        pnl_usd=equity - starting,
-        unrealized=sum(f.holding_pnl(h) for h in holdings),
+        pnl_usd=(
+            equity - starting
+            if equity is not None and starting is not None
+            else None
+        ),
+        unrealized=unrealized.amount,
+        unrealized_basis=unrealized.basis,
+        unrealized_net_coverage=unrealized.net_coverage,
+        unrealized_positions=unrealized.positions,
     )
 
 

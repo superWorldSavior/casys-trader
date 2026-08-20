@@ -246,12 +246,13 @@ def _migrate_benchmark_semantics(
     *,
     had_persisted_state: bool,
 ) -> None:
-    """Invalidate v1-derived feedback once, then let runtime replay it as v2.
+    """Invalidate stale derived feedback, then let runtime replay it.
 
     The SQLite store is reconstructible.  We deliberately keep source notes,
     recalls and citations, but remove every verdict/score/reward derived under
-    the old HOLD semantics.  A metadata marker makes the reset idempotent even
-    when several short-lived workers reopen the same database.
+    older benchmark or realised-economics semantics.  A metadata marker makes
+    the reset idempotent even when several short-lived workers reopen the same
+    database.
     """
 
     conn.execute("BEGIN IMMEDIATE")
@@ -270,6 +271,7 @@ def _migrate_benchmark_semantics(
                 """
                 UPDATE notes
                 SET verdict=NULL,
+                    forward_return=NULL,
                     outcome_score=NULL,
                     outcome_semantics_version=NULL,
                     q_value=0,
@@ -1159,7 +1161,7 @@ class LearningsStore:
         mature_before: str | None = None,
         limit: int = 64,
     ) -> list[dict]:
-        """Return notes needing a v2 verdict, including evaluated legacy rows."""
+        """Return notes needing the current verdict semantics."""
 
         with self._lock:
             sql = """

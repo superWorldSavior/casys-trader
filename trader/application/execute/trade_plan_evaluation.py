@@ -12,9 +12,11 @@ from trader.application.execute import order_admission, risk_admission
 from trader.application.execute.fee_estimate import (
     CommissionCalculator,
     UNAVAILABLE_COMMISSION_MODELS,
+    cost_scope_for,
 )
 from trader.domain.contracts import Order
 from trader.domain.decisions import Decision
+from trader.domain.market import fx
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError
 from trader.domain.planning.trade_plan import resolve_exit_plan
 
@@ -71,6 +73,8 @@ class TradePlanEconomics:
     """Payoff metrics for a fully specified bracket."""
 
     status: EconomicsStatus
+    cost_scope: str = "unknown"
+    cost_estimate_is_all_in: bool = False
     gross_gain_usd: float | None = None
     gross_loss_usd: float | None = None
     fees_if_win_usd: float | None = None
@@ -119,6 +123,8 @@ class TradePlanEvaluation:
 
         economics = {
             "status": self.economics.status,
+            "cost_scope": self.economics.cost_scope,
+            "cost_estimate_is_all_in": self.economics.cost_estimate_is_all_in,
             "gross_gain_usd": _rounded(self.economics.gross_gain_usd),
             "gross_loss_usd": _rounded(self.economics.gross_loss_usd),
             "fees_if_win_usd": _rounded(self.economics.fees_if_win_usd),
@@ -617,10 +623,21 @@ def _compute_economics(
     risk_entry_price: float,
 ) -> tuple[TradePlanEconomics, list[dict[str, Any]]]:
     warnings: list[dict[str, Any]] = []
+    cost_scope, cost_estimate_is_all_in = cost_scope_for(
+        context.commission_model
+    )
+
+    def unknown_economics() -> TradePlanEconomics:
+        return TradePlanEconomics(
+            "unknown",
+            cost_scope=cost_scope,
+            cost_estimate_is_all_in=cost_estimate_is_all_in,
+        )
+
     stop = order_admission.hard_stop_price(resolved_exit_plan)
     targets = list((resolved_exit_plan or {}).get("take_profits", []) or [])
     if stop is None or not targets or exposure_quantity <= 0.0:
-        return TradePlanEconomics("unknown"), warnings
+        return unknown_economics(), warnings
 
     total_fraction = sum(float(item.get("fraction", 0.0)) for item in targets)
     if total_fraction < 1.0 - _FRACTION_EPSILON:
@@ -630,7 +647,7 @@ def _compute_economics(
                 "fraction": total_fraction,
             }
         )
-        return TradePlanEconomics("unknown"), warnings
+        return unknown_economics(), warnings
 
     direction_sign = 1.0 if candidate.direction == "long" else -1.0
     gross_gain_native = sum(
@@ -646,7 +663,7 @@ def _compute_economics(
     gross_gain_usd = gross_gain_native * context.fx_rate
     gross_loss_usd = gross_loss_native * context.fx_rate
     if gross_gain_usd <= 0.0 or gross_loss_usd <= 0.0:
-        return TradePlanEconomics("unknown"), warnings
+        return unknown_economics(), warnings
 
     entry_fee = _commission_usd(
         context.commission_model,
@@ -684,14 +701,32 @@ def _compute_economics(
     ]
     if entry_fee is None or loss_exit_fee is None or any(fee is None for fee in target_fees):
         warnings.append({"code": "commission_unavailable"})
-        return TradePlanEconomics("unknown"), warnings
+        return unknown_economics(), warnings
+
+    if not cost_estimate_is_all_in:
+        warnings.append(
+            {
+                "code": "transaction_cost_estimate_incomplete",
+                "cost_scope": cost_scope,
+                "omitted_costs_may_include": (
+                    "taxes_exchange_regulatory_and_other_pass_throughs"
+                ),
+            }
+        )
 
     fees_if_win = entry_fee + sum(fee or 0.0 for fee in target_fees)
     fees_if_loss = entry_fee + loss_exit_fee
     net_gain = gross_gain_usd - fees_if_win
     net_loss = gross_loss_usd + fees_if_loss
     if net_gain <= 0.0 or net_loss <= 0.0:
-        return TradePlanEconomics("negative"), warnings
+        return (
+            TradePlanEconomics(
+                "negative",
+                cost_scope=cost_scope,
+                cost_estimate_is_all_in=cost_estimate_is_all_in,
+            ),
+            warnings,
+        )
     p_break_even = net_loss / (net_gain + net_loss)
     expected_value = (
         candidate.confidence * net_gain
@@ -701,6 +736,8 @@ def _compute_economics(
     return (
         TradePlanEconomics(
             status,
+            cost_scope=cost_scope,
+            cost_estimate_is_all_in=cost_estimate_is_all_in,
             gross_gain_usd=gross_gain_usd,
             gross_loss_usd=gross_loss_usd,
             fees_if_win_usd=fees_if_win,
@@ -726,8 +763,26 @@ def _commission_usd(
     commission = model.calculate(order, price)
     if commission.model in UNAVAILABLE_COMMISSION_MODELS:
         return None
-    rate = 1.0 if commission.currency == "USD" else fx_rate
-    return commission.amount * rate
+    try:
+        amount = float(commission.amount)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount) or amount < 0.0:
+        return None
+
+    quote_currency = fx.currency_for(order.symbol)
+    if commission.currency == fx.BASE_CCY:
+        commission_fx_rate = 1.0
+    elif commission.currency == quote_currency:
+        if not math.isfinite(fx_rate) or fx_rate <= 0.0:
+            return None
+        commission_fx_rate = fx_rate
+    else:
+        # The context carries only the symbol quote-currency FX rate.  A fee
+        # charged in any third currency cannot be converted truthfully here.
+        return None
+    amount_usd = amount * commission_fx_rate
+    return amount_usd if math.isfinite(amount_usd) else None
 
 
 def _evaluation_fingerprint(

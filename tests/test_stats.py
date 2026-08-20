@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from trader.reporting.stats import compute_live_kpis
+from trader.reporting.stats import _render_text, compute_live_kpis
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +90,11 @@ def test_compute_live_kpis_retourne_toutes_les_cles_attendues(tmp_path: Path) ->
         "n_positions",
         "positions",
         "model_performance",
+        "experiment_performance",
+        "history_quality",
+        "broker_quality",
+        "model_performance_quality",
+        "trade_economics_quality",
     }
     assert set(kpis.keys()) == cles_attendues
 
@@ -153,17 +158,47 @@ def test_compute_live_kpis_distingue_cycles_clotures_et_fills(tmp_path: Path) ->
             "cash": 91_000.0,
             "positions": {},
             "fills": [
-                {"symbol": "AAPL", "side": "BUY", "quantity": 10, "price": 190.0, "ts": "t1"},
-                {"symbol": "AAPL", "side": "BUY", "quantity": 5, "price": 192.0, "ts": "t2"},
-                {"symbol": "AAPL", "side": "SELL", "quantity": 15, "price": 195.0, "ts": "t3"},
+                {
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "quantity": 10,
+                    "price": 190.0,
+                    "ts": "2026-01-01T10:00:00+00:00",
+                    "fx_rate": 1.0,
+                    "commission": 0.35,
+                    "commission_model": "ibkr_us_stock_tiered",
+                    "commission_currency": "USD",
+                },
+                {
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "quantity": 5,
+                    "price": 192.0,
+                    "ts": "2026-01-01T11:00:00+00:00",
+                    "fx_rate": 1.0,
+                    "commission": 0.35,
+                    "commission_model": "ibkr_us_stock_tiered",
+                    "commission_currency": "USD",
+                },
+                {
+                    "symbol": "AAPL",
+                    "side": "SELL",
+                    "quantity": 15,
+                    "price": 195.0,
+                    "ts": "2026-01-01T12:00:00+00:00",
+                    "fx_rate": 1.0,
+                    "commission": 0.35,
+                    "commission_model": "ibkr_us_stock_tiered",
+                    "commission_currency": "USD",
+                },
             ],
         },
     )
 
     kpis = compute_live_kpis(state_dir)
 
-    assert kpis["num_trades"] == 0
-    assert kpis["num_closed_position_cycles"] == 0
+    assert kpis["num_trades"] == 1
+    assert kpis["num_closed_position_cycles"] == 1
     assert kpis["num_fills"] == 3
     assert kpis["trade_count_grain"] == "flat_to_flat_position_cycle"
 
@@ -230,10 +265,12 @@ def test_compute_live_kpis_tolere_fichiers_absents(tmp_path: Path) -> None:
     kpis = compute_live_kpis(state_dir)
 
     assert isinstance(kpis, dict)
-    # Valeurs neutres attendues
+    # L'absence de preuve historique est distincte d'une performance nulle.
     assert kpis["equity"] is None
-    assert kpis["total_return"] == pytest.approx(0.0)
-    assert kpis["max_drawdown"] == pytest.approx(0.0)
+    assert kpis["total_return"] is None
+    assert kpis["max_drawdown"] is None
+    assert kpis["history_quality"]["status"] == "unavailable"
+    assert kpis["history_quality"]["reason"] == "history_missing"
     assert kpis["num_trades"] == 0
     assert kpis["n_positions"] == 0
     assert kpis["positions"] == []
@@ -258,3 +295,21 @@ def test_compute_live_kpis_ignore_lignes_equity_null(tmp_path: Path) -> None:
     # La courbe doit avoir 2 points (le null est ignoré)
     assert kpis["equity"] == pytest.approx(103_000.0)
     assert kpis["total_return"] == pytest.approx(0.03)
+
+
+def test_render_live_kpis_survives_unavailable_broker(tmp_path: Path) -> None:
+    state_dir = _setup_state(
+        tmp_path,
+        history_rows=[
+            {"ts": "2026-01-01T10:00:00", "equity": 100_000.0},
+            {"ts": "2026-01-01T11:00:00", "equity": 101_000.0},
+        ],
+        broker={"cash": 100_000.0, "positions": {}, "fills": []},
+    )
+    (state_dir / "broker.json").write_text("{invalid", encoding="utf-8")
+
+    rendered = _render_text(compute_live_kpis(state_dir))
+
+    assert "Positions ouv.  : n/a" in rendered
+    assert "Qualité broker  : indisponible (broker_read_error)" in rendered
+    assert "Économie trades : unavailable (broker_read_error)" in rendered

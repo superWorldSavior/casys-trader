@@ -83,6 +83,37 @@ def test_inversion_signal_htf_bypasse_le_debounce_position() -> None:
     ) == (True, "signal")
 
 
+def test_disparition_puis_reapparition_du_meme_signal_reveillent_une_fois() -> None:
+    reviewed_signal = {
+        "signal": "signal:1h:breakout_up",
+    }
+
+    # Le signal actif lors de la dernière revue disparaît : c'est une
+    # invalidation matérielle, même si la position a été revue récemment.
+    assert _needs(
+        has_position=True,
+        last_wake_reasons=("signal",),
+        last_wake_fingerprints=reviewed_signal,
+        hours_since_last_llm=0.5,
+    ) == (True, "signal")
+
+    # Après cette revue, le daemon persiste l'état courant vide. La disparition
+    # ne réveille donc pas en boucle, mais le même signal qui revient est neuf.
+    assert _needs(
+        has_position=True,
+        last_wake_reasons=(),
+        last_wake_fingerprints={},
+        hours_since_last_llm=0.5,
+    ) == (False, "position_debounce")
+    assert _needs(
+        has_position=True,
+        sig=["1h:breakout_up"],
+        last_wake_reasons=(),
+        last_wake_fingerprints={},
+        hours_since_last_llm=0.5,
+    ) == (True, "signal")
+
+
 def test_signal_15m_seul_ne_reveille_pas() -> None:
     assert _needs(sig=["15m:stretched_up"]) == (False, "quiet")
     assert _needs(sig=["15m:stretched_up"], stretched=True) == (False, "quiet")
@@ -143,6 +174,34 @@ def test_inversion_regime_bypasse_le_debounce_position() -> None:
         family_regime_fingerprint="regime:us:down",
         last_wake_reasons=("regime",),
         last_wake_fingerprints={"regime": "regime:us:up"},
+        hours_since_last_llm=0.5,
+    ) == (True, "regime")
+
+
+def test_disparition_puis_reapparition_du_meme_regime_reveillent_une_fois() -> None:
+    reviewed_regime = {
+        "regime": "regime:us:up",
+    }
+
+    assert _needs(
+        has_position=True,
+        last_wake_reasons=("regime",),
+        last_wake_fingerprints=reviewed_regime,
+        hours_since_last_llm=0.5,
+    ) == (True, "regime")
+
+    assert _needs(
+        has_position=True,
+        last_wake_reasons=(),
+        last_wake_fingerprints={},
+        hours_since_last_llm=0.5,
+    ) == (False, "position_debounce")
+    assert _needs(
+        has_position=True,
+        family_regime_strong=True,
+        family_regime_fingerprint="regime:us:up",
+        last_wake_reasons=(),
+        last_wake_fingerprints={},
         hours_since_last_llm=0.5,
     ) == (True, "regime")
 
@@ -490,6 +549,108 @@ def test_run_cycle_inversion_htf_reveille_position_et_met_a_jour_empreinte(
     assert report["decisions"][0]["model_called"] is True
     assert process_state.last_wake_fingerprints[key] == {
         "signal": "signal:1h:breakout_down"
+    }
+
+
+def test_run_cycle_disparition_persiste_absence_puis_reapparition_reveille(
+    monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from trader.agent.client import Decision
+    from trader.execution.broker import Order, SimBroker
+    from trader.planning.scheduler import Scheduler
+    from trader.runtime import daemon
+
+    write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    disappeared_at = datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc)
+    SimBroker(state_dir / "broker.json", starting_cash=100_000).submit(
+        Order("SPY", "BUY", 10.0),
+        100.0,
+        disappeared_at.isoformat(),
+        dry_run=False,
+    )
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    current_signal: dict[str, list[str] | None] = {"value": None}
+    monkeypatch.setattr(
+        daemon,
+        "build_market_cockpit",
+        lambda *args, **kwargs: {
+            "cols": ["s", "st", "sig"],
+            "rows": [["SPY", False, current_signal["value"]]],
+        },
+    )
+    process_state = daemon.CycleProcessState()
+    key = (str(state_dir), "SPY")
+    process_state.last_llm_at[key] = disappeared_at - timedelta(minutes=30)
+    process_state.last_wake_reasons[key] = ("signal",)
+    process_state.last_wake_fingerprints[key] = {
+        "signal": "signal:1h:breakout_up"
+    }
+    calls: list[str] = []
+
+    def decide(**kwargs):
+        calls.append(kwargs["symbol"])
+        return Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="transition HTF revue",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5",
+        )
+
+    patch_batch(decide)
+    sched = Scheduler(state_dir / "scheduler.json")
+
+    disappeared = daemon.run_cycle(
+        dry_run=True,
+        now=disappeared_at,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=make_data_source(_flat_bars_factory(disappeared_at.isoformat())),
+        process_state=process_state,
+    )
+
+    assert calls == ["SPY"]
+    assert disappeared["decisions"][0]["model_called"] is True
+    assert process_state.last_wake_reasons[key] == ()
+    assert process_state.last_wake_fingerprints[key] == {}
+
+    still_absent_at = disappeared_at + timedelta(minutes=15)
+    still_absent = daemon.run_cycle(
+        dry_run=True,
+        now=still_absent_at,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=make_data_source(_flat_bars_factory(still_absent_at.isoformat())),
+        process_state=process_state,
+    )
+
+    assert calls == ["SPY"]
+    assert still_absent["decisions"][0]["model_called"] is False
+    assert still_absent["decisions"][0]["relevance_gate_reason"] == "position_debounce"
+
+    reappeared_at = still_absent_at + timedelta(minutes=15)
+    current_signal["value"] = ["1h:breakout_up"]
+    reappeared = daemon.run_cycle(
+        dry_run=True,
+        now=reappeared_at,
+        symbols_filter=["SPY"],
+        sched=sched,
+        data_source=make_data_source(_flat_bars_factory(reappeared_at.isoformat())),
+        process_state=process_state,
+    )
+
+    assert calls == ["SPY", "SPY"]
+    assert reappeared["decisions"][0]["model_called"] is True
+    assert process_state.last_wake_fingerprints[key] == {
+        "signal": "signal:1h:breakout_up"
     }
 
 

@@ -206,6 +206,22 @@ def test_main_saute_le_cycle_si_connexion_ib_echoue_et_reessaie_au_reveil_suivan
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     monkeypatch.setattr(daemon, "connect_ib", connect_ib, raising=False)
     monkeypatch.setattr(daemon, "run_cycle", run_cycle)
+    # Keep this IB retry test isolated from the git subprocesses used to freeze
+    # the boot cohort identity.  Monkeypatching ``daemon.time.sleep`` also
+    # affects subprocess' shared ``time`` module and would otherwise interrupt
+    # identity capture before the IB connection path is reached.
+    monkeypatch.setattr(
+        daemon,
+        "_capture_experiment_runtime_identity",
+        lambda: {
+            "code_version": {
+                "git_commit": "a" * 40,
+                "git_tracked_dirty": False,
+            },
+            "model_preset": "codex-luna-medium",
+            "model_profiles": {},
+        },
+    )
     monkeypatch.setattr(daemon.time, "sleep", sleep)
 
     with pytest.raises(KeyboardInterrupt):

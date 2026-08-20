@@ -8,6 +8,7 @@ from pathlib import Path
 
 from trader.agent.learnings.curation_adapter import CurationProviderAdapter, as_curation_port
 from trader.application.learnings.consolidate import maybe_consolidate
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 
 
 class _Raw:
@@ -24,7 +25,7 @@ class _Consolidated:
             "watermark": None,
             "global": [],
             "by_symbol": {},
-            "outcome_semantics_version": 2,
+            "outcome_semantics_version": BENCHMARK_SEMANTICS_VERSION,
         }
 
     def read(self) -> dict:

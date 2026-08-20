@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
@@ -38,6 +39,7 @@ class RunCycleRuntimeContext:
     execute_ledger: object | None
     worker_cycle_context: object | None = None
     wake_reasons: list | None = None
+    experiment_runtime_identity: Mapping[str, object] | None = None
 
 
 def dispatch_run_cycle(
@@ -76,4 +78,5 @@ def dispatch_run_cycle(
         queue_execute_enabled=context.queue_execute_enabled,
         execute_ledger=context.execute_ledger,
         worker_cycle_context=context.worker_cycle_context,
+        experiment_runtime_identity=context.experiment_runtime_identity,
     )

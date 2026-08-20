@@ -9,6 +9,7 @@ Contient :
 - import_scheduler_from_json : migration one-shot idempotente depuis scheduler.json
 - PROCESS_TRACE_MIGRATION : schéma append-only v4 des événements de processus
 - LLM_GATE_MIGRATION : cadence last_llm_at du gate de pertinence (v5)
+- LLM_GATE_CONTEXT_MIGRATION : raisons/empreintes du gate persistées (v8)
 - UNIVERSE_SELECTION_MIGRATION : attribution des sélections d'univers (v6)
 - UNIVERSE_SELECTION_V7_MIGRATION : verdict à deux bases (recréation, ne mute pas v6)
 - SITUATION_MEMORY_OUTCOME_MIGRATION : verdict FLAIR des notes de situation
@@ -555,6 +556,24 @@ LLM_GATE_MIGRATION: tuple[int, list[str]] = (
 
 
 # ---------------------------------------------------------------------------
+# Contexte du gate LLM — migration v8 (raison + empreinte atomiques)
+# ---------------------------------------------------------------------------
+
+LLM_GATE_CONTEXT_MIGRATION: tuple[int, list[str]] = (
+    8,
+    [
+        "ALTER TABLE llm_gate_last_seen ADD COLUMN wake_reasons_json TEXT",
+        "ALTER TABLE llm_gate_last_seen ADD COLUMN wake_fingerprints_json TEXT",
+    ],
+)
+
+LLM_GATE_MIGRATIONS: tuple[tuple[int, list[str]], ...] = (
+    LLM_GATE_MIGRATION,
+    LLM_GATE_CONTEXT_MIGRATION,
+)
+
+
+# ---------------------------------------------------------------------------
 # Attribution des sélections d'univers — migration v6
 # ---------------------------------------------------------------------------
 
@@ -651,8 +670,5 @@ SITUATION_MEMORY_OUTCOME_COLUMNS: tuple[tuple[str, str], ...] = (
 
 SITUATION_MEMORY_OUTCOME_MIGRATION: tuple[int, list[str]] = (
     1,
-    [
-        f"ALTER TABLE situation_notes ADD COLUMN {name} {decl}"
-        for name, decl in SITUATION_MEMORY_OUTCOME_COLUMNS
-    ],
+    [f"ALTER TABLE situation_notes ADD COLUMN {name} {decl}" for name, decl in SITUATION_MEMORY_OUTCOME_COLUMNS],
 )

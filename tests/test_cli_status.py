@@ -2,6 +2,7 @@ import json
 import inspect
 
 from backtest.data import HistoryStore
+from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
 from trader.runtime import cli, daemon
 from trader.market.market_data import Bar
 
@@ -353,7 +354,7 @@ def test_cli_decisions_stats_affiche_n_et_pourcentages_par_commit(monkeypatch, t
     (state_dir / "decision_audit.json").write_text(
         json.dumps(
             {
-                "benchmark_semantics_version": 2,
+                "benchmark_semantics_version": BENCHMARK_SEMANTICS_VERSION,
                 "metrics": {
                     "1h": {
                         "total": 12,
@@ -458,10 +459,13 @@ def test_cli_diagnostics_hard_stops_json(monkeypatch, tmp_path, capsys) -> None:
         state_dir,
         [
             {"ts": "2026-06-05T10:00:00+00:00", "symbol": "SPY", "action": "BUY",
-             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG"},
+             "quantity": 10, "price": 100.0, "confidence": 0.8, "intent": "OPEN_LONG",
+             "commission": 0.0, "commission_currency": "USD",
+             "commission_model": "ibkr_us_stock_tiered"},
             {"ts": "2026-06-05T11:00:00+00:00", "symbol": "SPY", "action": "SELL",
              "quantity": 10, "price": 95.0, "confidence": None, "intent": "PLANNED_EXIT",
-             "exit_reason": "hard_stop"},
+             "exit_reason": "hard_stop", "commission": 0.0,
+             "commission_currency": "USD", "commission_model": "ibkr_us_stock_tiered"},
         ],
     )
 

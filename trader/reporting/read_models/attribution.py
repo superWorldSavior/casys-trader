@@ -8,6 +8,9 @@ exit-reason aggregation.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Mapping
+import math
 from pathlib import Path
 
 from trader.reporting.read_models.hard_stop_diagnostics import (
@@ -38,22 +41,117 @@ def _bucket_for(confidence: float | None) -> str | None:
     return None
 
 
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _quality_values(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(
+        {
+            str(item).strip()
+            for item in value
+            if item is not None and str(item).strip()
+        }
+    )
+
+
+def _commission_quality(trips: list[dict]) -> dict:
+    available = 0
+    reasons: Counter[str] = Counter()
+    models: Counter[str] = Counter()
+
+    for trip in trips:
+        quality = trip.get("commission_quality")
+        if not isinstance(quality, Mapping):
+            reasons["commission_quality_missing"] += 1
+            continue
+
+        row_available = quality.get("status") == "available"
+        if row_available and (
+            _finite_number(trip.get("commission")) is None
+            or _finite_number(trip.get("pnl")) is None
+        ):
+            row_available = False
+            reasons["commission_economic_fields_invalid"] += 1
+
+        if row_available:
+            available += 1
+            continue
+
+        row_reasons = _quality_values(quality.get("reasons"))
+        if not row_reasons and quality.get("reason"):
+            row_reasons = [str(quality["reason"])]
+        if not row_reasons:
+            row_reasons = ["commission_quality_unavailable"]
+        reasons.update(row_reasons)
+        models.update(_quality_values(quality.get("models")))
+
+    unavailable = len(trips) - available
+    return {
+        "status": "available" if unavailable == 0 else "unavailable",
+        "reason": (
+            None
+            if unavailable == 0
+            else (
+                next(iter(reasons))
+                if len(reasons) == 1
+                else "multiple_commission_quality_failures"
+            )
+        ),
+        "counts": {
+            "total": len(trips),
+            "available": available,
+            "unavailable": unavailable,
+        },
+        "models": sorted(models),
+        "model_counts": dict(sorted(models.items())),
+        "reasons": sorted(reasons),
+        "reason_counts": dict(sorted(reasons.items())),
+    }
+
+
 def _aggregate(trips: list[dict]) -> dict:
-    pnls = [trip["pnl"] for trip in trips]
+    quality = _commission_quality(trips)
+    gross_values = [_finite_number(trip.get("gross_pnl")) for trip in trips]
+    total_gross_pnl = (
+        round(sum(value for value in gross_values if value is not None), 4)
+        if all(value is not None for value in gross_values)
+        else None
+    )
+
+    pnls: list[float] = []
+    commissions: list[float] = []
+    if quality["status"] == "available":
+        pnls = [float(trip["pnl"]) for trip in trips]
+        commissions = [float(trip["commission"]) for trip in trips]
     wins = [pnl for pnl in pnls if pnl > 0]
+    economics_available = quality["status"] == "available"
     return {
         "n": len(trips),
-        "total_pnl": round(sum(pnls), 4),
-        "total_gross_pnl": round(
-            sum(trip["gross_pnl"] for trip in trips),
-            4,
+        "total_pnl": round(sum(pnls), 4) if economics_available else None,
+        "total_gross_pnl": total_gross_pnl,
+        "total_commission": (
+            round(sum(commissions), 4) if economics_available else None
         ),
-        "total_commission": round(
-            sum(trip["commission"] for trip in trips),
-            4,
+        "win_rate": (
+            (len(wins) / len(trips))
+            if economics_available and trips
+            else None
         ),
-        "win_rate": (len(wins) / len(trips)) if trips else None,
-        "avg_pnl": (sum(pnls) / len(trips)) if trips else None,
+        "avg_pnl": (
+            (sum(pnls) / len(trips))
+            if economics_available and trips
+            else None
+        ),
+        "commission_quality": quality,
     }
 
 
@@ -160,6 +258,7 @@ def compute_attribution(
         "realized_pnl": overall["total_pnl"],
         "realized_gross_pnl": overall["total_gross_pnl"],
         "total_commissions": overall["total_commission"],
+        "commission_quality": overall["commission_quality"],
         "win_rate": overall["win_rate"],
         "avg_pnl": overall["avg_pnl"],
         "avg_holding_minutes": (

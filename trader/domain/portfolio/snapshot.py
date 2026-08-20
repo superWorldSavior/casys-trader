@@ -75,8 +75,21 @@ class Snapshot:
         self,
         *,
         fee_estimator: Callable[[str, float, float, float], float | None] | None = None,
+        fee_estimator_cost_scope: str | None = None,
+        fee_estimator_is_all_in: bool = False,
     ) -> dict[str, object]:
-        """Return the JSON-serializable portfolio context exposed to the agent."""
+        """Return the JSON-serializable portfolio context exposed to the agent.
+
+        A bare estimator callable carries no proof of what its number covers.
+        Callers must pass ``fee_estimator_cost_scope`` to claim a precise scope;
+        otherwise the projection remains explicitly unspecified and never
+        upgrades an arbitrary number to ``broker_commission_only``.
+        """
+        explicit_cost_scope = str(fee_estimator_cost_scope or "").strip()
+        cost_scope = explicit_cost_scope or "unspecified_transaction_cost_estimate"
+        cost_estimate_is_all_in = (
+            fee_estimator_is_all_in is True if explicit_cost_scope else False
+        )
         holdings: list[dict[str, object]] = []
         for holding in self.holdings:
             unrealized_pnl = round(holding.unrealized_pnl, 2)
@@ -95,13 +108,37 @@ class Snapshot:
                     holding.avg_price,
                     holding.last_price,
                 )
-                if round_trip_fee is not None:
+                if (
+                    round_trip_fee is not None
+                    and math.isfinite(round_trip_fee)
+                    and round_trip_fee >= 0.0
+                ):
                     round_trip_fee_usd = round_trip_fee * holding.fx_rate
-                    item["round_trip_fee"] = round_trip_fee_usd
-                    item["unrealized_pnl_net"] = round(
+                    after_modeled_costs = round(
                         unrealized_pnl - round_trip_fee_usd,
                         2,
                     )
+                    # Canonical truth-explicit fields are neutral about what
+                    # the injected estimator covers.  Broker-specific aliases
+                    # are emitted only when the caller explicitly proves that
+                    # scope through metadata.
+                    item["round_trip_cost_estimate"] = round_trip_fee_usd
+                    item["unrealized_pnl_after_modeled_costs"] = after_modeled_costs
+                    item["transaction_cost_scope"] = cost_scope
+                    item["transaction_cost_estimate_is_all_in"] = (
+                        cost_estimate_is_all_in
+                    )
+                    if cost_scope == "broker_commission_only":
+                        item["round_trip_broker_fee"] = round_trip_fee_usd
+                        item["unrealized_pnl_after_broker_fees"] = after_modeled_costs
+
+                    # Backward-compatible wire aliases.  Their adjacent scope
+                    # field prevents legacy consumers from reading "net" as
+                    # all-in while they migrate to the canonical names above.
+                    item["round_trip_fee"] = round_trip_fee_usd
+                    item["unrealized_pnl_net"] = after_modeled_costs
+                    item["unrealized_pnl_net_scope"] = cost_scope
+                    item["unrealized_pnl_net_is_all_in"] = cost_estimate_is_all_in
             holdings.append(item)
         return {
             "cash": round(self.cash, 2),

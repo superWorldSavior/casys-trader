@@ -11,13 +11,43 @@ def test_as_context_ajoute_le_pnl_latent_net_quand_un_estimateur_frais_est_fourn
     )
 
     context = snap.as_context(
-        fee_estimator=lambda symbol, quantity, avg_price, last_price: 3.456
+        fee_estimator=lambda symbol, quantity, avg_price, last_price: 3.456,
+        fee_estimator_cost_scope="broker_commission_only",
+        fee_estimator_is_all_in=False,
     )
 
     holding = context["holdings"][0]
     assert holding["unrealized_pnl"] == 100.0
+    assert holding["round_trip_broker_fee"] == 3.456
+    assert holding["unrealized_pnl_after_broker_fees"] == 96.54
+    assert holding["transaction_cost_scope"] == "broker_commission_only"
+    assert holding["transaction_cost_estimate_is_all_in"] is False
+    assert holding["round_trip_cost_estimate"] == 3.456
+    assert holding["unrealized_pnl_after_modeled_costs"] == 96.54
     assert holding["round_trip_fee"] == 3.456
     assert holding["unrealized_pnl_net"] == 96.54
+    assert holding["unrealized_pnl_net_scope"] == "broker_commission_only"
+    assert holding["unrealized_pnl_net_is_all_in"] is False
+
+
+def test_as_context_ne_pretend_pas_connaitre_le_scope_d_un_callable_nu() -> None:
+    snap = Snapshot(
+        cash=1_000.0,
+        holdings=[Holding("AAPL", quantity=10.0, avg_price=100.0, last_price=110.0)],
+        starting_equity=1_000.0,
+    )
+
+    holding = snap.as_context(
+        fee_estimator=lambda symbol, quantity, avg_price, last_price: 3.456
+    )["holdings"][0]
+
+    assert holding["round_trip_cost_estimate"] == 3.456
+    assert holding["transaction_cost_scope"] == "unspecified_transaction_cost_estimate"
+    assert holding["transaction_cost_estimate_is_all_in"] is False
+    assert holding["unrealized_pnl_net_scope"] == "unspecified_transaction_cost_estimate"
+    assert holding["unrealized_pnl_net_is_all_in"] is False
+    assert "round_trip_broker_fee" not in holding
+    assert "unrealized_pnl_after_broker_fees" not in holding
 
 
 def test_as_context_sans_estimateur_garde_le_contrat_historique() -> None:

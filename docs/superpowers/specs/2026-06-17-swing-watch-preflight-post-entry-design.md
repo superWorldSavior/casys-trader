@@ -129,7 +129,8 @@ Pour garder le contexte du trade :
 - `entry_decision_id` et éventuellement `preflight_decision_id`.
 - `entry_context` : prix, runtime interval, data age, session, daily as-of.
 - revue post-entry v1 : réveil scheduler court après fill, puis chemin existant
-  `has_position` / `exit_watch` ; pas de canal `post_entry_watch` parallèle.
+  `has_position` / `exit_watch` ; le réveil scheduler post-entry contourne le
+  debounce de position, sans canal `post_entry_watch` parallèle.
 - `last_llm_review` : verdict court `intact|fragile|invalidated`, timestamp.
 
 Le but n'est pas de stocker du raisonnement long, mais de rendre la thèse et les
@@ -138,9 +139,15 @@ gardes suffisamment explicites pour les prochains réveils.
 `last_llm_review` est persisté dans `TradePlan` puis **réinjecté dans le contexte
 LLM par symbole** (`_batch_decide` / `_symbol_facts`) au réveil d'une position
 ouverte : le modèle revoit son propre dernier verdict (continuité de thèse). La
-persistance ne sert PAS à nourrir le gate de pertinence : `has_position` force
-déjà l'appel LLM sur toute position ouverte, donc réhydrater `_LAST_LLM_AT` au
-restart serait sans effet observable.
+persistance métier de ce verdict ne pilote pas le gate de pertinence. Le gate
+utilise sa propre dernière revue réelle (`last_llm_at`) : une position ouverte est
+revue au plus tard toutes les 2 h, et plus tôt sur réveil agent, trigger explicite
+(`exit_watch` inclus), ou transition matérielle de régime/signal HTF. Une transition
+inclut apparition, inversion, **disparition**, puis réapparition après revue de
+l'absence. `last_llm_at`, les raisons persistantes revues et leurs empreintes sont
+upsertés atomiquement dans `casys.db` et hydratés ensemble au restart ; une ligne
+legacy ou corrompue est ignorée en bloc afin de forcer une revue fail-open. Le réveil
+post-entry court est un réveil agent et passe donc immédiatement.
 
 ## 6. Cycle hors marché / runtime stale
 
@@ -222,8 +229,10 @@ veille. Modifier hard stop / TP existants demande un champ explicite nouveau, à
 ne pas cacher dans une décision ambiguë.
 
 En v1, ne pas ajouter de canal `post_entry_watch` parallèle : une position ouverte
-est déjà sticky via D10 et force le passage LLM via `has_position`. Si un futur champ
-`post_entry_watch` explicite est ajouté, il devra devenir sticky aussi.
+est déjà sticky via D10 et garantit une revue LLM au plus tard toutes les 2 h via
+`has_position`. Les réveils agent, triggers explicites et transitions matérielles
+de régime/signal HTF contournent cette cadence. Si un futur champ `post_entry_watch`
+explicite est ajouté, il devra devenir sticky aussi.
 
 ## 9. Calendrier de marché
 
@@ -266,8 +275,12 @@ brancher une librairie de calendriers exchange si nécessaire.
   déterministe toujours appliqué.
 - Hard stop / TP d'un plan ouvert restent mécaniques.
 - Fill d'ouverture => `TradePlan` enrichi + revue post-entry planifiée.
-- Revue post-entry planifiée => wake symbole court + `has_position` force l'appel LLM.
-- Position ouverte due => LLM appelé même sans signal cockpit.
+- Revue post-entry planifiée => wake symbole court qui contourne le debounce de
+  position et force l'appel LLM.
+- Position ouverte revue récemment + signal/régime actif qui disparaît => appel LLM
+  unique ; après revue de l'absence, pas de boucle ; réapparition identique => nouvel appel.
+- Position ouverte jamais revue ou dont la dernière revue réelle date d'au moins
+  2 h => LLM appelé même sans signal cockpit.
 - `.TWO` utilise le calendrier Taiwan.
 - Weekend / férié => planning possible, exécution interdite.
 - Daily timestampé à minuit mais dernière séance complétée valide => contexte daily accepté.

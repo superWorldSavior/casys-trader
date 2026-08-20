@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from trader.tui import build_view, sparkline
+from trader.tui import _build_kpi_band, build_view, sparkline
 
 
 def _render(renderable, width: int = 120) -> str:
@@ -45,6 +45,62 @@ def test_build_view_affiche_les_kpi() -> None:
     assert "Sharpe" in out
     assert "1.5" in out
     assert "Win" in out
+
+
+def test_build_view_ne_transforme_pas_les_kpi_inconnus_en_zero() -> None:
+    out = _render(
+        build_view(
+            {
+                "portfolio": {},
+                "kpis": {"equity": None, "cash": None, "total_return": None},
+            }
+        ),
+        width=220,
+    )
+    trades = _render(
+        _build_kpi_band(
+            {
+                "sharpe": 1.1,
+                "max_drawdown": -0.1,
+                "period_win_rate": 0.5,
+                "volatility": 0.2,
+                "num_trades": None,
+            }
+        )
+    )
+    trade_value = [cell.strip() for cell in trades.splitlines()[1].split("│") if cell.strip()][-1]
+
+    assert "Équité $ : —" in out
+    assert "Capital non engagé $ : —" in out
+    assert "Rendement : —" in out
+    assert trade_value == "—"
+
+
+def test_build_view_preserve_les_vrais_zeros() -> None:
+    state = {
+        "portfolio": {
+            "equity": 0.0,
+            "cash": 0.0,
+            "total_return_pct": 0.0,
+            "holdings": [],
+        },
+        "kpis": {
+            "sharpe": 1.1,
+            "max_drawdown": -0.1,
+            "period_win_rate": 0.5,
+            "volatility": 0.2,
+            "num_trades": 0,
+        },
+    }
+
+    out = _render(build_view(state), width=220)
+    trades = _render(_build_kpi_band(state["kpis"]))
+    trade_value = [cell.strip() for cell in trades.splitlines()[1].split("│") if cell.strip()][-1]
+
+    assert "Équité $ : $0.00" in out
+    assert "Capital non engagé $ : $0.00" in out
+    assert "Rendement : +0.00%" in out
+    assert trade_value == "0"
 
 
 def test_build_view_affiche_la_calibration_de_confidence() -> None:

@@ -21,9 +21,17 @@ def test_build_base_context_preserve_payload_and_evaluation_order(monkeypatch, t
     class Snap:
         equity = 123_456.0
 
-        def as_context(self, *, fee_estimator):
+        def as_context(
+            self,
+            *,
+            fee_estimator,
+            fee_estimator_cost_scope,
+            fee_estimator_is_all_in,
+        ):
             calls.append("portfolio")
             assert fee_estimator is fee_estimator_ref
+            assert fee_estimator_cost_scope == "broker_commission_only"
+            assert fee_estimator_is_all_in is False
             return {"portfolio": "context"}
 
     class Store:
@@ -125,6 +133,8 @@ def test_build_base_context_preserve_payload_and_evaluation_order(monkeypatch, t
         symbols=["SPY", "QQQ", "MISSING"],
         snap=snap,
         portfolio_fee_estimator=fee_estimator,
+        portfolio_fee_estimator_cost_scope="broker_commission_only",
+        portfolio_fee_estimator_is_all_in=False,
         risk_cfg=risk_cfg,
         prices=prices,
         broker=broker,

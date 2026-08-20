@@ -37,6 +37,25 @@ def test_current_code_version_distinguishes_untracked_from_tracked_dirty(
     assert tracked["git_tracked_dirty"] is True
 
 
+def test_current_code_version_does_not_treat_unavailable_status_as_clean(
+    monkeypatch,
+) -> None:
+    def fake_git(_repo_root: Path, args: list[str]) -> str | None:
+        if args == ["rev-parse", "HEAD"]:
+            return "a" * 40
+        if args == ["status", "--porcelain=v1", "--untracked-files=all"]:
+            return None
+        return "known"
+
+    monkeypatch.setattr(code_version, "_git", fake_git)
+
+    version = code_version.current_code_version(Path("."))
+
+    assert version["git_commit"] == "a" * 40
+    assert version["git_dirty"] is None
+    assert version["git_tracked_dirty"] is None
+
+
 def test_historical_code_version_retrouve_le_commit_avant_un_timestamp(monkeypatch) -> None:
     calls: list[list[str]] = []
 

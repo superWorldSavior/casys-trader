@@ -275,8 +275,13 @@ def test_run_cycle_report_portefeuille_expose_le_pnl_latent_net_avec_commissions
     current_report = json.loads((state_dir / "current_report.json").read_text())
     persisted_holding = current_report["portfolio"]["holdings"][0]
     assert holding["unrealized_pnl"] == 0.0
+    assert holding["round_trip_broker_fee"] == 0.7
+    assert holding["unrealized_pnl_after_broker_fees"] == -0.7
+    assert holding["transaction_cost_scope"] == "broker_commission_only"
+    assert holding["transaction_cost_estimate_is_all_in"] is False
     assert holding["round_trip_fee"] == 0.7
     assert holding["unrealized_pnl_net"] == -0.7
+    assert holding["unrealized_pnl_net_scope"] == "broker_commission_only"
     assert persisted_holding == holding
 
 

@@ -12,6 +12,7 @@ Modal ~112 cols :
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from rich.console import Group, RenderableType
@@ -106,16 +107,38 @@ def _symbol_watch(state: dict, symbol: str) -> dict | None:
     return None
 
 
-def _realized_total(state: dict, symbol: str) -> tuple[float, int]:
-    """(total_net_pnl_usd, n_trips) from recent_trips filtered by symbol."""
-    total = 0.0
+def _realized_total(
+    state: dict, symbol: str
+) -> tuple[float | None, float | None, int]:
+    """Return trustworthy net, gross and count for one symbol's recent trips."""
+    net_total = 0.0
+    gross_total = 0.0
+    net_available = True
+    gross_available = True
     count = 0
     for trip in _safe_list_of_dicts(state.get("recent_trips")):
         if str(trip.get("symbol") or "") == symbol:
-            pnl = _safe_float(trip.get("pnl"), default=0.0) or 0.0
-            total += pnl
             count += 1
-    return total, count
+            quality = trip.get("commission_quality")
+            pnl = _safe_float(trip.get("pnl"), default=None)
+            if (
+                not isinstance(quality, Mapping)
+                or quality.get("status") != "available"
+                or pnl is None
+            ):
+                net_available = False
+            else:
+                net_total += pnl
+            gross = _safe_float(trip.get("gross_pnl"), default=None)
+            if gross is None:
+                gross_available = False
+            else:
+                gross_total += gross
+    return (
+        net_total if net_available else None,
+        gross_total if gross_available else None,
+        count,
+    )
 
 
 def _venue_bias(state: dict, symbol: str) -> str | None:
@@ -224,16 +247,28 @@ def _build_left_column(
     parts.append(Text(""))  # spacer
 
     # ── Realized ─────────────────────────────────────────────────────────────
-    total, count = _realized_total(state, symbol)
+    net_total, gross_total, count = _realized_total(state, symbol)
     real_line = Text()
     if count == 0:
         real_line.append("no closed trips for this symbol", style=CASYS_FAINT)
     else:
-        real_line.append("realized on this symbol  ", style=CASYS_DIM)
-        real_line.append(
-            f.fmt_signed_money(total),
-            style=CASYS_SUCCESS if total >= 0 else CASYS_ERROR,
-        )
+        if net_total is not None:
+            real_line.append("net realized on this symbol  ", style=CASYS_DIM)
+            real_line.append(
+                f.fmt_signed_money(net_total),
+                style=CASYS_SUCCESS if net_total >= 0 else CASYS_ERROR,
+            )
+        elif gross_total is not None:
+            real_line.append("gross realized on this symbol  ", style=CASYS_DIM)
+            real_line.append(
+                f.fmt_signed_money(gross_total),
+                style=CASYS_SUCCESS if gross_total >= 0 else CASYS_ERROR,
+            )
+            real_line.append(" · net/broker fees unavailable", style=CASYS_FAINT)
+        else:
+            real_line.append(
+                "realized economics unavailable", style=CASYS_FAINT
+            )
         real_line.append(
             f"  over {count} closed trip{'s' if count != 1 else ''}",
             style=CASYS_DIM,

@@ -51,6 +51,12 @@ def _fmt_fee_cost(value: Any, *, default: str = "n/a") -> str:
 
 
 def _holding_unrealized_pnl_for_display(holding: dict) -> float:
+    after_broker_fees = _safe_float(
+        holding.get("unrealized_pnl_after_broker_fees"),
+        default=None,
+    )
+    if after_broker_fees is not None:
+        return after_broker_fees
     net_pnl = _safe_float(holding.get("unrealized_pnl_net"), default=None)
     if net_pnl is not None:
         return net_pnl
@@ -58,6 +64,9 @@ def _holding_unrealized_pnl_for_display(holding: dict) -> float:
 
 
 def _holding_round_trip_fee_for_display(holding: dict) -> float | None:
+    broker_fee = _safe_float(holding.get("round_trip_broker_fee"), default=None)
+    if broker_fee is not None:
+        return broker_fee
     if _safe_float(holding.get("unrealized_pnl_net"), default=None) is None:
         return None
     return _safe_float(holding.get("round_trip_fee"), default=None)

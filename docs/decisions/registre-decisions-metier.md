@@ -81,7 +81,7 @@ Mécanique : agent écrit un HOLD → consolidé en interdiction → relu → re
 2. Pré-autorisation : aujourd'hui un trigger WAKE_WITH_ORDER_INTENT « repasse par Codex » — exécuter direct transfère le jugement au moment de l'armement. Le risque résiduel est borné par le gate déterministe.
 3. Moins d'adaptabilité → compensée par les réveils événementiels (cluster D3, triggers).
 **Arbitrage tranché en plus (Erwan, 2026-06-11) : l'agent GARDE son autonomie d'auto-réveil** — un `next_wake_in_minutes` qu'il a demandé n'est jamais filtré ; cible souple ~−50 % d'appels, pas une coupure totale.
-**Étage A implémenté (2026-06-11).** `trader/relevance_gate.py` (fonctions pures) + câblage daemon : le polling par défaut sur symbole calme ne consomme plus d'appel (décision tracée `quiet_gate`) ; passent toujours — réveil demandé par l'agent (`Scheduler.has_symbol_wake`), triggers, position ouverte, régime de famille fort (≥0,70), signaux cockpit (sig/stretched), revue périodique garantie (4 h, et premier réveil post-restart). Guidance ajoutée : préférer les `indicator_watch` aux réveils courts. TDD (`tests/test_relevance_gate.py`, 8 tests). À mesurer : appels/24 h avant→après.
+**Étage A implémenté (2026-06-11, cadence position amendée 2026-08-20).** `trader/relevance_gate.py` (fonctions pures) + câblage daemon : le polling par défaut sur symbole calme ne consomme plus d'appel (décision tracée `quiet_gate`). Passent toujours : réveil demandé par l'agent (`Scheduler.has_symbol_wake`), trigger explicite, première revue sans état durable valide et revue périodique garantie (4 h). Une position ouverte est revue au plus tard toutes les **2 h** ; cette cadence est contournée par les réveils agent (dont post-entry), triggers (`exit_watch` inclus), et transitions matérielles de régime fort / signal HTF : apparition, inversion, disparition, puis réapparition après revue de l'absence. Hard exits, RiskGate et exécution directe des plans armés D7B restent en dehors de ce gate de pertinence. Guidance ajoutée : préférer les `indicator_watch` aux réveils courts. TDD dans `tests/test_relevance_gate.py`. À mesurer : appels/24 h avant→après.
 **Motivation supplémentaire (Erwan, 2026-06-11) — le mode planificateur force l'usage du modèle sémantique.** En opérateur, l'agent peut répondre HOLD en prose sans jamais mobiliser la couche sémantique. En planificateur, un scénario DOIT s'exprimer dans le vocabulaire gouverné (`indicator_watch` : cube symbol × indicator × timeframe × op × value ; `exit_plan` structuré) → sorties machine-validables (fast-fail sur indicateur halluciné), plans auditables et rejouables a posteriori, et learnings rattachables à l'issue d'un plan précis plutôt qu'à un sentiment. Le planificateur transforme le jugement LLM en artefacts vérifiables — exactement l'esprit AX.
 **Arbitrage 1 tranché (Erwan, 2026-06-11) : exécution DIRECTE des plans armés, sans re-appel LLM.** Le LLM fait des ordres selon des scénarios mais n'exécute pas en direct ; il garde la main pour se réveiller et poser/ajuster ses plans. Le gate de risque déterministe reste le fusible.
 **Étage B implémenté (MVP, 2026-06-11, consultation Codex intégrée).** `on_trigger:"EXECUTE_ORDER"` sur les indicator_watch : le LLM arme un scénario complet (`order` = intent OPEN_*, qty, confidence, exit_plan avec hard_stop OBLIGATOIRE, rationale) ; au déclenchement le daemon exécute SANS re-appel via la boucle d'exécution normale (tous les gates de risque s'appliquent : missing_hard_stop, clamp 1 %, order_value, gross). Sécurités au déclenchement : si le prix a déjà franchi le stop, si une position existe déjà ou si les données sont stale → annulation + RÉVEIL du planificateur avec le contexte (événement `armed_plan_cancelled`). Contrat strict à l'armement (fast-fail) sinon dégradation en WAKE_WITH_ORDER_INTENT ; TTL max 4 h, aligné sur la revue périodique (corrigé par Erwan : un TTL court forçait des réveils de ré-armement, l'expiration étant silencieuse) ; provenance ledger `source="armed_plan"` + `armed_plan_id` ; `_LAST_LLM_AT` mis à jour seulement si le modèle a réellement statué. TDD : `tests/test_armed_plans.py` (5), `tests/test_indicator_watch.py` (+5), contrat agent exposé (vocabulaire + guidance).
@@ -197,11 +197,14 @@ veto de thèse au moment du tir.
   multi-jours demandent un renouvellement explicite, un TTL différent, ou un réveil
   pré-open qui régénère le plan.
 - Le suivi post-entry v1 doit étendre le chemin existant : wake court après fill,
-  puis `has_position` force l'appel LLM. Pas de canal `post_entry_watch` parallèle ;
+  puis ce réveil agent contourne immédiatement le debounce de position. Hors événement,
+  `has_position` garantit une revue LLM au plus tard toutes les 2 h. Pas de canal `post_entry_watch` parallèle ;
   si un tel champ existe plus tard hors position, il devra devenir sticky D10.
 - `last_llm_review` est persisté dans `TradePlan` puis **réinjecté au contexte LLM**
   par symbole (continuité de thèse au réveil). Il ne sert PAS à réhydrater le cache
-  `_LAST_LLM_AT` : `has_position` force déjà l'appel LLM sur toute position ouverte.
+  du gate : la cadence utilise `last_llm_at`, distinct du verdict métier. Une
+  transition de régime/signal HTF (apparition, inversion, disparition ou réapparition
+  après revue de l'absence) contourne les 2 h ; triggers et réveils agent aussi.
 **Point ouvert principal.** Critère de déclenchement du préflight : conditionnel
 vs global. La recommandation actuelle est conditionnelle pour préserver D7B sur les
 plans intra-séance récents, éviter le double-jugement inutile, et mesurer d'abord
@@ -505,12 +508,14 @@ l'agent d'aval. Cinq couches, du plus instrumenté au plus fermé :
      mandats (plus seulement le script). Collateral : briefs
      macro/news et micro société rédigés en anglais.
 
-5. **Cadence LLM — `beb9e26`.** Ferme le backlog D7 « persister
+5. **Cadence LLM — `beb9e26`, contexte durable complété le 2026-08-20.** Ferme le backlog D7 « persister
    `last_llm_at` (volatile → batch global à chaque restart) ». Table
-   `llm_gate_last_seen` (casys.db, migration v5) : hydratation au boot,
-   upsert à chaque revue réelle. Backend ≠ sqlite → mémoire seule
-   préservée. **`last_wake_reasons` reste volatile** (debounce
-   régime/signal se réinitialise au restart — plus d'appels, pas moins).
+   `llm_gate_last_seen` (casys.db, migration v5) ; la migration v8 ajoute
+   `wake_reasons_json` et `wake_fingerprints_json`. Timestamp, raisons et
+   empreintes sont upsertés atomiquement après chaque revue réelle, puis les
+   trois sont hydratés au boot. Une ligne legacy ou un contexte corrompu est
+   ignorée en bloc (fail-open : nouvelle revue, jamais faux debounce).
+   Backend ≠ sqlite → mémoire seule préservée.
    Ce n'est pas une boucle marché : c'est la persistance du gate de
    pertinence.
 
@@ -532,7 +537,7 @@ vertes au fil des commits (4 276 → 4 326).
 
 **Points ouverts.** `since_open_m` persisté mais **non analysé** (mesure
 D11 pas commencée). Retrieval FTS situation toujours inactif. MemRL
-situation (`q_value`) jamais scorée. `last_wake_reasons` reste volatile.
+situation (`q_value`) jamais scorée.
 Le digest `direction` univers ne parle qu'une fois `min_n=5` atteint par
 famille × venue.
 

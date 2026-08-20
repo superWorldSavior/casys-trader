@@ -100,12 +100,77 @@ def test_compute_meta_performance_signale_audit_illisible(monkeypatch, tmp_path)
     assert payload == {"available": False, "reason": "decision_audit_unreadable"}
 
 
+def test_compute_meta_performance_signale_audit_utf8_invalide(tmp_path) -> None:
+    (tmp_path / "decision_audit.json").write_bytes(b"\xff\xfe\x00")
+
+    payload = meta_performance.compute_meta_performance(tmp_path)
+
+    assert payload == {"available": False, "reason": "decision_audit_unreadable"}
+
+
 def test_compute_meta_performance_signale_schema_audit_invalide(tmp_path) -> None:
     (tmp_path / "decision_audit.json").write_text("[]", encoding="utf-8")
 
     payload = meta_performance.compute_meta_performance(tmp_path)
 
     assert payload == {"available": False, "reason": "decision_audit_invalid_schema"}
+
+
+def test_compute_meta_performance_signale_schema_imbrique_invalide(tmp_path) -> None:
+    payload = {
+        "benchmark_semantics_version": decision_audit.BENCHMARK_SEMANTICS_VERSION,
+        "horizons": ["1h"],
+        "rows": [],
+        "metrics": {"1h": []},
+        "metrics_by_reason": {"1h": {}},
+    }
+    (tmp_path / "decision_audit.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    result = meta_performance.compute_meta_performance(tmp_path, horizons=("1h",))
+
+    assert result == {"available": False, "reason": "decision_audit_invalid_schema"}
+
+
+def test_compute_meta_performance_signale_reason_metrics_non_mapping(tmp_path) -> None:
+    payload = {
+        "benchmark_semantics_version": decision_audit.BENCHMARK_SEMANTICS_VERSION,
+        "horizons": ["1h"],
+        "rows": [],
+        "metrics": {"1h": {}},
+        "metrics_by_reason": {"1h": {"HOLD": {"NO_EDGE": []}}},
+    }
+    (tmp_path / "decision_audit.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    result = meta_performance.compute_meta_performance(tmp_path, horizons=("1h",))
+
+    assert result == {"available": False, "reason": "decision_audit_invalid_schema"}
+
+
+def test_daemon_meta_performance_projection_is_fail_soft(monkeypatch, tmp_path) -> None:
+    from trader.runtime import daemon
+
+    monkeypatch.setattr(daemon, "STATE_DIR", tmp_path)
+
+    def broken_projection(state_dir):
+        raise RuntimeError(f"broken {state_dir}")
+
+    monkeypatch.setattr(
+        daemon.meta_performance,
+        "compute_meta_performance",
+        broken_projection,
+    )
+
+    assert daemon._load_meta_performance_payload() == {
+        "available": False,
+        "reason": "meta_performance_projection_error",
+        "detail": "RuntimeError",
+    }
 
 
 def test_compute_meta_performance_migre_les_anciens_audits_directionless(tmp_path) -> None:
@@ -159,9 +224,7 @@ def test_compute_meta_performance_migre_les_anciens_audits_directionless(tmp_pat
 def _minimal_audit(tmp_path: Path) -> Path:
     """Écrit un decision_audit.json minimal valide et retourne son chemin."""
     audit_path = tmp_path / "decision_audit.json"
-    audit_path.write_text(
-        json.dumps({"horizons": [], "metrics": {}, "rows": []}), encoding="utf-8"
-    )
+    audit_path.write_text(json.dumps({"horizons": [], "metrics": {}, "rows": []}), encoding="utf-8")
     return audit_path
 
 
@@ -214,9 +277,7 @@ def test_mtime_cache_relecture_si_mtime_change(monkeypatch, tmp_path) -> None:
     # résolution 1-2 s (ext3, FAT, certains NFS) — utime est déterministe.
     stat = audit_path.stat()
     os.utime(audit_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-    audit_path.write_text(
-        json.dumps({"horizons": ["1h"], "metrics": {}, "rows": []}), encoding="utf-8"
-    )
+    audit_path.write_text(json.dumps({"horizons": ["1h"], "metrics": {}, "rows": []}), encoding="utf-8")
 
     meta_performance.compute_meta_performance(tmp_path)  # lecture 2
 

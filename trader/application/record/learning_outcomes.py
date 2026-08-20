@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left, bisect_right
-from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Protocol
 
 from trader.domain.decision_benchmark import decision_verdict
 from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
@@ -17,25 +14,6 @@ from trader.domain.market_data import Bar
 MIN_OUTCOME_AGE = timedelta(days=1)
 UNKNOWN_OUTCOME_AGE = timedelta(days=3)
 OPENING_INTENTS = frozenset({"OPEN_LONG", "OPEN_SHORT", "SCALE_IN", "FLIP"})
-_FLAT_EPSILON = 1e-9
-
-
-class ModelPerformanceRows(Protocol):
-    """Driven port exposing persisted model-performance rows."""
-
-    def read_rows(self) -> Iterable[Mapping[str, object]]: ...
-
-
-@dataclass
-class _Lot:
-    decision_id: str | None
-    quantity: float
-    price: float
-    fx_rate: float
-    entry_commission: float
-    initial_quantity: float
-    gross_usd: float = 0.0
-    exit_commission: float = 0.0
 
 
 def _utc(value: datetime) -> datetime:
@@ -52,77 +30,42 @@ def _parse_ts(raw: object) -> datetime | None:
     return _utc(value)
 
 
-def _non_negative(value: object, *, fallback: float) -> float:
+def _finite_number(value: object) -> float | None:
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
-        return fallback
-    return parsed if math.isfinite(parsed) and parsed >= 0.0 else fallback
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
-def realised_entry_outcomes(reader: ModelPerformanceRows) -> dict[str, float]:
-    """Return net directional returns for fully closed FIFO entry lots."""
-    rows = sorted(
-        reader.read_rows(),
-        key=lambda row: (str(row.get("symbol") or ""), str(row.get("ts") or "")),
-    )
-    lots_by_symbol: dict[str, deque[_Lot]] = {}
+def realised_entry_outcomes(
+    cycles: Iterable[Mapping[str, object]],
+) -> dict[str, float]:
+    """Project canonical, fee-proven cycles onto their entry decisions.
+
+    This application policy owns no persistence or reconstruction authority.
+    Its caller must inject completed flat-to-flat cycles built from the broker
+    ledger, including USD entry notional and explicit commission quality.
+    """
     resolved: dict[str, float] = {}
-
-    for row in rows:
-        symbol = str(row.get("symbol") or "")
-        action = str(row.get("action") or "").upper()
-        try:
-            quantity = abs(float(row.get("quantity")))
-            price = float(row.get("price"))
-        except (TypeError, ValueError):
+    for cycle in cycles:
+        quality = cycle.get("commission_quality")
+        if not isinstance(quality, Mapping) or quality.get("status") != "available":
             continue
-        if (
-            not symbol
-            or action not in {"BUY", "SELL"}
-            or not math.isfinite(quantity)
-            or quantity <= 0.0
-            or not math.isfinite(price)
-            or price <= 0.0
-        ):
+        deployed = _finite_number(cycle.get("entry_notional_usd"))
+        net_pnl = _finite_number(cycle.get("pnl"))
+        if deployed is None or deployed <= 0.0 or net_pnl is None:
             continue
 
-        signed = quantity if action == "BUY" else -quantity
-        fx_rate = _non_negative(row.get("fx_rate"), fallback=1.0)
-        commission = _non_negative(row.get("commission"), fallback=0.0)
-        decision_id = str(row.get("decision_id") or "") or None
-        lots = lots_by_symbol.setdefault(symbol, deque())
-
-        remaining = signed
-        while lots and abs(remaining) > _FLAT_EPSILON and (lots[0].quantity > 0) != (remaining > 0):
-            lot = lots[0]
-            closed = min(abs(remaining), abs(lot.quantity))
-            direction = 1.0 if lot.quantity > 0 else -1.0
-            lot.gross_usd += (price - lot.price) * closed * direction * fx_rate
-            lot.exit_commission += commission * (closed / abs(signed))
-            lot.quantity -= direction * closed
-            remaining += direction * closed
-            if abs(lot.quantity) <= _FLAT_EPSILON:
-                lots.popleft()
-                if lot.decision_id:
-                    deployed = lot.price * lot.initial_quantity * lot.fx_rate
-                    net = lot.gross_usd - lot.entry_commission - lot.exit_commission
-                    if deployed > 0.0:
-                        resolved[lot.decision_id] = net / deployed
-
-        if abs(remaining) > _FLAT_EPSILON:
-            opening_quantity = abs(remaining)
-            lots.append(
-                _Lot(
-                    decision_id=decision_id,
-                    quantity=remaining,
-                    price=price,
-                    fx_rate=fx_rate,
-                    entry_commission=commission * (opening_quantity / quantity),
-                    initial_quantity=opening_quantity,
-                )
-            )
-
+        raw_entry_ids = cycle.get("entry_decision_ids")
+        entry_ids = raw_entry_ids if isinstance(raw_entry_ids, list) else []
+        net_return = net_pnl / deployed
+        if not math.isfinite(net_return):
+            continue
+        for entry_id in entry_ids:
+            normalized_id = str(entry_id or "").strip()
+            if normalized_id:
+                resolved[normalized_id] = net_return
     return resolved
 
 
@@ -248,7 +191,6 @@ def uses_realised_outcome(row: Mapping[str, object]) -> bool:
 
 __all__ = [
     "MIN_OUTCOME_AGE",
-    "ModelPerformanceRows",
     "OPENING_INTENTS",
     "forward_return",
     "learning_outcome_for_return",

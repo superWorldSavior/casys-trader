@@ -62,7 +62,10 @@ def _build_kpi_band(kpis: dict, *, palette: Palette = PALETTE_DARK) -> Renderabl
             card("Win rate", _fmt_percent(win_rate), win_style, "période"),
             card("Volatilité", _fmt_percent(volatility), vol_style, "annualisée"),
             card(
-                "Trades", _fmt_int(trades), palette["kpi_default"], "clôturés/exécutés"
+                "Trades",
+                _fmt_int(trades, default="—"),
+                palette["kpi_default"],
+                "clôturés/exécutés",
             ),
         ],
         equal=True,
@@ -137,7 +140,7 @@ def _build_kpi_compact(
     dd_str = f"{max_dd * 100:.1f}%" if max_dd is not None else "—"
     wr_str = f"{win_rate * 100:.1f}%" if win_rate is not None else "—"
     vol_str = f"{volatility * 100:.1f}%" if volatility is not None else "—"
-    trades_str = str(int(trades)) if trades is not None else "0"
+    trades_str = str(int(trades)) if trades is not None else "—"
 
     line1 = Text.assemble(
         ("Sharpe: ", palette["dim"]),
