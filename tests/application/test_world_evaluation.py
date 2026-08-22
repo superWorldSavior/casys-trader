@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.world_model.evaluation import evaluate_shadow
+from trader.reporting.read_models.world_evaluation import evaluate_shadow
 
 
 def _prediction(**overrides):

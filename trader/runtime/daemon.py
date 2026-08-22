@@ -2130,6 +2130,7 @@ def main(
             from trader.application.world_model.gru import OnlineGRUWorldChallenger
             from trader.infrastructure.state_db.world_model_store import WorldModelStore
             from trader.runtime.world_model_runtime import (
+                CallableWorldBarProvider,
                 WorldModelBackgroundRunner,
                 WorldModelRuntime,
             )
@@ -2140,7 +2141,7 @@ def main(
                 predictor=HierarchicalDirichletWorldBaseline(),
                 predictors=(OnlineGRUWorldChallenger(),),
                 labeler=world_model_labeler,
-                bar_provider=make_indirect_get_bars(_ds_handle.get),
+                bar_provider=CallableWorldBarProvider(make_indirect_get_bars(_ds_handle.get)),
                 logger=log,
                 lookback=DEFAULT_RUNTIME_LOOKBACK,
             )

@@ -21,7 +21,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from trader.domain.world_episode import (
+    OUTCOME_STATUSES,
+    PREDICTION_CLASSES,
+    PREDICTION_STATUSES,
+    WorldOutcome,
+    WorldPrediction,
+)
 from trader.infrastructure.state_db.connection import StateDb
+
+_LEGACY_MOVE_CLASS = {"up": "UP", "down": "DOWN", "flat": "FLAT"}
 
 __all__ = [
     "WORLD_MODEL_MIGRATIONS",
@@ -343,6 +352,72 @@ def _required_text(value: Any, *, field: str) -> str:
     return result
 
 
+def _canonical_move_class(value: str | None) -> str | None:
+    """Read adapter: persist lowercase historical directions as DOWN/FLAT/UP."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return _LEGACY_MOVE_CLASS.get(text.lower(), text.upper() if text.upper() in PREDICTION_CLASSES else text)
+
+
+def _assert_live_prediction(payload: Mapping[str, Any], nested: Mapping[str, Any]) -> None:
+    recommendation = nested.get("recommendation", payload.get("recommendation", "NO_GO"))
+    if recommendation != "NO_GO":
+        raise ValueError("recommendation must remain NO_GO for a shadow prediction")
+    authority = nested.get("authority", payload.get("authority", "shadow_only"))
+    if authority != "shadow_only":
+        raise ValueError("authority must remain shadow_only")
+    decision_effect = nested.get("decision_effect", payload.get("decision_effect", "none"))
+    if decision_effect != "none":
+        raise ValueError("decision_effect must remain none")
+    status = str(nested.get("status") or payload.get("status") or "warming_up").strip().lower()
+    if status not in PREDICTION_STATUSES:
+        allowed = ", ".join(sorted(PREDICTION_STATUSES))
+        raise ValueError(f"status must be one of: {allowed}")
+    probabilities = nested.get("probabilities", payload.get("probabilities"))
+    if isinstance(probabilities, Mapping):
+        keys = set(probabilities)
+        if keys and keys != set(PREDICTION_CLASSES):
+            raise ValueError("probabilities must contain exactly DOWN, FLAT, and UP")
+        if status == "shadow_only" and keys != set(PREDICTION_CLASSES):
+            raise ValueError("shadow_only prediction requires DOWN/FLAT/UP probabilities")
+    predicted_class = nested.get("predicted_class", payload.get("predicted_class"))
+    if predicted_class is not None:
+        rendered = str(predicted_class).strip()
+        if rendered not in PREDICTION_CLASSES:
+            raise ValueError("predicted_class must be one of: DOWN, FLAT, UP")
+
+
+def _assert_live_outcome(payload: Mapping[str, Any], label: Mapping[str, Any]) -> None:
+    status = str(payload.get("status") or label.get("status") or "observed").strip().lower()
+    if status not in OUTCOME_STATUSES:
+        allowed = ", ".join(sorted(OUTCOME_STATUSES))
+        raise ValueError(f"status must be one of: {allowed}")
+    move = _first(
+        payload,
+        ("move_class",),
+        ("direction",),
+        ("label", "move_class"),
+        ("label", "direction"),
+    )
+    if move is not None:
+        rendered = str(move).strip()
+        if rendered not in PREDICTION_CLASSES:
+            raise ValueError("move_class must be one of: DOWN, FLAT, UP")
+    source = _first(
+        payload,
+        ("source_raw_sha256",),
+        ("evidence", "source_raw_sha256"),
+        ("label", "source_raw_sha256"),
+    )
+    eligible = payload.get("training_eligible")
+    if eligible is True and (status != "observed" or not _text(source)):
+        raise ValueError("only an observed outcome with immutable source evidence is trainable")
+
+
 def _horizon_filter(
     *,
     horizon_code: str | None,
@@ -541,6 +616,19 @@ class WorldModelStore:
         )
 
     def append_outcome_event(self, outcome: Any) -> bool:
+        """Append a canonical live outcome.  Mapping payloads must satisfy the live contract."""
+
+        return self._append_outcome_event(outcome, live=True)
+
+    def append_legacy_outcome_event(self, outcome: Any) -> bool:
+        """Persist a historical or fixture mapping without the live canonical contract."""
+
+        return self._append_outcome_event(outcome, live=False)
+
+    def append_legacy_outcome(self, outcome: Any) -> bool:
+        return self.append_legacy_outcome_event(outcome)
+
+    def _append_outcome_event(self, outcome: Any, *, live: bool) -> bool:
         payload = _as_mapping(outcome, name="outcome")
         episode_id = _required_text(payload.get("episode_id"), field="episode_id")
         episode = self._db.query_one(
@@ -633,7 +721,7 @@ class WorldModelStore:
                 _first(payload, ("move_class",), ("direction",), ("label", "move_class"), ("label", "direction"))
             ),
             "training_eligible": int(
-                _bool(payload.get("training_eligible"), default=bool(episode["training_eligible"]))
+                _bool(payload.get("training_eligible"), default=False)
             ),
             "label_available_at": _text(
                 _first(payload, ("label_available_at",), ("available_at",), ("label", "available_at"))
@@ -648,6 +736,13 @@ class WorldModelStore:
             "payload_json": _canonical_json(payload),
             "payload_sha256": _canonical_sha256(payload),
         }
+        if live and not isinstance(outcome, WorldOutcome):
+            existing = self._db.query_one(
+                "SELECT outcome_event_id FROM world_outcome_events WHERE outcome_event_id=?",
+                (values["outcome_event_id"],),
+            )
+            if existing is None:
+                _assert_live_outcome(payload, label)
         return self._append(
             table="world_outcome_events",
             id_column="outcome_event_id",
@@ -661,6 +756,16 @@ class WorldModelStore:
         return self.append_outcome_event(outcome)
 
     def append_prediction(self, prediction: Any) -> bool:
+        """Append a canonical live prediction.  Mapping payloads must satisfy the live contract."""
+
+        return self._append_prediction(prediction, live=True)
+
+    def append_legacy_prediction(self, prediction: Any) -> bool:
+        """Persist a historical or fixture mapping without the live canonical contract."""
+
+        return self._append_prediction(prediction, live=False)
+
+    def _append_prediction(self, prediction: Any, *, live: bool) -> bool:
         payload = _as_mapping(prediction, name="prediction")
         episode_id = _required_text(payload.get("episode_id"), field="episode_id")
         episode = self._db.query_one(
@@ -731,6 +836,13 @@ class WorldModelStore:
             "payload_json": _canonical_json(payload),
             "payload_sha256": _canonical_sha256(payload),
         }
+        if live and not isinstance(prediction, WorldPrediction):
+            existing = self._db.query_one(
+                "SELECT prediction_id FROM world_shadow_predictions WHERE prediction_id=?",
+                (values["prediction_id"],),
+            )
+            if existing is None:
+                _assert_live_prediction(payload, predicted)
         return self._append(
             table="world_shadow_predictions",
             id_column="prediction_id",
@@ -960,6 +1072,13 @@ class WorldModelStore:
         result["outcome"] = _json_load(result["payload_json"])
         result["label"] = _json_load(result["label_json"])
         result["evidence"] = _json_load(result["evidence_json"])
+        result["move_class"] = _canonical_move_class(result.get("move_class"))
+        label = result["label"]
+        if isinstance(label, dict):
+            if "move_class" in label:
+                label["move_class"] = _canonical_move_class(label.get("move_class"))
+            if "direction" in label:
+                label["direction"] = _canonical_move_class(label.get("direction"))
         return result
 
     @staticmethod

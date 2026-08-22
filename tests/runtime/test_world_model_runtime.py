@@ -10,6 +10,7 @@ from trader.application.world_model.labeler import DEFAULT_HORIZONS as LABEL_HOR
 from trader.application.world_model.labeler import label_horizon
 from trader.domain.world_episode import AnchorBar, WorldEpisode, WorldObservation, WorldOutcome
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
+from trader.application.world_model.service import WorldModelService
 from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, WorldModelRuntime
 
 
@@ -99,28 +100,63 @@ class MemoryWorldStore:
         self.outcomes[key] = row
         return True
 
+    def get_episode(self, episode_id: str) -> dict[str, object] | None:
+        row = self.episodes.get(episode_id)
+        return None if row is None else copy.deepcopy(row)
+
+    def list_eligible_episodes(self) -> list[dict[str, object]]:
+        return [
+            copy.deepcopy(episode)
+            for episode in self.episodes.values()
+            if episode.get("training_eligible") is not False
+        ]
+
     def list_predictions(self) -> list[dict[str, object]]:
         return list(self.predictions.values())
 
-    def list_pending_episodes(self, *, horizon_code: str | None = None) -> list[dict[str, object]]:
-        assert horizon_code is not None
+    def list_pending_episodes(
+        self,
+        *,
+        horizon_id: str | None = None,
+        training_eligible: bool | None = None,
+    ) -> list[dict[str, object]]:
+        assert horizon_id is not None
         terminal = {"observed", "missing", "unknown"}
-        return [
-            copy.deepcopy(episode)
-            for episode_id, episode in self.episodes.items()
-            if self.outcomes.get((episode_id, horizon_code), {}).get("status") not in terminal
-        ]
+        rows = []
+        for episode_id, episode in self.episodes.items():
+            if training_eligible is True and episode.get("training_eligible") is False:
+                continue
+            if self.outcomes.get((episode_id, horizon_id), {}).get("status") not in terminal:
+                rows.append(copy.deepcopy(episode))
+        return rows
 
     def list_outcome_events(self, **_kwargs) -> list[dict[str, object]]:
         return list(self.outcomes.values())
 
+    def list_observed_outcomes(self, **kwargs) -> list[dict[str, object]]:
+        return [
+            row
+            for row in self.outcomes.values()
+            if str(row.get("status") or "").lower() == "observed"
+            and (kwargs.get("training_eligible") is not True or row.get("training_eligible") is True)
+        ]
+
 
 class RecordingPredictor:
+    model_id = "recording_predictor"
+    model_version = "v1"
+
     def __init__(self) -> None:
         self.predictions: list[tuple[str, str]] = []
         self.baseline_updates: list[tuple[str, str]] = []
 
-    def predict(self, episode: dict[str, object], horizon_id: str = "elapsed_4h.v1") -> dict[str, object]:
+    def predict(
+        self,
+        episode: dict[str, object],
+        horizon_id: str,
+        *,
+        prediction_at: datetime | None = None,
+    ) -> dict[str, object]:
         episode["mutated_by_predictor"] = True
         identifier = str(episode["episode_id"])
         self.predictions.append((identifier, horizon_id))
@@ -128,7 +164,15 @@ class RecordingPredictor:
             "prediction_id": f"pred:{identifier}:{horizon_id}",
             "episode_id": identifier,
             "horizon_id": horizon_id,
-            "distribution": {"up": 0.5, "flat": 0.3, "down": 0.2},
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "created_at": (prediction_at or NOW).isoformat(),
+            "probabilities": {"DOWN": 0.2, "FLAT": 0.3, "UP": 0.5},
+            "predicted_class": "UP",
+            "status": "shadow_only",
+            "recommendation": "NO_GO",
+            "authority": "shadow_only",
+            "decision_effect": "none",
         }
 
     def apply_outcome(
@@ -203,7 +247,7 @@ def _runtime(
     labeler: RecordingLabeler | None = None,
     bars: RecordingBars | None = None,
 ) -> WorldModelRuntime:
-    return WorldModelRuntime(
+    return WorldModelService(
         store=store,
         predictor=predictor or RecordingPredictor(),
         labeler=labeler or RecordingLabeler(),
@@ -878,6 +922,7 @@ def test_legacy_duck_typed_predictor_remains_compatible_without_replay_reset(tmp
                 "training_eligible": True,
                 "sealed": True,
                 "available_at": now.isoformat(),
+                "source_raw_sha256": f"evidence:{observation['episode_id']}",
             }
 
     class Bars:

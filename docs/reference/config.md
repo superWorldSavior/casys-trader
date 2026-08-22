@@ -57,6 +57,13 @@ Les deux runners D15 sont actifs par défaut. Leurs kill switches sont :
 - `CASYS_UNIVERSE_INTELLIGENCE_ENABLED=0` désactive la préparation async de la
   hotlist par l'agent univers.
 
+Le World Model shadow est actif par défaut. Son kill switch est
+`CASYS_WORLD_MODEL_SHADOW_ENABLED=0`. Le flag n'est lu qu'au boot du daemon :
+changer la variable dans le shell ou le `.env` sans redémarrer ne coupe pas un
+process déjà lancé. Le shadow écrit `state/world_model.db`, jamais `casys.db`,
+et ne modifie pas le chemin de décision. Voir
+[world-model](world-model.md).
+
 Les modèles ne vivent pas dans `config/*.yaml`. Les cinq rôles sont réglés dans
 le bloc géré du `.env`, produit depuis `ops/model-presets/*.env`. Le preset Codex
 courant utilise un unique `ops/codex-home` nu : brain Luna medium par override de

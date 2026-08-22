@@ -9,6 +9,7 @@ from trader.domain.world_episode import (
     Freshness,
     WorldEpisode,
     WorldObservation,
+    WorldOutcome,
     WorldPrediction,
     canonical_json,
     canonical_sha256,
@@ -164,4 +165,66 @@ def test_prediction_is_three_class_and_permanently_shadow_only() -> None:
             created_at="2026-08-22T02:02:00+00:00",
             probabilities={"DOWN": 0.5, "FLAT": 0.5},
             status="shadow_only",
+        )
+
+
+def test_world_outcome_from_dict_adapts_nested_labeler_payload_and_normalizes_direction() -> None:
+    payload = {
+        "episode_id": "episode-nested",
+        "horizon_code": "elapsed_4h.v1",
+        "status": "observed",
+        "training_eligible": True,
+        "label": {
+            "direction": "up",
+            "target_at": "2026-08-22T06:00:00+00:00",
+            "available_at": "2026-08-22T06:00:00+00:00",
+            "computed_at": "2026-08-22T06:01:00+00:00",
+            "anchor_close": 100.0,
+            "endpoint_close": 101.0,
+            "horizon": {
+                "horizon_id": "elapsed_4h.v1",
+                "duration_seconds": 4 * 60 * 60,
+                "endpoint_rule": "first_fully_available_bar_at_or_after_target.v1",
+                "max_lateness_seconds": 3600,
+            },
+        },
+        "evidence": {
+            "target_bar": {
+                "ts": "2026-08-22T06:00:00+00:00",
+                "close": 101.0,
+                "source": "yahoo",
+                "fingerprint": "c" * 64,
+            },
+            "anchor_bar": {"close": 100.0},
+        },
+        "supersedes_outcome_event_id": "previous-event",
+    }
+
+    outcome = WorldOutcome.from_dict(payload)
+
+    assert outcome.direction == "UP"
+    assert outcome.source == "yahoo"
+    assert outcome.source_raw_sha256 == "c" * 64
+    assert outcome.endpoint_bar_ts.isoformat() == "2026-08-22T06:00:00+00:00"
+    assert outcome.horizon.horizon_id == "elapsed_4h.v1"
+    assert outcome.horizon.duration_seconds == 4 * 60 * 60
+    assert outcome.supersedes_event_id == "previous-event"
+    assert outcome.training_eligible is True
+
+
+def test_world_outcome_from_dict_does_not_invent_missing_source_evidence() -> None:
+    with pytest.raises(ValueError, match="immutable source evidence"):
+        WorldOutcome.from_dict(
+            {
+                "episode_id": "episode-missing-source",
+                "horizon_id": "elapsed_4h.v1",
+                "status": "observed",
+                "target_at": "2026-08-22T06:00:00+00:00",
+                "available_at": "2026-08-22T06:00:00+00:00",
+                "anchor_close": 100.0,
+                "endpoint_close": 101.0,
+                "endpoint_bar_ts": "2026-08-22T06:00:00+00:00",
+                "source": "yahoo",
+                "training_eligible": True,
+            }
         )

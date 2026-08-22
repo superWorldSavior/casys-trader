@@ -36,19 +36,22 @@ from types import MappingProxyType
 
 import numpy as np
 
-from trader.application.world_model.baseline import (
+from trader.application.world_model.encoding import (
     FEATURE_CONTRACT_FINGERPRINT,
     FeatureBoundaryError,
     FutureLabelLeakageError,
     ModelUpdate,
     OutcomeEventConflictError,
     build_feature_state,
+    normalise_horizon_id,
+    outcome_horizon_id,
+    outcome_move_class,
 )
 from trader.domain.world_episode import (
+    DEFAULT_WORLD_HORIZONS,
     PREDICTION_CLASSES,
     WorldEpisode,
     WorldObservation,
-    WorldOutcome,
     WorldPrediction,
     canonical_sha256,
     parse_utc_timestamp,
@@ -101,7 +104,7 @@ _CATEGORICAL_KEYS = frozenset(
         "source_status",
     }
 )
-_DEFAULT_HORIZONS = ("elapsed_4h.v1", "elapsed_1d.v1")
+_DEFAULT_HORIZONS = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
 _EPISODE_ENVELOPE_KEYS = frozenset(
     {
         "schema_version",
@@ -157,12 +160,7 @@ class SequenceMetadata:
 
 
 def _normalise_horizon(value: object, allowed: frozenset[str] | None) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("horizon_id must be a non-empty fixed-horizon string")
-    result = value.strip().lower()
-    if allowed is not None and result not in allowed:
-        raise ValueError(f"unsupported fixed horizon: {result!r}")
-    return result
+    return normalise_horizon_id(value, allowed)
 
 
 def _parse_timestamp(value: object, *, field_name: str) -> datetime:
@@ -221,50 +219,11 @@ def _outcome_field(outcome: object, *names: str) -> object:
 
 
 def _outcome_horizon(outcome: object) -> object:
-    direct = _outcome_field(outcome, "horizon_id", "horizon_code")
-    if direct is not _MISSING:
-        return direct
-    horizon = _read_field(outcome, "horizon")
-    if isinstance(horizon, Mapping):
-        return _read_field(horizon, "horizon_id", "horizon_code", "id")
-    return _read_field(horizon, "horizon_id", "horizon_code", "id")
-
-
-def _normalise_class(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("World outcome class must be a string")
-    result = value.strip().upper()
-    if result not in OUTCOME_CLASSES:
-        raise ValueError(f"unsupported World outcome class: {result!r}")
-    return result
-
-
-def _class_from_return(value: object) -> str:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("WorldOutcome without direction requires a finite simple_return")
-    simple_return = float(value)
-    if not math.isfinite(simple_return):
-        raise ValueError("WorldOutcome without direction requires a finite simple_return")
-    if simple_return >= DEFAULT_DIRECTION_BAND:
-        return "UP"
-    if simple_return <= -DEFAULT_DIRECTION_BAND:
-        return "DOWN"
-    return "FLAT"
+    return outcome_horizon_id(outcome)
 
 
 def _outcome_class(outcome: object) -> str:
-    raw = _outcome_field(outcome, "move_class", "direction", "outcome_class")
-    if raw is not _MISSING and raw is not None:
-        return _normalise_class(raw)
-    # The shared domain record deliberately keeps raw immutable prices rather
-    # than duplicating a label projection.  Its return is enough to derive the
-    # same 50bp class used by the fixed-horizon labeler.
-    if isinstance(outcome, WorldOutcome):
-        return _class_from_return(outcome.simple_return)
-    schema = _outcome_field(outcome, "schema_version")
-    if schema == "world_outcome.v1":
-        return _class_from_return(_outcome_field(outcome, "simple_return"))
-    raise ValueError("observed World outcome requires an explicit DOWN/FLAT/UP label projection")
+    return outcome_move_class(outcome)
 
 
 def _status(value: object) -> str:

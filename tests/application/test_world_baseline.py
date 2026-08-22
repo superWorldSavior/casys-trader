@@ -83,7 +83,6 @@ def test_cold_start_is_uniform_warming_up_and_permanently_shadow_only() -> None:
     assert prediction.recommendation == "NO_GO"
     assert prediction.authority == "shadow_only"
     assert prediction.decision_effect == "none"
-    assert prediction.non_authoritative is True
     with pytest.raises(ValueError, match="unsupported fixed horizon"):
         model.predict(_observation(), "4h")
 

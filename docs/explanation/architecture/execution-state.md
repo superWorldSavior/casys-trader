@@ -31,6 +31,7 @@ pas l'autorité transactionnelle SQLite.
 | Artefact | Rôle |
 |---|---|
 | `casys.db` | broker, plans, scheduler, tâches d'exécution et projections runtime |
+| `world_model.db` | journal shadow dédié des épisodes, labels et prédictions marché ; indépendant de `casys.db` ; peut être absent (`not_started`) |
 | `decisions.jsonl` | journal d'audit des décisions et provenance |
 | `history.jsonl` / rapports | lecture opérateur et tendances de cycles |
 | `process_events` | admissions, tentatives, effets et clôtures rejouables |

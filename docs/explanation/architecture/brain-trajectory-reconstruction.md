@@ -47,21 +47,24 @@ transition `s -> s'` entraînable.
 - entraîner ou activer un GRU depuis cet export reconstruit.
 
 Les anciens prototypes qui faisaient ces assimilations ont été retirés. Le
-[world model shadow](world-model-shadow.md) utilise désormais un corpus
-prospectif séparé ; cet export historique n'en est toujours pas une source
+[world model shadow](world-model-shadow.md) utilise un corpus prospectif
+séparé, déjà implémenté ; cet export historique n'en est **pas** une source
 d'entraînement.
 
-## Frontière du `WorldEpisode` prospectif
+## `WorldEpisode` : marché action-free, déjà implémenté
 
-Un vrai dataset de dynamique devra capturer, de manière append-only :
+`trader.domain.world_episode.WorldEpisode` existe. C'est une observation de
+marché append-only (ancre OHLCV, fraîcheur, features causales, `available_at`).
+Il ne contient **jamais** de mémoire Brain, de mémoire Univers, de mandat, de
+décision, d'ordre, de fill ou de portefeuille. Sans ancre OHLCV valide, aucun
+épisode n'est créé. Les labels `elapsed_4h.v1` / `elapsed_1d.v1` et les
+prédictions shadow vivent dans `state/world_model.db`, pas dans
+`cross_loop_episodes.jsonl`.
 
-1. l'observation exacte avant décision, y compris les mémoires point-in-time
-   présentées à Univers et au Brain ;
-2. un outcome exogène du marché ou de la situation à horizon fixe, sans action
-   Trader dans la transition de prix ;
-3. le mandat Univers et la décision Trader comme contrôles/hypothèses séparés ;
-4. des critics séparés pour la sélection Univers et la décision Trader ;
-5. la provenance `available_at`, la fraîcheur et les états `missing/stale/unknown`.
+Ce spike reste un audit du chemin Univers → Brain → fills. Ce n'est pas le
+dataset World Model et il ne doit pas y être fusionné. Les mémoires
+point-in-time Brain/Univers restent de la provenance de décision, pas des
+features de transition de marché.
 
 Le portefeuille peut ensuite être simulé conditionnellement à une action et à
 la trajectoire de prix. Ce simulateur n'est pas le modèle causal du marché.

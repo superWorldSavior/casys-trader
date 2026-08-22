@@ -69,8 +69,13 @@ def test_world_status_compares_persisted_baseline_and_gru_predictions(tmp_path, 
             "training_eligible": True,
             "label_available_at": "2026-08-22T04:00:00+00:00",
             "sealed_at": "2026-08-22T04:00:00+00:00",
-            "label": {"simple_return": 0.01, "move_class": "UP"},
-            "evidence": {"source": "fixture"},
+            "source_raw_sha256": "d" * 64,
+            "label": {
+                "simple_return": 0.01,
+                "move_class": "UP",
+                "source_raw_sha256": "d" * 64,
+            },
+            "evidence": {"source": "fixture", "source_raw_sha256": "d" * 64},
         }
     )
     # ``ready_at`` is derived from the immutable storage ``recorded_at`` by
@@ -151,8 +156,14 @@ def test_world_status_uses_indexed_model_and_direction_over_payload_claims(tmp_p
             "training_eligible": True,
             "label_available_at": "2026-08-22T04:00:00+00:00",
             "sealed_at": "2026-08-22T04:00:00+00:00",
-            "label": {"simple_return": 0.01, "move_class": "DOWN", "direction": "DOWN"},
-            "evidence": {"source": "fixture"},
+            "source_raw_sha256": "e" * 64,
+            "label": {
+                "simple_return": 0.01,
+                "move_class": "DOWN",
+                "direction": "DOWN",
+                "source_raw_sha256": "e" * 64,
+            },
+            "evidence": {"source": "fixture", "source_raw_sha256": "e" * 64},
         }
     )
     monkeypatch.setattr(

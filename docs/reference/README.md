@@ -14,6 +14,7 @@
 | Exécution, broker, admission, budget | [`execution.md`](execution.md) | `application/execute/order_admission`, `execution/*` |
 | Risk gate | [`risk-gate.md`](risk-gate.md) | `execution/risk.py`, `config/risk.yaml` |
 | Reporting, audit, attribution, ledgers | [`reporting.md`](reporting.md) | `reporting/*` |
+| World Model shadow (marché, `NO_GO`) | [`world-model.md`](world-model.md) | `application/world_model`, `reporting/read_models/world_*`, `state/world_model.db` |
 
 ## LLM & agent
 

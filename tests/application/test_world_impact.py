@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.world_model.impact import evaluate_world_shadow_impact
+from trader.reporting.read_models.world_impact import evaluate_world_shadow_impact
 
 
 def _prediction(

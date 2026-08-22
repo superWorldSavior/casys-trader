@@ -128,8 +128,8 @@ def test_episode_exact_replay_is_noop_and_content_change_fails_closed(store: Wor
 
 def test_immutable_triggers_reject_update_and_delete(store: WorldModelStore) -> None:
     assert store.append_episode(_episode())
-    assert store.append_outcome_event(_outcome())
-    assert store.append_prediction(_prediction())
+    assert store.append_legacy_outcome_event(_outcome())
+    assert store.append_legacy_prediction(_prediction())
 
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         with store._db.transaction() as cur:
@@ -215,9 +215,9 @@ def test_outcome_revisions_are_retained_and_pending_query_is_horizon_specific(st
         evidence={"provider_revision": "2026-08-23", "target_close": 103.929},
     )
 
-    assert store.append_outcome(first) is True
-    assert store.append_outcome(deepcopy(first)) is False
-    assert store.append_outcome_event(second) is True
+    assert store.append_legacy_outcome(first) is True
+    assert store.append_legacy_outcome(deepcopy(first)) is False
+    assert store.append_legacy_outcome_event(second) is True
 
     rows = store.list_outcome_events(episode_id="episode-1", horizon_code="4h")
     assert [row["outcome_event_id"] for row in rows] == ["outcome-4h-v1", "outcome-4h-v2"]
@@ -236,17 +236,17 @@ def test_outcome_revisions_are_retained_and_pending_query_is_horizon_specific(st
     conflict = deepcopy(first)
     conflict["label"]["forward_return"] = -0.03  # type: ignore[index]
     with pytest.raises(WorldModelConflictError):
-        store.append_outcome_event(conflict)
+        store.append_legacy_outcome_event(conflict)
 
     with pytest.raises(ValueError, match="unknown outcome_event_id"):
-        store.append_outcome_event(
+        store.append_legacy_outcome_event(
             _outcome("outcome-invalid-revision", supersedes_outcome_event_id="missing-revision")
         )
 
 
 def test_pending_requires_an_active_observation_leaf(store: WorldModelStore) -> None:
     assert store.append_episode(_episode())
-    assert store.append_outcome_event(
+    assert store.append_legacy_outcome_event(
         _outcome(
             "outcome-inferred",
             training_eligible=False,
@@ -257,7 +257,7 @@ def test_pending_requires_an_active_observation_leaf(store: WorldModelStore) -> 
     # audit-only label must not be recomputed on every wake.
     assert store.list_pending_episodes(horizon_code="4h") == []
 
-    assert store.append_outcome_event(
+    assert store.append_legacy_outcome_event(
         _outcome(
             "outcome-explicit",
             supersedes_outcome_event_id="outcome-inferred",
@@ -266,7 +266,7 @@ def test_pending_requires_an_active_observation_leaf(store: WorldModelStore) -> 
     )
     assert store.list_pending_episodes(horizon_code="4h") == []
 
-    assert store.append_outcome_event(
+    assert store.append_legacy_outcome_event(
         _outcome(
             "outcome-invalidated",
             supersedes_outcome_event_id="outcome-explicit",
@@ -285,8 +285,8 @@ def test_predictions_are_immutable_and_listed_deterministically(store: WorldMode
     assert store.append_episode(_episode())
     prediction = _prediction()
 
-    assert store.append_prediction(prediction) is True
-    assert store.append_prediction(deepcopy(prediction)) is False
+    assert store.append_legacy_prediction(prediction) is True
+    assert store.append_legacy_prediction(deepcopy(prediction)) is False
     rows = store.list_predictions(run_id="markov-run-1")
     assert len(rows) == 1
     assert rows[0]["prediction_id"] == "prediction-1"
@@ -299,12 +299,12 @@ def test_predictions_are_immutable_and_listed_deterministically(store: WorldMode
     conflict = deepcopy(prediction)
     conflict["prediction"]["p_up"] = 0.5  # type: ignore[index]
     with pytest.raises(WorldModelConflictError, match="different canonical content"):
-        store.append_prediction(conflict)
+        store.append_legacy_prediction(conflict)
 
     no_horizon = _prediction("prediction-without-horizon")
     no_horizon.pop("horizon_id")
     with pytest.raises(ValueError, match="requires horizon_code"):
-        store.append_prediction(no_horizon)
+        store.append_legacy_prediction(no_horizon)
 
 
 def test_store_accepts_domain_records_and_preserves_domain_ids(store: WorldModelStore) -> None:
@@ -373,13 +373,13 @@ def test_store_accepts_domain_records_and_preserves_domain_ids(store: WorldModel
 
 def test_top_level_baseline_prediction_metadata_and_direction_are_preserved(store: WorldModelStore) -> None:
     assert store.append_episode(_episode())
-    assert store.append_outcome(
+    assert store.append_legacy_outcome(
         _outcome(
             direction="up",
             move_class=None,
         )
     )
-    assert store.append_prediction(
+    assert store.append_legacy_prediction(
         _prediction(
             prediction_id="prediction-baseline-shape",
             prediction=None,
@@ -397,7 +397,7 @@ def test_top_level_baseline_prediction_metadata_and_direction_are_preserved(stor
     )
 
     outcome = store.list_observed_outcomes()[0]
-    assert outcome["move_class"] == "up"
+    assert outcome["move_class"] == "UP"
     prediction = store.list_predictions(run_id="markov-run-1")[-1]
     assert prediction["prediction"]["probabilities"]["up"] == 0.7
     assert prediction["prediction"]["status"] == "no_go"
@@ -408,3 +408,74 @@ def test_top_level_baseline_prediction_metadata_and_direction_are_preserved(stor
     assert prediction["prediction"]["model_fingerprint"] == "markov:fixture"
     assert prediction["prediction"]["authority"] == "shadow_only"
     assert prediction["prediction"]["decision_effect"] == "none"
+
+
+def test_live_append_rejects_invalid_canonical_outcome_and_prediction(store: WorldModelStore) -> None:
+    assert store.append_episode(_episode())
+
+    with pytest.raises(ValueError, match="move_class must be one of"):
+        store.append_outcome_event(_outcome())
+    with pytest.raises(ValueError, match="immutable source evidence"):
+        store.append_outcome_event(
+            _outcome(
+                move_class="UP",
+                training_eligible=True,
+                label={"move_class": "UP", "forward_return": 0.03},
+            )
+        )
+    with pytest.raises(ValueError, match="status must be one of"):
+        store.append_prediction(_prediction())
+    with pytest.raises(ValueError, match="probabilities must contain exactly"):
+        store.append_prediction(
+            _prediction(
+                prediction={
+                    "probabilities": {"up": 0.6, "flat": 0.3, "down": 0.1},
+                    "status": "shadow_only",
+                    "recommendation": "NO_GO",
+                    "authority": "shadow_only",
+                    "decision_effect": "none",
+                }
+            )
+        )
+
+    live_outcome = _outcome(
+        "live-outcome-1",
+        move_class="UP",
+        training_eligible=True,
+        source_raw_sha256="b" * 64,
+        label={
+            "move_class": "UP",
+            "forward_return": 0.03,
+            "source_raw_sha256": "b" * 64,
+        },
+        evidence={"source_raw_sha256": "b" * 64, "source": "fixture"},
+    )
+    live_prediction = _prediction(
+        "live-prediction-1",
+        prediction={
+            "probabilities": {"DOWN": 0.1, "FLAT": 0.3, "UP": 0.6},
+            "predicted_class": "UP",
+            "status": "shadow_only",
+            "recommendation": "NO_GO",
+            "authority": "shadow_only",
+            "decision_effect": "none",
+        },
+    )
+    assert store.append_outcome_event(live_outcome) is True
+    assert store.append_prediction(live_prediction) is True
+    assert store.list_observed_outcomes()[0]["move_class"] == "UP"
+
+
+def test_legacy_append_keeps_historical_mappings_readable_as_canonical_classes(
+    store: WorldModelStore,
+) -> None:
+    assert store.append_episode(_episode())
+    assert store.append_legacy_outcome_event(_outcome()) is True
+    assert store.append_legacy_prediction(_prediction()) is True
+
+    outcome = store.list_observed_outcomes()[0]
+    assert outcome["move_class"] == "UP"
+    assert outcome["label"]["move_class"] == "UP"
+    prediction = store.list_predictions()[0]
+    assert prediction["prediction"]["probabilities"]["up"] == 0.6
+    assert prediction["prediction"]["status"] == "ok"

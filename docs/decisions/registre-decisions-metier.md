@@ -574,3 +574,40 @@ pull-only via `get_attribution{scope:"calibration"}`.
 **Points ouverts.** Un hard gate EV reste explicitement hors périmètre. Toute
 activation future demanderait une décision métier séparée et des seuils
 configurés, pas une réinterprétation silencieuse de D18.
+
+---
+
+## D19 — World Model shadow isolé, sans autorité Trader  🛠 implémenté (2026-08-22)
+**Contexte.** Un critic de dynamique de marché a été tenté via des reconstructions
+Brain–Univers (trajectoires, mémoires, prochaine tâche due). Cela mélangeait
+action, sélection d'univers et transition de prix, et invitait à lire un
+« uplift Trader » dans une coïncidence de PnL.
+
+**Décision.** Le World Model est un bounded context **marché**, shadow-only,
+permanent `NO_GO`. Il estime `DOWN` / `FLAT` / `UP` (bande 50 bp) à horizons
+fixes `elapsed_4h.v1` et `elapsed_1d.v1` depuis un `WorldEpisode` action-free.
+Sans ancre OHLCV valide : pas d'épisode. `anchor_end_at` démarre la transition.
+Aucun fallback d'horizon. Preuve append-only (replay exact = no-op, correction =
+supersession, jamais d'overwrite). `predicted_at` = cutoff logique ;
+`ready_at` = disponibilité réelle de persistance. Baseline Markov et GRU en
+ligne (encodeur partagé, le GRU n'importe pas le baseline). Comparaison
+appariée, support minimum 20. Drawdown = proxy de marché non-portefeuille.
+`actual_contribution=not_attributable` et
+`counterfactual_contribution=not_available` tant qu'il n'existe pas de liens
+pré-décision append-only **et** une politique d'ordres/fills shadow
+pré-enregistrée. Store dédié `state/world_model.db`, indépendant de `casys.db`.
+Flag `CASYS_WORLD_MODEL_SHADOW_ENABLED` lu au boot seulement. Live `not_started`
+si le daemon n'a pas créé la base.
+
+**Owners.** `domain/world_episode` (contrat) ;
+`application/world_model` (capture, labels, modèles, `WorldModelService`) ;
+`infrastructure/state_db` (store append-only + query lecture seule) ;
+`reporting/read_models` (évaluation, impact, status) ; `runtime` (adapter
+background fail-open) ; CLI mince sans SQL.
+
+**Politique.** Jamais d'autorité sur Brain, Univers, scheduler, RiskGate,
+broker ou portefeuille. Pas de claim d'uplift Trader. Un changement de flag
+n'a d'effet qu'après redémarrage du daemon.
+
+**Points ouverts.** Jointure pré-décision durable et politique d'exécution
+shadow pré-enregistrée : hors périmètre jusqu'à une décision métier séparée.

@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from trader.application.world_model.baseline import (
+from trader.application.world_model.encoding import (
     FeatureBoundaryError,
     FutureLabelLeakageError,
     OutcomeEventConflictError,

@@ -39,6 +39,33 @@ owners canoniques.
 | `infrastructure/queue` | tâches durables, leases, retries et backpressure |
 | `infrastructure/state_db` | état paper SQLite, outbox et projections persistantes |
 | `application/universe` | scopes candidats, activation et revalidation de la hotlist |
+| `application/world_model` | capture, labels à horizon fixe, baseline Markov et GRU shadow |
+
+## Contexte borné World Model
+
+Le World Model est un bounded context **marché**, isolé du Trader, du Brain et
+de l'Univers. Il prédit `DOWN` / `FLAT` / `UP` à `elapsed_4h.v1` et
+`elapsed_1d.v1` depuis un `WorldEpisode` action-free. Il ne contient jamais la
+mémoire Brain ni Univers, ne conseille pas le planificateur, et reste
+`shadow_only` / `NO_GO`.
+
+```text
+domain/world_episode          contrat d'observation et d'identité
+        │
+        ├─ application/world_model     capture, labeler, encoding, baseline, GRU, service
+        ├─ infrastructure/state_db     world_model.db append-only + query lecture seule
+        └─ reporting/read_models       évaluation, impact honnête, status projector
+                ▲                              ▲
+                │                              │
+        runtime (adapter background     interfaces/cli (adaptateur mince)
+        fail-open, façade compat)
+```
+
+Carte des relations : Univers sélectionne l'attention ; Brain décide ; le
+code exécute ; FLAIR/D16/MemRL jugent leurs boucles. Le World Model n'entre
+dans aucune de ces autorités. `state/world_model.db` n'est pas une table de
+`casys.db`. Voir [world model shadow](world-model-shadow.md) et
+[référence](../../reference/world-model.md).
 
 La [file de tâches](../../reference/task-queue.md) et l'[état persistant](execution-state.md#etat-persistant) sont des détails de conception ; leurs contrats complets vivent en Reference.
 

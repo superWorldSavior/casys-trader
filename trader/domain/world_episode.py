@@ -33,6 +33,8 @@ OUTCOME_EVENT_TYPES = frozenset(
 PREDICTION_CLASSES = ("DOWN", "FLAT", "UP")
 PREDICTION_STATUSES = frozenset({"warming_up", "shadow_only"})
 PREDICTION_TIERS = frozenset({"uniform", "global", "coarse", "exact"})
+_LEGACY_PREDICTION_CLASSES = {"down": "DOWN", "flat": "FLAT", "up": "UP"}
+SIMPLE_RETURN_DIRECTION_BAND = 0.005
 
 # The initial feature contract intentionally remains small and semantic.  A
 # new feature requires an explicit contract-version bump rather than silently
@@ -158,7 +160,9 @@ __all__ = [
     "WORLD_PREDICTION_SCHEMA_VERSION",
     "canonical_json",
     "canonical_payload",
+    "canonical_prediction_class",
     "canonical_sha256",
+    "move_class_from_simple_return",
     "parse_utc_timestamp",
     "validate_action_free_features",
     "world_episode_id",
@@ -174,6 +178,36 @@ def _required_text(value: Any, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} must be a non-empty string")
     return text
+
+
+def canonical_prediction_class(value: Any) -> str:
+    """Normalize live or legacy up/down/flat labels onto DOWN/FLAT/UP."""
+
+    text = _required_text(value, "prediction class")
+    mapped = _LEGACY_PREDICTION_CLASSES.get(text.lower(), text.upper())
+    if mapped not in PREDICTION_CLASSES:
+        allowed = ", ".join(PREDICTION_CLASSES)
+        raise ValueError(f"prediction class must be one of: {allowed}")
+    return mapped
+
+
+def move_class_from_simple_return(
+    value: float,
+    *,
+    band: float = SIMPLE_RETURN_DIRECTION_BAND,
+) -> str:
+    """Map a simple return onto the canonical 50bp DOWN/FLAT/UP contract."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("simple_return must be a finite number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("simple_return must be finite")
+    if number >= band:
+        return "UP"
+    if number <= -band:
+        return "DOWN"
+    return "FLAT"
 
 
 def parse_utc_timestamp(value: datetime | str, field_name: str = "timestamp") -> datetime:
@@ -739,6 +773,35 @@ def _finite_optional(value: float | None, field_name: str) -> float | None:
     return number
 
 
+def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _first_present(*containers: Any, names: tuple[str, ...]) -> Any:
+    """Return the first non-null field without inventing a missing value."""
+
+    for container in containers:
+        mapping = _mapping_or_none(container)
+        if mapping is None:
+            continue
+        for name in names:
+            if name in mapping and mapping[name] is not None:
+                return mapping[name]
+    return None
+
+
+def _nested_bar(*containers: Any, names: tuple[str, ...]) -> Mapping[str, Any]:
+    for container in containers:
+        mapping = _mapping_or_none(container)
+        if mapping is None:
+            continue
+        for name in names:
+            nested = mapping.get(name)
+            if isinstance(nested, Mapping):
+                return nested
+    return {}
+
+
 def world_outcome_event_id(
     *,
     episode_id: str,
@@ -782,6 +845,7 @@ class WorldOutcome:
     event_type: str | None = None
     supersedes_event_id: str | None = None
     training_eligible: bool | None = None
+    direction: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "episode_id", _required_text(self.episode_id, "episode_id"))
@@ -846,6 +910,19 @@ class WorldOutcome:
         if self.endpoint_close is not None and self.endpoint_close <= 0.0:
             raise ValueError("endpoint_close must be positive")
 
+        derived_direction = None
+        if self.anchor_close is not None and self.endpoint_close is not None:
+            derived_direction = move_class_from_simple_return(
+                self.endpoint_close / self.anchor_close - 1.0
+            )
+        if self.direction is not None:
+            normalized_direction = canonical_prediction_class(self.direction)
+            if derived_direction is not None and normalized_direction != derived_direction:
+                raise ValueError("direction does not match simple_return")
+            object.__setattr__(self, "direction", normalized_direction)
+        else:
+            object.__setattr__(self, "direction", derived_direction)
+
         requested_eligible = self.training_eligible
         if requested_eligible is not None and not isinstance(requested_eligible, bool):
             raise TypeError("training_eligible must be a bool or None")
@@ -893,6 +970,8 @@ class WorldOutcome:
             "anchor_close": self.anchor_close,
             "endpoint_close": self.endpoint_close,
             "simple_return": self.simple_return,
+            "direction": self.direction,
+            "move_class": self.direction,
             "endpoint_bar_ts": _iso(self.endpoint_bar_ts),
             "source": self.source,
             "source_raw_sha256": self.source_raw_sha256,
@@ -900,6 +979,138 @@ class WorldOutcome:
             "supersedes_event_id": self.supersedes_event_id,
             "training_eligible": self.training_eligible,
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> WorldOutcome:
+        if not isinstance(value, Mapping):
+            raise TypeError("world outcome payload must be a mapping")
+        label = _mapping_or_none(value.get("label")) or {}
+        evidence = _mapping_or_none(value.get("evidence")) or {}
+        nested_horizon = (
+            _mapping_or_none(value.get("horizon"))
+            or _mapping_or_none(label.get("horizon"))
+            or {}
+        )
+        target_bar = _nested_bar(
+            value,
+            label,
+            evidence,
+            names=("target_bar", "endpoint_bar"),
+        )
+        anchor_bar = _nested_bar(value, label, evidence, names=("anchor_bar",))
+        horizon = value.get("horizon")
+        if horizon is None:
+            horizon = label.get("horizon")
+        if not isinstance(horizon, (OutcomeHorizon, Mapping)):
+            horizon = None
+        if horizon is None:
+            horizon_id = _first_present(
+                value,
+                label,
+                nested_horizon,
+                names=("horizon_id", "horizon_code"),
+            )
+            known = {item.horizon_id: item for item in DEFAULT_WORLD_HORIZONS}
+            match = known.get(str(horizon_id or "").strip())
+            if match is not None:
+                horizon = match
+            elif horizon_id is not None:
+                duration_seconds = _first_present(
+                    nested_horizon,
+                    value,
+                    label,
+                    names=("duration_seconds",),
+                )
+                if duration_seconds is None:
+                    raise ValueError("horizon duration_seconds is required")
+                horizon = {
+                    "horizon_id": horizon_id,
+                    "duration_seconds": duration_seconds,
+                    "endpoint_rule": _first_present(
+                        nested_horizon,
+                        value,
+                        label,
+                        names=("endpoint_rule",),
+                    )
+                    or "first_completed_1h_bar_at_or_after_target",
+                    "max_lateness_seconds": _first_present(
+                        nested_horizon,
+                        value,
+                        label,
+                        names=("max_lateness_seconds",),
+                    )
+                    or 3600,
+                }
+        if "training_eligible" in value:
+            training_eligible = value.get("training_eligible")
+        elif "training_eligible" in label:
+            training_eligible = label.get("training_eligible")
+        else:
+            training_eligible = None
+        return cls(
+            episode_id=_first_present(value, label, names=("episode_id",)),
+            horizon=horizon,
+            status=_first_present(value, label, names=("status",)),
+            target_at=_first_present(value, label, evidence, names=("target_at",)),
+            available_at=_first_present(
+                value,
+                label,
+                evidence,
+                names=("available_at", "label_available_at"),
+            ),
+            computed_at=_first_present(
+                value,
+                label,
+                evidence,
+                names=("computed_at", "sealed_at"),
+            ),
+            anchor_close=_first_present(
+                value,
+                label,
+                evidence,
+                names=("anchor_close",),
+            )
+            or anchor_bar.get("close"),
+            endpoint_close=_first_present(
+                value,
+                label,
+                evidence,
+                names=("endpoint_close",),
+            )
+            or target_bar.get("close"),
+            endpoint_bar_ts=_first_present(
+                value,
+                label,
+                evidence,
+                names=("endpoint_bar_ts",),
+            )
+            or target_bar.get("bar_end_at")
+            or target_bar.get("end_at")
+            or target_bar.get("ts"),
+            source=_first_present(value, label, evidence, names=("source",))
+            or target_bar.get("source"),
+            source_raw_sha256=_first_present(
+                value,
+                label,
+                evidence,
+                names=("source_raw_sha256",),
+            )
+            or target_bar.get("fingerprint")
+            or target_bar.get("source_raw_sha256"),
+            reason=_first_present(value, label, names=("reason",)),
+            event_type=_first_present(value, label, names=("event_type",)),
+            supersedes_event_id=_first_present(
+                value,
+                label,
+                names=("supersedes_event_id", "supersedes_outcome_event_id"),
+            ),
+            training_eligible=training_eligible,
+            direction=_first_present(
+                value,
+                label,
+                names=("direction", "move_class"),
+            ),
+        )
 
 
 def world_prediction_id(
@@ -1078,3 +1289,30 @@ class WorldPrediction:
             "authority": self.authority,
             "decision_effect": self.decision_effect,
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> WorldPrediction:
+        if not isinstance(value, Mapping):
+            raise TypeError("world prediction payload must be a mapping")
+        return cls(
+            episode_id=value.get("episode_id"),
+            horizon_id=value.get("horizon_id") or value.get("horizon_code"),
+            model_id=value.get("model_id") or value.get("model_kind"),
+            model_version=value.get("model_version"),
+            feature_hash=value.get("feature_hash") or "",
+            created_at=value.get("created_at") or value.get("predicted_at"),
+            predicted_return=value.get("predicted_return"),
+            probabilities=value.get("probabilities"),
+            predicted_class=value.get("predicted_class"),
+            status=value.get("status", "warming_up"),
+            tier=value.get("tier", "uniform"),
+            support=int(value.get("support") or 0),
+            exact_support=int(value.get("exact_support") or 0),
+            coarse_support=int(value.get("coarse_support") or 0),
+            global_support=int(value.get("global_support") or 0),
+            training_cutoff=value.get("training_cutoff"),
+            model_fingerprint=value.get("model_fingerprint"),
+            recommendation=value.get("recommendation", "NO_GO"),
+            authority=value.get("authority", "shadow_only"),
+            decision_effect=value.get("decision_effect", "none"),
+        )
