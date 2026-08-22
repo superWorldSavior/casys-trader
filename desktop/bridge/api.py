@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -30,6 +31,71 @@ def _now() -> datetime:
 
 def _kill_active() -> bool:
     return (REPO_ROOT / "KILL").exists()
+
+
+def _optional_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _optional_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _optional_finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _receipt_map(container: object, key: str) -> dict[str, Any] | None:
+    if not isinstance(container, dict):
+        return None
+    value = container.get(key)
+    return value if isinstance(value, dict) else None
+
+
+def _execution_status(source: dict[str, Any]) -> str | None:
+    """Project execution_status only: confirmed, recorded, or omitted. No receipts."""
+
+    if source.get("executed") is not True:
+        return None
+    nested = source.get("decision")
+    decision = nested if isinstance(nested, dict) else {}
+    refs = decision.get("effect_refs")
+    source_symbol = _optional_text(source.get("symbol"))
+    source_decision_id = _optional_text(source.get("decision_id"))
+    process_instance_id = _optional_text(decision.get("process_instance_id"))
+    attempt_id = _optional_text(decision.get("attempt_id"))
+    nested_decision_id = _optional_text(decision.get("decision_id"))
+    broker_fill = _receipt_map(refs, "broker_fill")
+    portfolio_readback = _receipt_map(refs, "portfolio_readback")
+    if (
+        source_symbol is not None
+        and source_decision_id is not None
+        and process_instance_id is not None
+        and attempt_id is not None
+        and nested_decision_id is not None
+        and nested_decision_id == source_decision_id
+        and _optional_text(decision.get("effect_status")) == "verified"
+        and _optional_bool(decision.get("queue_fill_verified")) is True
+        and _optional_text(decision.get("queue_terminal")) == "done"
+        and broker_fill is not None
+        and _optional_text(broker_fill.get("symbol")) == source_symbol
+        and _optional_text(broker_fill.get("process_instance_id")) == process_instance_id
+        and _optional_text(broker_fill.get("attempt_id")) == attempt_id
+        and _optional_text(broker_fill.get("decision_id")) == nested_decision_id
+        and _optional_text(broker_fill.get("ts")) is not None
+        and portfolio_readback is not None
+        and _optional_finite_number(portfolio_readback.get("cash")) is not None
+        and _optional_finite_number(portfolio_readback.get("equity")) is not None
+        and _optional_finite_number(portfolio_readback.get("position_quantity")) is not None
+    ):
+        return "confirmed"
+    return "recorded"
 
 
 def handle_snapshot(_args: argparse.Namespace) -> dict[str, Any]:
@@ -74,6 +140,7 @@ def handle_decisions(args: argparse.Namespace) -> dict[str, Any]:
                 "executed": source.get("executed"),
                 "decision_source": source.get("decision_source"),
                 "model_called": source.get("model_called"),
+                "summary_kind": source.get("summary_kind"),
                 "llm_model": source.get("llm_model"),
                 "confidence": source.get("confidence"),
                 "qty": source.get("qty"),
@@ -82,6 +149,9 @@ def handle_decisions(args: argparse.Namespace) -> dict[str, Any]:
                 "runtime": as_dict(source.get("runtime")),
             }
         )
+        execution_status = _execution_status(source)
+        if execution_status is not None:
+            slim_rows[-1]["execution_status"] = execution_status
         if len(slim_rows) >= limit:
             break
     return {

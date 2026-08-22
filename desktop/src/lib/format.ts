@@ -38,6 +38,14 @@ export function formatUsd(value: number | null | undefined, digits = 0): string 
   }).format(value);
 }
 
+export function formatMarketPrice(value: number | null | undefined, digits = 2): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  }).format(value);
+}
+
 export function formatPct(value: number | null | undefined, digits = 2): string {
   if (value == null || Number.isNaN(value)) return "—";
   const sign = value > 0 ? "+" : "";

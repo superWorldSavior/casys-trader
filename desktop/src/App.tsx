@@ -113,7 +113,7 @@ function Desk() {
         <CompaniesPage initialVenue={companyVenue} onSymbol={setSymbol} />
       ) : null}
       {!symbol && page === "portfolio" ? <PortfolioPage snapshot={data} onSymbol={setSymbol} /> : null}
-      {!symbol && page === "decisions" ? <DecisionsPage onSymbol={setSymbol} /> : null}
+      {!symbol && page === "decisions" ? <DecisionsPage snapshot={data} onSymbol={setSymbol} /> : null}
       {!symbol && page === "health" ? <HealthPage /> : null}
       {!symbol && page === "logs" ? <LogsPage /> : null}
       {!symbol && page === "universe" ? <UniversePage onSymbol={setSymbol} /> : null}

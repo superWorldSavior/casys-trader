@@ -22,6 +22,7 @@ def is_batch_row(row: dict) -> bool:
     return (
         _safe_str(row.get("decision_source")) in ("infra", "infra_hold")
         and not row.get("model_called", True)
+        and _safe_str(row.get("reason")) == "quiet_gate"
     )
 
 
@@ -82,10 +83,12 @@ def group_into_ledger_rows(rows: list[dict]) -> list[dict]:
             result.append(
                 {
                     "_is_batch_summary": True,
+                    "summary_kind": "automatic_cycle",
                     "cycle_ts": cycle_ts,
                     "symbol": "— batch",
                     "action": "HOLD",
-                    "decision_source": "heuristic",
+                    "decision_source": "infra",
+                    "model_called": False,
                     "reason": (
                         f"{len(batch)} due — {llm_n} LLM calls, {quiet_n} quiet holds"
                     ),

@@ -146,12 +146,14 @@ export type LedgerRow = {
   executed?: boolean;
   decision_source?: string;
   model_called?: boolean;
+  summary_kind?: "automatic_cycle";
   llm_model?: string;
   confidence?: number | null;
   qty?: number;
   price?: number;
   decision_reason_code?: string;
   runtime?: Record<string, unknown>;
+  execution_status?: "confirmed" | "recorded";
 };
 
 export type DecisionsPayload = {

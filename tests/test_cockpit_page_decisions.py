@@ -159,13 +159,33 @@ def test_is_risk_row_false() -> None:
 
 
 def test_is_batch_row_true() -> None:
-    row = {"decision_source": "infra_hold", "model_called": False}
+    row = {
+        "decision_source": "infra_hold",
+        "model_called": False,
+        "reason": "quiet_gate",
+    }
     assert _is_batch_row(row) is True
 
 
 def test_is_batch_row_llm() -> None:
     row = {"decision_source": "llm", "model_called": True}
     assert _is_batch_row(row) is False
+
+
+def test_is_batch_row_rejects_stale_risk_and_unknown_infra() -> None:
+    base = {"decision_source": "infra", "model_called": False}
+    for reason in (
+        "stale_market_data",
+        "risk:gross_exposure",
+        "blocked_no_stop",
+        "no_decision_in_batch",
+        "model_call_budget_exhausted",
+        "",
+        "unknown_reason",
+    ):
+        assert _is_batch_row({**base, "reason": reason}) is False
+    assert _is_batch_row({**base, "reason": "stale_market_data", "source": "armed_plan"}) is False
+    assert _is_batch_row(base) is False
 
 
 def test_is_stale_row() -> None:
@@ -267,6 +287,7 @@ def test_group_batch_large() -> None:
             "model_called": False,
             "cycle_ts": ts,
             "action": "HOLD",
+            "reason": "quiet_gate",
             "symbol": f"SYM{i}",
         }
         for i in range(5)
@@ -281,7 +302,13 @@ def test_group_batch_small_passes_through() -> None:
     """< 3 infra_hold → toutes lignes passent individuellement."""
     ts = "2026-07-06T01:00:00+00:00"
     rows = [
-        {"decision_source": "infra_hold", "model_called": False, "cycle_ts": ts, "action": "HOLD"}
+        {
+            "decision_source": "infra_hold",
+            "model_called": False,
+            "cycle_ts": ts,
+            "action": "HOLD",
+            "reason": "quiet_gate",
+        }
         for _ in range(2)
     ]
     grouped = _group_into_ledger_rows(rows)
@@ -303,7 +330,7 @@ def test_project_decision_ledger_composes_counts_filter_and_grouping() -> None:
     cycle_ts = "2026-07-06T01:00:00+00:00"
     quiet_rows = [
         {
-            **_make_decision(f"QUIET{i}", "HOLD", cycle_ts=cycle_ts),
+            **_make_decision(f"QUIET{i}", "HOLD", cycle_ts=cycle_ts, reason="quiet_gate"),
             "decision_source": "infra",
             "model_called": False,
         }
