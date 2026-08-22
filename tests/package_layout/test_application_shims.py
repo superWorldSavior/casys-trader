@@ -28,6 +28,7 @@ def test_application_package_has_only_canonical_subpackages() -> None:
         "queue",
         "record",
         "universe",
+        "world_model",
     }
 
 
@@ -631,4 +632,3 @@ def test_application_uses_execution_contracts_and_ports_instead_of_broker_adapte
                             violations.append(f"{rel_path}: import {alias.name}")
 
     assert violations == []
-

@@ -241,6 +241,8 @@ class _ClaimedDaemonResources:
         self.release_pid_file: Callable[..., None] | None = None
         self.data_source_handle: object | None = None
         self.learning_sync_runner: object | None = None
+        self.world_model_runner: object | None = None
+        self.world_model_store: object | None = None
         self.company_intelligence_runner: object | None = None
         self.universe_intelligence_runner: object | None = None
         self.news_macro_runner: object | None = None
@@ -272,6 +274,22 @@ class _ClaimedDaemonResources:
             try:
                 self.data_source_handle.set(None)
             except Exception:  # noqa: BLE001 - cleanup remains best-effort
+                pass
+        if self.world_model_runner is not None:
+            try:
+                self.world_model_runner.stop()
+            except Exception:  # noqa: BLE001 - shadow shutdown remains best-effort
+                pass
+        if self.world_model_store is not None:
+            try:
+                runner_status = (
+                    self.world_model_runner.status()
+                    if self.world_model_runner is not None
+                    else {}
+                )
+                if not isinstance(runner_status, Mapping) or not runner_status.get("running"):
+                    self.world_model_store.close()
+            except Exception:  # noqa: BLE001 - process exit will release SQLite
                 pass
         runtime_shutdown.shutdown_runtime_resources(
             learning_sync_runner=self.learning_sync_runner,
@@ -682,6 +700,141 @@ def _build_governed_record_decision(
     return record
 
 
+def _world_model_source_name(data_source: object, runtime_source: object) -> str:
+    if isinstance(runtime_source, str) and runtime_source.strip():
+        return runtime_source.strip()
+    name = type(data_source).__name__.strip()
+    return name.removesuffix("DataSource").lower() or "runtime_market_source"
+
+
+def _world_model_snapshot_cutoff(
+    cycle_started_at: datetime,
+    *,
+    completed_at: datetime | None = None,
+) -> datetime:
+    """Return a conservative cohort cutoff taken after market snapshot I/O."""
+
+    started = (
+        cycle_started_at.replace(tzinfo=timezone.utc)
+        if cycle_started_at.tzinfo is None
+        else cycle_started_at.astimezone(timezone.utc)
+    )
+    observed = completed_at or datetime.now(timezone.utc)
+    observed = (
+        observed.replace(tzinfo=timezone.utc)
+        if observed.tzinfo is None
+        else observed.astimezone(timezone.utc)
+    )
+    return max(started, observed)
+
+
+def _world_model_bar_payload(
+    bar: object,
+    *,
+    source: str,
+    interval: str,
+    available_at: datetime,
+) -> dict[str, object]:
+    def value(name: str) -> object:
+        return bar.get(name) if isinstance(bar, Mapping) else getattr(bar, name, None)
+
+    return {
+        "ts": value("ts"),
+        "open": value("open"),
+        "high": value("high"),
+        "low": value("low"),
+        "close": value("close"),
+        "volume": value("volume"),
+        "source": source,
+        "interval": interval,
+        # Yahoo and IB historical intraday bars both expose their opening label.
+        # The capture/label contracts derive and retain the completed-bar clock.
+        "timestamp_semantics": "bar_start",
+        # The exact provider publication time is unavailable in the legacy Bar.
+        # The runtime fetch completion is a conservative point-in-time bound.
+        "available_at": available_at.isoformat(),
+    }
+
+
+def _trigger_world_model_shadow(
+    *,
+    runner: object | None,
+    active_symbols: list[str],
+    tradable_symbols: list[str],
+    bars_by_symbol: Mapping[str, list],
+    data_age_by_symbol: Mapping[str, float],
+    runtime_data_source_by_symbol: Mapping[str, object],
+    data_source: object,
+    runtime_interval: str,
+    now: datetime,
+) -> dict[str, object]:
+    """Freeze an action-free market cohort and enqueue it without blocking trade."""
+
+    if runner is None:
+        return {"triggered": False, "reason": "disabled"}
+    try:
+        from trader.application.world_model.capture import capture_world_episodes
+        from trader.domain.semantic.catalog import family_for_symbol
+
+        evidence_by_symbol: dict[str, list[dict[str, object]]] = {}
+        metadata_by_symbol: dict[str, dict[str, object]] = {}
+        for symbol in tradable_symbols:
+            source = _world_model_source_name(
+                data_source,
+                runtime_data_source_by_symbol.get(symbol),
+            )
+            evidence_by_symbol[symbol] = [
+                _world_model_bar_payload(
+                    bar,
+                    source=source,
+                    interval=runtime_interval,
+                    available_at=now,
+                )
+                for bar in bars_by_symbol.get(symbol, [])
+            ]
+            metadata: dict[str, object] = {
+                "venue": market_rotation_runtime.venue_for_symbol(symbol),
+                "source": source,
+                "interval": runtime_interval,
+                "timestamp_semantics": "bar_start",
+                "available_at": now.isoformat(),
+                "freshness": {
+                    "status": "fresh",
+                    "data_age_minutes": data_age_by_symbol.get(symbol),
+                },
+            }
+            family = family_for_symbol(symbol)
+            if family is not None:
+                metadata["asset_family"] = family
+            metadata_by_symbol[symbol] = metadata
+
+        episodes = capture_world_episodes(
+            active_symbols=active_symbols,
+            tradable_symbols=tradable_symbols,
+            bars_by_symbol=evidence_by_symbol,
+            market_metadata_by_symbol=metadata_by_symbol,
+            interval=runtime_interval,
+            timestamp_semantics="bar_start",
+            captured_at=now,
+        )
+        result = runner.trigger(
+            episodes=episodes,
+            bars_by_symbol=evidence_by_symbol,
+            now=now,
+            reason="market_snapshot_pre_dispatch",
+        )
+        if isinstance(result, Mapping):
+            return dict(result)
+        return {"triggered": True, "reason": "market_snapshot_pre_dispatch"}
+    except Exception as exc:  # noqa: BLE001 - shadow observability never blocks trade
+        log.warning("[world_model_shadow] capture trigger failed: %s", exc)
+        return {
+            "triggered": False,
+            "reason": "capture_error",
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+
+
 def run_cycle(
     *,
     dry_run: bool,
@@ -719,6 +872,7 @@ def run_cycle(
     process_state: CycleProcessState | None = None,
     process_pilot: ProcessPilot | None = None,
     experiment_runtime_identity: Mapping[str, object] | None = None,
+    world_model_runner: object | None = None,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     process_state = process_state or _DEFAULT_CYCLE_PROCESS_STATE
@@ -920,6 +1074,18 @@ def run_cycle(
     execution_eligibility = snapshot.execution_eligibility
     exit_bars_by_symbol = snapshot.exit_bars_by_symbol
     exit_intervals_by_symbol = snapshot.exit_intervals_by_symbol
+    world_model_snapshot_at = _world_model_snapshot_cutoff(now)
+    _trigger_world_model_shadow(
+        runner=world_model_runner,
+        active_symbols=symbols,
+        tradable_symbols=tradable_symbols,
+        bars_by_symbol=tradable_bars_by_symbol,
+        data_age_by_symbol=data_age_by_symbol,
+        runtime_data_source_by_symbol=runtime_data_source_by_sym,
+        data_source=data_source,
+        runtime_interval=runtime_interval,
+        now=world_model_snapshot_at,
+    )
     if worker_cycle_context is not None:
         worker_cycle_context.publish(
             worker_cycle_context_runtime.WorkerCycleContext(
@@ -1940,12 +2106,14 @@ def main(
     _hydrate_llm_gate_state(process_state)
     cycle_run = run_cycle
     experiment_runtime_identity = _capture_experiment_runtime_identity()
+    _world_model_runner: object | None = None
 
     def _run_cycle_with_process_state(**kwargs):
         return cycle_run(
             **kwargs,
             process_state=process_state,
             process_pilot=process_pilot,
+            world_model_runner=_world_model_runner,
         )
 
     # Ref partagée vers le data_source courant : les workers de file la lisent via
@@ -1953,6 +2121,43 @@ def main(
     _ds_handle = data_source_runtime.DataSourceHandle()
     claimed_resources.data_source_handle = _ds_handle
     _worker_cycle_context = worker_cycle_context_runtime.WorkerCycleContextHandle()
+    if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED", 1) == 1:
+        try:
+            from trader.application.world_model import labeler as world_model_labeler
+            from trader.application.world_model.baseline import (
+                HierarchicalDirichletWorldBaseline,
+            )
+            from trader.infrastructure.state_db.world_model_store import WorldModelStore
+            from trader.runtime.world_model_runtime import (
+                WorldModelBackgroundRunner,
+                WorldModelRuntime,
+            )
+
+            _world_model_store = WorldModelStore(STATE_DIR / "world_model.db")
+            _world_model_runtime = WorldModelRuntime(
+                store=_world_model_store,
+                predictor=HierarchicalDirichletWorldBaseline(),
+                labeler=world_model_labeler,
+                bar_provider=make_indirect_get_bars(_ds_handle.get),
+                logger=log,
+                lookback=DEFAULT_RUNTIME_LOOKBACK,
+            )
+            _world_model_runner = WorldModelBackgroundRunner(
+                runtime=_world_model_runtime,
+                logger=log,
+            )
+            claimed_resources.world_model_store = _world_model_store
+            claimed_resources.world_model_runner = _world_model_runner
+            log.info(
+                "[world_model_shadow] enabled db=%s authority=shadow_only",
+                STATE_DIR / "world_model.db",
+            )
+        except Exception as exc:  # noqa: BLE001 - shadow boot cannot block trading
+            log.warning(
+                "[world_model_shadow] disabled after boot failure: %s:%s",
+                type(exc).__name__,
+                exc,
+            )
     _learning_sync_runner = learnings_sync_runtime.LearningSyncRunner(
         state_dir=STATE_DIR,
         get_bars=make_indirect_get_bars(_ds_handle.get),

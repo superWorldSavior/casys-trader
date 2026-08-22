@@ -29,6 +29,14 @@ def _default_logger() -> logging.Logger:
     return logging.getLogger("casys-trader")
 
 
+def venue_for_symbol(symbol: str) -> str:
+    """Expose venue classification without leaking rotation internals to daemon."""
+
+    from trader.market.rotation.wiring import venue_of
+
+    return venue_of(symbol)
+
+
 def _load_cached_market_context(
     regime_cache_path: Path,
     *,

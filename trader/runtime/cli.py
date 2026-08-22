@@ -336,6 +336,23 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_world_status(args: argparse.Namespace) -> int:
+    from trader.interfaces.cli.world_model import read_world_model_status
+
+    payload = read_world_model_status(daemon.STATE_DIR)
+    if args.json:
+        _print_json(payload)
+    else:
+        counts = payload.get("counts", {})
+        evaluation = payload.get("evaluation", {})
+        print(
+            f"world_model: {payload.get('status')} authority={payload.get('authority')} "
+            f"episodes={counts.get('episodes', 0)} labels={counts.get('outcome_events', 0)} "
+            f"predictions={counts.get('predictions', 0)} matched={evaluation.get('matched', 0)}"
+        )
+    return 0 if payload.get("status") not in {"unavailable", "schema_unavailable"} else 1
+
+
 def _dashboard_url(path: object) -> str:
     return f"http://127.0.0.1:8137/{getattr(path, 'name', path)}"
 
@@ -985,6 +1002,12 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="état courant du daemon")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_cmd_status)
+
+    world = sub.add_parser("world", help="world model de marché shadow")
+    world_sub = world.add_subparsers(dest="world_command", required=True)
+    world_status = world_sub.add_parser("status", help="couverture et métriques préquentielles")
+    world_status.add_argument("--json", action="store_true")
+    world_status.set_defaults(func=_cmd_world_status)
 
     news_macro = sub.add_parser("news-macro", help="briefs macro/news par marché")
     news_macro_sub = news_macro.add_subparsers(dest="news_macro_command", required=True)

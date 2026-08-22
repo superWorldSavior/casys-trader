@@ -44,12 +44,14 @@ transition `s -> s'` entraînable.
 - apprendre une dynamique de prix conditionnée par l'action du Trader ;
 - appeler la prochaine tâche due un horizon de marché ;
 - fusionner D16, FLAIR Trader et MemRL ;
-- entraîner ou activer un GRU/world model dans le daemon.
+- entraîner ou activer un GRU depuis cet export reconstruit.
 
-Les anciens prototypes qui faisaient ces assimilations ont été retirés. Aucun
-trainer de world model n'est actuellement conservé dans le dépôt.
+Les anciens prototypes qui faisaient ces assimilations ont été retirés. Le
+[world model shadow](world-model-shadow.md) utilise désormais un corpus
+prospectif séparé ; cet export historique n'en est toujours pas une source
+d'entraînement.
 
-## Frontière d'un futur `WorldEpisode`
+## Frontière du `WorldEpisode` prospectif
 
 Un vrai dataset de dynamique devra capturer, de manière append-only :
 
