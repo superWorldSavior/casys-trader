@@ -203,6 +203,88 @@ def _normalise_horizons(values: Iterable[object]) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+def _predictor_identity(predictor: object) -> tuple[str, str]:
+    """Return a stable runtime identity for one shadow predictor.
+
+    Real multi-model predictors are expected to expose ``model_id`` and
+    ``model_version``.  The class-based fallback keeps older injected test
+    doubles and single-model adapters backward compatible without conflating
+    two real challengers.
+    """
+
+    model_id = str(getattr(predictor, "model_id", "") or "").strip()
+    model_version = str(getattr(predictor, "model_version", "") or "").strip()
+    if not model_id:
+        predictor_type = type(predictor)
+        model_id = f"{predictor_type.__module__}.{predictor_type.__qualname__}"
+    return model_id, model_version or "unversioned"
+
+
+def _prediction_model_identity(value: object) -> tuple[str | None, str | None]:
+    nested = _field(value, "prediction", "prediction_record")
+    model_id = _field(value, "model_kind", "model_id", "kind")
+    model_version = _field(value, "model_version", "version")
+    if model_id is None and nested is not None:
+        model_id = _field(nested, "model_kind", "model_id", "kind")
+    if model_version is None and nested is not None:
+        model_version = _field(nested, "model_version", "version")
+    normalized_id = str(model_id or "").strip() or None
+    normalized_version = str(model_version or "").strip() or None
+    return normalized_id, normalized_version
+
+
+def _outcome_replay_key(value: object) -> tuple[datetime, str, str, str]:
+    """Canonical order shared by live reconciliation and restart replay."""
+
+    available_at = None
+    for name in ("label_available_at", "available_at", "sealed_at"):
+        available_at = _parse_timestamp(_field(value, name))
+        if available_at is not None:
+            break
+    event_id = _field(value, "outcome_event_id", "event_id", "outcome_id")
+    return (
+        available_at or datetime.max.replace(tzinfo=timezone.utc),
+        str(_episode_id(value) or ""),
+        str(_horizon_id(value) or ""),
+        str(event_id or ""),
+    )
+
+
+def _episode_replay_key(value: object) -> tuple[datetime, datetime, str]:
+    """Canonical causal order for sequence-model episode reconstruction."""
+
+    observation = _field(value, "observation")
+    available_at = _parse_timestamp(_field(value, "available_at"))
+    if available_at is None and observation is not None:
+        available_at = _parse_timestamp(_field(observation, "available_at"))
+    observed_at = _parse_timestamp(_field(value, "observed_at", "as_of_bar_ts"))
+    if observed_at is None and observation is not None:
+        observed_at = _parse_timestamp(_field(observation, "as_of_bar_ts"))
+    latest = datetime.max.replace(tzinfo=timezone.utc)
+    return (available_at or observed_at or latest, observed_at or latest, str(_episode_id(value) or ""))
+
+
+def _episode_series_identity(value: object) -> tuple[str, str, str, str, str]:
+    """Mirror the sequence boundary without importing a concrete predictor."""
+
+    episode = _episode_payload(value)
+    observation = _field(episode, "observation")
+
+    def text_field(name: str, *aliases: str) -> str:
+        raw = _field(observation, name, *aliases) if observation is not None else None
+        if raw is None:
+            raw = _field(episode, name, *aliases)
+        return str(raw or "").strip()
+
+    return (
+        text_field("venue"),
+        text_field("symbol"),
+        text_field("bar_interval", "interval"),
+        text_field("feature_contract_version"),
+        text_field("sampling_policy_version"),
+    )
+
+
 def _call_compatible(
     fn: Callable[..., object],
     variants: Iterable[tuple[tuple[object, ...], dict[str, object]]],
@@ -242,6 +324,7 @@ class WorldModelRuntime:
         *,
         store: object,
         predictor: object | None,
+        predictors: Iterable[object] | None = None,
         labeler: object | None,
         bar_provider: object | None,
         horizons: Iterable[str] = DEFAULT_HORIZONS,
@@ -250,8 +333,18 @@ class WorldModelRuntime:
         run_id: str = "world_shadow.v1",
     ) -> None:
         normalized = _normalise_horizons(horizons)
+        configured = ([predictor] if predictor is not None else []) + list(predictors or ())
+        identities = [_predictor_identity(item) for item in configured]
+        if len(set(identities)) != len(identities):
+            raise ValueError("shadow predictors must have unique model_id/model_version identities")
         self.store = store
-        self.predictor = predictor
+        self.predictors = tuple(configured)
+        # Retain the original attribute for compatibility with older callers;
+        # new code iterates ``predictors`` and isolates each challenger.
+        self.predictor = self.predictors[0] if self.predictors else None
+        self._predictor_identities = {
+            id(item): identity for item, identity in zip(self.predictors, identities, strict=True)
+        }
         self.labeler = labeler
         self.bar_provider = bar_provider
         self.horizons = normalized or DEFAULT_HORIZONS
@@ -261,8 +354,12 @@ class WorldModelRuntime:
         self._lock = threading.Lock()
         self._running: str | None = None
         self._last_report: dict[str, object] = {}
-        self._prediction_keys: set[tuple[str, str]] = set()
+        self._prediction_keys: set[tuple[str, str, str, str]] = set()
         self._baseline_hydrated = False
+        self._active_outcome_fingerprint: str | None = None
+        self._eligible_episode_fingerprint: str | None = None
+        self._eligible_episode_signatures: dict[str, str] | None = None
+        self._model_hydrated_through: datetime | None = None
 
     def capture_and_predict(
         self,
@@ -299,7 +396,34 @@ class WorldModelRuntime:
         try:
             self._hydrate_baseline(report, _parse_timestamp(report["as_of"]))
             self._hydrate_prediction_keys(report)
-            self._capture_episodes(episodes, report)
+            canonical_episodes = self._capture_episodes(episodes, report)
+            # Persist the entire cohort before prediction.  A late eligible
+            # episode can change an older target sequence, so reconcile the
+            # canonical episode ledger before emitting any forecast.
+            observed_during_hydration = self._hydrate_baseline(
+                report,
+                _parse_timestamp(report["as_of"]),
+            )
+            for episode in canonical_episodes:
+                identifier = _episode_id(episode)
+                already_observed = (
+                    observed_during_hydration.get(identifier, set())
+                    if identifier is not None
+                    else set()
+                )
+                remaining_predictors = tuple(
+                    predictor
+                    for predictor in self.predictors
+                    if id(predictor) not in already_observed
+                )
+                if remaining_predictors:
+                    self._observe_predictors(
+                        episode,
+                        report,
+                        predictors=remaining_predictors,
+                    )
+                for horizon in self.horizons:
+                    self._predict_one(episode, horizon, report)
         except Exception as exc:  # noqa: BLE001 - a shadow worker never raises
             self._error(report, stage="capture_run", error=exc)
         finally:
@@ -345,6 +469,9 @@ class WorldModelRuntime:
                 supplied_bars = {}
             self._hydrate_baseline(report, current_now)
             self._mature_horizons(current_now, report, supplied_bars)
+            # New labels, delayed evidence and superseding corrections all
+            # reconcile against the same active-leaf order used on restart.
+            self._hydrate_baseline(report, current_now)
         except Exception as exc:  # noqa: BLE001 - a shadow worker never raises
             self._error(report, stage="mature_run", error=exc)
         finally:
@@ -377,6 +504,12 @@ class WorldModelRuntime:
             "bars_snapshot_reused": 0,
             "baseline_updates": 0,
             "baseline_replayed": 0,
+            "model_updates": 0,
+            "model_replayed": 0,
+            "model_observations_replayed": 0,
+            "model_reconcile_skipped_unresettable": 0,
+            "model_updates_by_model": {},
+            "model_replayed_by_model": {},
             "errors": [],
         }
 
@@ -426,21 +559,26 @@ class WorldModelRuntime:
             # caller-visible failure either.
             pass
 
-    def _capture_episodes(self, episodes: Iterable[object], report: dict[str, object]) -> None:
+    def _capture_episodes(
+        self,
+        episodes: Iterable[object],
+        report: dict[str, object],
+    ) -> list[object]:
+        canonical_episodes: list[object] = []
         try:
             iterator = iter(episodes)
         except Exception as exc:  # noqa: BLE001
             self._error(report, stage="episodes_iter", error=exc)
-            return
+            return canonical_episodes
 
         while True:
             try:
                 raw_episode = next(iterator)
             except StopIteration:
-                return
+                return canonical_episodes
             except Exception as exc:  # noqa: BLE001
                 self._error(report, stage="episodes_iter", error=exc)
-                return
+                return canonical_episodes
             report["episodes_received"] = int(report["episodes_received"]) + 1
             try:
                 episode = _clone(raw_episode)
@@ -476,9 +614,7 @@ class WorldModelRuntime:
                     report["episodes_existing"] = int(report["episodes_existing"]) + 1
                 else:
                     report["episodes_appended"] = int(report["episodes_appended"]) + 1
-
-            for horizon in self.horizons:
-                self._predict_one(canonical_episode, horizon, report)
+            canonical_episodes.append(canonical_episode)
 
     def _load_existing_episode(
         self,
@@ -512,31 +648,51 @@ class WorldModelRuntime:
         identifier = _episode_id(episode)
         if identifier is None:
             return
-        key = (identifier, horizon)
-        if key in self._prediction_keys:
-            report["predictions_existing"] = int(report["predictions_existing"]) + 1
-            return
-        if self.predictor is None:
+        if not self.predictors:
             self._error(report, stage="predict", error=RuntimeError("predictor_unavailable"), episode=episode, horizon=horizon)
             return
-        try:
-            prediction = self._predict(episode, horizon, _parse_timestamp(report["as_of"]))
-            if prediction is None:
-                raise ValueError("empty_prediction")
-            event = self._prediction_event(prediction, episode, identifier, horizon, report["as_of"])
-            appended = self._store_append("append_prediction", _clone(event))
-        except Exception as exc:  # noqa: BLE001
-            self._error(report, stage="predict", error=exc, episode=episode, horizon=horizon)
-            return
-        self._prediction_keys.add(key)
-        if appended is False:
-            report["predictions_existing"] = int(report["predictions_existing"]) + 1
-        else:
-            report["predictions_appended"] = int(report["predictions_appended"]) + 1
+        for predictor in self.predictors:
+            model_id, model_version = self._predictor_identities[id(predictor)]
+            key = (identifier, horizon, model_id, model_version)
+            if key in self._prediction_keys:
+                report["predictions_existing"] = int(report["predictions_existing"]) + 1
+                continue
+            try:
+                prediction = self._predict(predictor, episode, horizon, _parse_timestamp(report["as_of"]))
+                if prediction is None:
+                    raise ValueError("empty_prediction")
+                event = self._prediction_event(
+                    prediction,
+                    episode,
+                    identifier,
+                    horizon,
+                    report["as_of"],
+                    model_id=model_id,
+                    model_version=model_version,
+                )
+                appended = self._store_append("append_prediction", _clone(event))
+            except Exception as exc:  # noqa: BLE001
+                self._error(
+                    report,
+                    stage=f"predict:{model_id}:{model_version}",
+                    error=exc,
+                    episode=episode,
+                    horizon=horizon,
+                )
+                continue
+            self._prediction_keys.add(key)
+            if appended is False:
+                report["predictions_existing"] = int(report["predictions_existing"]) + 1
+            else:
+                report["predictions_appended"] = int(report["predictions_appended"]) + 1
 
-    def _predict(self, episode: object, horizon: str, predicted_at: datetime | None) -> object:
-        predictor = self.predictor
-        assert predictor is not None
+    def _predict(
+        self,
+        predictor: object,
+        episode: object,
+        horizon: str,
+        predicted_at: datetime | None,
+    ) -> object:
         fn = getattr(predictor, "predict", predictor)
         if not callable(fn):
             raise TypeError("predictor_not_callable")
@@ -561,6 +717,9 @@ class WorldModelRuntime:
         episode_id: str,
         horizon: str,
         predicted_at: object,
+        *,
+        model_id: str,
+        model_version: str,
     ) -> dict[str, object]:
         """Normalize a prediction into the append-only store envelope.
 
@@ -570,6 +729,16 @@ class WorldModelRuntime:
         """
 
         payload = _mapping_copy(prediction)
+        payload_model_id, payload_model_version = _prediction_model_identity(payload)
+        if payload_model_id is not None and payload_model_id != model_id:
+            raise ValueError(
+                f"prediction model_id mismatch: expected {model_id!r}, got {payload_model_id!r}"
+            )
+        if payload_model_version is not None and payload_model_version != model_version:
+            raise ValueError(
+                "prediction model_version mismatch: "
+                f"expected {model_version!r}, got {payload_model_version!r}"
+            )
         prediction_id = str(payload.get("prediction_id") or "").strip()
         if not prediction_id:
             prediction_id = _stable_id(
@@ -577,19 +746,19 @@ class WorldModelRuntime:
                 {
                     "episode_id": episode_id,
                     "horizon_id": horizon,
+                    "model_id": model_id,
+                    "model_version": model_version,
                     "run_id": str(payload.get("run_id") or self.run_id),
                     "payload": payload,
                 },
             )
-        model_kind = payload.get("model_kind") or payload.get("model_id") or payload.get("kind")
-        model_version = payload.get("model_version") or payload.get("version")
         return {
             "prediction_id": prediction_id,
             "run_id": payload.get("run_id") or payload.get("model_run_id") or self.run_id,
             "episode_id": episode_id,
             "horizon_id": payload.get("horizon_id") or horizon,
             "horizon_code": payload.get("horizon_code") or payload.get("horizon_id") or horizon,
-            "model_kind": model_kind,
+            "model_kind": model_id,
             "model_version": model_version,
             "predicted_at": payload.get("predicted_at") or payload.get("created_at") or predicted_at,
             "input": _observation_payload(episode),
@@ -605,80 +774,352 @@ class WorldModelRuntime:
             for row in list(rows or []):
                 identifier = _episode_id(row)
                 horizon = _horizon_id(row)
-                if identifier and horizon:
-                    self._prediction_keys.add((identifier, horizon))
+                if not identifier or not horizon:
+                    continue
+                model_id, model_version = _prediction_model_identity(row)
+                candidates = [
+                    identity
+                    for identity in self._predictor_identities.values()
+                    if (model_id is None or identity[0] == model_id)
+                    and (model_version is None or identity[1] == model_version)
+                ]
+                if len(candidates) == 1:
+                    identity = candidates[0]
+                    self._prediction_keys.add((identifier, horizon, identity[0], identity[1]))
         except Exception as exc:  # noqa: BLE001
             self._error(report, stage="list_predictions", error=exc)
 
-    def _hydrate_baseline(self, report: dict[str, object], now: datetime | None) -> None:
-        """Replay only durable causal labels into an in-memory shadow baseline.
-
-        The predictor has no persistence authority of its own.  Rebuilding it
-        from the append-only outcome ledger keeps a daemon/process restart from
-        silently resetting progressive world learning.  This never consults a
-        broker, decision, or scheduler store.
-        """
-
-        if self._baseline_hydrated or self.predictor is None:
-            return
-        apply = self._baseline_apply_method()
-        if apply is None:
-            self._baseline_hydrated = True
-            return
-        fn = self._store_method("list_observed_outcomes", "list_outcome_events")
-        episode_fn = self._store_method("get_episode")
-        if fn is None or episode_fn is None:
-            self._baseline_hydrated = True
-            return
-        try:
-            rows = _call_compatible(
-                fn,
-                (
-                    ((), {"active_only": True, "training_eligible": True}),
-                    ((), {"active_only": True, "status": "observed", "training_eligible": True}),
-                    ((), {"training_eligible": True}),
-                    ((), {"status": "observed", "training_eligible": True}),
-                    ((), {"status": "observed"}),
-                    ((), {}),
-                ),
-            )
-            ordered = sorted(
-                list(rows or []),
-                key=lambda row: (
-                    _parse_timestamp(
-                        _field(row, "label_available_at", "available_at", "sealed_at")
-                    )
-                    or datetime.max.replace(tzinfo=timezone.utc),
-                    str(_episode_id(row) or ""),
-                    str(_horizon_id(row) or ""),
-                    str(_field(row, "outcome_event_id", "event_id", "outcome_id") or ""),
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._error(report, stage="baseline_hydrate_list", error=exc)
-            return
+    def _observe_predictors(
+        self,
+        episode: object,
+        report: dict[str, object],
+        *,
+        predictors: Iterable[object] | None = None,
+    ) -> bool:
+        """Give sequence models one immutable episode without coupling the runtime to GRU."""
 
         completed = True
-        for row in ordered:
+        selected = self.predictors if predictors is None else tuple(predictors)
+        for predictor in selected:
+            observe = getattr(predictor, "observe_episode", None)
+            if not callable(observe):
+                continue
+            model_id, model_version = self._predictor_identities[id(predictor)]
             try:
-                label = self._outcome_label(row)
-                if not self._is_sealed_observed(label, now):
-                    completed = False
-                    continue
-                identifier = _episode_id(row) or _episode_id(label)
-                if identifier is None:
-                    raise ValueError("missing_episode_id")
+                _call_compatible(observe, (((_clone(episode),), {}),))
+            except Exception as exc:  # noqa: BLE001 - one challenger never blocks another
+                completed = False
+                self._error(
+                    report,
+                    stage=f"observe:{model_id}:{model_version}",
+                    error=exc,
+                    episode=episode,
+                )
+        return completed
+
+    def _hydrate_baseline(self, report: dict[str, object], now: datetime | None) -> dict[str, set[int]]:
+        """Reconcile predictors with the canonical active outcome leaves.
+
+        Sequence histories are replayed in point-in-time order before outcomes.
+        Outcomes are replayed in one canonical order.  The active-leaf
+        fingerprint is checked even after initial hydration so delayed labels
+        and append-only corrections cannot leave a live daemon with different
+        weights from a fresh restart.  The return value records sequence
+        observers that already received an episode during this pass, so a
+        capture cohort is not sent to a non-idempotent legacy observer twice.
+        """
+
+        observed_predictors: dict[str, set[int]] = {}
+        if not self.predictors:
+            return observed_predictors
+        episode_fn = self._store_method("get_episode")
+        if episode_fn is None:
+            self._baseline_hydrated = True
+            return observed_predictors
+
+        sequence_predictors = [
+            predictor
+            for predictor in self.predictors
+            if callable(getattr(predictor, "observe_episode", None))
+        ]
+        stored_episodes: list[object] = []
+        eligible_fingerprint: str | None = None
+        eligible_signatures: dict[str, str] | None = None
+        if sequence_predictors:
+            list_episodes = self._store_method("list_eligible_episodes")
+            if list_episodes is None:
+                self._error(
+                    report,
+                    stage="model_hydrate_observations",
+                    error=RuntimeError("eligible_episode_store_unavailable"),
+                )
+                return observed_predictors
+            try:
+                stored_episodes = list(_call_compatible(list_episodes, (((), {}),)) or [])
+                stored_episodes.sort(key=_episode_replay_key)
+                episode_payloads = [
+                    _mapping_copy(_episode_payload(row))
+                    for row in stored_episodes
+                ]
+                eligible_signatures = {
+                    str(_episode_id(row) or ""): _stable_id(
+                        "world-eligible-episode",
+                        payload,
+                    )
+                    for row, payload in zip(stored_episodes, episode_payloads, strict=True)
+                    if _episode_id(row) is not None
+                }
+                eligible_fingerprint = _stable_id(
+                    "world-eligible-episodes",
+                    {"episodes": episode_payloads},
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._error(report, stage="model_hydrate_observations", error=exc)
+                return observed_predictors
+
+        all_apply_predictors = [
+            predictor
+            for predictor in self.predictors
+            if self._baseline_apply_method(predictor) is not None
+        ]
+        fn = self._store_method("list_observed_outcomes", "list_outcome_events")
+        if all_apply_predictors and fn is None:
+            self._error(
+                report,
+                stage="model_hydrate_labels",
+                error=RuntimeError("observed_outcome_store_unavailable"),
+            )
+            return observed_predictors
+        try:
+            rows = (
+                _call_compatible(
+                    fn,
+                    (
+                        ((), {"active_only": True, "training_eligible": True}),
+                        ((), {"active_only": True, "status": "observed", "training_eligible": True}),
+                        ((), {"training_eligible": True}),
+                        ((), {"status": "observed", "training_eligible": True}),
+                        ((), {"status": "observed"}),
+                        ((), {}),
+                    ),
+                )
+                if fn is not None
+                else []
+            )
+            ordered = sorted(list(rows or []), key=_outcome_replay_key)
+            active_fingerprint = _stable_id(
+                "world-active-outcomes",
+                {"labels": [self._outcome_label(row) for row in ordered]},
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._error(report, stage="model_hydrate_labels", error=exc)
+            return observed_predictors
+
+        causal_cutoff_is_current = (
+            now is None
+            or self._model_hydrated_through is None
+            or now >= self._model_hydrated_through
+        )
+        active_changed = active_fingerprint != self._active_outcome_fingerprint
+        eligible_changed = eligible_fingerprint != self._eligible_episode_fingerprint
+        if (
+            self._baseline_hydrated
+            and not active_changed
+            and not eligible_changed
+            and causal_cutoff_is_current
+        ):
+            return observed_predictors
+
+        episode_change_requires_reset = False
+        new_episode_rows: list[object] = []
+        if eligible_changed and self._eligible_episode_signatures is not None:
+            previous = self._eligible_episode_signatures
+            current = eligible_signatures or {}
+            previous_ids = set(previous)
+            current_ids = set(current)
+            if not previous_ids.issubset(current_ids) or any(
+                previous[identifier] != current[identifier]
+                for identifier in previous_ids.intersection(current_ids)
+            ):
+                episode_change_requires_reset = True
+            new_ids = current_ids - previous_ids
+            by_id = {
+                identifier: row
+                for row in stored_episodes
+                if (identifier := _episode_id(row)) is not None
+            }
+            new_episode_rows = [by_id[identifier] for identifier in new_ids]
+            target_rows = [
+                by_id[identifier]
+                for row in ordered
+                if (identifier := _episode_id(row)) in by_id
+            ]
+            if any(
+                _episode_series_identity(new_row) == _episode_series_identity(target_row)
+                and _episode_replay_key(new_row) <= _episode_replay_key(target_row)
+                for new_row in new_episode_rows
+                for target_row in target_rows
+            ):
+                episode_change_requires_reset = True
+
+        if (
+            self._baseline_hydrated
+            and not active_changed
+            and eligible_changed
+            and not episode_change_requires_reset
+            and causal_cutoff_is_current
+        ):
+            # Pure append of later, unlabeled sequence observations: no prior
+            # training example can change, so extend caches online without an
+            # O(history) replay.
+            for row in sorted(new_episode_rows, key=_episode_replay_key):
+                if not self._observe_predictors(_clone(_episode_payload(row)), report):
+                    self._baseline_hydrated = False
+                    return observed_predictors
+                identifier = _episode_id(row)
+                if identifier is not None:
+                    observed_predictors[identifier] = {
+                        id(predictor)
+                        for predictor in self.predictors
+                        if callable(getattr(predictor, "observe_episode", None))
+                    }
+            self._eligible_episode_fingerprint = eligible_fingerprint
+            self._eligible_episode_signatures = eligible_signatures
+            self._model_hydrated_through = now
+            return observed_predictors
+
+        needs_authoritative_reset = (
+            self._active_outcome_fingerprint is not None
+            or self._eligible_episode_fingerprint is not None
+        )
+        replay_predictors = list(self.predictors)
+        if needs_authoritative_reset:
+            # The production baseline and GRU implement reset_for_replay.  A
+            # legacy duck-typed injected predictor may not; keep its already
+            # applied live state instead of double-training it or turning a
+            # formerly supported collaborator into a permanent partial run.
+            # Such a predictor does not receive correction reconciliation.
+            unresettable = [
+                predictor
+                for predictor in replay_predictors
+                if not callable(getattr(predictor, "reset_for_replay", None))
+            ]
+            report["model_reconcile_skipped_unresettable"] = len(unresettable)
+            replay_predictors = [
+                predictor
+                for predictor in replay_predictors
+                if callable(getattr(predictor, "reset_for_replay", None))
+            ]
+
+        completed = True
+        for predictor in replay_predictors:
+            reset = getattr(predictor, "reset_for_replay", None)
+            if not callable(reset):
+                continue
+            model_id, model_version = self._predictor_identities[id(predictor)]
+            try:
+                reset()
+            except Exception as exc:  # noqa: BLE001
+                completed = False
+                self._error(
+                    report,
+                    stage=f"model_reconcile_reset:{model_id}:{model_version}",
+                    error=exc,
+                )
+        if not completed:
+            self._baseline_hydrated = False
+            return observed_predictors
+
+        if any(callable(getattr(predictor, "observe_episode", None)) for predictor in replay_predictors):
+            try:
+                for row in stored_episodes:
+                    episode = _clone(_episode_payload(row))
+                    if self._observe_predictors(
+                        episode,
+                        report,
+                        predictors=replay_predictors,
+                    ):
+                        identifier = _episode_id(row)
+                        if identifier is not None:
+                            observed_predictors[identifier] = {
+                                id(predictor)
+                                for predictor in replay_predictors
+                                if callable(getattr(predictor, "observe_episode", None))
+                            }
+                        report["model_observations_replayed"] = int(
+                            report["model_observations_replayed"]
+                        ) + 1
+                    else:
+                        completed = False
+            except Exception as exc:  # noqa: BLE001
+                self._error(report, stage="model_hydrate_observations", error=exc)
+                self._baseline_hydrated = False
+                return observed_predictors
+
+        apply_predictors = [
+            predictor
+            for predictor in replay_predictors
+            if self._baseline_apply_method(predictor) is not None
+        ]
+        for row in ordered:
+            label = self._outcome_label(row)
+            if not self._is_sealed_observed(label, now):
+                completed = False
+                continue
+            identifier = _episode_id(row) or _episode_id(label)
+            if identifier is None:
+                completed = False
+                self._error(
+                    report,
+                    stage="model_hydrate",
+                    error=ValueError("missing_episode_id"),
+                    episode=row,
+                    horizon=_horizon_id(row),
+                )
+                continue
+            try:
                 stored_episode = _call_compatible(episode_fn, (((identifier,), {}),))
                 if stored_episode is None:
                     raise ValueError("episode_not_found")
                 episode = _clone(_episode_payload(stored_episode))
-                applied = self._call_baseline_apply(apply, label, episode, now)
-                if applied is not False:
-                    report["baseline_replayed"] = int(report["baseline_replayed"]) + 1
             except Exception as exc:  # noqa: BLE001
                 completed = False
-                self._error(report, stage="baseline_hydrate", error=exc, episode=row, horizon=_horizon_id(row))
+                self._error(
+                    report,
+                    stage="model_hydrate_episode",
+                    error=exc,
+                    episode=row,
+                    horizon=_horizon_id(row),
+                )
+                continue
+            for predictor in apply_predictors:
+                apply = self._baseline_apply_method(predictor)
+                assert apply is not None
+                model_id, model_version = self._predictor_identities[id(predictor)]
+                try:
+                    applied = self._call_baseline_apply(apply, label, episode, now)
+                except Exception as exc:  # noqa: BLE001
+                    completed = False
+                    self._error(
+                        report,
+                        stage=f"model_hydrate:{model_id}:{model_version}",
+                        error=exc,
+                        episode=row,
+                        horizon=_horizon_id(row),
+                    )
+                    continue
+                if applied is False:
+                    continue
+                self._increment_model_counter(report, "replayed", predictor)
+                if predictor is self.predictor:
+                    report["baseline_replayed"] = int(report["baseline_replayed"]) + 1
         self._baseline_hydrated = completed
+        if completed:
+            self._active_outcome_fingerprint = active_fingerprint
+            self._eligible_episode_fingerprint = eligible_fingerprint
+            self._eligible_episode_signatures = eligible_signatures
+            self._model_hydrated_through = now
+        return observed_predictors
 
     def _mature_horizons(
         self,
@@ -931,19 +1372,52 @@ class WorldModelRuntime:
         report: dict[str, object],
         horizon: str,
     ) -> None:
-        fn = self._baseline_apply_method()
-        if not callable(fn):
-            return
-        try:
-            applied = self._call_baseline_apply(fn, outcome, episode, now)
-        except Exception as exc:  # noqa: BLE001
-            self._error(report, stage="baseline", error=exc, episode=episode, horizon=horizon)
-            return
-        if applied is not False:
-            report["baseline_updates"] = int(report["baseline_updates"]) + 1
+        for predictor in self.predictors:
+            fn = self._baseline_apply_method(predictor)
+            if not callable(fn):
+                continue
+            model_id, model_version = self._predictor_identities[id(predictor)]
+            try:
+                applied = self._call_baseline_apply(fn, outcome, episode, now)
+            except Exception as exc:  # noqa: BLE001
+                # The durable outcome will no longer be pending.  Mark the
+                # in-memory replay dirty so the next shadow pass retries this
+                # model from the authoritative ledger instead of losing the
+                # update until a process restart.
+                self._baseline_hydrated = False
+                self._error(
+                    report,
+                    stage=f"model_update:{model_id}:{model_version}",
+                    error=exc,
+                    episode=episode,
+                    horizon=horizon,
+                )
+                continue
+            if applied is False:
+                continue
+            self._increment_model_counter(report, "updates", predictor)
+            if predictor is self.predictor:
+                report["baseline_updates"] = int(report["baseline_updates"]) + 1
 
-    def _baseline_apply_method(self) -> Callable[..., object] | None:
-        predictor = self.predictor
+    def _increment_model_counter(
+        self,
+        report: dict[str, object],
+        suffix: str,
+        predictor: object,
+    ) -> None:
+        total_key = "model_updates" if suffix == "updates" else "model_replayed"
+        by_model_key = "model_updates_by_model" if suffix == "updates" else "model_replayed_by_model"
+        report[total_key] = int(report[total_key]) + 1
+        counts = report.get(by_model_key)
+        if not isinstance(counts, dict):
+            counts = {}
+            report[by_model_key] = counts
+        model_id, model_version = self._predictor_identities[id(predictor)]
+        key = f"{model_id}@{model_version}"
+        counts[key] = int(counts.get(key, 0)) + 1
+
+    def _baseline_apply_method(self, predictor: object | None = None) -> Callable[..., object] | None:
+        predictor = self.predictor if predictor is None else predictor
         if predictor is None:
             return None
         for name in ("apply_outcome", "learn", "update", "update_baseline"):

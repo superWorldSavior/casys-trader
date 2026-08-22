@@ -2127,6 +2127,7 @@ def main(
             from trader.application.world_model.baseline import (
                 HierarchicalDirichletWorldBaseline,
             )
+            from trader.application.world_model.gru import OnlineGRUWorldChallenger
             from trader.infrastructure.state_db.world_model_store import WorldModelStore
             from trader.runtime.world_model_runtime import (
                 WorldModelBackgroundRunner,
@@ -2137,6 +2138,7 @@ def main(
             _world_model_runtime = WorldModelRuntime(
                 store=_world_model_store,
                 predictor=HierarchicalDirichletWorldBaseline(),
+                predictors=(OnlineGRUWorldChallenger(),),
                 labeler=world_model_labeler,
                 bar_provider=make_indirect_get_bars(_ds_handle.get),
                 logger=log,

@@ -5,15 +5,50 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+from trader.application.world_model.gru import OnlineGRUWorldChallenger
 from trader.application.world_model.labeler import DEFAULT_HORIZONS as LABEL_HORIZONS
 from trader.application.world_model.labeler import label_horizon
-from trader.domain.world_episode import AnchorBar, WorldEpisode, WorldObservation
+from trader.domain.world_episode import AnchorBar, WorldEpisode, WorldObservation, WorldOutcome
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
 from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, WorldModelRuntime
 
 
 UTC = timezone.utc
 NOW = datetime(2026, 8, 22, 10, 0, tzinfo=UTC)
+
+
+def _domain_episode(at: datetime, *, symbol: str = "SPY", market_return: float = 0.01) -> WorldEpisode:
+    return WorldEpisode(
+        observation=WorldObservation(
+            venue="US",
+            symbol=symbol,
+            bar_interval="1h",
+            as_of_bar_ts=at,
+            feature_contract_version="world-features-v1",
+            sampling_policy_version="fresh-active-v1",
+            anchor=AnchorBar(
+                ts=at,
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1_000.0,
+                source="fixture",
+            ),
+            available_at=at,
+            captured_at=at + timedelta(minutes=1),
+            freshness="fresh",
+            categorical_features={
+                "asset_family": "equities",
+                "venue": "US",
+                "bar_interval": "1h",
+                "session_phase": "regular",
+                "market_regime": "trend_up" if market_return >= 0 else "trend_down",
+                "volatility_state": "normal",
+            },
+            numeric_features={"return": market_return, "atr_pct": 0.01},
+        )
+    )
 
 
 def _episode(episode_id: str, symbol: str = "SPY") -> dict[str, object]:
@@ -514,7 +549,7 @@ def test_background_runner_preserves_the_snapshot_clock_for_delayed_prediction()
     assert runner.status()["capture"]["as_of"] == NOW.isoformat()
 
 
-def test_real_domain_store_labeler_and_restart_rehydrate_baseline(tmp_path) -> None:
+def test_real_domain_store_labeler_and_restart_rehydrate_all_models(tmp_path) -> None:
     started = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
     observation = WorldObservation(
         venue="US",
@@ -582,9 +617,11 @@ def test_real_domain_store_labeler_and_restart_rehydrate_baseline(tmp_path) -> N
     horizons = tuple(spec.horizon_id for spec in LABEL_HORIZONS)
     store = WorldModelStore(tmp_path / "world_model.db")
     baseline = HierarchicalDirichletWorldBaseline(allowed_horizons=horizons)
+    gru = OnlineGRUWorldChallenger(allowed_horizons=horizons, hidden_size=4, sequence_len=4)
     runtime = WorldModelRuntime(
         store=store,
         predictor=baseline,
+        predictors=(gru,),
         labeler=label_horizon,
         bar_provider=FixtureBars(),
         horizons=LABEL_HORIZONS,
@@ -594,16 +631,25 @@ def test_real_domain_store_labeler_and_restart_rehydrate_baseline(tmp_path) -> N
     matured = runtime.mature_pending(mature_at)
 
     assert captured["errors"] == []
-    assert captured["predictions_appended"] == 2
+    assert captured["predictions_appended"] == 4
     assert matured["errors"] == []
     assert matured["outcomes_appended"] == 2
     assert matured["baseline_updates"] == 2
-    assert store.counts() == {"episodes": 1, "outcome_events": 2, "predictions": 2}
+    assert matured["model_updates"] == 4
+    assert gru.support("elapsed_4h.v1") == 1
+    assert gru.support("elapsed_1d.v1") == 1
+    assert store.counts() == {"episodes": 1, "outcome_events": 2, "predictions": 4}
 
     restarted_baseline = HierarchicalDirichletWorldBaseline(allowed_horizons=horizons)
+    restarted_gru = OnlineGRUWorldChallenger(
+        allowed_horizons=horizons,
+        hidden_size=4,
+        sequence_len=4,
+    )
     restarted = WorldModelRuntime(
         store=store,
         predictor=restarted_baseline,
+        predictors=(restarted_gru,),
         labeler=label_horizon,
         bar_provider=FixtureBars(),
         horizons=LABEL_HORIZONS,
@@ -612,6 +658,316 @@ def test_real_domain_store_labeler_and_restart_rehydrate_baseline(tmp_path) -> N
 
     assert replay["errors"] == []
     assert replay["baseline_replayed"] == 2
+    assert replay["model_replayed"] == 4
+    assert replay["model_observations_replayed"] == 1
     assert replay["predictions_appended"] == 0
-    assert store.counts() == {"episodes": 1, "outcome_events": 2, "predictions": 2}
+    assert restarted_gru.model_fingerprint("elapsed_4h.v1") == gru.model_fingerprint("elapsed_4h.v1")
+    assert restarted_gru.model_fingerprint("elapsed_1d.v1") == gru.model_fingerprint("elapsed_1d.v1")
+    assert store.counts() == {"episodes": 1, "outcome_events": 2, "predictions": 4}
+    store.close()
+
+
+def test_live_delayed_labels_reconcile_to_the_same_gru_as_restart(tmp_path) -> None:
+    started = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+    earlier = _domain_episode(started, market_return=0.01)
+    later = _domain_episode(started + timedelta(hours=1), market_return=-0.01)
+    available_at = {
+        earlier.episode_id: started + timedelta(hours=10),
+        later.episode_id: started + timedelta(hours=5),
+    }
+    move_class = {earlier.episode_id: "UP", later.episode_id: "DOWN"}
+
+    class DelayedLabeler:
+        def label_horizon(
+            self,
+            episode: dict[str, object],
+            _bars: object,
+            horizon_id: str,
+            *,
+            now: datetime,
+        ) -> dict[str, object]:
+            identifier = str(episode["episode_id"])
+            label_at = available_at[identifier]
+            assert label_at <= now
+            return {
+                "outcome_event_id": f"outcome:{identifier}:{horizon_id}",
+                "episode_id": identifier,
+                "horizon_id": horizon_id,
+                "status": "observed",
+                "move_class": move_class[identifier],
+                "training_eligible": True,
+                "sealed": True,
+                "available_at": label_at.isoformat(),
+                "source_raw_sha256": f"evidence:{identifier}",
+            }
+
+    class FixtureBars:
+        def get_bars(self, _symbol: str, *, lookback: str, interval: str) -> list[dict[str, object]]:
+            assert lookback == "5d"
+            assert interval == "1h"
+            return [{"ts": started, "close": 100.0}]
+
+    horizon = "elapsed_4h.v1"
+    store = WorldModelStore(tmp_path / "world_model.db")
+    assert store.append_episode(earlier)
+    assert store.append_episode(later)
+    baseline = HierarchicalDirichletWorldBaseline(allowed_horizons=(horizon,))
+    gru = OnlineGRUWorldChallenger(
+        allowed_horizons=(horizon,),
+        hidden_size=4,
+        sequence_len=4,
+    )
+    runtime = WorldModelRuntime(
+        store=store,
+        predictor=baseline,
+        predictors=(gru,),
+        labeler=DelayedLabeler(),
+        bar_provider=FixtureBars(),
+        horizons=(horizon,),
+    )
+
+    live = runtime.mature_pending(started + timedelta(hours=12))
+
+    assert live["errors"] == []
+    assert live["outcomes_appended"] == 2
+    assert gru.support(horizon) == 2
+    restarted_gru = OnlineGRUWorldChallenger(
+        allowed_horizons=(horizon,),
+        hidden_size=4,
+        sequence_len=4,
+    )
+    restarted = WorldModelRuntime(
+        store=store,
+        predictor=restarted_gru,
+        labeler=DelayedLabeler(),
+        bar_provider=FixtureBars(),
+        horizons=(horizon,),
+    )
+    replay = restarted.capture_and_predict([], now=started + timedelta(hours=12))
+
+    assert replay["errors"] == []
+    assert restarted_gru.support(horizon) == 2
+    assert restarted_gru.model_fingerprint(horizon) == gru.model_fingerprint(horizon)
+    store.close()
+
+
+def test_live_superseding_outcome_rebuilds_active_gru_leaf_without_restart(tmp_path) -> None:
+    started = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+    horizon = "elapsed_4h.v1"
+    episode = _domain_episode(started)
+    original = WorldOutcome(
+        episode_id=episode.episode_id,
+        horizon={"horizon_id": horizon, "duration_seconds": 4 * 60 * 60},
+        status="observed",
+        target_at=started + timedelta(hours=4),
+        available_at=started + timedelta(hours=4),
+        computed_at=started + timedelta(hours=4),
+        anchor_close=100.0,
+        endpoint_close=102.0,
+        endpoint_bar_ts=started + timedelta(hours=4),
+        source="fixture",
+        source_raw_sha256="original-up",
+        training_eligible=True,
+    )
+    correction = WorldOutcome(
+        episode_id=episode.episode_id,
+        horizon={"horizon_id": horizon, "duration_seconds": 4 * 60 * 60},
+        status="observed",
+        target_at=started + timedelta(hours=4),
+        available_at=started + timedelta(hours=5),
+        computed_at=started + timedelta(hours=5),
+        anchor_close=100.0,
+        endpoint_close=98.0,
+        endpoint_bar_ts=started + timedelta(hours=4),
+        source="fixture-correction",
+        source_raw_sha256="correction-down",
+        supersedes_event_id=original.event_id,
+        training_eligible=True,
+    )
+    store = WorldModelStore(tmp_path / "world_model.db")
+    assert store.append_episode(episode)
+    assert store.append_outcome_event({**original.to_dict(), "move_class": "UP"})
+    gru = OnlineGRUWorldChallenger(
+        allowed_horizons=(horizon,),
+        hidden_size=4,
+        sequence_len=4,
+    )
+    runtime = WorldModelRuntime(
+        store=store,
+        predictor=gru,
+        labeler=None,
+        bar_provider=None,
+        horizons=(horizon,),
+    )
+    first = runtime.capture_and_predict([], now=started + timedelta(hours=6))
+    original_fingerprint = gru.model_fingerprint(horizon)
+
+    assert first["errors"] == []
+    assert gru.support(horizon) == 1
+    assert store.append_outcome_event({**correction.to_dict(), "move_class": "DOWN"})
+    reconciled = runtime.capture_and_predict([], now=started + timedelta(hours=7))
+
+    assert reconciled["errors"] == []
+    assert gru.support(horizon) == 1
+    assert gru.model_fingerprint(horizon) != original_fingerprint
+    restarted_gru = OnlineGRUWorldChallenger(
+        allowed_horizons=(horizon,),
+        hidden_size=4,
+        sequence_len=4,
+    )
+    restarted = WorldModelRuntime(
+        store=store,
+        predictor=restarted_gru,
+        labeler=None,
+        bar_provider=None,
+        horizons=(horizon,),
+    )
+    replay = restarted.capture_and_predict([], now=started + timedelta(hours=7))
+
+    assert replay["errors"] == []
+    assert restarted_gru.model_fingerprint(horizon) == gru.model_fingerprint(horizon)
+    store.close()
+
+
+def test_legacy_duck_typed_predictor_remains_compatible_without_replay_reset(tmp_path) -> None:
+    started = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+    horizon = "elapsed_4h.v1"
+    episode = _domain_episode(started)
+
+    class LegacyPredictor:
+        model_id = "legacy-world-predictor"
+        model_version = "v1"
+
+        def __init__(self) -> None:
+            self.applied = 0
+            self.observed_episode_ids: list[str] = []
+
+        def observe_episode(self, observation: dict[str, object]) -> None:
+            self.observed_episode_ids.append(str(observation["episode_id"]))
+
+        def predict(
+            self,
+            observation: dict[str, object],
+            horizon_id: str,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            return {
+                "episode_id": observation["episode_id"],
+                "horizon_id": horizon_id,
+                "probabilities": {"DOWN": 0.2, "FLAT": 0.3, "UP": 0.5},
+            }
+
+        def apply_outcome(self, *_args: object, **_kwargs: object) -> None:
+            self.applied += 1
+
+    class Labeler:
+        def label_horizon(
+            self,
+            observation: dict[str, object],
+            _bars: object,
+            horizon_id: str,
+            *,
+            now: datetime,
+        ) -> dict[str, object]:
+            return {
+                "outcome_event_id": f"outcome:{observation['episode_id']}:{horizon_id}",
+                "episode_id": observation["episode_id"],
+                "horizon_id": horizon_id,
+                "status": "observed",
+                "move_class": "UP",
+                "training_eligible": True,
+                "sealed": True,
+                "available_at": now.isoformat(),
+            }
+
+    class Bars:
+        def get_bars(self, _symbol: str, **_kwargs: object) -> list[dict[str, object]]:
+            return [{"ts": started, "close": 100.0}]
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    predictor = LegacyPredictor()
+    runtime = WorldModelRuntime(
+        store=store,
+        predictor=predictor,
+        labeler=Labeler(),
+        bar_provider=Bars(),
+        horizons=(horizon,),
+    )
+    captured = runtime.capture_and_predict([episode], now=started + timedelta(hours=1))
+    matured = runtime.mature_pending(started + timedelta(hours=4))
+
+    assert captured["errors"] == []
+    assert predictor.observed_episode_ids == [episode.episode_id]
+    assert matured["errors"] == []
+    assert matured["status"] == "ok"
+    assert matured["model_reconcile_skipped_unresettable"] == 1
+    assert predictor.applied == 1
+    store.close()
+
+
+def test_late_causally_earlier_episode_reconciles_training_sequence_before_prediction(tmp_path) -> None:
+    started = datetime(2026, 8, 20, 0, 0, tzinfo=UTC)
+    horizon = "elapsed_4h.v1"
+    earlier = _domain_episode(started, market_return=-0.01)
+    trained_target = _domain_episode(started + timedelta(hours=1), market_return=0.01)
+    outcome = WorldOutcome(
+        episode_id=trained_target.episode_id,
+        horizon={"horizon_id": horizon, "duration_seconds": 4 * 60 * 60},
+        status="observed",
+        target_at=started + timedelta(hours=5),
+        available_at=started + timedelta(hours=5),
+        computed_at=started + timedelta(hours=5),
+        anchor_close=100.0,
+        endpoint_close=102.0,
+        endpoint_bar_ts=started + timedelta(hours=5),
+        source="fixture",
+        source_raw_sha256="trained-target-up",
+        training_eligible=True,
+    )
+    store = WorldModelStore(tmp_path / "world_model.db")
+    gru = OnlineGRUWorldChallenger(
+        allowed_horizons=(horizon,),
+        hidden_size=4,
+        sequence_len=4,
+    )
+    runtime = WorldModelRuntime(
+        store=store,
+        predictor=gru,
+        labeler=None,
+        bar_provider=None,
+        horizons=(horizon,),
+    )
+    assert runtime.capture_and_predict(
+        [trained_target],
+        now=started + timedelta(hours=2),
+    )["errors"] == []
+    assert store.append_outcome_event({**outcome.to_dict(), "move_class": "UP"})
+    assert runtime.capture_and_predict([], now=started + timedelta(hours=6))["errors"] == []
+    before = gru.model_fingerprint(horizon)
+
+    backfill = runtime.capture_and_predict([earlier], now=started + timedelta(hours=7))
+
+    assert backfill["errors"] == []
+    assert gru.support(horizon) == 1
+    assert gru.model_fingerprint(horizon) != before
+    assert gru.sequence_metadata(trained_target).episode_ids == (
+        earlier.episode_id,
+        trained_target.episode_id,
+    )
+    restarted_gru = OnlineGRUWorldChallenger(
+        allowed_horizons=(horizon,),
+        hidden_size=4,
+        sequence_len=4,
+    )
+    restarted = WorldModelRuntime(
+        store=store,
+        predictor=restarted_gru,
+        labeler=None,
+        bar_provider=None,
+        horizons=(horizon,),
+    )
+    replay = restarted.capture_and_predict([], now=started + timedelta(hours=7))
+
+    assert replay["errors"] == []
+    assert restarted_gru.model_fingerprint(horizon) == gru.model_fingerprint(horizon)
     store.close()

@@ -104,6 +104,7 @@ def test_world_shadow_freezes_every_active_tradable_symbol_before_dispatch() -> 
 def test_world_shadow_wiring_persists_predictions_in_the_dedicated_store(tmp_path) -> None:
     from trader.application.world_model import labeler
     from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.gru import OnlineGRUWorldChallenger
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
     from trader.runtime.world_model_runtime import (
         WorldModelBackgroundRunner,
@@ -115,6 +116,7 @@ def test_world_shadow_wiring_persists_predictions_in_the_dedicated_store(tmp_pat
         runtime=WorldModelRuntime(
             store=store,
             predictor=HierarchicalDirichletWorldBaseline(),
+            predictors=(OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4),),
             labeler=labeler,
             bar_provider=None,
         )
@@ -138,7 +140,7 @@ def test_world_shadow_wiring_persists_predictions_in_the_dedicated_store(tmp_pat
         assert store.counts() == {
             "episodes": 2,
             "outcome_events": 0,
-            "predictions": 4,
+            "predictions": 8,
         }
         assert {
             row["horizon_code"] for row in store.list_predictions()
@@ -164,7 +166,7 @@ def test_world_shadow_wiring_persists_predictions_in_the_dedicated_store(tmp_pat
         assert store.counts() == {
             "episodes": 2,
             "outcome_events": 0,
-            "predictions": 4,
+            "predictions": 8,
         }
 
         revised = daemon._trigger_world_model_shadow(
@@ -187,7 +189,7 @@ def test_world_shadow_wiring_persists_predictions_in_the_dedicated_store(tmp_pat
         assert store.counts() == {
             "episodes": 2,
             "outcome_events": 0,
-            "predictions": 4,
+            "predictions": 8,
         }
     finally:
         runner.stop()

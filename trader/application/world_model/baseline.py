@@ -789,6 +789,11 @@ class HierarchicalDirichletWorldBaseline:
         self._allowed_horizons = normalised_horizons
         self._horizons: dict[str, _HorizonCounts] = {}
 
+    def reset_for_replay(self) -> None:
+        """Clear learned counts before an authoritative active-leaf replay."""
+
+        self._horizons.clear()
+
     def predict(
         self,
         observation: object,

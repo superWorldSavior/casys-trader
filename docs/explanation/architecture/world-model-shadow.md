@@ -21,10 +21,10 @@ des rappels. Ces trois critics ne sont jamais fusionnés avec la cible marché.
 ```text
 snapshot marché frais, avant les gates et le LLM
   -> WorldEpisode immuable pour chaque symbole tradable
-  -> prédictions 4 h et 1 j persistées avant leurs labels
+  -> prédictions baseline + GRU à 4 h et 1 j persistées avant leurs labels
   -> outcomes marché indépendants à T+4 h et T+1 j
-  -> mise à jour incrémentale du baseline
-  -> mesure préquentielle des prédictions shadow
+  -> mise à jour incrémentale des deux modèles
+  -> comparaison préquentielle appariée des prédictions shadow
 ```
 
 Le sampling porte sur tout `tradable_symbols`, pas sur les seuls symboles dus,
@@ -64,22 +64,58 @@ est recalculé ; les états terminaux sont persistés pour éviter une rematurat
 sans borne. Il n'existe aucun fallback silencieux de 1 j vers 4 h. Le store
 accepte une correction future comme outcome supersédant ; un
 producer de correction devra l'ajouter explicitement et ne modifiera jamais
-une preuve existante.
+une preuve existante. Le runtime fingerprint les feuilles actives et reconstruit
+les deux modèles dans un ordre canonique dès que ce ledger change : une arrivée
+retardée ou une correction produit donc le même état live qu'après redémarrage.
 
-## Modèle V1 et futur GRU
+## Baseline et GRU challenger
 
-Le premier challenger est un Markov catégoriel hiérarchique à lissage
+Le baseline est un Markov catégoriel hiérarchique à lissage
 Dirichlet : état exact, puis état grossier, puis fréquence globale, puis
 distribution uniforme au cold start. Il est déterministe, incrémental et rend
 visibles son support et son niveau de backoff. Tant que le support est
 insuffisant il émet `warming_up/NO_GO`; avec davantage de données il reste
 malgré tout `shadow_only`.
 
-Un GRU éventuel devra consommer le même contrat d'observation causal et produire
-le même contrat de prédiction. Il sera donc un challenger remplaçable, pas une
-nouvelle source d'autorité. On ne l'entraînera qu'après avoir accumulé assez de
-séquences prospectives point-in-time pour comparer son Brier score, sa
-calibration et sa stabilité au baseline simple.
+Le challenger est un petit GRU NumPy qui consomme les douze derniers épisodes
+compatibles d'un même instrument. Son encodeur est fixe : aucune normalisation
+ni aucun vocabulaire n'est ajusté sur le futur. Chaque horizon possède ses
+propres poids et reçoit une étape BPTT déterministe seulement lorsque son label
+append-only devient disponible. Le démarrage est donc volontairement froid,
+avec padding masqué, puis l'apprentissage se fait progressivement à partir du
+premier label prospectif ; il n'existe pas de gros entraînement initial caché.
+
+Le baseline et le GRU produisent tous les deux le même `WorldPrediction`, pour
+la même observation et avant son outcome. Ils restent en permanence
+`shadow_only/NO_GO`. Un redémarrage reconstruit leur état en rejouant les
+épisodes puis les labels dans leur ordre causal ; le GRU n'est ni une nouvelle
+mémoire du Brain ni une source d'autorité de trading.
+
+## Mesures shadow et apport Trader
+
+L'évaluation groupe chaque version de modèle et chaque horizon. Elle mesure
+Brier, log-loss, accuracy, calibration à cinq bins, direction et un drawdown
+directionnel de marché. La comparaison GRU–baseline est appariée sur les mêmes
+épisodes : en dessous du support minimum elle répond
+`insufficient_support` au lieu de déclarer un gagnant. Le drawdown de marché est
+un proxy additif à notionnel unitaire, sans frais, FX ou sizing ; les horizons
+peuvent se chevaucher. Ce n'est donc pas un drawdown de portefeuille.
+
+L'apport aux résultats Trader est une autre question. Le chemin historique
+`mandat Univers -> décision -> fills -> cycle flat-to-flat` est joignable, mais
+une prédiction World asynchrone n'est actuellement ni présentée au Brain ni
+référencée par la décision. Le runner retourne donc honnêtement
+`actual_contribution=not_attributable` et
+`counterfactual_contribution=not_available`. Il ne transforme jamais une bonne
+prévision de marché en faux gain Trader.
+
+Une future association descriptive exigera un lien append-only explicite entre
+la prédiction et la décision, l'heure réelle où la prédiction est devenue
+disponible, l'heure de dispatch de la décision, puis un cycle flat-to-flat à
+frais connus. Un vrai delta PnL/drawdown exigera en plus une politique shadow
+pré-enregistrée et son ledger d'ordres/fills simulés. `predicted_at`, qui est le
+cutoff logique du snapshot, et `cycle_ts`, qui est le début du cycle, ne
+suffisent pas à prouver l'ordre temporel réel.
 
 ## Persistance et sûreté
 
@@ -105,6 +141,7 @@ Le statut est une lecture seule : il ne crée ni ne migre la base absente.
 uv run casys-trader world status --json
 ```
 
-Il expose la couverture, les horizons observés et, dès que des prédictions ont
-mûri, les métriques préquentielles (Brier, skill contre l'uniforme, log-loss,
-accuracy et calibration). Une base vide répond `warming_up`.
+Il expose la couverture, les prédictions par modèle et, dès que des prédictions
+ont mûri, les groupes préquentiels, la comparaison appariée baseline–GRU et les
+mesures d'impact avec leurs limites d'attribution. Une base vide répond
+`warming_up`.
