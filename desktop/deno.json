@@ -1,0 +1,81 @@
+{
+  "name": "casys-trader-desktop",
+  "version": "0.1.0",
+  "exports": "./server/main.ts",
+  "nodeModulesDir": "none",
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["deno.desktop"]
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@1",
+    "@std/media-types": "jsr:@std/media-types@1",
+    "@std/path": "jsr:@std/path@1"
+  },
+  "tasks": {
+    "ui:dev": "./node_modules/.bin/vite --open",
+    "ui:build": "./node_modules/.bin/tsc && ./node_modules/.bin/vite build",
+    "desktop": "deno task ui:build && deno desktop -P --hmr --backend webview server/main.ts",
+    "pack": "deno task ui:build && deno desktop -P --backend webview --include dist server/main.ts",
+    "serve": "deno run -P server/main.ts",
+    "test": "deno test -P",
+    "check": "deno check server/main.ts",
+    "fmt": "deno fmt",
+    "lint": "deno lint"
+  },
+  "permissions": {
+    "default": {
+      "read": true,
+      "env": ["CASYS_TRADER_ROOT", "UV_BIN", "PATH"],
+      "net": ["127.0.0.1", "localhost"],
+      "run": ["uv", "/opt/homebrew/bin/uv", "/usr/local/bin/uv"]
+    }
+  },
+  "test": {
+    "permissions": {
+      "read": true,
+      "write": true,
+      "env": [
+        "CASYS_TRADER_ROOT",
+        "UV_BIN",
+        "PATH",
+        "TMPDIR"
+      ],
+      "net": ["127.0.0.1", "localhost"],
+      "run": ["/bin/sh"]
+    }
+  },
+  "compile": {
+    "include": ["dist"],
+    "permissions": "default"
+  },
+  "desktop": {
+    "app": {
+      "name": "Casys Trader",
+      "identifier": "ai.casys.trader.desktop",
+      "icons": {
+        "macos": "./icons/icon.icns",
+        "windows": "./icons/icon.ico",
+        "linux": "./icons/icon.png"
+      }
+    },
+    "backend": "webview",
+    "output": {
+      "macos": "./build/CasysTrader.app"
+    }
+  },
+  "exclude": [
+    "dist/",
+    "node_modules/",
+    "build/",
+    "src/",
+    "public/",
+    "vite.config.ts"
+  ],
+  "fmt": {
+    "include": ["server/", "deno.json"]
+  },
+  "lint": {
+    "include": ["server/"]
+  }
+}

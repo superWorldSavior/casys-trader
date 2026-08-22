@@ -63,11 +63,10 @@ __pycache__/
 *.log
 *.html
 
-# Desktop app (keep source; ignore build/vendor)
+# Desktop app (keep source; ignore build/vendor/bundles)
 /desktop/node_modules/
 /desktop/dist/
-/desktop/src-tauri/target/
-/desktop/src-tauri/gen/
+/desktop/build/
 !/desktop/
 !/desktop/**
 !/desktop/index.html

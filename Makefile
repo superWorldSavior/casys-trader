@@ -1,19 +1,22 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro universe models model-preset storage-report storage-archive storage-schedule storage-unschedule desktop desktop-tauri
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro universe models model-preset storage-report storage-archive storage-schedule storage-unschedule desktop desktop-browser desktop-build
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 watch:  ## Salle de contrôle — voir et piloter le daemon (dashboard + logs + supervision)
 	uv run python -m trader.cockpit
 
-desktop:  ## Cockpit read-only dans le navigateur (http://127.0.0.1:1420)
-	cd desktop && npm run dev
+desktop:  ## Cockpit natif Deno Desktop (WebView)
+	cd desktop && deno task desktop
 
-desktop-tauri:  ## Même UI dans une fenêtre Tauri (optionnel, peut figer)
-	cd desktop && npm run tauri dev
+desktop-browser:  ## Cockpit Vite dans le navigateur (http://127.0.0.1:1420)
+	cd desktop && deno task ui:dev
+
+desktop-build:  ## Empaquete l'app macOS dans desktop/build/CasysTrader.app
+	cd desktop && deno task pack
 
 live:  ## Moteur en PAPER réel (exécute les ordres simulés, écrit l'état)
 	uv run python -m trader.daemon --live
