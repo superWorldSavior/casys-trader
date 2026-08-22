@@ -12,9 +12,12 @@ from trader.application.record.decision_entries import (
     INFRA_HOLD_REASONS,
     has_exploitable_llm_rationale,
 )
-from trader.application.record.decision_ledger_rows import build_decision_row
+from trader.application.record.decision_ledger_rows import (
+    build_decision_row,
+    decision_row_mandate_ref,
+)
 from trader.application.record.tool_outcomes import finalize_action_tool_outcomes
-from trader.domain import decision_identity
+from trader.domain import brain_trace, decision_identity
 
 log = logging.getLogger("trader.application.decision_recorder")
 
@@ -263,6 +266,37 @@ class DecisionRecorder:
                 learning_extra["rationale"] = rationale
             if annotation is not None:
                 learning_extra["learning_annotation"] = annotation
+            process_instance_id = brain_trace.unique_identity(
+                decision_entry.get("process_instance_id"),
+                self.report.get("process_instance_id"),
+            )
+            task_id = brain_trace.unique_identity(
+                decision_entry.get("task_id"),
+                self.report.get("task_id"),
+            )
+            attempt_id = brain_trace.unique_identity(
+                decision_entry.get("attempt_id"),
+                self.report.get("attempt_id"),
+            )
+            mandate_id = brain_trace.mandate_id_from_ref(
+                decision_row_mandate_ref({"mandate_ref": decision_entry.get("mandate_ref")})
+                or decision_entry.get("mandate_ref")
+            )
+            episode = brain_trace.episode_id(
+                task_id=task_id,
+                process_instance_id=process_instance_id,
+                decision_source=decision_entry.get("decision_source"),
+            )
+            if task_id is not None:
+                learning_extra["task_id"] = task_id
+            if process_instance_id is not None:
+                learning_extra["process_instance_id"] = process_instance_id
+            if attempt_id is not None:
+                learning_extra["attempt_id"] = attempt_id
+            if mandate_id is not None:
+                learning_extra["mandate_id"] = mandate_id
+            if episode is not None:
+                learning_extra["episode_id"] = episode
             decision_entry["learning_recorded"] = self.learnings_store.append(
                 symbol=symbol,
                 note=note,

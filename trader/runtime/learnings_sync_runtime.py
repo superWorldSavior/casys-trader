@@ -14,7 +14,7 @@ from trader.agent.learnings import embeddings as embeddings_mod
 from trader.application.record.learning_outcomes import (
     MIN_OUTCOME_AGE,
     outcome_for_row,
-    realised_entry_outcomes,
+    realised_entry_outcome_records,
     uses_realised_outcome,
 )
 from trader.infrastructure.files import ledger_rotation
@@ -190,7 +190,7 @@ def _refresh_outcomes(
             }
         )
         realised_cycles = []
-    realised_returns = realised_entry_outcomes(realised_cycles)
+    realised_returns = realised_entry_outcome_records(realised_cycles)
 
     note_updates: list[dict] = []
     for row in pending_notes:

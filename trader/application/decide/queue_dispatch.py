@@ -94,6 +94,7 @@ def _enqueue_decide_tasks(
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
     process_identity_by_symbol: Mapping[str, Mapping[str, object]] | None = None,
+    task_id_by_symbol: dict[str, int] | None = None,
 ) -> tuple[dict[str, int], set[str]]:
     """Purge les stale puis enfile une tâche decide par symbole admissible."""
     now_ms = int(now_fn() * 1000)
@@ -169,6 +170,8 @@ def _enqueue_decide_tasks(
                 )
                 enqueue_skipped_syms.add(sym)
 
+    if task_id_by_symbol is not None:
+        task_id_by_symbol.update(task_ids)
     return task_ids, enqueue_skipped_syms
 
 
@@ -186,6 +189,7 @@ def iter_decide_results_via_queue(
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
     process_identity_by_symbol: Mapping[str, Mapping[str, object]] | None = None,
+    task_id_by_symbol: dict[str, int] | None = None,
 ) -> Iterator[tuple[str, Decision | None, int]]:
     """Yield les résultats de décisions dès que leur tâche atteint un terminal.
 
@@ -207,6 +211,7 @@ def iter_decide_results_via_queue(
         now_fn=now_fn,
         symbols_universe=symbols_universe,
         process_identity_by_symbol=process_identity_by_symbol,
+        task_id_by_symbol=task_id_by_symbol,
     )
 
     # -----------------------------------------------------------------------
@@ -320,6 +325,7 @@ def dispatch_decide_via_queue(
     now_fn: Callable[[], float],
     symbols_universe: list[str] | None = None,
     process_identity_by_symbol: Mapping[str, Mapping[str, object]] | None = None,
+    task_id_by_symbol: dict[str, int] | None = None,
 ) -> tuple[dict[str, Decision], int, set[str]]:
     """Enfile les décisions grain-symbole et collecte les résultats via polling.
 
@@ -378,6 +384,7 @@ def dispatch_decide_via_queue(
         now_fn=now_fn,
         symbols_universe=symbols_universe,
         process_identity_by_symbol=process_identity_by_symbol,
+        task_id_by_symbol=task_id_by_symbol,
     ):
         if decision is None:
             skipped_syms.add(sym)

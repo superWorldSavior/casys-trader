@@ -1035,17 +1035,28 @@ def test_batch_decide_reinjecte_last_llm_review_dans_les_deux_batches(monkeypatc
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_batch)
     monkeypatch.setattr(daemon, "resolve_indicator_requests", fake_resolve)
     review = {"ts": "2026-06-15T13:00:00+00:00", "verdict": "fragile"}
+    company = {"status": "fresh", "summary": "Catalyst remains active."}
+    mandate = {
+        "mandate_ref": {"mandate_id": "mandate-1", "status": "active"},
+        "symbol_mandate": {"directional_view": "long_bias"},
+    }
 
     _batch_decide(
         decidable=["SPY"],
         max_model_calls=2,
         last_review_by_symbol={"SPY": review},
+        company_context_by_symbol={"SPY": company},
+        mandate_context_by_symbol={"SPY": mandate},
         **_COMMON,
     )
 
     assert len(captured) == 2  # round-trip REQUEST_CONTEXT a bien eu lieu
     assert captured[0]["SPY"].get("last_llm_review") == review  # 1er batch
     assert captured[1]["SPY"].get("last_llm_review") == review  # 2e batch (per_symbol2)
+    assert captured[0]["SPY"].get("company_intelligence_delta") == company
+    assert captured[1]["SPY"].get("company_intelligence_delta") == company
+    assert captured[0]["SPY"].get("universe_mandate") == mandate
+    assert captured[1]["SPY"].get("universe_mandate") == mandate
 
 
 def test_last_review_by_symbol_filtre_plans_sans_review_et_hors_perimetre(tmp_path) -> None:

@@ -1422,6 +1422,7 @@ def run_cycle(
         process_identity_for_symbol=(
             process_pilot.decision_fields if process_pilot is not None else lambda _symbol: {}
         ),
+        analysis_bars_by_symbol=analysis_bars_by_symbol,
         rate_for_symbol=_rate,
         append_event=_append_event,
         append_model_performance=_append_model_performance,

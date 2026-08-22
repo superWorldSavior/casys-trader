@@ -201,6 +201,8 @@ def score_learning(
         "action": action,
         "executed": executed,
         "verdict": primary_outcome["verdict"],
+        "evaluation_basis": "counterfactual",
+        "horizon_used": primary_label,
         "classify_primary": primary_classify,
         "forward_return": round(primary_fr, 6) if primary_fr is not None else None,
         "classify_4h": cl["4h"],

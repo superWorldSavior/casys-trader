@@ -506,6 +506,8 @@ def batch_decide(
                     recent_decisions_by_symbol=recent,
                     bars_by_symbol=tradable_bars_by_symbol,
                     bar_timeframe_by_symbol=bar_timeframe_by_symbol,
+                    company_context_by_symbol=company_context_by_symbol,
+                    mandate_context_by_symbol=mandate_context_by_symbol,
                 ),
                 "research": research,
                 # Sessions jetables : le 2e batch n'a pas l'historique du 1er ; on

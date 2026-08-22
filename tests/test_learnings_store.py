@@ -467,8 +467,18 @@ def test_apply_verdicts_met_a_jour_verdict_et_forward_return(tmp_path: Path) -> 
     did2 = _ROWS[2]["decision_id"]
     bootstrap = tmp_path / "bootstrap.json"
     _make_bootstrap_json(bootstrap, {
-        did0: {"verdict": "WIN", "forward_return": 0.05},
-        did2: {"verdict": "LOSS", "forward_return": -0.03},
+        did0: {
+            "verdict": "WIN",
+            "forward_return": 0.05,
+            "evaluation_basis": "counterfactual",
+            "horizon_used": "1d",
+        },
+        did2: {
+            "verdict": "LOSS",
+            "forward_return": -0.03,
+            "evaluation_basis": "counterfactual",
+            "horizon_used": "4h",
+        },
     })
 
     n = store.apply_verdicts(bootstrap)
@@ -476,17 +486,35 @@ def test_apply_verdicts_met_a_jour_verdict_et_forward_return(tmp_path: Path) -> 
 
     conn = sqlite3.connect(str(tmp_path / "learnings.db"))
     r0 = conn.execute(
-        "SELECT verdict, forward_return FROM notes WHERE decision_id=?", (did0,)
+        """
+        SELECT verdict, forward_return, evaluation_basis, horizon_used, evaluated_at
+        FROM notes WHERE decision_id=?
+        """,
+        (did0,),
     ).fetchone()
     r2 = conn.execute(
-        "SELECT verdict, forward_return FROM notes WHERE decision_id=?", (did2,)
+        """
+        SELECT verdict, forward_return, evaluation_basis, horizon_used, evaluated_at
+        FROM notes WHERE decision_id=?
+        """,
+        (did2,),
     ).fetchone()
     conn.close()
 
     assert r0[0] == "WIN"
     assert r0[1] == pytest.approx(0.05)
+    assert tuple(r0[2:]) == (
+        "counterfactual",
+        "1d",
+        "2026-07-02T00:00:00+00:00",
+    )
     assert r2[0] == "LOSS"
     assert r2[1] == pytest.approx(-0.03)
+    assert tuple(r2[2:]) == (
+        "counterfactual",
+        "4h",
+        "2026-07-02T00:00:00+00:00",
+    )
 
 
 def test_apply_verdicts_fichier_absent_retourne_zero(tmp_path: Path) -> None:
@@ -1479,6 +1507,9 @@ def test_benchmark_v3_migration_invalidates_v2_derived_feedback_once(
         UPDATE notes
         SET outcome_score=0.4, q_value=0.7, q_updates=9,
             outcome_semantics_version=2,
+            evaluation_basis='realized', horizon_used='1d',
+            evaluated_at='2026-07-10T00:00:00+00:00',
+            source_cycle_id='legacy-cycle',
             curated_revision=curation_revision
         """
     )
@@ -1506,7 +1537,8 @@ def test_benchmark_v3_migration_invalidates_v2_derived_feedback_once(
         """
         SELECT verdict, forward_return, outcome_score,
                outcome_semantics_version, q_value, q_updates,
-               curation_revision, curated_revision
+               curation_revision, curated_revision,
+               evaluation_basis, horizon_used, evaluated_at, source_cycle_id
         FROM notes
         """
     ).fetchone()
@@ -1534,6 +1566,10 @@ def test_benchmark_v3_migration_invalidates_v2_derived_feedback_once(
         0,
         revision_before + 1,
         revision_before + 1,
+        None,
+        None,
+        None,
+        None,
     )
     assert tuple(recall) == (None, None, None, None, None)
     assert tuple(citation) == (None, None, None, None, None)

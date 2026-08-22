@@ -83,6 +83,9 @@ class UniverseAgentDecision:
     model: str | None = None
     provider_fallback_reason: str | None = None
     portfolio_posture: dict[str, Any] = field(default_factory=dict)
+    tool_rounds: int = 0
+    tool_calls: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    tool_results: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,9 @@ class UniverseCompositionResult:
     agent_provider: str | None = None
     agent_model: str | None = None
     agent_provider_fallback_reason: str | None = None
+    tool_rounds: int = 0
+    tool_calls: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    tool_results: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
 @runtime_checkable
@@ -312,6 +318,38 @@ def validate_universe_decision(
     return tuple(dict.fromkeys(errors))
 
 
+def _decision_tool_trace(
+    decision: UniverseAgentDecision,
+) -> tuple[int, tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    rounds = max(0, int(decision.tool_rounds or 0))
+    calls = tuple(
+        dict(item)
+        for item in decision.tool_calls
+        if isinstance(item, Mapping)
+    )
+    results = tuple(
+        dict(item)
+        for item in decision.tool_results
+        if isinstance(item, Mapping)
+    )
+    return rounds, calls, results
+
+
+def universe_run_tool_trace(
+    *,
+    agent_run_id: str,
+    result: UniverseCompositionResult,
+) -> dict[str, Any]:
+    """Bind the captured tool-round trace to the durable universe run identity."""
+
+    return {
+        "agent_run_id": str(agent_run_id),
+        "tool_rounds": max(0, int(result.tool_rounds or 0)),
+        "tool_calls": [dict(item) for item in result.tool_calls if isinstance(item, Mapping)],
+        "tool_results": [dict(item) for item in result.tool_results if isinstance(item, Mapping)],
+    }
+
+
 def compose_universe(
     request: UniverseCompositionRequest,
     *,
@@ -346,10 +384,17 @@ def compose_universe(
             validation_errors=("invalid_agent_decision_type",),
         )
     validation_errors = validate_universe_decision(request, decision)
+    tool_rounds, tool_calls, tool_results = _decision_tool_trace(decision)
     if validation_errors:
         return UniverseCompositionResult(
             status="invalid",
             validation_errors=validation_errors,
+            tool_rounds=tool_rounds,
+            tool_calls=tool_calls,
+            tool_results=tool_results,
+            agent_provider=decision.provider,
+            agent_model=decision.model,
+            agent_provider_fallback_reason=decision.provider_fallback_reason,
         )
     return UniverseCompositionResult(
         status="success",
@@ -357,6 +402,9 @@ def compose_universe(
         agent_provider=decision.provider,
         agent_model=decision.model,
         agent_provider_fallback_reason=decision.provider_fallback_reason,
+        tool_rounds=tool_rounds,
+        tool_calls=tool_calls,
+        tool_results=tool_results,
     )
 
 

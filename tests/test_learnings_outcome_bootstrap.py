@@ -56,6 +56,8 @@ def test_score_learning_uses_directional_benchmark_v2() -> None:
     assert result["classify_1d"] == "missed"
     assert result["verdict"] == "LOSS"
     assert result["forward_return"] == pytest.approx(0.03)
+    assert result["evaluation_basis"] == "counterfactual"
+    assert result["horizon_used"] == "1d"
 
 
 def test_score_learning_directionless_material_move_is_unknown() -> None:

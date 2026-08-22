@@ -96,6 +96,12 @@ def test_compose_with_tool_loop_executes_tool_between_two_completions() -> None:
     assert "SAP.DE" in router.prompts[1]
     assert "selected_hotlist" in router.prompts[1]
     assert "get_company_briefs" in router.prompts[1]
+    assert decision.tool_rounds == 1
+    assert decision.tool_calls[0]["tool"] == "get_company_briefs"
+    assert decision.tool_calls[0]["outcome"] == "ok"
+    assert decision.tool_results[0]["tool"] == "get_company_briefs"
+    assert decision.tool_results[0]["ok"] is True
+    assert decision.tool_results[0]["result"]["rows"][0]["brief_ref"]["brief_id"]
 
 
 def test_compose_with_tool_loop_accepts_direct_final_completion() -> None:
@@ -110,6 +116,9 @@ def test_compose_with_tool_loop_accepts_direct_final_completion() -> None:
     assert store.calls == []
     assert len(router.prompts) == 1
     assert "tool_calls" in router.prompts[0]
+    assert decision.tool_rounds == 0
+    assert decision.tool_calls == ()
+    assert decision.tool_results == ()
 
 
 def test_compose_with_tool_loop_repairs_one_invalid_final_payload() -> None:

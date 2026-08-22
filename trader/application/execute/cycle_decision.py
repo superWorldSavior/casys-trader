@@ -40,6 +40,19 @@ _RELATIVE_ORDER_INTENTS = order_admission.RELATIVE_ORDER_INTENTS
 _EXECUTE_POLL_BUDGET_S: float = 10.0
 
 
+def _last_bar_ts(bars: object) -> str | None:
+    """Return the last analysis bar timestamp, or None when it was not captured."""
+
+    if not isinstance(bars, (list, tuple)) or not bars:
+        return None
+    last = bars[-1]
+    raw = getattr(last, "ts", None)
+    if raw is None and isinstance(last, dict):
+        raw = last.get("ts")
+    text = str(raw or "").strip()
+    return text or None
+
+
 def _fx_rate_or_none(rate_for_symbol: Callable[[str], float], symbol: str) -> float | None:
     try:
         return rate_for_symbol(symbol)
@@ -95,6 +108,8 @@ class DecisionExecutionContext:
     # supplies the stable ledger identity reserved before execution.
     decision_id_for_symbol: Callable[[str], str] = lambda symbol: symbol
     process_identity_for_symbol: Callable[[str], dict[str, str]] = lambda _symbol: {}
+    decide_task_id_by_symbol: dict[str, int] = field(default_factory=dict)
+    analysis_bars_by_symbol: dict[str, list] = field(default_factory=dict)
     append_event: Callable[..., None] = _noop_event
     append_model_performance: Callable[..., None] = _noop_model_performance
     logger: logging.Logger = logging.getLogger("casys-trader")
@@ -351,6 +366,13 @@ def execute_one_cycle_decision(
         entry["entry_dimensions"] = _entry_dimensions(decision, ctx.cockpit)
     process_identity = dict(ctx.process_identity_for_symbol(sym))
     entry.update(process_identity)
+    task_id = ctx.decide_task_id_by_symbol.get(sym)
+    if task_id is not None:
+        entry["task_id"] = task_id
+    observation_ts = _last_bar_ts(ctx.analysis_bars_by_symbol.get(sym))
+    if observation_ts is not None:
+        entry["observation_ts"] = observation_ts
+        entry["observation_source"] = "analysis_bar_as_of"
 
     def record_outcome(payload: dict) -> None:
         if "admission_status" not in payload:

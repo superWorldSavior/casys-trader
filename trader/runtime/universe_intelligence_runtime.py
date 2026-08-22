@@ -21,6 +21,7 @@ from trader.application.universe import (
     UniverseCompositionRequest,
     build_universe_composition_request,
     compose_universe,
+    universe_run_tool_trace,
 )
 from trader.agent.universe.agent import (
     build_universe_router_from_env,
@@ -29,6 +30,10 @@ from trader.agent.universe.agent import (
 from trader.agent.universe.global_posture_agent import (
     GlobalUniversePostureRequest,
     LlmGlobalPostureAgent,
+)
+from trader.agent.universe.prompt import (
+    UNIVERSE_PROMPT_CONTRACT_VERSION,
+    project_universe_prompt_payload,
 )
 from trader.agent.universe.tool_loop import compose_with_tool_loop
 from trader.domain.universe import (
@@ -583,6 +588,26 @@ def tick_universe_intelligence(
                 "retrieval_status": request.retrieval_status,
                 "retrieval_refs": list(request.retrieval_refs),
                 "request_payload_hash": _request_signature(request_payload),
+                "request_snapshot": request_payload,
+                "prompt_observation": {
+                    "status": (
+                        "actual_standard_tool_loop_projection"
+                        if isinstance(agent, _ToolLoopUniverseAgent)
+                        else "reference_projection_custom_agent_prompt_unknown"
+                    ),
+                    "contract_version": UNIVERSE_PROMPT_CONTRACT_VERSION,
+                    "company_context_projection": "triage_index",
+                    "payload_hash": _request_signature(
+                        project_universe_prompt_payload(
+                            request,
+                            company_context_index=True,
+                        )
+                    ),
+                    "payload": project_universe_prompt_payload(
+                        request,
+                        company_context_index=True,
+                    ),
+                },
                 "market_context_status": (
                     str(request.market_context.get("status") or "present")
                     if request.market_context
@@ -608,6 +633,10 @@ def tick_universe_intelligence(
                 "agent_model": result.agent_model,
                 "agent_provider_fallback_reason": result.agent_provider_fallback_reason,
             }
+        )
+        record["tool_trace"] = universe_run_tool_trace(
+            agent_run_id=str(record["agent_run_id"]),
+            result=result,
         )
         if result.status == "success" and result.decision is not None:
             decision = result.decision
@@ -2067,6 +2096,4 @@ def _build_prepared_mandate(
             else None
         ),
     )
-
-
 

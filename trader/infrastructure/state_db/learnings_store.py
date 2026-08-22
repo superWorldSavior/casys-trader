@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
+from trader.domain.brain_trace import identity_text
 from trader.domain.learnings.scoring import (
     MEMRL_MIN_UPDATES,
     compute_outcome_scores as default_outcome_scorer,
@@ -73,7 +74,16 @@ CREATE TABLE IF NOT EXISTS notes (
     curation_revision INTEGER NOT NULL DEFAULT 1,
     curated_revision  INTEGER NOT NULL DEFAULT 0,
     curation_updated_at TEXT,
-    embedding       BLOB        -- OpenAI float32 LE, pré-calculé batch
+    embedding       BLOB,       -- OpenAI float32 LE, pré-calculé batch
+    episode_id      TEXT,
+    task_id         TEXT,
+    process_instance_id TEXT,
+    attempt_id      TEXT,
+    mandate_id      TEXT,
+    evaluation_basis TEXT,
+    horizon_used    TEXT,
+    evaluated_at    TEXT,
+    source_cycle_id TEXT
 )
 """
 
@@ -215,6 +225,15 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "recalls", "forward_return", "REAL")
     _ensure_column(conn, "recalls", "evaluated_at", "TEXT")
     _ensure_column(conn, "recalls", "outcome_semantics_version", "INTEGER")
+    _ensure_column(conn, "notes", "episode_id", "TEXT")
+    _ensure_column(conn, "notes", "task_id", "TEXT")
+    _ensure_column(conn, "notes", "process_instance_id", "TEXT")
+    _ensure_column(conn, "notes", "attempt_id", "TEXT")
+    _ensure_column(conn, "notes", "mandate_id", "TEXT")
+    _ensure_column(conn, "notes", "evaluation_basis", "TEXT")
+    _ensure_column(conn, "notes", "horizon_used", "TEXT")
+    _ensure_column(conn, "notes", "evaluated_at", "TEXT")
+    _ensure_column(conn, "notes", "source_cycle_id", "TEXT")
     _ensure_column(
         conn,
         "global_rule_citations",
@@ -274,6 +293,10 @@ def _migrate_benchmark_semantics(
                     forward_return=NULL,
                     outcome_score=NULL,
                     outcome_semantics_version=NULL,
+                    evaluation_basis=NULL,
+                    horizon_used=NULL,
+                    evaluated_at=NULL,
+                    source_cycle_id=NULL,
                     q_value=0,
                     q_updates=0,
                     curation_revision=MAX(curation_revision, curated_revision)+1,
@@ -517,6 +540,11 @@ class LearningsStore:
                     "source": source,
                     "valid_from": ts,
                     "curation_updated_at": ts or datetime.now(timezone.utc).isoformat(),
+                    "episode_id": identity_text(row.get("episode_id")),
+                    "task_id": identity_text(row.get("task_id")),
+                    "process_instance_id": identity_text(row.get("process_instance_id")),
+                    "attempt_id": identity_text(row.get("attempt_id")),
+                    "mandate_id": identity_text(row.get("mandate_id")),
                 })
 
         with self._lock, self._commit_or_rollback():
@@ -526,11 +554,15 @@ class LearningsStore:
                     INSERT OR IGNORE INTO notes (
                         decision_id, ts, symbol, family, venue,
                         action, intent, executed, reason, note,
-                        concepts, source, valid_from, curation_updated_at
+                        concepts, source, valid_from, curation_updated_at,
+                        episode_id, task_id, process_instance_id, attempt_id,
+                        mandate_id
                     ) VALUES (
                         :decision_id, :ts, :symbol, :family, :venue,
                         :action, :intent, :executed, :reason, :note,
-                        :concepts, :source, :valid_from, :curation_updated_at
+                        :concepts, :source, :valid_from, :curation_updated_at,
+                        :episode_id, :task_id, :process_instance_id, :attempt_id,
+                        :mandate_id
                     )
                     """,
                     params,
@@ -555,7 +587,10 @@ class LearningsStore:
 
         Format attendu : fichier JSON produit par scripts/learnings_outcome_bootstrap.py,
         avec une clé ``"learnings"`` contenant une liste d'objets ayant au moins
-        ``decision_id``, ``verdict``, et ``forward_return``.
+        ``decision_id``, ``verdict``, et ``forward_return``. Les exports
+        modernes peuvent aussi fournir ``evaluation_basis``, ``horizon_used``,
+        ``evaluated_at`` et ``source_cycle_id`` ; leur absence est conservée
+        explicitement comme provenance bootstrap/indisponible.
 
         Retourne le nombre de notes effectivement mises à jour (rowcount > 0).
         """
@@ -573,6 +608,7 @@ class LearningsStore:
 
         updated = 0
         changed_at = datetime.now(timezone.utc).isoformat()
+        bootstrap_evaluated_at = identity_text(data.get("generated_at")) or changed_at
         with self._lock, self._commit_or_rollback():
             for item in learnings:
                 decision_id = item.get("decision_id")
@@ -590,6 +626,10 @@ class LearningsStore:
                        SET verdict        = :verdict,
                            forward_return = :forward_return,
                            outcome_semantics_version = :semantics_version,
+                           evaluation_basis = :evaluation_basis,
+                           horizon_used = :horizon_used,
+                           evaluated_at = :evaluated_at,
+                           source_cycle_id = :source_cycle_id,
                            curation_revision = curation_revision + 1,
                            curation_updated_at = :changed_at
                      WHERE decision_id = :decision_id
@@ -598,6 +638,10 @@ class LearningsStore:
                            verdict IS NOT :verdict
                            OR forward_return IS NOT :forward_return
                            OR outcome_semantics_version IS NOT :semantics_version
+                           OR evaluation_basis IS NOT :evaluation_basis
+                           OR horizon_used IS NOT :horizon_used
+                           OR evaluated_at IS NOT :evaluated_at
+                           OR source_cycle_id IS NOT :source_cycle_id
                        )
                     """,
                     {
@@ -605,6 +649,12 @@ class LearningsStore:
                         "verdict": item.get("verdict"),
                         "forward_return": item.get("forward_return"),
                         "semantics_version": BENCHMARK_SEMANTICS_VERSION,
+                        "evaluation_basis": identity_text(item.get("evaluation_basis"))
+                        or "counterfactual_bootstrap",
+                        "horizon_used": identity_text(item.get("horizon_used")),
+                        "evaluated_at": identity_text(item.get("evaluated_at"))
+                        or bootstrap_evaluated_at,
+                        "source_cycle_id": identity_text(item.get("source_cycle_id")),
                         "changed_at": changed_at,
                     },
                 )
@@ -1167,7 +1217,10 @@ class LearningsStore:
             sql = """
                 SELECT id, decision_id, ts, symbol, family, action, intent,
                        executed, note, verdict, forward_return, outcome_score,
-                       outcome_semantics_version, q_value, q_updates
+                       outcome_semantics_version, q_value, q_updates,
+                       episode_id, task_id, process_instance_id, attempt_id,
+                       mandate_id, evaluation_basis, horizon_used, evaluated_at,
+                       source_cycle_id
                 FROM notes
                 WHERE (verdict IS NULL
                    OR outcome_semantics_version IS NOT ?)
@@ -1197,7 +1250,11 @@ class LearningsStore:
                     SET verdict = ?, forward_return = ?,
                         outcome_semantics_version = ?,
                         curation_revision = curation_revision + 1,
-                        curation_updated_at = ?
+                        curation_updated_at = ?,
+                        evaluation_basis = ?,
+                        horizon_used = ?,
+                        evaluated_at = ?,
+                        source_cycle_id = ?
                     WHERE id = ?
                       AND (verdict IS NULL OR outcome_semantics_version IS NOT ?)
                     """,
@@ -1206,6 +1263,10 @@ class LearningsStore:
                         row.get("forward_return"),
                         BENCHMARK_SEMANTICS_VERSION,
                         changed_at,
+                        row.get("evaluation_basis"),
+                        row.get("horizon_used"),
+                        row.get("evaluated_at"),
+                        row.get("source_cycle_id"),
                         row.get("id"),
                         BENCHMARK_SEMANTICS_VERSION,
                     ),

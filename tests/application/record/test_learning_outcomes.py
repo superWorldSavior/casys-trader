@@ -242,6 +242,16 @@ def _bars(start: datetime, *, initial: float = 100.0, final: float = 102.0) -> l
     ]
 
 
+def _counterfactual_provenance(now: datetime, *, horizon: str | None = "1d") -> dict:
+    return {
+        "evaluation_basis": "counterfactual",
+        "horizon_used": horizon,
+        "evaluated_at": now.isoformat(),
+        "source_cycle_id": None,
+        "source_cycle_status": "unavailable",
+    }
+
+
 def test_score_outcome_uses_one_day_then_maps_reward() -> None:
     started = datetime(2026, 7, 1, 10, tzinfo=UTC)
     result = score_outcome(
@@ -250,10 +260,12 @@ def test_score_outcome_uses_one_day_then_maps_reward() -> None:
         now=started + timedelta(days=2),
     )
 
+    now = started + timedelta(days=2)
     assert result == {
         "verdict": "WIN",
         "reward": 1.0,
         "forward_return": pytest.approx(0.03),
+        **_counterfactual_provenance(now),
     }
 
 @pytest.mark.parametrize(
@@ -283,10 +295,12 @@ def test_score_outcome_hold_reflects_portfolio_exposure(
         now=started + timedelta(days=2),
     )
 
+    now = started + timedelta(days=2)
     assert result == {
         "verdict": verdict,
         "reward": 1.0 if verdict == "WIN" else -1.0,
         "forward_return": pytest.approx(forward_return),
+        **_counterfactual_provenance(now),
     }
 
 
@@ -315,10 +329,12 @@ def test_score_outcome_directionless_hold_material_move_is_unknown(
         now=started + timedelta(days=4),
     )
 
+    now = started + timedelta(days=4)
     assert result == {
         "verdict": "UNKNOWN",
         "reward": None,
         "forward_return": pytest.approx(0.03),
+        **_counterfactual_provenance(now),
     }
 
 
@@ -336,10 +352,12 @@ def test_score_outcome_directionless_hold_quiet_market_is_neutral() -> None:
         now=started + timedelta(days=2),
     )
 
+    now = started + timedelta(days=2)
     assert result == {
         "verdict": "NEUTRAL",
         "reward": 0.0,
         "forward_return": pytest.approx(0.003),
+        **_counterfactual_provenance(now),
     }
 
 
@@ -371,10 +389,12 @@ def test_score_outcome_directional_hold_scores_missed_or_prudence(
         now=started + timedelta(days=2),
     )
 
+    now = started + timedelta(days=2)
     assert result == {
         "verdict": verdict,
         "reward": reward,
         "forward_return": pytest.approx(final / 100.0 - 1.0),
+        **_counterfactual_provenance(now),
     }
 
 
@@ -401,10 +421,12 @@ def test_score_outcome_unscoreable_hold_is_unknown(decision_fields: dict) -> Non
         now=started + timedelta(days=2),
     )
 
+    now = started + timedelta(days=2)
     assert result == {
         "verdict": "UNKNOWN",
         "reward": None,
         "forward_return": pytest.approx(0.03),
+        **_counterfactual_provenance(now),
     }
 
 
@@ -421,10 +443,12 @@ def test_score_outcome_uses_first_bar_at_or_after_horizon() -> None:
         now=started + timedelta(days=4),
     )
 
+    now = started + timedelta(days=4)
     assert result == {
         "verdict": "WIN",
         "reward": 1.0,
         "forward_return": pytest.approx(0.03),
+        **_counterfactual_provenance(now),
     }
 
 
@@ -448,8 +472,10 @@ def test_score_outcome_compares_offset_bars_as_utc_datetimes() -> None:
         now=started + timedelta(days=2),
     )
 
+    now = started + timedelta(days=2)
     assert result == {
         "verdict": "WIN",
         "reward": 1.0,
         "forward_return": pytest.approx(0.03),
+        **_counterfactual_provenance(now),
     }

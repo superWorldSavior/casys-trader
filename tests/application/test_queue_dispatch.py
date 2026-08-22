@@ -270,6 +270,7 @@ def test_enqueue_decide_payload_contient_cycle_id() -> None:
             return len(self.payloads)
 
     ledger = CaptureLedger()
+    observed_task_ids: dict[str, int] = {}
 
     queue_dispatch_mod._enqueue_decide_tasks(
         ledger=ledger,
@@ -283,6 +284,7 @@ def test_enqueue_decide_payload_contient_cycle_id() -> None:
         cycle_id="2026-07-07T09:00:00+08:00",
         now_fn=lambda: 1.0,
         symbols_universe=["SPY"],
+        task_id_by_symbol=observed_task_ids,
         process_identity_by_symbol={
             "SPY": {
                 "process_instance_id": "instance-SPY",
@@ -311,6 +313,7 @@ def test_enqueue_decide_payload_contient_cycle_id() -> None:
             },
         }
     ]
+    assert observed_task_ids == {"SPY": 1}
 
 
 def test_retry_keeps_process_payload_and_handler_echoes_it(tmp_path, monkeypatch) -> None:

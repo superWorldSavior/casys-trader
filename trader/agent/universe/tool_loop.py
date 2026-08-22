@@ -8,7 +8,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from trader.agent import llm
-from trader.agent.tools.core import ToolRoundLimits, execute_tool_round, results_prompt_payload
+from trader.agent.tools.core import (
+    ToolRoundLimits,
+    execute_tool_round,
+    results_prompt_payload,
+    round_runtime_payload,
+)
 from trader.agent.universe.agent import UniverseAgentError, UniverseAgentPayloadError
 from trader.agent.universe.prompt import (
     build_universe_followup_prompt,
@@ -81,6 +86,22 @@ def _parse_final(
     )
 
 
+def _with_tool_trace(
+    decision: UniverseAgentDecision,
+    traces: list,
+    *,
+    rounds: int,
+    results: list[dict[str, Any]],
+) -> UniverseAgentDecision:
+    payload = round_runtime_payload(traces, rounds=max(0, int(rounds)))
+    return replace(
+        decision,
+        tool_rounds=int(payload["tool_rounds"]),
+        tool_calls=tuple(payload["tool_calls"]),
+        tool_results=tuple(dict(item) for item in results),
+    )
+
+
 def _parse_final_with_repair(
     completion: llm.LlmCompletion,
     *,
@@ -120,6 +141,8 @@ def compose_with_tool_loop(
     registry = {"get_company_briefs": make_get_company_briefs_spec(intelligence_store)}
     context = SimpleNamespace(intelligence_store=intelligence_store)
     accumulated: list[dict[str, Any]] = []
+    traces: list = []
+    rounds = 0
     prompt = build_universe_prompt(request, allow_tools=True)
 
     for _ in range(max(0, int(max_rounds))):
@@ -128,20 +151,27 @@ def compose_with_tool_loop(
             _raise_failure(completion)
         tool_calls = _extract_tool_calls(completion.text)
         if tool_calls is None:
-            return _parse_final_with_repair(
-                completion,
-                request=request,
-                router=router,
-                timeout_s=timeout_s,
-                tool_results=accumulated,
+            return _with_tool_trace(
+                _parse_final_with_repair(
+                    completion,
+                    request=request,
+                    router=router,
+                    timeout_s=timeout_s,
+                    tool_results=accumulated,
+                ),
+                traces,
+                rounds=rounds,
+                results=accumulated,
             )
-        results, _traces = execute_tool_round(
+        results, round_traces = execute_tool_round(
             tool_calls,
             context=context,
             limits=ToolRoundLimits(max_total_calls=10, max_calls_per_symbol=3),
             allowed_tools=_ALLOWED_TOOLS,
             registry=registry,
         )
+        rounds += 1
+        traces.extend(round_traces)
         accumulated.extend(results_prompt_payload(results))
         prompt = build_universe_followup_prompt(request, tool_results=accumulated)
 
@@ -156,12 +186,17 @@ def compose_with_tool_loop(
     completion = router.complete(prompt, timeout_s=timeout_s)
     if isinstance(completion, llm.LlmFailure):
         _raise_failure(completion)
-    return _parse_final_with_repair(
-        completion,
-        request=request,
-        router=router,
-        timeout_s=timeout_s,
-        tool_results=accumulated,
+    return _with_tool_trace(
+        _parse_final_with_repair(
+            completion,
+            request=request,
+            router=router,
+            timeout_s=timeout_s,
+            tool_results=accumulated,
+        ),
+        traces,
+        rounds=rounds,
+        results=accumulated,
     )
 
 

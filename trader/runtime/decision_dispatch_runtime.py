@@ -244,6 +244,9 @@ def _dispatch_via_queue(
     streamed_decision_symbols: set[str] = set()
     execution_state = request.execution_state
 
+    observed_task_ids = getattr(request.execution_context, "decide_task_id_by_symbol", None)
+    if not isinstance(observed_task_ids, dict):
+        observed_task_ids = {}
     for symbol, decision, calls in queue_results_iterator(
         ledger=request.task_ledger,
         decidable=request.decidable,
@@ -257,6 +260,7 @@ def _dispatch_via_queue(
         now_fn=request.now_fn,
         symbols_universe=request.analysis_symbols,
         process_identity_by_symbol=request.process_identity_by_symbol,
+        task_id_by_symbol=observed_task_ids,
     ):
         if decision is None:
             undecided_symbols.add(symbol)

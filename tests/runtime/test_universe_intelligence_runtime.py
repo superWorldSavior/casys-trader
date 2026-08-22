@@ -367,6 +367,10 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
             request.candidate_scope_id
         )
         assert prepared is not None
+        assert prepared["tool_trace"]["agent_run_id"] == prepared["agent_run_id"]
+        assert prepared["tool_trace"]["tool_rounds"] == 0
+        assert prepared["tool_trace"]["tool_calls"] == []
+        assert prepared["tool_trace"]["tool_results"] == []
         assert prepared["status"] == "success"
         assert prepared["fallback_used"] is False
         assert prepared["brief_ref"]["venue"] == request.venue
@@ -376,6 +380,16 @@ def test_tick_prepares_three_independent_venue_runs_with_briefs_and_families(tmp
         assert prepared["agent_model"] == "test-model"
         assert prepared["agent_provider_fallback_reason"] == "primary:retryable"
         assert prepared["request_payload_hash"]
+        assert prepared["request_snapshot"]["candidate_scope_id"] == request.candidate_scope_id
+        assert prepared["request_snapshot"].get("selection_feedback", {}) == request.selection_feedback
+        assert prepared["prompt_observation"]["contract_version"] == "universe_prompt_v1"
+        assert prepared["prompt_observation"]["payload_hash"]
+        assert prepared["prompt_observation"]["status"] == (
+            "reference_projection_custom_agent_prompt_unknown"
+        )
+        assert prepared["prompt_observation"]["payload"]["candidate_scope_id"] == (
+            request.candidate_scope_id
+        )
         assert prepared["market_context_status"] == "partial"
         assert prepared["market_context"]["as_of"] == "2026-07-10T19:00:00+00:00"
         assert request.candidates[-1]["family"] in prepared["family_snapshot"]

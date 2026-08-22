@@ -38,16 +38,16 @@ def _finite_number(value: object) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def realised_entry_outcomes(
+def realised_entry_outcome_records(
     cycles: Iterable[Mapping[str, object]],
-) -> dict[str, float]:
-    """Project canonical, fee-proven cycles onto their entry decisions.
+) -> dict[str, dict[str, object]]:
+    """Project fee-proven cycles onto entry decisions with explicit cycle identity.
 
-    This application policy owns no persistence or reconstruction authority.
-    Its caller must inject completed flat-to-flat cycles built from the broker
-    ledger, including USD entry notional and explicit commission quality.
+    A decision mapped to two distinct ``position_cycle_id`` values is dropped
+    instead of picking a winner.
     """
-    resolved: dict[str, float] = {}
+    resolved: dict[str, dict[str, object]] = {}
+    ambiguous: set[str] = set()
     for cycle in cycles:
         quality = cycle.get("commission_quality")
         if not isinstance(quality, Mapping) or quality.get("status") != "available":
@@ -62,11 +62,43 @@ def realised_entry_outcomes(
         net_return = net_pnl / deployed
         if not math.isfinite(net_return):
             continue
+        cycle_id = str(cycle.get("position_cycle_id") or "").strip() or None
+        record = {
+            "net_return": net_return,
+            "source_cycle_id": cycle_id,
+            "source_cycle_status": "available" if cycle_id else "unavailable",
+        }
         for entry_id in entry_ids:
             normalized_id = str(entry_id or "").strip()
-            if normalized_id:
-                resolved[normalized_id] = net_return
+            if not normalized_id or normalized_id in ambiguous:
+                continue
+            existing = resolved.get(normalized_id)
+            if existing is None:
+                resolved[normalized_id] = dict(record)
+                continue
+            if (
+                existing.get("source_cycle_id") != cycle_id
+                or existing.get("net_return") != net_return
+            ):
+                ambiguous.add(normalized_id)
+                resolved.pop(normalized_id, None)
     return resolved
+
+
+def realised_entry_outcomes(
+    cycles: Iterable[Mapping[str, object]],
+) -> dict[str, float]:
+    """Project canonical, fee-proven cycles onto their entry decisions.
+
+    This application policy owns no persistence or reconstruction authority.
+    Its caller must inject completed flat-to-flat cycles built from the broker
+    ledger, including USD entry notional and explicit commission quality.
+    """
+    return {
+        decision_id: float(record["net_return"])
+        for decision_id, record in realised_entry_outcome_records(cycles).items()
+        if isinstance(record.get("net_return"), (int, float))
+    }
 
 
 def realised_verdict(net_return: float) -> tuple[str, float]:
@@ -137,6 +169,51 @@ def learning_outcome_for_return(
     return {"verdict": "UNKNOWN", "reward": None, "forward_return": forward_value}
 
 
+def _evaluation_provenance(
+    outcome: Mapping[str, object],
+    *,
+    evaluation_basis: str,
+    horizon_used: str | None,
+    evaluated_at: datetime,
+    source_cycle_id: str | None = None,
+    source_cycle_status: str = "unavailable",
+) -> dict[str, object]:
+    return {
+        **dict(outcome),
+        "evaluation_basis": evaluation_basis,
+        "horizon_used": horizon_used,
+        "evaluated_at": _utc(evaluated_at).isoformat(),
+        "source_cycle_id": source_cycle_id,
+        "source_cycle_status": source_cycle_status,
+    }
+
+
+def _realised_record(raw: object) -> dict[str, object] | None:
+    if isinstance(raw, Mapping):
+        net_return = _finite_number(raw.get("net_return"))
+        if net_return is None:
+            return None
+        cycle_id = str(raw.get("source_cycle_id") or "").strip() or None
+        status = str(raw.get("source_cycle_status") or "").strip()
+        if status not in {"available", "unavailable", "ambiguous"}:
+            status = "available" if cycle_id else "unavailable"
+        if status == "ambiguous":
+            return None
+        return {
+            "net_return": net_return,
+            "source_cycle_id": cycle_id,
+            "source_cycle_status": status,
+        }
+    net_return = _finite_number(raw)
+    if net_return is None:
+        return None
+    return {
+        "net_return": net_return,
+        "source_cycle_id": None,
+        "source_cycle_status": "unavailable",
+    }
+
+
 def score_outcome(
     row: Mapping[str, object],
     bars: Sequence[Bar],
@@ -152,12 +229,27 @@ def score_outcome(
     ts_iso = ts.isoformat()
     one_day = forward_return(bars, ts_iso, timedelta(days=1))
     if one_day is not None:
-        return learning_outcome_for_return(row, one_day)
+        return _evaluation_provenance(
+            learning_outcome_for_return(row, one_day),
+            evaluation_basis="counterfactual",
+            horizon_used="1d",
+            evaluated_at=now,
+        )
     four_hours = forward_return(bars, ts_iso, timedelta(hours=4))
     if four_hours is not None:
-        return learning_outcome_for_return(row, four_hours)
+        return _evaluation_provenance(
+            learning_outcome_for_return(row, four_hours),
+            evaluation_basis="counterfactual",
+            horizon_used="4h",
+            evaluated_at=now,
+        )
     if bars and _utc(now) - ts >= UNKNOWN_OUTCOME_AGE:
-        return learning_outcome_for_return(row, None)
+        return _evaluation_provenance(
+            learning_outcome_for_return(row, None),
+            evaluation_basis="counterfactual",
+            horizon_used=None,
+            evaluated_at=now,
+        )
     return None
 
 
@@ -166,20 +258,28 @@ def outcome_for_row(
     *,
     bars: Sequence[Bar],
     now: datetime,
-    realised_returns: Mapping[str, float],
+    realised_returns: Mapping[str, object],
 ) -> dict[str, object] | None:
     """Resolve an opening on realised P&L and every other decision on horizon quality."""
     decision_id = str(row.get("decision_id") or "")
     if uses_realised_outcome(row):
-        net_return = realised_returns.get(decision_id)
-        if net_return is None:
+        record = _realised_record(realised_returns.get(decision_id))
+        if record is None:
             return None
+        net_return = float(record["net_return"])
         verdict, reward = realised_verdict(net_return)
-        return {
-            "verdict": verdict,
-            "reward": reward,
-            "forward_return": net_return,
-        }
+        return _evaluation_provenance(
+            {
+                "verdict": verdict,
+                "reward": reward,
+                "forward_return": net_return,
+            },
+            evaluation_basis="realized",
+            horizon_used=None,
+            evaluated_at=now,
+            source_cycle_id=str(record["source_cycle_id"]) if record.get("source_cycle_id") else None,
+            source_cycle_status=str(record["source_cycle_status"]),
+        )
     return score_outcome(row, bars, now=now)
 
 
@@ -195,6 +295,7 @@ __all__ = [
     "forward_return",
     "learning_outcome_for_return",
     "outcome_for_row",
+    "realised_entry_outcome_records",
     "realised_entry_outcomes",
     "realised_verdict",
     "requires_realised_trade",

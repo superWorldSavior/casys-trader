@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from trader.domain import decision_reason
+from trader.domain import brain_trace, decision_reason
 from trader.domain.decision_identity import decision_id
 from trader.support.metadata import experiment as experiment_metadata
 
@@ -28,6 +28,7 @@ __all__ = [
     "UNKNOWN_CODE_VERSION",
     "build_decision_row",
     "collect_session_by_symbol",
+    "decision_row_brain_trace",
     "decision_row_mandate_ref",
 ]
 
@@ -83,6 +84,68 @@ def decision_row_mandate_ref(row: Any) -> dict | None:
     if isinstance(nested, dict):
         return _optional_mandate_ref(nested.get("mandate_ref"))
     return None
+
+
+def decision_row_brain_trace(row: Any) -> dict | None:
+    """Read the additive Brain trace block; missing on historical rows."""
+    if not isinstance(row, dict):
+        return None
+    found = row.get("brain_trace")
+    return dict(found) if isinstance(found, dict) else None
+
+
+def _mapping(value: Any) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _brain_trace_projection(
+    report: dict,
+    decision: dict,
+    *,
+    resolved_decision_id: str,
+    mandate_ref: dict | None,
+) -> dict[str, object]:
+    nested_decision_process = _mapping(decision.get("process"))
+    nested_report_process = _mapping(report.get("process"))
+    task_id = brain_trace.unique_identity(
+        decision.get("task_id"),
+        report.get("task_id"),
+        nested_decision_process.get("task_id"),
+        nested_report_process.get("task_id"),
+    )
+    process_instance_id = brain_trace.unique_identity(
+        decision.get("process_instance_id"),
+        report.get("process_instance_id"),
+        nested_decision_process.get("process_instance_id"),
+        nested_report_process.get("process_instance_id"),
+    )
+    attempt_id = brain_trace.unique_identity(
+        decision.get("attempt_id"),
+        report.get("attempt_id"),
+        nested_decision_process.get("attempt_id"),
+        nested_report_process.get("attempt_id"),
+    )
+    observation_source = decision.get("observation_source") or report.get("observation_source")
+    return {
+        "episode_id": brain_trace.episode_id(
+            task_id=task_id,
+            process_instance_id=process_instance_id,
+            decision_source=decision.get("decision_source"),
+        ),
+        "task_id": task_id,
+        "process_instance_id": process_instance_id,
+        "attempt_id": attempt_id,
+        "decision_id": resolved_decision_id,
+        "mandate_id": brain_trace.mandate_id_from_ref(mandate_ref),
+        "observation": brain_trace.observation_ref(
+            ts=decision.get("observation_ts") or report.get("observation_ts"),
+            source=observation_source,
+        ),
+        "post_effect_snapshot": brain_trace.post_effect_snapshot_ref(
+            snapshot_id=decision.get("post_effect_snapshot_id")
+            or report.get("post_effect_snapshot_id")
+        ),
+    }
 
 
 def collect_session_by_symbol(
@@ -275,6 +338,12 @@ def build_decision_row(
         },
         "news": _as_dict(decision.get("news")),
         "labels": {},
+        "brain_trace": _brain_trace_projection(
+            report,
+            decision,
+            resolved_decision_id=resolved_decision_id,
+            mandate_ref=_optional_mandate_ref(decision.get("mandate_ref")),
+        ),
     }
     process = _process_projection(report, decision, resolved_decision_id=resolved_decision_id)
     if process is not None:

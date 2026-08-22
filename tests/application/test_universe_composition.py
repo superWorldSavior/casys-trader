@@ -184,6 +184,54 @@ def test_compose_universe_returns_success_only_for_explicit_valid_selection() ->
     assert result.validation_errors == ()
     assert result.error_code is None
     assert result.fallback_used is False
+    assert result.tool_rounds == 0
+    assert result.tool_calls == ()
+    assert result.tool_results == ()
+
+
+def test_compose_universe_preserves_agent_tool_trace_on_the_result() -> None:
+    request = _request()
+    traces = (
+        {
+            "id": "c1",
+            "tool": "get_company_briefs",
+            "args": {"symbols": ["SAP.DE"]},
+            "outcome": "ok",
+            "detail": {},
+        },
+    )
+    tool_results = (
+        {
+            "id": "c1",
+            "tool": "get_company_briefs",
+            "ok": True,
+            "result": {"rows": [{"symbol": "SAP.DE", "brief_ref": {"brief_id": "brief-1"}}]},
+        },
+    )
+
+    class Agent:
+        def compose(self, received):
+            assert received is request
+            return UniverseAgentDecision(
+                selected_hotlist=("ASML.AS",),
+                summary="Prefer the fresh catalyst with supportive family regime.",
+                family_postures={"eu_tech": "constructive"},
+                symbol_rationales={"ASML.AS": "Fresh event and positive family context."},
+                contract_version="universe.v1",
+                tool_rounds=1,
+                tool_calls=traces,
+                tool_results=tool_results,
+            )
+
+    result = compose_universe(request, agent=Agent())
+
+    assert result.status == "success"
+    assert result.tool_rounds == 1
+    assert result.tool_calls == traces
+    assert result.tool_results == tool_results
+    assert result.decision is not None
+    assert result.decision.tool_calls == traces
+    assert result.decision.tool_results == tool_results
 
 
 @pytest.mark.parametrize(

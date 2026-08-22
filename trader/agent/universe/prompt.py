@@ -11,6 +11,22 @@ from trader.agent.protocol.prompts import DATA_BOUNDARY_ANALYST_EN
 from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
 
 
+UNIVERSE_PROMPT_CONTRACT_VERSION = "universe_prompt_v1"
+
+
+def project_universe_prompt_payload(
+    request: UniverseCompositionRequest,
+    *,
+    company_context_index: bool,
+) -> dict[str, Any]:
+    """Return the exact structured payload rendered into a Universe prompt."""
+
+    return _project_prompt_payload(
+        request,
+        company_context_index=company_context_index,
+    )
+
+
 def build_universe_prompt(
     request: UniverseCompositionRequest,
     *,
@@ -20,7 +36,10 @@ def build_universe_prompt(
     """Render the complete bounded venue request for the universe agent."""
 
     use_company_index = allow_tools if company_context_index is None else company_context_index
-    payload = _project_prompt_payload(request, company_context_index=use_company_index)
+    payload = project_universe_prompt_payload(
+        request,
+        company_context_index=use_company_index,
+    )
     tool_block = _UNIVERSE_TOOL_BLOCK if allow_tools else ""
     final_contract_intro = (
         "Forme B — DÉCISION FINALE: retourne uniquement un objet JSON valide, "

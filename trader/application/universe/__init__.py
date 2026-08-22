@@ -9,6 +9,7 @@ from trader.application.universe.composition import (
     UniverseCompositionResult,
     build_universe_composition_request,
     compose_universe,
+    universe_run_tool_trace,
     validate_universe_decision,
 )
 from trader.application.universe.scope_rotation import (
@@ -26,6 +27,7 @@ __all__ = [
     "UniverseCompositionResult",
     "build_universe_composition_request",
     "compose_universe",
+    "universe_run_tool_trace",
     "refresh_preopen_candidate_scope",
     "update_venue_ranking",
     "validate_prepared_hotlist",
