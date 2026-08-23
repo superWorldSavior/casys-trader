@@ -12,6 +12,7 @@ from typing import NewType, Protocol
 
 from trader.domain.world_availability import AvailabilityEvidence, PersistedWorldRef
 from trader.domain.world_graph import (
+    GRAPH_TRAVERSAL_POLICY_VERSION,
     KnowledgeWorldRelationEvent,
     MacroGraphBridgeEvent,
     MacroGraphBridgeFence,
@@ -115,6 +116,66 @@ class WorldGraphSnapshotLedger(Protocol):
     def get(self, snapshot_id: WorldGraphSnapshotId) -> WorldGraphSnapshot | None: ...
 
 
+@dataclass(frozen=True)
+class WorldGraphPathStep:
+    """One admissible hop. Signature tokens never include instrument or company IDs."""
+
+    relation_id: str
+    kind: str
+    family: str
+    direction: str
+    source_kind: str
+    target_kind: str
+    source_node_id: str
+    target_node_id: str
+    freshness_bucket: str
+
+    def signature_token(self) -> str:
+        return f"{self.source_kind}|{self.kind}:{self.direction}:{self.freshness_bucket}|{self.target_kind}"
+
+
+@dataclass(frozen=True)
+class WorldGraphPath:
+    steps: tuple[WorldGraphPathStep, ...]
+
+    @property
+    def signature(self) -> str:
+        return ">".join(step.signature_token() for step in self.steps)
+
+    @property
+    def depth(self) -> int:
+        return len(self.steps)
+
+    @property
+    def relation_ids(self) -> tuple[str, ...]:
+        return tuple(step.relation_id for step in self.steps)
+
+
+@dataclass(frozen=True)
+class WorldGraphPathSet:
+    paths: tuple[WorldGraphPath, ...]
+    status: str = "complete"
+    policy_version: str = GRAPH_TRAVERSAL_POLICY_VERSION
+
+    @property
+    def truncated(self) -> bool:
+        return self.status == "graph_budget_exceeded"
+
+
+class WorldGraphTraversalPort(Protocol):
+    """Fresh projection of resolved PIT views. Never a persistence or lifecycle authority."""
+
+    def enumerate_paths(
+        self,
+        structural: object,
+        knowledge: object,
+        root: object,
+        *,
+        max_depth: int | None = None,
+        max_paths: int | None = None,
+    ) -> WorldGraphPathSet: ...
+
+
 class MacroObservationScanPort(Protocol):
     def reserve_activation_cursor(
         self, bridge_key: MacroGraphBridgeKey, request_id: BridgeRequestId
@@ -149,8 +210,12 @@ __all__ = [
     "WorldEntityIdentityEventEnvelope",
     "WorldEntityIdentityEventId",
     "WorldGraphLedger",
+    "WorldGraphPath",
+    "WorldGraphPathSet",
+    "WorldGraphPathStep",
     "WorldGraphSnapshotId",
     "WorldGraphSnapshotLedger",
+    "WorldGraphTraversalPort",
     "WorldOntologyRevisionEventEnvelope",
     "WorldOntologyRevisionEventId",
     "WorldRelationEventEnvelope",
