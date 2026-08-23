@@ -403,6 +403,9 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+_GRAPH_FEATURE_CONTRACT_VERSION = "market_ohlcv_graph.v3"
+
+
 def world_episode_id(
     *,
     venue: str,
@@ -412,13 +415,15 @@ def world_episode_id(
     feature_contract_version: str,
     sampling_policy_version: str,
     context_snapshot_id: str | None = None,
+    graph_snapshot_id: str | None = None,
 ) -> str:
     """Return the deterministic identity of one action-independent sampling slot.
 
     ``context_snapshot_id`` is omitted from the V1 slot.  A V2 context episode
     includes the snapshot digest so two different proven contexts at the same
     market bar cannot collide, while a market-only observation keeps the
-    historical identity byte-for-byte.
+    historical identity byte-for-byte.  A V3 graph episode includes
+    ``graph_snapshot_id`` the same way and must not change V1/V2 identities.
     """
 
     slot = {
@@ -431,6 +436,8 @@ def world_episode_id(
     }
     if context_snapshot_id is not None:
         slot["context_snapshot_id"] = _required_text(context_snapshot_id, "context_snapshot_id")
+    if graph_snapshot_id is not None:
+        slot["graph_snapshot_id"] = _required_text(graph_snapshot_id, "graph_snapshot_id")
     return f"world-episode:v1:{canonical_sha256(slot)}"
 
 
@@ -514,6 +521,42 @@ class Freshness:
         return {"status": self.status, "data_age_minutes": self.data_age_minutes}
 
 
+def _immutable_graph_features(value: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("graph_features must be a mapping")
+    detached = dict(value)
+    snapshot = detached.pop("snapshot", None)
+    validate_action_free_features(detached, "graph_features")
+    payload = canonical_payload(detached)
+    if not isinstance(payload, dict):
+        raise TypeError("graph_features must be a mapping")
+    if snapshot is not None:
+        payload["snapshot"] = canonical_payload(snapshot)
+    return MappingProxyType(payload)
+
+
+def _graph_snapshot_id(graph: Any, graph_features: Mapping[str, Any] | None) -> str | None:
+    snapshot_id = getattr(graph, "snapshot_id", None)
+    if isinstance(snapshot_id, str) and snapshot_id.strip():
+        return snapshot_id.strip()
+    if isinstance(graph, Mapping):
+        raw = graph.get("snapshot_id")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    if isinstance(graph_features, Mapping):
+        nested = graph_features.get("snapshot")
+        if isinstance(nested, Mapping):
+            raw = nested.get("snapshot_id")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        raw = graph_features.get("snapshot_id")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
 def _freshness(value: Freshness | Mapping[str, Any] | str) -> Freshness:
     if isinstance(value, Freshness):
         return value
@@ -561,6 +604,8 @@ class WorldObservation:
     categorical_features: Mapping[str, Any] | None = field(default_factory=dict)
     numeric_features: Mapping[str, Any] | None = field(default_factory=dict)
     context: Mapping[str, Any] | None = None
+    graph: Mapping[str, Any] | None = None
+    graph_features: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -600,13 +645,27 @@ class WorldObservation:
             object.__setattr__(self, "context", None)
         else:
             object.__setattr__(self, "context", freeze_context_mapping(self.context))
+        from trader.domain.world_graph import WorldGraphSnapshot
+
+        raw_graph = self.graph
+        if raw_graph is None and isinstance(self.graph_features, Mapping):
+            raw_graph = self.graph_features.get("snapshot")
+        if raw_graph is None:
+            object.__setattr__(self, "graph", None)
+        else:
+            object.__setattr__(self, "graph", WorldGraphSnapshot.from_mapping(raw_graph))
+        object.__setattr__(self, "graph_features", _immutable_graph_features(self.graph_features))
         contract = self.feature_contract_version
         if contract == MARKET_FEATURE_CONTRACT_VERSION:
             if self.context is not None:
                 raise ValueError("V1 observation must not carry context")
+            if self.graph is not None or self.graph_features is not None:
+                raise ValueError("V1 observation must not carry graph")
         elif contract == CONTEXT_FEATURE_CONTRACT_VERSION:
             if self.context is None:
                 raise ValueError("V2 observation must carry context")
+            if self.graph is not None or self.graph_features is not None:
+                raise ValueError("V2 observation must not carry graph")
             snapshot = WorldContextSnapshot.from_mapping(self.context)
             if snapshot.instrument.entity_id != self.symbol:
                 raise ValueError("context instrument must match observation symbol")
@@ -616,8 +675,18 @@ class WorldObservation:
                 raise ValueError("V2 observation requires available_at to bound context cutoff")
             if snapshot.cutoff_at > available_at:
                 raise ValueError("context cutoff must not follow observation available_at")
+        elif contract == _GRAPH_FEATURE_CONTRACT_VERSION:
+            if self.context is not None:
+                raise ValueError("V3 observation must not carry V2 context")
+            if self.graph is not None:
+                if available_at is None:
+                    raise ValueError("V3 observation requires available_at to bound graph cutoff")
+                if self.graph.cutoff_at > available_at:
+                    raise ValueError("graph cutoff must not follow observation available_at")
         elif self.context is not None:
             raise ValueError("unknown feature contract must not carry context")
+        elif self.graph is not None or self.graph_features is not None:
+            raise ValueError("unknown feature contract must not carry graph")
 
     @property
     def observed_at(self) -> datetime:
@@ -640,6 +709,7 @@ class WorldObservation:
             feature_contract_version=self.feature_contract_version,
             sampling_policy_version=self.sampling_policy_version,
             context_snapshot_id=context_snapshot_id,
+            graph_snapshot_id=_graph_snapshot_id(self.graph, self.graph_features),
         )
 
     @property
@@ -686,6 +756,11 @@ class WorldObservation:
         }
         if self.context is not None:
             payload["context"] = canonical_payload(self.context)
+        if self.graph_features is not None or self.graph is not None:
+            features = dict(self.graph_features or {})
+            if self.graph is not None:
+                features["snapshot"] = canonical_payload(self.graph.to_dict())
+            payload["graph_features"] = features
         return payload
 
     def replay_payload(self) -> dict[str, Any]:
@@ -714,6 +789,8 @@ class WorldObservation:
             categorical_features=value.get("categorical_features", {}),
             numeric_features=value.get("numeric_features", {}),
             context=value.get("context"),
+            graph=value.get("graph"),
+            graph_features=value.get("graph_features"),
         )
 
 

@@ -943,7 +943,7 @@ def test_cohort_migration_is_version_5_and_preserves_v1_v4_statements() -> None:
 
 def test_graph_bridge_migration_is_version_7_reuses_receipts_and_does_not_rewrite_v1_v6() -> None:
     versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions[-1] == 7
+    assert 7 in versions
     v7_sql = "\n".join(WORLD_MODEL_MIGRATIONS[6][1])
     assert "CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events" in v7_sql
     assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v7_sql
@@ -1175,3 +1175,150 @@ def test_append_event_cas_and_restart_keep_conservative_first_seen(tmp_path: Pat
         restarted.close()
     finally:
         store.close()
+
+
+def _v3_pair():
+    from tests.application.test_world_graph_capture import _attach, _complete_config, _unpublished_config
+    from tests.application.test_world_graph_snapshot import _episode as _graph6_v1_episode
+
+    v1 = _graph6_v1_episode()
+    first = _attach((v1,), _unpublished_config())[0]
+    second = _attach((v1,), _complete_config())[0]
+    return first, second
+
+
+def _v3_slot_lookup(store: WorldModelStore, episode: WorldEpisode, *, as_of_bar_ts: str | None = None):
+    observation = episode.observation
+    return store.get_episode_by_v3_slot(
+        venue=observation.venue,
+        symbol=observation.symbol,
+        bar_interval=observation.bar_interval,
+        as_of_bar_ts=as_of_bar_ts or observation.as_of_bar_ts.isoformat(),
+        feature_contract_version=observation.feature_contract_version,
+        sampling_policy_version=observation.sampling_policy_version,
+    )
+
+
+def test_v3_market_slot_keeps_one_canonical_episode_and_writes_snapshot_first(store: WorldModelStore) -> None:
+    first, second = _v3_pair()
+    assert first.episode_id != second.episode_id
+    assert store.append_episode(first) is True
+    snapshots = store._db.query_one("SELECT COUNT(*) AS n FROM world_graph_snapshots")
+    assert snapshots["n"] == 1
+    assert store.append_episode(first.to_dict()) is False
+    with pytest.raises(WorldModelConflictError, match="V3 market slot"):
+        store.append_episode(second)
+    stored = _v3_slot_lookup(store, first)
+    assert stored is not None
+    assert stored["episode_id"] == first.episode_id
+    assert store.counts()["episodes"] == 1
+    snapshot_id = first.observation.to_dict()["graph_features"]["snapshot"]["snapshot_id"]
+    row = store._db.query_one("SELECT snapshot_id, payload_sha256 FROM world_graph_snapshots WHERE snapshot_id=?", (snapshot_id,))
+    assert row is not None
+    assert row["snapshot_id"] == snapshot_id
+
+
+def test_v3_crash_between_snapshot_and_episode_repairs_on_identical_retry(tmp_path: Path) -> None:
+    first, second = _v3_pair()
+    db_path = tmp_path / "world_model.db"
+    store = WorldModelStore(db_path)
+    try:
+        snapshot = first.observation.to_dict()["graph_features"]["snapshot"]
+        assert store.append_graph_snapshot(snapshot) is True
+        assert store._db.query_one("SELECT COUNT(*) FROM world_graph_snapshots")[0] == 1
+        assert store.counts()["episodes"] == 0
+        assert store.append_episode(first) is True
+        assert store.counts()["episodes"] == 1
+        assert store.append_graph_snapshot(snapshot) is False
+        assert store.append_episode(first.to_dict()) is False
+        with pytest.raises(WorldModelConflictError, match="V3 market slot|snapshot"):
+            store.append_episode(second)
+        stored = _v3_slot_lookup(store, first)
+        assert stored is not None
+        assert stored["episode_id"] == first.episode_id
+    finally:
+        store.close()
+
+
+def test_v3_same_snapshot_id_different_payload_conflicts(store: WorldModelStore) -> None:
+    first, _second = _v3_pair()
+    snapshot = first.observation.to_dict()["graph_features"]["snapshot"]
+    assert store.append_graph_snapshot(snapshot) is True
+    with store._db.transaction() as cur:
+        cur.execute("DROP TRIGGER IF EXISTS world_graph_snapshots_no_update")
+        cur.execute(
+            "UPDATE world_graph_snapshots SET payload_sha256=? WHERE snapshot_id=?",
+            ("0" * 64, snapshot["snapshot_id"]),
+        )
+        cur.execute(
+            """
+            CREATE TRIGGER world_graph_snapshots_no_update
+            BEFORE UPDATE ON world_graph_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'world_graph_snapshots are append-only');
+            END
+            """
+        )
+    with pytest.raises(WorldModelConflictError, match="snapshot"):
+        store.append_graph_snapshot(snapshot)
+
+
+def test_v3_zulu_and_offset_timestamps_share_one_canonical_slot(store: WorldModelStore) -> None:
+    first, second = _v3_pair()
+    payload = first.to_dict()
+    z_payload = _replace_offset_with_z(deepcopy(payload))
+    assert isinstance(z_payload, dict)
+    assert store.append_episode(payload) is True
+    assert store.append_episode(z_payload) is False
+    assert store.counts()["episodes"] == 1
+    stored = _v3_slot_lookup(store, first, as_of_bar_ts="2026-08-23T13:00:00Z")
+    assert stored is not None
+    assert stored["episode_id"] == first.episode_id
+    with pytest.raises(WorldModelConflictError, match="V3 market slot"):
+        store.append_episode(second)
+
+
+def test_v3_mapping_rejects_contradictory_envelope_versions(store: WorldModelStore) -> None:
+    first, _second = _v3_pair()
+    nested_v3_top_v1 = first.to_dict()
+    nested_v3_top_v1["feature_contract_version"] = MARKET_FEATURE_CONTRACT_VERSION
+    with pytest.raises(ValueError, match="contradict"):
+        store.append_episode(nested_v3_top_v1)
+    assert store.counts()["episodes"] == 0
+
+
+def test_v3_migration_is_version_8_and_does_not_rewrite_v1_v7() -> None:
+    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    assert versions[-1] == 8
+    v8_sql = "\n".join(WORLD_MODEL_MIGRATIONS[7][1])
+    assert "world_episodes_v3_canonical_first_write" in v8_sql
+    assert "idx_world_episodes_v3_market_slot_candidates" in v8_sql
+    assert "market_ohlcv_graph.v3" in v8_sql
+    for _version, statements in WORLD_MODEL_MIGRATIONS[:7]:
+        blob = "\n".join(statements)
+        assert "world_episodes_v3_canonical_first_write" not in blob
+        assert "idx_world_episodes_v3_market_slot_candidates" not in blob
+
+
+def test_v3_slot_lookup_survives_reopen(tmp_path: Path) -> None:
+    first, second = _v3_pair()
+    db_path = tmp_path / "world_model.db"
+    store = WorldModelStore(db_path)
+    try:
+        assert store.append_episode(first) is True
+    finally:
+        store.close()
+    restarted = WorldModelStore(db_path)
+    try:
+        stored = _v3_slot_lookup(restarted, first)
+        assert stored is not None
+        assert stored["episode_id"] == first.episode_id
+        with pytest.raises(WorldModelConflictError, match="V3 market slot"):
+            restarted.append_episode(second)
+        trigger = restarted._db.query_one(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='world_episodes_v3_canonical_first_write'"
+        )
+        assert trigger is not None
+        assert "unixepoch" not in trigger["sql"]
+    finally:
+        restarted.close()

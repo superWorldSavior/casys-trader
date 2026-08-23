@@ -24,7 +24,7 @@ from trader.domain.world_context import (
     CONTEXT_FEATURE_CONTRACT_VERSION,
     SensorEvidence,
 )
-from trader.domain.world_episode import WorldPrediction
+from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_VERSION, WorldPrediction
 
 from tests.application.test_world_context_capture import _FakeSource, _v1_episode
 
@@ -737,3 +737,262 @@ def test_pre_start_episodes_are_not_replayed_and_downtime_is_not_backfilled(tmp_
         assert all(slot.anchor_end_at > ready for slot in slots)
     finally:
         store.close()
+
+
+class GraphFilteringPredictor(RecordingPredictor):
+    model_id = "graph_filtering_predictor"
+    model_version = "graph.v3"
+
+    def accepts_episode(self, episode) -> bool:
+        from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+
+        return _contract_version(episode) == GRAPH_FEATURE_CONTRACT_VERSION
+
+
+class MarketFilteringPredictor(RecordingPredictor):
+    model_id = "market_filtering_predictor"
+    model_version = "v1"
+
+    def accepts_episode(self, episode) -> bool:
+        return _contract_version(episode) == MARKET_FEATURE_CONTRACT_VERSION
+
+
+def _v3_models():
+    from trader.application.world_model.encoding import world_lane_encoder_profile
+    from trader.domain.world_feature_contract import (
+        GRAPH_FEATURE_CONTRACT_VERSION,
+        WORLD_V3_GRU_MODEL_IDENTITY,
+        WORLD_V3_MARKOV_MODEL_IDENTITY,
+        WORLD_V3_MODEL_VERSION,
+    )
+
+    status = world_lane_encoder_profile("topology_status_only")
+    content = world_lane_encoder_profile("graph_content")
+    markov = HierarchicalDirichletWorldBaseline(
+        model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
+        model_version=WORLD_V3_MODEL_VERSION,
+        feature_contract=status.contract,
+        feature_mask=status.mask,
+        accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+    )
+    gru = OnlineGRUWorldChallenger(
+        model_id=WORLD_V3_GRU_MODEL_IDENTITY,
+        model_version=WORLD_V3_MODEL_VERSION,
+        feature_contract=content.contract,
+        feature_mask=content.mask,
+        hidden_size=4,
+        sequence_len=4,
+        accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+    )
+    return markov, gru
+
+
+def _v3_companion():
+    from tests.application.test_world_graph_capture import _attach, _unmapped_config
+
+    return _attach((_v1_episode(),), _unmapped_config())[0]
+
+
+def test_v3_markov_and_gru_identities_are_distinct_and_refuse_other_contracts() -> None:
+    from trader.application.world_model.baseline import cold_markov_challenger
+    from trader.application.world_model.encoding import world_lane_encoder_profile
+    from trader.application.world_model.gru import ENCODER_VERSION_V3, cold_gru_challenger
+    from trader.domain.world_cohort import WorldLaneDefinition
+    from trader.domain.world_episode import canonical_sha256
+    from trader.domain.world_feature_contract import (
+        WORLD_V3_GRU_MODEL_IDENTITY,
+        WORLD_V3_MARKOV_MODEL_IDENTITY,
+        WORLD_V3_MODEL_VERSION,
+    )
+
+    v1 = _v1_episode()
+    v2 = attach_world_context(
+        (v1,),
+        _FakeSource(
+            SensorEvidence(status="missing", reason="no_artifact"),
+            SensorEvidence(status="missing", reason="no_artifact"),
+        ),
+    )[0]
+    v3 = _v3_companion()
+    markov_v3, gru_v3 = _v3_models()
+    assert markov_v3.model_id == WORLD_V3_MARKOV_MODEL_IDENTITY
+    assert gru_v3.model_id == WORLD_V3_GRU_MODEL_IDENTITY
+    assert markov_v3.model_version == gru_v3.model_version == WORLD_V3_MODEL_VERSION
+    assert gru_v3.encoder_version == ENCODER_VERSION_V3
+    assert markov_v3.accepts_episode(v3) is True
+    assert gru_v3.accepts_episode(v3) is True
+    assert markov_v3.accepts_episode(v1) is False
+    assert gru_v3.accepts_episode(v2) is False
+    markov_v1 = HierarchicalDirichletWorldBaseline()
+    gru_v1 = OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4)
+    markov_v2, gru_v2 = _v2_models()
+    assert markov_v1.accepts_episode(v3) is False
+    assert gru_v1.accepts_episode(v3) is False
+    assert markov_v2.accepts_episode(v3) is False
+    assert gru_v2.accepts_episode(v3) is False
+    with pytest.raises(FeatureBoundaryError):
+        markov_v1.predict(v3, "elapsed_4h.v1")
+    with pytest.raises(FeatureBoundaryError):
+        gru_v3.predict(v1, "elapsed_4h.v1")
+
+    status = world_lane_encoder_profile("topology_status_only")
+    lane = WorldLaneDefinition(
+        lane_id="markov.topology_status_only",
+        model_family="markov",
+        model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
+        model_version=WORLD_V3_MODEL_VERSION,
+        feature_contract_id=status.contract.contract_id,
+        feature_contract_fingerprint=status.contract.fingerprint,
+        feature_mask_id=status.mask.mask_id,
+        feature_mask_fingerprint=status.mask.fingerprint,
+        seed=0,
+        sequence_length=None,
+        hyperparameters_sha256=canonical_sha256({"family": "markov", "lane": "topology_status_only"}),
+        role="secondary_challenger",
+    )
+    cold = cold_markov_challenger(
+        lane=lane,
+        contract=status.contract,
+        mask=status.mask,
+        study_cohort_id="world_cohort:v1:" + "c" * 64,
+        manifest_sha256="a" * 64,
+        started_event_id="world_cohort_started:v1:" + "d" * 64,
+        alpha=1.0,
+        minimum_global_support=1,
+        minimum_coarse_support=1,
+        minimum_exact_support=2,
+    )
+    assert cold.accepts_episode(v3) is True
+    assert cold.accepts_episode(v1) is False
+    content = world_lane_encoder_profile("graph_content")
+    gru_lane = WorldLaneDefinition(
+        lane_id="gru.graph_content",
+        model_family="gru",
+        model_id=WORLD_V3_GRU_MODEL_IDENTITY,
+        model_version=WORLD_V3_MODEL_VERSION,
+        feature_contract_id=content.contract.contract_id,
+        feature_contract_fingerprint=content.contract.fingerprint,
+        feature_mask_id=content.mask.mask_id,
+        feature_mask_fingerprint=content.mask.fingerprint,
+        seed=0,
+        sequence_length=4,
+        hyperparameters_sha256=canonical_sha256({"family": "gru", "lane": "graph_content"}),
+        role="secondary_challenger",
+    )
+    cold_gru = cold_gru_challenger(
+        lane=gru_lane,
+        contract=content.contract,
+        mask=content.mask,
+        study_cohort_id="world_cohort:v1:" + "c" * 64,
+        manifest_sha256="a" * 64,
+        started_event_id="world_cohort_started:v1:" + "d" * 64,
+        hidden_size=4,
+    )
+    assert cold_gru.accepts_episode(v3) is True
+    assert cold_gru.accepts_episode(v2) is False
+
+
+def test_service_dispatches_v1_v2_v3_companions_on_the_same_market_slot() -> None:
+    v1 = _v1_episode()
+    v2 = attach_world_context(
+        (v1,),
+        _FakeSource(
+            SensorEvidence(status="missing", reason="no_artifact"),
+            SensorEvidence(status="missing", reason="no_artifact"),
+        ),
+    )[0]
+    v3 = _v3_companion()
+    assert (v1.observation.venue, v1.observation.symbol, v1.observation.bar_interval, v1.observation.as_of_bar_ts) == (
+        v2.observation.venue,
+        v2.observation.symbol,
+        v2.observation.bar_interval,
+        v2.observation.as_of_bar_ts,
+    )
+    assert (v1.observation.venue, v1.observation.symbol, v1.observation.bar_interval, v1.observation.as_of_bar_ts) == (
+        v3.observation.venue,
+        v3.observation.symbol,
+        v3.observation.bar_interval,
+        v3.observation.as_of_bar_ts,
+    )
+    market = MarketFilteringPredictor()
+    context = FilteringPredictor()
+    graph = GraphFilteringPredictor()
+    service = WorldModelService(
+        store=MemoryStore(),
+        predictor=market,
+        predictors=(context, graph),
+        labeler=None,
+        bar_provider=None,
+    )
+    report = service.capture_and_predict((v1, v2, v3), now=NOW)
+    assert report["errors"] == []
+    assert report["episodes_appended"] == 3
+    assert set(market.seen) == {v1.episode_id}
+    assert set(context.seen) == {v2.episode_id}
+    assert set(graph.seen) == {v3.episode_id}
+
+
+def test_v3_capture_failure_does_not_prevent_v1_v2_persistence() -> None:
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+
+    class FailOpenStore(MemoryStore):
+        def append_episode(self, episode):
+            if _contract_version(episode) == GRAPH_FEATURE_CONTRACT_VERSION:
+                raise RuntimeError("graph capture failed")
+            return super().append_episode(episode)
+
+    v1 = _v1_episode()
+    v2 = attach_world_context(
+        (v1,),
+        _FakeSource(
+            SensorEvidence(status="missing", reason="no_artifact"),
+            SensorEvidence(status="missing", reason="no_artifact"),
+        ),
+    )[0]
+    v3 = _v3_companion()
+    store = FailOpenStore()
+    service = WorldModelService(
+        store=store,
+        predictor=RecordingPredictor(),
+        predictors=(FilteringPredictor(), GraphFilteringPredictor()),
+        labeler=None,
+        bar_provider=None,
+        horizons=("elapsed_4h.v1",),
+    )
+    report = service.capture_and_predict((v1, v2, v3), now=NOW)
+    assert any("graph capture failed" in str(item.get("error") or "") for item in report["errors"])
+    assert v1.episode_id in store.episodes
+    assert v2.episode_id in store.episodes
+    assert v3.episode_id not in store.episodes
+
+
+def test_service_reuses_first_canonical_v3_slot(tmp_path) -> None:
+    from pathlib import Path
+
+    from tests.application.test_world_graph_capture import _attach, _complete_config, _unpublished_config
+    from tests.application.test_world_graph_snapshot import _episode as _graph6_v1_episode
+    from trader.infrastructure.state_db.world_model_store import WorldModelConflictError, WorldModelStore
+
+    v1 = _graph6_v1_episode()
+    first = _attach((v1,), _unpublished_config())[0]
+    second = _attach((v1,), _complete_config())[0]
+    assert first.episode_id != second.episode_id
+    store = WorldModelStore(Path(tmp_path) / "world_model.db")
+    recorder = GraphFilteringPredictor()
+    service = WorldModelService(
+        store=store,
+        predictor=recorder,
+        labeler=None,
+        bar_provider=None,
+        horizons=("elapsed_4h.v1",),
+    )
+    first_report = service.capture_and_predict((first,), now=NOW)
+    assert first_report["episodes_appended"] == 1
+    second_report = service.capture_and_predict((second,), now=NOW)
+    assert second_report["errors"] == []
+    assert second_report["episodes_existing"] == 1
+    assert store.counts()["episodes"] == 1
+    assert recorder.seen == [first.episode_id]
+    with pytest.raises(WorldModelConflictError):
+        store.append_episode(second)
+    assert {row["episode_id"] for row in store.list_predictions()} == {first.episode_id}

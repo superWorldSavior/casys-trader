@@ -43,6 +43,7 @@ from trader.domain.world_episode import (
 
 
 _V2_FEATURE_CONTRACT = "market_ohlcv_context.v2"
+_V3_FEATURE_CONTRACT = "market_ohlcv_graph.v3"
 
 
 DEFAULT_HORIZONS: tuple[str, ...] = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
@@ -187,7 +188,8 @@ def _canonical_v2_episode(value: object) -> WorldEpisode | None:
     top = str(payload.get("feature_contract_version") or "").strip()
     nested = str(observation_map.get("feature_contract_version") or "").strip()
     has_context = observation_map.get("context") is not None
-    is_v2 = top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context
+    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT
+    is_v2 = (top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context) and not is_v3
     if top and nested and top != nested:
         if is_v2:
             raise ValueError("feature_contract_version envelope contradicts nested observation")
@@ -197,20 +199,45 @@ def _canonical_v2_episode(value: object) -> WorldEpisode | None:
     return WorldEpisode.from_dict(payload)
 
 
+def _canonical_v3_episode(value: object) -> WorldEpisode | None:
+    """Rebuild a V3 episode through the domain contract, or return None for non-V3."""
+
+    payload = _mapping_copy(value)
+    observation = payload.get("observation")
+    observation_map = dict(observation) if isinstance(observation, Mapping) else {}
+    top = str(payload.get("feature_contract_version") or "").strip()
+    nested = str(observation_map.get("feature_contract_version") or "").strip()
+    has_graph = observation_map.get("graph_features") is not None or observation_map.get("graph") is not None
+    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT or has_graph
+    if top and nested and top != nested:
+        if is_v3:
+            raise ValueError("feature_contract_version envelope contradicts nested observation")
+        return None
+    if not is_v3:
+        return None
+    return WorldEpisode.from_dict(payload)
+
+
 def _episode_market_signature(value: object) -> str:
     """Fingerprint stable market evidence while ignoring context and fetch clocks."""
 
-    canonical_v2 = _canonical_v2_episode(value)
-    payload = _mapping_copy(canonical_v2 if canonical_v2 is not None else value)
+    canonical_v3 = _canonical_v3_episode(value)
+    canonical_v2 = None if canonical_v3 is not None else _canonical_v2_episode(value)
+    source = canonical_v3 if canonical_v3 is not None else canonical_v2
+    payload = _mapping_copy(source if source is not None else value)
     payload.pop("episode_id", None)
     payload.pop("context", None)
     payload.pop("context_id", None)
+    payload.pop("graph_features", None)
+    payload.pop("graph", None)
     containers: list[dict[str, object]] = [payload]
     observation = payload.get("observation")
     if isinstance(observation, Mapping):
         detached_observation = copy.deepcopy(dict(observation))
         detached_observation.pop("context", None)
         detached_observation.pop("context_id", None)
+        detached_observation.pop("graph_features", None)
+        detached_observation.pop("graph", None)
         payload["observation"] = detached_observation
         containers.append(detached_observation)
     for container in containers:
@@ -233,11 +260,19 @@ def _iso_slot_text(value: object) -> str | None:
 
 
 def _v2_market_slot(episode: object) -> dict[str, str] | None:
+    return _market_slot_for_contract(episode, _V2_FEATURE_CONTRACT)
+
+
+def _v3_market_slot(episode: object) -> dict[str, str] | None:
+    return _market_slot_for_contract(episode, _V3_FEATURE_CONTRACT)
+
+
+def _market_slot_for_contract(episode: object, contract: str) -> dict[str, str] | None:
     payload = _mapping_copy(episode)
     observation = payload.get("observation")
     source = dict(observation) if isinstance(observation, Mapping) else payload
     version = str(source.get("feature_contract_version") or payload.get("feature_contract_version") or "").strip()
-    if version != _V2_FEATURE_CONTRACT:
+    if version != contract:
         return None
     venue = str(source.get("venue") or payload.get("venue") or "").strip()
     symbol = str(source.get("symbol") or payload.get("symbol") or "").strip()
@@ -700,11 +735,19 @@ class WorldModelService:
             canonical_episodes.append(canonical_episode)
 
     def _lookup_canonical_episode(self, incoming_episode: object) -> object | None:
-        """Reuse the first canonical V2 episode for a market slot when the store can."""
+        """Reuse the first canonical V2/V3 episode for a market slot when the store can."""
 
-        slot = _v2_market_slot(incoming_episode)
-        lookup = getattr(self.store, "get_episode_by_v2_slot", None)
-        if slot is None or not callable(lookup):
+        v2_slot = _v2_market_slot(incoming_episode)
+        v3_slot = _v3_market_slot(incoming_episode)
+        if v2_slot is not None:
+            lookup = getattr(self.store, "get_episode_by_v2_slot", None)
+            slot = v2_slot
+        elif v3_slot is not None:
+            lookup = getattr(self.store, "get_episode_by_v3_slot", None)
+            slot = v3_slot
+        else:
+            return None
+        if not callable(lookup):
             return None
         stored = lookup(**slot)
         if stored is None:

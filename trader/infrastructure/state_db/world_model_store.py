@@ -53,6 +53,7 @@ from trader.domain.world_episode import (
     canonical_sha256,
     parse_utc_timestamp,
 )
+from trader.domain.world_graph import WorldGraphSnapshot
 from trader.infrastructure.state_db.availability_receipt import (
     UtcClock,
     _seal_world_availability_receipt,
@@ -62,6 +63,7 @@ from trader.infrastructure.state_db.connection import StateDb
 
 _LEGACY_MOVE_CLASS = {"up": "UP", "down": "DOWN", "flat": "FLAT"}
 _V2_FEATURE_CONTRACT = "market_ohlcv_context.v2"
+_V3_FEATURE_CONTRACT = "market_ohlcv_graph.v3"
 
 __all__ = [
     "WORLD_MODEL_MIGRATIONS",
@@ -138,6 +140,48 @@ _V2_SLOT_CANDIDATE_INDEX = """
             WHERE feature_contract_version = 'market_ohlcv_context.v2'
             """
 
+_V3_CANONICAL_FIRST_WRITE_TRIGGER = """
+            CREATE TRIGGER IF NOT EXISTS world_episodes_v3_canonical_first_write
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version = 'market_ohlcv_graph.v3'
+            BEGIN
+                SELECT RAISE(ABORT, 'V3 market slot already exists')
+                WHERE EXISTS (
+                    SELECT 1 FROM world_episodes AS existing
+                    WHERE existing.symbol = NEW.symbol
+                      AND existing.venue IS NEW.venue
+                      AND existing.bar_interval IS NEW.bar_interval
+                      AND existing.feature_contract_version = 'market_ohlcv_graph.v3'
+                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
+                      AND existing.episode_id != NEW.episode_id
+                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
+                );
+                SELECT RAISE(ABORT, 'V3 graph snapshot must be persisted first')
+                WHERE json_extract(NEW.payload_json, '$.observation.graph_features.snapshot.snapshot_id') IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM world_graph_snapshots AS snapshot
+                    WHERE snapshot.snapshot_id = json_extract(
+                        NEW.payload_json,
+                        '$.observation.graph_features.snapshot.snapshot_id'
+                    )
+                );
+            END
+            """
+
+_V3_SLOT_CANDIDATE_INDEX = """
+            CREATE INDEX IF NOT EXISTS idx_world_episodes_v3_market_slot_candidates
+            ON world_episodes(
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+                recorded_at,
+                episode_id
+            )
+            WHERE feature_contract_version = 'market_ohlcv_graph.v3'
+            """
+
 
 def _canonical_v2_episode(payload: Mapping[str, Any], observation: Mapping[str, Any]) -> WorldEpisode | None:
     """Rebuild a V2 episode from its canonical projection, or return None for non-V2."""
@@ -145,12 +189,29 @@ def _canonical_v2_episode(payload: Mapping[str, Any], observation: Mapping[str, 
     top = _text(payload.get("feature_contract_version"))
     nested = _text(observation.get("feature_contract_version"))
     has_context = observation.get("context") is not None
-    is_v2 = top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context
+    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT
+    is_v2 = (top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context) and not is_v3
     if top and nested and top != nested:
         if is_v2:
             raise ValueError("feature_contract_version envelope contradicts nested observation")
         return None
     if not is_v2:
+        return None
+    return WorldEpisode.from_dict(payload)
+
+
+def _canonical_v3_episode(payload: Mapping[str, Any], observation: Mapping[str, Any]) -> WorldEpisode | None:
+    """Rebuild a V3 episode from its canonical projection, or return None for non-V3."""
+
+    top = _text(payload.get("feature_contract_version"))
+    nested = _text(observation.get("feature_contract_version"))
+    has_graph = observation.get("graph_features") is not None or observation.get("graph") is not None
+    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT or has_graph
+    if top and nested and top != nested:
+        if is_v3:
+            raise ValueError("feature_contract_version envelope contradicts nested observation")
+        return None
+    if not is_v3:
         return None
     return WorldEpisode.from_dict(payload)
 
@@ -561,6 +622,15 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             *_append_only_trigger_sql("world_macro_graph_bridge_events"),
         ],
     ),
+    (
+        8,
+        [
+            "DROP TRIGGER IF EXISTS world_episodes_v3_canonical_first_write",
+            "DROP INDEX IF EXISTS idx_world_episodes_v3_market_slot_candidates",
+            _V3_CANONICAL_FIRST_WRITE_TRIGGER,
+            _V3_SLOT_CANDIDATE_INDEX,
+        ],
+    ),
 ]
 
 
@@ -936,8 +1006,12 @@ class WorldModelStore:
     def append_episode(self, episode: Any) -> bool:
         payload = _as_mapping(episode, name="episode")
         observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
-        canonical_v2 = _canonical_v2_episode(payload, observation)
-        if canonical_v2 is not None:
+        canonical_v3 = _canonical_v3_episode(payload, observation)
+        canonical_v2 = None if canonical_v3 is not None else _canonical_v2_episode(payload, observation)
+        if canonical_v3 is not None:
+            payload = canonical_v3.to_dict()
+            observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
+        elif canonical_v2 is not None:
             payload = canonical_v2.to_dict()
             observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
         source_evidence = _first(
@@ -955,7 +1029,7 @@ class WorldModelStore:
             # inventing a reconstruction from later runtime state.
             source = {
                 key: observation[key]
-                for key in ("anchor", "freshness", "available_at", "captured_at", "context")
+                for key in ("anchor", "freshness", "available_at", "captured_at", "context", "graph_features")
                 if key in observation
             }
         values = {
@@ -999,7 +1073,7 @@ class WorldModelStore:
             "source_evidence_json": _canonical_json(source),
             "source_evidence_sha256": _canonical_sha256(source),
         }
-        if values["feature_contract_version"] == _V2_FEATURE_CONTRACT:
+        if values["feature_contract_version"] in {_V2_FEATURE_CONTRACT, _V3_FEATURE_CONTRACT}:
             slot_fields = (
                 values["venue"],
                 values["symbol"],
@@ -1007,23 +1081,41 @@ class WorldModelStore:
                 values["as_of_bar_ts"],
                 values["sampling_policy_version"],
             )
+            contract = values["feature_contract_version"]
+            label = "V2" if contract == _V2_FEATURE_CONTRACT else "V3"
             if any(item is None or item == "" for item in slot_fields):
-                raise ValueError("V2 episode requires a complete market slot identity")
-            existing = self.get_episode_by_v2_slot(
-                venue=values["venue"],
-                symbol=values["symbol"],
-                bar_interval=values["bar_interval"],
-                as_of_bar_ts=values["as_of_bar_ts"],
-                feature_contract_version=values["feature_contract_version"],
-                sampling_policy_version=values["sampling_policy_version"],
-            )
+                raise ValueError(f"{label} episode requires a complete market slot identity")
+            if contract == _V3_FEATURE_CONTRACT:
+                snapshot = None
+                graph_features = observation.get("graph_features")
+                if isinstance(graph_features, Mapping):
+                    snapshot = graph_features.get("snapshot")
+                if snapshot is not None:
+                    self.append_graph_snapshot(snapshot)
+                existing = self.get_episode_by_v3_slot(
+                    venue=values["venue"],
+                    symbol=values["symbol"],
+                    bar_interval=values["bar_interval"],
+                    as_of_bar_ts=values["as_of_bar_ts"],
+                    feature_contract_version=contract,
+                    sampling_policy_version=values["sampling_policy_version"],
+                )
+            else:
+                existing = self.get_episode_by_v2_slot(
+                    venue=values["venue"],
+                    symbol=values["symbol"],
+                    bar_interval=values["bar_interval"],
+                    as_of_bar_ts=values["as_of_bar_ts"],
+                    feature_contract_version=contract,
+                    sampling_policy_version=values["sampling_policy_version"],
+                )
             if existing is not None:
                 if (
                     existing["episode_id"] == values["episode_id"]
                     and existing["payload_sha256"] == values["payload_sha256"]
                 ):
                     return False
-                raise WorldModelConflictError("V2 market slot already exists with different canonical content")
+                raise WorldModelConflictError(f"{label} market slot already exists with different canonical content")
         try:
             return self._append(
                 table="world_episodes",
@@ -1037,6 +1129,11 @@ class WorldModelStore:
                 "UNIQUE constraint failed" in message or "V2 market slot already exists" in message
             ):
                 raise WorldModelConflictError("V2 market slot already exists with different canonical content") from exc
+            if values["feature_contract_version"] == _V3_FEATURE_CONTRACT:
+                if "V3 graph snapshot must be persisted first" in message:
+                    raise WorldModelConflictError("V3 graph snapshot must be persisted first") from exc
+                if "UNIQUE constraint failed" in message or "V3 market slot already exists" in message:
+                    raise WorldModelConflictError("V3 market slot already exists with different canonical content") from exc
             raise
 
     def append_outcome_event(self, outcome: Any) -> bool:
@@ -1323,6 +1420,105 @@ class WorldModelStore:
             if existing == incoming:
                 return self._episode_row(row)
         return None
+
+    def get_episode_by_v3_slot(
+        self,
+        *,
+        venue: str,
+        symbol: str,
+        bar_interval: str,
+        as_of_bar_ts: str,
+        feature_contract_version: str,
+        sampling_policy_version: str,
+    ) -> dict[str, Any] | None:
+        """Return the first canonical V3 episode for one market slot, if any."""
+
+        if feature_contract_version != _V3_FEATURE_CONTRACT:
+            return None
+        incoming = parse_utc_timestamp(as_of_bar_ts, "as_of_bar_ts")
+        rows = self._db.query_all(
+            """
+            SELECT * FROM world_episodes
+            WHERE venue IS ? AND symbol=? AND bar_interval IS ?
+              AND feature_contract_version=? AND sampling_policy_version IS ?
+            ORDER BY recorded_at ASC, episode_id ASC
+            """,
+            (
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+            ),
+        )
+        for row in rows:
+            raw = row["as_of_bar_ts"]
+            if raw in (None, ""):
+                continue
+            try:
+                existing = parse_utc_timestamp(raw, "as_of_bar_ts")
+            except (TypeError, ValueError):
+                continue
+            if existing == incoming:
+                return self._episode_row(row)
+        return None
+
+    def append_graph_snapshot(self, snapshot: Any) -> bool:
+        """Persist a V3 graph snapshot before the episode that roots on it."""
+
+        parsed = snapshot if isinstance(snapshot, WorldGraphSnapshot) else WorldGraphSnapshot.from_mapping(snapshot)
+        payload = parsed.to_dict()
+        payload_json = canonical_json(payload)
+        payload_sha256 = canonical_sha256(payload)
+        existing = self._db.query_one(
+            "SELECT snapshot_id, payload_sha256 FROM world_graph_snapshots WHERE snapshot_id=?",
+            (parsed.snapshot_id,),
+        )
+        if existing is not None:
+            if existing["payload_sha256"] != payload_sha256:
+                raise WorldModelConflictError("graph snapshot already exists with different canonical content")
+            return False
+        recorded_at = _utc_now()
+        try:
+            with self._db.transaction() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_graph_snapshots(
+                        snapshot_id, root_episode_id, root_entity_kind, root_entity_id, cutoff_at,
+                        ontology_revision, ontology_hash, identity_map_hash, scope_mapping_id,
+                        scope_mapping_hash, status, payload_json, payload_sha256, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        parsed.snapshot_id,
+                        parsed.root_episode_id,
+                        parsed.root_entity.kind,
+                        parsed.root_entity.entity_id,
+                        payload["cutoff_at"],
+                        parsed.ontology_revision,
+                        parsed.ontology_hash,
+                        parsed.identity_map_hash,
+                        parsed.scope_mapping_id,
+                        parsed.scope_mapping_hash,
+                        parsed.status,
+                        payload_json,
+                        payload_sha256,
+                        recorded_at,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            recovered = self._db.query_one(
+                "SELECT payload_sha256 FROM world_graph_snapshots WHERE snapshot_id=?",
+                (parsed.snapshot_id,),
+            )
+            if recovered is not None:
+                if recovered["payload_sha256"] != payload_sha256:
+                    raise WorldModelConflictError(
+                        "graph snapshot already exists with different canonical content"
+                    ) from exc
+                return False
+            raise WorldModelConflictError("conflicting graph snapshot") from exc
+        return True
 
     def list_eligible_episodes(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM world_episodes WHERE training_eligible=1 ORDER BY observed_at, episode_id"
