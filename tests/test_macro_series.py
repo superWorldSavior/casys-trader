@@ -105,7 +105,7 @@ def test_append_nouvelle_period(tmp_path):
 
 
 def test_skip_period_identique(tmp_path):
-    """Deuxième appel avec la même period → tout skippé, aucun doublon."""
+    """Deuxième appel avec la même period et la même valeur → tout skippé."""
     collect_daily(tmp_path, NOW, get_json=_stub_all("2026-06"))
     result = collect_daily(tmp_path, NOW, get_json=_stub_all("2026-06"))
 
@@ -118,6 +118,25 @@ def test_skip_period_identique(tmp_path):
     for s in SERIES:
         rows = _read_jsonl(macro_dir / f"{s['label']}.jsonl")
         assert len(rows) == 1, f"doublon inattendu pour {s['label']}"
+
+
+def test_meme_period_valeur_corrigee_cree_une_vintage(tmp_path):
+    """Même période, valeur différente → append une correction, pas un skip."""
+    collect_daily(tmp_path, NOW, get_json=_stub_all("2026-06", 3.5))
+    result = collect_daily(tmp_path, NOW, get_json=_stub_all("2026-06", 3.75))
+
+    assert result["collected"] == len(SERIES)
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+    macro_dir = tmp_path / "macro_series"
+    for s in SERIES:
+        rows = _read_jsonl(macro_dir / f"{s['label']}.jsonl")
+        assert len(rows) == 2, f"correction absente pour {s['label']}"
+        assert rows[0]["period"] == rows[1]["period"] == "2026-06"
+        assert rows[0]["value"] == 3.5
+        assert rows[1]["value"] == 3.75
+        assert "unit" in rows[1]
 
 
 def test_append_apres_nouvelle_period(tmp_path):
@@ -191,7 +210,7 @@ def test_maybe_collect_sans_marqueur(tmp_path):
 
 
 def test_maybe_collect_cooldown_bloque(tmp_path):
-    """Moins de 20 h depuis dernière collecte → pas de déclenchement."""
+    """Moins de 24 h depuis dernière collecte → pas de déclenchement."""
     result0 = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
     _join(result0)
 
@@ -201,16 +220,27 @@ def test_maybe_collect_cooldown_bloque(tmp_path):
 
     assert result["triggered"] is False
     assert result["reason"] == "cooldown"
-    assert result["elapsed_h"] < 20.0
+    assert result["elapsed_h"] < 24.0
 
 
-def test_maybe_collect_declenche_apres_20h(tmp_path):
-    """Plus de 20 h depuis dernière collecte → déclenchement et nouvelles données."""
+def test_maybe_collect_21h_reste_en_cooldown_24h(tmp_path):
+    """21 h < cooldown opérateur 24 h → pas de déclenchement."""
     result0 = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
     _join(result0)
 
-    # 21 h après
-    now2 = datetime(2026, 7, 3, 7, 0, 0, tzinfo=UTC)
+    now2 = NOW + timedelta(hours=21)
+    result = maybe_collect(tmp_path, now2, get_json=_stub_all("2026-07"))
+
+    assert result["triggered"] is False
+    assert result["reason"] == "cooldown"
+
+
+def test_maybe_collect_declenche_apres_24h(tmp_path):
+    """Plus de 24 h depuis dernière collecte → déclenchement et nouvelles données."""
+    result0 = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
+    _join(result0)
+
+    now2 = NOW + timedelta(hours=25)
     result = maybe_collect(tmp_path, now2, get_json=_stub_all("2026-07"))
 
     assert result["triggered"] is True
@@ -224,11 +254,11 @@ def test_maybe_collect_declenche_apres_20h(tmp_path):
 
 
 def test_maybe_collect_juste_avant_seuil(tmp_path):
-    """19 h 59 min → encore bloqué."""
+    """23 h 59 min → encore bloqué par le cooldown 24 h."""
     result0 = maybe_collect(tmp_path, NOW, get_json=_stub_all("2026-06"))
     _join(result0)
 
-    now2 = NOW + timedelta(hours=19, minutes=59)
+    now2 = NOW + timedelta(hours=23, minutes=59)
     result = maybe_collect(tmp_path, now2, get_json=_stub_all("2026-06"))
 
     assert result["triggered"] is False
@@ -314,8 +344,8 @@ def test_no_double_demarrage_en_cours(tmp_path):
     # Attendre que le thread ait réellement démarré
     assert started.wait(timeout=2.0), "thread de collecte non démarré"
 
-    # Second appel pendant la collecte : cooldown dépassé (21 h) mais thread en cours
-    now2 = NOW + timedelta(hours=21)
+    # Second appel pendant la collecte : cooldown 24 h dépassé mais thread en cours
+    now2 = NOW + timedelta(hours=25)
     result2 = maybe_collect(tmp_path, now2, get_json=slow_get_json)
 
     assert result2["triggered"] is False

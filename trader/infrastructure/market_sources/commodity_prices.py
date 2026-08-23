@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-COLLECT_COOLDOWN_H = 20
+COLLECT_COOLDOWN_H = 24
 MARKER_FILE = "commodity_prices.last_collect"
 DEFAULT_TIMEOUT_S = 8
 
@@ -52,11 +52,13 @@ COMMODITIES: tuple[dict, ...] = (
         "ticker": "BZ=F",
         "series_id": "yahoo/BZ=F",
         "label": "brent_crude_usd",
+        "unit": "usd",
     },
     {
         "ticker": "GC=F",
         "series_id": "yahoo/GC=F",
         "label": "gold_usd",
+        "unit": "usd",
     },
 )
 
@@ -88,6 +90,38 @@ def _http_get(url: str, *, timeout_s: int = DEFAULT_TIMEOUT_S) -> str:
 # ---------------------------------------------------------------------------
 
 
+def parse_yahoo_last_close(body: str) -> tuple[str, float] | None:
+    """Extract (period, close) from a Yahoo v8 chart payload. None if unusable."""
+    try:
+        chart = json.loads(body)["chart"]
+        error = chart.get("error")
+        if error:
+            return None
+        results = chart.get("result") or []
+        if not results:
+            return None
+        result = results[0]
+        timestamps = result.get("timestamp") or []
+        if not timestamps:
+            return None
+        indicators = result.get("indicators") or {}
+        quote = ((indicators.get("quote") or [{}]) or [{}])[0]
+        closes = quote.get("close") or []
+        last_ts: int | None = None
+        last_close: float | None = None
+        for ts, raw_close in zip(reversed(timestamps), reversed(closes)):
+            if raw_close is not None and math.isfinite(float(raw_close)) and float(raw_close) > 0:
+                last_ts = int(ts)
+                last_close = float(raw_close)
+                break
+        if last_ts is None or last_close is None:
+            return None
+        period = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        return period, last_close
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def _fetch_last_close(
     ticker: str,
     *,
@@ -105,41 +139,10 @@ def _fetch_last_close(
     _get = http_get if http_get is not None else lambda url: _http_get(url, timeout_s=timeout_s)
     try:
         body = _get(f"{_V8_CHART}{ticker}?range=5d&interval=1d")
-        chart = json.loads(body)["chart"]
-
-        error = chart.get("error")
-        if error:
-            log.warning("commodity_prices: chart.error pour %s : %s", ticker, error)
-            return None
-
-        results = chart.get("result") or []
-        if not results:
-            return None
-
-        result = results[0]
-        timestamps = result.get("timestamp") or []
-        if not timestamps:
-            return None
-
-        indicators = result.get("indicators") or {}
-        quote = ((indicators.get("quote") or [{}]) or [{}])[0]
-        closes = quote.get("close") or []
-
-        # Cherche le dernier close non-null en partant de la fin
-        last_ts: int | None = None
-        last_close: float | None = None
-        for ts, raw_close in zip(reversed(timestamps), reversed(closes)):
-            if raw_close is not None and math.isfinite(float(raw_close)) and float(raw_close) > 0:
-                last_ts = int(ts)
-                last_close = float(raw_close)
-                break
-
-        if last_ts is None or last_close is None:
-            return None
-
-        period = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-        return period, last_close
-
+        obs = parse_yahoo_last_close(body)
+        if obs is None:
+            log.warning("commodity_prices: aucun close pour %s", ticker)
+        return obs
     except Exception as exc:  # noqa: BLE001 — best-effort, frontière externe
         log.warning("commodity_prices: erreur fetch %s : %s", ticker, exc)
         return None
@@ -152,15 +155,33 @@ def _fetch_last_close(
 
 def _last_collected_period(path: Path) -> str | None:
     """Lit la dernière ligne du JSONL et retourne son champ 'period' (ou None)."""
+    identity = _last_collected_identity(path)
+    return None if identity is None else identity[0]
+
+
+def _last_collected_identity(path: Path) -> tuple[str, float, str | None] | None:
     if not path.exists():
         return None
     try:
         lines = [ln.strip() for ln in path.read_text("utf-8").splitlines() if ln.strip()]
         if not lines:
             return None
-        return json.loads(lines[-1]).get("period")
-    except (OSError, json.JSONDecodeError, ValueError):
+        row = json.loads(lines[-1])
+        period = row.get("period")
+        value = row.get("value")
+        if period is None or value is None:
+            return None
+        unit = row.get("unit")
+        return str(period), float(value), None if unit is None else str(unit)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
+
+
+def _same_vintage(last: tuple[str, float, str | None] | None, period: str, value: float, unit: str) -> bool:
+    if last is None:
+        return False
+    last_period, last_value, last_unit = last
+    return last_period == period and last_value == float(value) and last_unit in (None, unit)
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +233,10 @@ def collect_daily(
                 errors += 1
                 continue
             period, value = obs
-            last_period = _last_collected_period(jsonl_path)
-            if last_period == period:
-                log.debug("commodity_prices: skip %s period=%s (déjà collectée)", label, period)
+            unit = str(c.get("unit") or "usd")
+            last = _last_collected_identity(jsonl_path)
+            if _same_vintage(last, period, value, unit):
+                log.debug("commodity_prices: skip %s period=%s value=%s (déjà collectée)", label, period, value)
                 skipped += 1
                 continue
             row = {
@@ -222,6 +244,7 @@ def collect_daily(
                 "series_id": series_id,
                 "period": period,
                 "value": value,
+                "unit": unit,
             }
             with jsonl_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row) + "\n")
@@ -328,4 +351,4 @@ def maybe_collect(
     return {"triggered": True, "_thread": t}
 
 
-__all__ = ["collect_daily", "maybe_collect", "COMMODITIES", "_fetch_last_close"]
+__all__ = ["collect_daily", "maybe_collect", "COMMODITIES", "_fetch_last_close", "parse_yahoo_last_close"]

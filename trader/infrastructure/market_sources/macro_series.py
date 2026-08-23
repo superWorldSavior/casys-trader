@@ -52,7 +52,7 @@ log = logging.getLogger(__name__)
 
 DBNOMICS_BASE = "https://api.db.nomics.world/v22"
 DEFAULT_TIMEOUT_S = 5  # 5 s/requête → pire cas thread ~25 s, invisible pour le cycle
-COLLECT_COOLDOWN_H = 20
+COLLECT_COOLDOWN_H = 24
 MARKER_FILE = ".last_collect"
 
 # ---------------------------------------------------------------------------
@@ -71,6 +71,7 @@ SERIES: tuple[dict, ...] = (
     {
         "id": "FED/H15/RIFSPFF_N.D",
         "label": "fed_funds_effective",
+        "unit": "percent",
     },
     {
         # Remplace BLS/cu/CUSR0000SA0 (mort après 2025-01).
@@ -78,20 +79,24 @@ SERIES: tuple[dict, ...] = (
         # Fichier propre cpi_us_imf.jsonl pour éviter tout mélange de base.
         "id": "IMF/CPI/M.US.PCPI_IX",
         "label": "cpi_us_imf",
+        "unit": "index",
     },
     {
         "id": "ECB/FM/B.U2.EUR.4F.KR.DFR.LEV",
         "label": "ecb_deposit_rate",
+        "unit": "percent",
     },
     {
         "id": "Eurostat/prc_hicp_midx/M.I15.CP00.EA20",
         "label": "hicp_euro_area",
+        "unit": "index",
     },
     {
         # TODO sourcing: BLS connector delivers no data after 2025-01 on DBnomics;
         # no satisfactory replacement found. UI displays the period gap honestly.
         "id": "BLS/ln/LNS14000000",
         "label": "unemployment_rate_us",
+        "unit": "percent",
     },
     # Commodités Brent + Or : IMF/PCPS mort depuis 2025-07.
     # Remplacés par Yahoo Finance quotidien dans commodity_prices.py (BZ=F / GC=F).
@@ -158,15 +163,34 @@ def _last_collected_period(path: Path) -> str | None:
 
     Jamais d'exception — best-effort.
     """
+    identity = _last_collected_identity(path)
+    return None if identity is None else identity[0]
+
+
+def _last_collected_identity(path: Path) -> tuple[str, float, str | None] | None:
+    """Return (period, value, unit) of the JSONL tail, or None."""
     if not path.exists():
         return None
     try:
         lines = [ln.strip() for ln in path.read_text("utf-8").splitlines() if ln.strip()]
         if not lines:
             return None
-        return json.loads(lines[-1]).get("period")
-    except (OSError, json.JSONDecodeError, ValueError):
+        row = json.loads(lines[-1])
+        period = row.get("period")
+        value = row.get("value")
+        if period is None or value is None:
+            return None
+        unit = row.get("unit")
+        return str(period), float(value), None if unit is None else str(unit)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
+
+
+def _same_vintage(last: tuple[str, float, str | None] | None, period: str, value: float, unit: str) -> bool:
+    if last is None:
+        return False
+    last_period, last_value, last_unit = last
+    return last_period == period and last_value == float(value) and last_unit in (None, unit)
 
 
 # ---------------------------------------------------------------------------
@@ -224,9 +248,10 @@ def collect_daily(
                 errors += 1
                 continue
             period, value = obs
-            last_period = _last_collected_period(jsonl_path)
-            if last_period == period:
-                log.debug("macro_series: skip %s period=%s (déjà collectée)", label, period)
+            unit = str(s.get("unit") or "percent")
+            last = _last_collected_identity(jsonl_path)
+            if _same_vintage(last, period, value, unit):
+                log.debug("macro_series: skip %s period=%s value=%s (déjà collectée)", label, period, value)
                 skipped += 1
                 continue
             row = {
@@ -234,6 +259,7 @@ def collect_daily(
                 "series_id": sid,
                 "period": period,
                 "value": value,
+                "unit": unit,
             }
             with jsonl_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row) + "\n")
@@ -342,3 +368,6 @@ def maybe_collect(
     t = threading.Thread(target=_run, daemon=True, name="macro-series-collect")
     t.start()
     return {"triggered": True, "_thread": t}
+
+
+parse_dbnomics_last_observation = _extract_last_observation

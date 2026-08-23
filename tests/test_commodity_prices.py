@@ -207,7 +207,7 @@ def test_collect_daily_append_nouvelles_periods(tmp_path):
 
 
 def test_collect_daily_skip_period_identique(tmp_path):
-    """Deuxième appel avec la même period → tout skippé, aucun doublon."""
+    """Deuxième appel avec la même period et la même valeur → tout skippé."""
     collect_daily(tmp_path, NOW, http_get=_stub_http("2026-08-18"))
     result = collect_daily(tmp_path, NOW, http_get=_stub_http("2026-08-18"))
 
@@ -219,6 +219,25 @@ def test_collect_daily_skip_period_identique(tmp_path):
     for c in COMMODITIES:
         rows = _read_jsonl(macro_dir / f"{c['label']}.jsonl")
         assert len(rows) == 1, f"doublon inattendu pour {c['label']}"
+
+
+def test_collect_daily_meme_period_valeur_corrigee_cree_une_vintage(tmp_path):
+    """Même période, close différent → append une correction de vintage."""
+    collect_daily(tmp_path, NOW, http_get=_stub_http("2026-08-18", 91.22))
+    result = collect_daily(tmp_path, NOW, http_get=_stub_http("2026-08-18", 92.5))
+
+    assert result["collected"] == len(COMMODITIES)
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+    macro_dir = tmp_path / "macro_series"
+    for c in COMMODITIES:
+        rows = _read_jsonl(macro_dir / f"{c['label']}.jsonl")
+        assert len(rows) == 2, f"correction absente pour {c['label']}"
+        assert rows[0]["period"] == rows[1]["period"] == "2026-08-18"
+        assert abs(rows[0]["value"] - 91.22) < 0.01
+        assert abs(rows[1]["value"] - 92.5) < 0.01
+        assert "unit" in rows[1]
 
 
 def test_collect_daily_append_nouvelle_period(tmp_path):
@@ -287,7 +306,7 @@ def test_maybe_collect_sans_marqueur(tmp_path):
 
 
 def test_maybe_collect_cooldown_bloque(tmp_path):
-    """Moins de 20 h depuis dernière collecte → pas de déclenchement."""
+    """Moins de 24 h depuis dernière collecte → pas de déclenchement."""
     result0 = maybe_collect(tmp_path, NOW, http_get=_stub_http("2026-08-18"))
     _join(result0)
 
@@ -296,15 +315,27 @@ def test_maybe_collect_cooldown_bloque(tmp_path):
 
     assert result["triggered"] is False
     assert result["reason"] == "cooldown"
-    assert result["elapsed_h"] < 20.0
+    assert result["elapsed_h"] < 24.0
 
 
-def test_maybe_collect_declenche_apres_20h(tmp_path):
-    """Plus de 20 h depuis dernière collecte → déclenchement."""
+def test_maybe_collect_21h_reste_en_cooldown_24h(tmp_path):
+    """21 h < cooldown opérateur 24 h → pas de déclenchement."""
     result0 = maybe_collect(tmp_path, NOW, http_get=_stub_http("2026-08-18"))
     _join(result0)
 
     now2 = NOW + timedelta(hours=21)
+    result = maybe_collect(tmp_path, now2, http_get=_stub_http("2026-08-19", 92.0))
+
+    assert result["triggered"] is False
+    assert result["reason"] == "cooldown"
+
+
+def test_maybe_collect_declenche_apres_24h(tmp_path):
+    """Plus de 24 h depuis dernière collecte → déclenchement."""
+    result0 = maybe_collect(tmp_path, NOW, http_get=_stub_http("2026-08-18"))
+    _join(result0)
+
+    now2 = NOW + timedelta(hours=25)
     result = maybe_collect(tmp_path, now2, http_get=_stub_http("2026-08-19", 92.0))
 
     assert result["triggered"] is True
@@ -357,7 +388,7 @@ def test_no_double_demarrage_en_cours(tmp_path):
     assert result1["triggered"] is True
     assert started.wait(timeout=2.0), "thread de collecte non démarré"
 
-    now2 = NOW + timedelta(hours=21)
+    now2 = NOW + timedelta(hours=25)
     result2 = maybe_collect(tmp_path, now2, http_get=slow_http)
 
     assert result2["triggered"] is False
