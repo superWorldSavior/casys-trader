@@ -578,3 +578,103 @@ def _contains_control_field(value: object) -> bool:
     if isinstance(value, (tuple, list)):
         return any(_contains_control_field(item) for item in value)
     return False
+
+
+def test_macro_flag_defaults_off_via_existing_env_int_surface() -> None:
+    from pathlib import Path
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    assert '_env_int("CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED", 0)' in source
+    assert "CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED=1" not in source
+
+
+def test_run_cycle_has_no_macro_io_or_runner_parameter() -> None:
+    import inspect
+
+    signature = inspect.signature(daemon.run_cycle)
+    assert "world_macro_runner" not in signature.parameters
+    cycle_src = inspect.getsource(daemon.run_cycle)
+    assert "world_macro" not in cycle_src
+    assert "macro_source_only" not in cycle_src
+    assert "wire_world_macro_runtime" not in cycle_src
+    assert "_trigger_world_macro_source_only" not in cycle_src
+
+
+def test_macro_producer_boot_is_independent_of_v2_and_does_not_start_cohort() -> None:
+    from pathlib import Path
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    macro_flag = source.index('_env_int("CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED", 0)')
+    v2_flag = source.index('_env_int("CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED", 0)')
+    shadow_if = source.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"')
+    macro_if = source.index("if _world_macro_source_only:")
+    v2_if = source.index("if _world_model_context_v2:")
+    assert macro_if < shadow_if
+    assert macro_if != v2_if
+    assert v2_flag < shadow_if
+    boot = source[macro_flag:shadow_if]
+    assert "wire_world_macro_runtime(" in boot
+    assert ".trigger(" not in boot
+    assert "RegisterWorldCohort" not in boot
+    assert "ArmWorldCohort" not in boot
+    assert "StartWorldCohort" not in boot
+    assert "AdmitWorldCohortSlot" not in boot
+    assert ".register(" not in boot
+    assert ".arm(" not in boot
+    assert ".start(" not in boot
+    assert "market_sources.world_macro" not in source
+    assert "build_macro_source_ports" not in source
+    assert "DBnomicsSeriesAdapter" not in source
+    assert "YahooCommodityAdapter" not in source
+
+
+def test_v2_predictors_use_macro_lane_identity_only_when_producer_store_is_wired() -> None:
+    from pathlib import Path
+
+    from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v1"
+    assert "MACRO_LANE_IDENTITY" in source
+    assert 'else "context.v2"' in source
+    assert "macro_store=" in source
+    assert "scope_mapping=" in source
+    shadow_start = source.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"')
+    v2_block = source[source.index("if _world_model_context_v2:", shadow_start) :]
+    assert "MACRO_LANE_IDENTITY" in v2_block
+    assert 'else "context.v2"' in v2_block
+
+
+def test_world_macro_disabled_is_a_noop() -> None:
+    assert daemon._trigger_world_macro_source_only(runner=None, now=NOW) == {
+        "triggered": False,
+        "reason": "disabled",
+    }
+
+
+def test_world_macro_trigger_failure_is_logged_and_never_escapes(monkeypatch) -> None:
+    class BrokenRunner:
+        def trigger(self, **_kwargs: object) -> None:
+            raise OSError("macro disk unavailable")
+
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(daemon.log, "warning", lambda *args: warnings.append(args))
+
+    result = daemon._trigger_world_macro_source_only(runner=BrokenRunner(), now=NOW)
+
+    assert result["triggered"] is False
+    assert result["reason"] == "trigger_error"
+    assert result["error"] == "OSError:macro disk unavailable"
+    assert warnings
+
+
+def test_daemon_post_cycle_macro_trigger_cannot_break_trader_loop() -> None:
+    import inspect
+    from pathlib import Path
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    main_idx = source.index("def main(")
+    assert "_trigger_world_macro_source_only(" in source[main_idx:]
+    loop_idx = main_idx + source[main_idx:].index("_trigger_world_macro_source_only(")
+    assert "if not args.once:" in source[loop_idx - 400 : loop_idx]
+    assert "_trigger_world_macro_source_only" not in inspect.getsource(daemon.run_cycle)

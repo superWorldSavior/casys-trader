@@ -241,6 +241,7 @@ class _ClaimedDaemonResources:
         self.learning_sync_runner: object | None = None
         self.world_model_runner: object | None = None
         self.world_model_store: object | None = None
+        self.world_macro_runner: object | None = None
         self.company_intelligence_runner: object | None = None
         self.universe_intelligence_runner: object | None = None
         self.news_macro_runner: object | None = None
@@ -272,6 +273,11 @@ class _ClaimedDaemonResources:
             try:
                 self.world_model_runner.stop()
             except Exception:  # noqa: BLE001 - shadow shutdown remains best-effort
+                pass
+        if self.world_macro_runner is not None:
+            try:
+                self.world_macro_runner.stop()
+            except Exception:  # noqa: BLE001 - source-only macro shutdown remains best-effort
                 pass
         if self.world_model_store is not None:
             try:
@@ -815,6 +821,33 @@ def _trigger_world_model_shadow(
         return {
             "triggered": False,
             "reason": "capture_error",
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+
+
+def _trigger_world_macro_source_only(
+    *,
+    runner: object | None,
+    now: datetime,
+    reason: str = "post_cycle",
+) -> dict[str, object]:
+    """Enqueue source-only macro collection without blocking the trader loop."""
+
+    if runner is None:
+        return {"triggered": False, "reason": "disabled"}
+    try:
+        trigger = getattr(runner, "trigger", None)
+        if not callable(trigger):
+            return {"triggered": False, "reason": "disabled"}
+        result = trigger(now=now, reason=reason)
+        if isinstance(result, Mapping):
+            return dict(result)
+        return {"triggered": True, "reason": reason}
+    except Exception as exc:  # noqa: BLE001 - source-only macro never blocks trade
+        log.warning("[world_macro_source_only] trigger failed: %s", exc)
+        return {
+            "triggered": False,
+            "reason": "trigger_error",
             "error": f"{type(exc).__name__}:{exc}",
         }
 
@@ -2055,6 +2088,10 @@ def main(
     experiment_runtime_identity = _capture_experiment_runtime_identity()
     _world_model_runner: object | None = None
     _world_model_context_v2 = _env_int("CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED", 0) == 1
+    _world_macro_source_only = _env_int("CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED", 0) == 1
+    _world_macro_runner: object | None = None
+    _world_macro_store: object | None = None
+    _world_macro_mapping: object | None = None
 
     def _run_cycle_with_process_state(**kwargs):
         return cycle_run(
@@ -2070,6 +2107,33 @@ def main(
     _ds_handle = data_source_runtime.DataSourceHandle()
     claimed_resources.data_source_handle = _ds_handle
     _worker_cycle_context = worker_cycle_context_runtime.WorkerCycleContextHandle()
+    if _world_macro_source_only:
+        try:
+            from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+            _world_macro_bundle = wire_world_macro_runtime(
+                config_dir=ROOT / "config",
+                state_dir=STATE_DIR,
+                logger=log,
+            )
+            _world_macro_runner = _world_macro_bundle.runner
+            _world_macro_store = _world_macro_bundle.store
+            _world_macro_mapping = _world_macro_bundle.mapping
+            claimed_resources.world_macro_runner = _world_macro_runner
+            log.info(
+                "[world_macro_source_only] enabled root=%s authority=shadow_only decision_effect=none lane=%s",
+                STATE_DIR / "world_macro",
+                _world_macro_bundle.lane_identity,
+            )
+        except Exception as exc:  # noqa: BLE001 - producer boot cannot block trading
+            log.warning(
+                "[world_macro_source_only] disabled after boot failure: %s:%s",
+                type(exc).__name__,
+                exc,
+            )
+            _world_macro_runner = None
+            _world_macro_store = None
+            _world_macro_mapping = None
     if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED", 1) == 1:
         try:
             from trader.application.world_model import labeler as world_model_labeler
@@ -2098,15 +2162,20 @@ def main(
             extra_predictors: list[object] = [OnlineGRUWorldChallenger()]
             context_enricher = None
             if _world_model_context_v2:
+                from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY
+
+                v2_model_version = (
+                    MACRO_LANE_IDENTITY if _world_macro_store is not None else "context.v2"
+                )
                 extra_predictors.extend(
                     [
                         HierarchicalDirichletWorldBaseline(
-                            model_version="context.v2",
+                            model_version=v2_model_version,
                             include_context=True,
                             accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
                         ),
                         OnlineGRUWorldChallenger(
-                            model_version="context.v2",
+                            model_version=v2_model_version,
                             encoder_version="world_gru_encoder.v2",
                             include_context=True,
                             extra_categorical_keys=ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
@@ -2124,6 +2193,8 @@ def main(
                     WorldContextReader(
                         news_store=NewsMacroBriefStore(STATE_DIR / "news_briefs"),
                         company_store=CompanyIntelligenceStore(STATE_DIR / "company_intelligence"),
+                        macro_store=_world_macro_store,
+                        scope_mapping=_world_macro_mapping,
                     )
                 )
             _world_model_runtime = WorldModelRuntime(
@@ -2427,6 +2498,11 @@ def main(
                         sleep_seconds = min(wait, args.poll)
                         log.info("[sleep] next_check_in=%.0fs next_due_in=%.0fs", sleep_seconds, wait)
                 if not args.once:
+                    _trigger_world_macro_source_only(
+                        runner=_world_macro_runner,
+                        now=loop_now,
+                        reason="post_cycle",
+                    )
                     # Déclenché après le cycle afin que l'analyste voie aussi le
                     # dernier snapshot macro collecté par la finalisation. Les
                     # deux runners restent non bloquants et coalescent les
