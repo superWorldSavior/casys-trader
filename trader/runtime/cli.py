@@ -353,6 +353,14 @@ def _cmd_world_status(args: argparse.Namespace) -> int:
     return 0 if payload.get("status") not in {"unavailable", "schema_unavailable"} else 1
 
 
+def _cmd_world_cohort(args: argparse.Namespace) -> int:
+    from trader.interfaces.cli.world_model import dispatch_world_cohort
+
+    payload, code = dispatch_world_cohort(args, state_dir=daemon.STATE_DIR)
+    _print_json(payload)
+    return code
+
+
 def _dashboard_url(path: object) -> str:
     return f"http://127.0.0.1:8137/{getattr(path, 'name', path)}"
 
@@ -1008,6 +1016,57 @@ def build_parser() -> argparse.ArgumentParser:
     world_status = world_sub.add_parser("status", help="couverture et métriques préquentielles")
     world_status.add_argument("--json", action="store_true")
     world_status.set_defaults(func=_cmd_world_status)
+
+    from trader.interfaces.cli.world_model import WORLD_COHORT_INVALIDATION_REASONS
+
+    cohort = world_sub.add_parser("cohort", help="cohorte prospective shadow")
+    cohort_sub = cohort.add_subparsers(dest="cohort_command", required=True)
+
+    cohort_validate = cohort_sub.add_parser("validate", help="valide un manifeste sans écrire")
+    cohort_validate.add_argument("--manifest", required=True)
+    cohort_validate.add_argument("--json", action="store_true")
+    cohort_validate.set_defaults(func=_cmd_world_cohort)
+
+    cohort_register = cohort_sub.add_parser("register", help="enregistre un manifeste durable")
+    cohort_register.add_argument("--manifest", required=True)
+    cohort_register.add_argument("--json", action="store_true")
+    cohort_register.set_defaults(func=_cmd_world_cohort)
+
+    cohort_arm = cohort_sub.add_parser("arm", help="arme une cohorte enregistrée")
+    cohort_arm.add_argument("cohort_id")
+    cohort_arm.add_argument("--sensor", action="append")
+    cohort_arm.add_argument("--json", action="store_true")
+    cohort_arm.set_defaults(func=_cmd_world_cohort)
+
+    cohort_start = cohort_sub.add_parser("start", help="démarre la collecte après armement")
+    cohort_start.add_argument("cohort_id")
+    cohort_start.add_argument("--json", action="store_true")
+    cohort_start.set_defaults(func=_cmd_world_cohort)
+
+    cohort_status = cohort_sub.add_parser("status", help="cycle de vie d'une cohorte")
+    cohort_status.add_argument("cohort_id")
+    cohort_status.add_argument("--json", action="store_true")
+    cohort_status.set_defaults(func=_cmd_world_cohort)
+
+    cohort_report = cohort_sub.add_parser("report", help="rapport reconstructible")
+    cohort_report.add_argument("cohort_id")
+    cohort_report.add_argument("--json", action="store_true")
+    cohort_report.set_defaults(func=_cmd_world_cohort)
+
+    cohort_close = cohort_sub.add_parser("close", help="ferme la collecte")
+    cohort_close.add_argument("cohort_id")
+    cohort_close.add_argument("--reason", required=True)
+    cohort_close.add_argument("--json", action="store_true")
+    cohort_close.set_defaults(func=_cmd_world_cohort)
+
+    cohort_invalidate = cohort_sub.add_parser("invalidate", help="invalide le protocole")
+    cohort_invalidate.add_argument("cohort_id")
+    cohort_invalidate.add_argument("--reason", required=True, choices=WORLD_COHORT_INVALIDATION_REASONS)
+    cohort_invalidate.add_argument("--scope")
+    cohort_invalidate.add_argument("--proof", action="append")
+    cohort_invalidate.add_argument("--occurred-at")
+    cohort_invalidate.add_argument("--json", action="store_true")
+    cohort_invalidate.set_defaults(func=_cmd_world_cohort)
 
     news_macro = sub.add_parser("news-macro", help="briefs macro/news par marché")
     news_macro_sub = news_macro.add_subparsers(dest="news_macro_command", required=True)

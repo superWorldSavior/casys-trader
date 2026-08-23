@@ -1,9 +1,43 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from tests.domain.test_world_cohort import COHORT_ID, _manifest
 from trader.interfaces.cli.world_model import read_world_model_status
 from trader.runtime import cli
+
+_CLAIM = {
+    "authority": "shadow_only",
+    "decision_effect": "none",
+    "recommendation": "NO_GO",
+    "causal_claim": False,
+    "pnl_claim": False,
+    "actual_trader_contribution": "not_attributable",
+}
+
+
+def _write_manifest(directory: Path, **overrides: object) -> Path:
+    path = directory / "cohort-manifest.json"
+    path.write_text(json.dumps(_manifest(**overrides).to_dict()), encoding="utf-8")
+    return path
+
+
+def _run_json(monkeypatch, capsys, tmp_path: Path, argv: list[str]) -> tuple[int, dict]:
+    monkeypatch.setattr(cli.daemon, "STATE_DIR", tmp_path)
+    code = cli.main(argv)
+    captured = capsys.readouterr()
+    assert captured.out, captured.err
+    return code, json.loads(captured.out)
+
+
+def _assert_claims(payload: dict) -> None:
+    for key, expected in _CLAIM.items():
+        assert payload[key] == expected
+
+
+def _db_path(tmp_path: Path) -> Path:
+    return tmp_path / "world_model.db"
 
 
 def test_world_status_does_not_create_a_missing_database(tmp_path) -> None:
@@ -214,3 +248,295 @@ def test_cli_world_status_json_is_machine_readable(tmp_path, monkeypatch, capsys
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "not_started"
     assert payload["decision_effect"] == "none"
+
+
+def test_world_cohort_validate_is_read_only_and_machine_readable(tmp_path, monkeypatch, capsys) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    expected = _manifest()
+
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "validate", "--manifest", str(manifest_path), "--json"],
+    )
+
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["command"] == "validate"
+    assert payload["cohort_id"] == expected.cohort_id
+    assert payload["manifest_sha256"] == expected.manifest_sha256
+    assert payload["study_kind"] == "pipeline_pilot"
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_cohort_validate_rejects_invalid_manifest_without_creating_db(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    manifest_path = tmp_path / "bad-manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "validate", "--manifest", str(manifest_path), "--json"],
+    )
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_manifest"
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+
+
+def test_world_cohort_status_and_report_missing_db_do_not_create_or_migrate(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    status_code, status = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "status", COHORT_ID, "--json"],
+    )
+    assert status_code == 0
+    assert status["command"] == "status"
+    assert status["status"] == "not_started"
+    assert status["exists"] is False
+    assert status["cohort_id"] == COHORT_ID
+    _assert_claims(status)
+    assert not _db_path(tmp_path).exists()
+
+    report_code, report = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "report", COHORT_ID, "--json"],
+    )
+    assert report_code == 0
+    assert report["schema_version"] == "world_cohort_report.v1"
+    assert report["status"] == "not_started"
+    assert report["exists"] is False
+    _assert_claims(report)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_cohort_register_does_not_arm_or_start(tmp_path, monkeypatch, capsys) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    expected = _manifest()
+
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "register", "--manifest", str(manifest_path)],
+    )
+
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["command"] == "register"
+    assert payload["phase"] == "registered"
+    assert payload["event_type"] == "world_cohort_registered"
+    assert payload["cohort_id"] == expected.cohort_id
+    assert payload["manifest_sha256"] == expected.manifest_sha256
+    _assert_claims(payload)
+    assert _db_path(tmp_path).exists()
+
+    status_code, status = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "status", expected.cohort_id, "--json"],
+    )
+    assert status_code == 0
+    assert status["phase"] == "registered"
+    assert status["event_types"] == ["world_cohort_registered"]
+    assert status["started_event_id"] is None
+    _assert_claims(status)
+
+
+def test_world_cohort_arm_and_start_require_explicit_commands(tmp_path, monkeypatch, capsys) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    expected = _manifest()
+    register_code, _register = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "register", "--manifest", str(manifest_path)],
+    )
+    assert register_code == 0
+
+    start_before_arm, start_payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "start", expected.cohort_id],
+    )
+    assert start_before_arm == 1
+    assert start_payload["ok"] is False
+    assert start_payload["error"]["code"] == "domain_error"
+    _assert_claims(start_payload)
+
+    arm_code, armed = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "arm", expected.cohort_id],
+    )
+    assert arm_code == 0
+    assert armed["ok"] is True
+    assert armed["command"] == "arm"
+    assert armed["phase"] == "armed"
+    assert armed["event_type"] == "world_cohort_armed"
+    assert armed["satisfied_sensor_ids"] == ["company"]
+    _assert_claims(armed)
+
+    start_code, started = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "start", expected.cohort_id],
+    )
+    assert start_code == 0
+    assert started["ok"] is True
+    assert started["command"] == "start"
+    assert started["phase"] == "collecting"
+    assert started["event_type"] == "world_cohort_started"
+    _assert_claims(started)
+
+    status_code, status = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "status", expected.cohort_id, "--json"],
+    )
+    assert status_code == 0
+    assert status["phase"] == "collecting"
+    assert status["event_types"] == [
+        "world_cohort_registered",
+        "world_cohort_armed",
+        "world_cohort_started",
+    ]
+    assert status["started_event_id"]
+
+
+def test_world_cohort_mutations_on_missing_db_do_not_create_store(tmp_path, monkeypatch, capsys) -> None:
+    for argv in (
+        ["world", "cohort", "arm", COHORT_ID],
+        ["world", "cohort", "start", COHORT_ID],
+        ["world", "cohort", "close", COHORT_ID, "--reason", "stop"],
+        ["world", "cohort", "invalidate", COHORT_ID, "--reason", "accepted_drift"],
+    ):
+        code, payload = _run_json(monkeypatch, capsys, tmp_path, argv)
+        assert code == 1
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "store_missing"
+        _assert_claims(payload)
+        assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_cohort_close_and_invalidate_are_explicit(tmp_path, monkeypatch, capsys) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    expected = _manifest()
+    for argv in (
+        ["world", "cohort", "register", "--manifest", str(manifest_path)],
+        ["world", "cohort", "arm", expected.cohort_id],
+        ["world", "cohort", "start", expected.cohort_id],
+    ):
+        code, payload = _run_json(monkeypatch, capsys, tmp_path, argv)
+        assert code == 0, payload
+
+    close_code, closed = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "close", expected.cohort_id, "--reason", "planned_stop"],
+    )
+    assert close_code == 0
+    assert closed["ok"] is True
+    assert closed["command"] == "close"
+    assert closed["phase"] == "collection_closed"
+    assert closed["event_type"] == "world_cohort_collection_closed"
+    _assert_claims(closed)
+
+    report_code, report = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "report", expected.cohort_id, "--json"],
+    )
+    assert report_code == 0
+    assert report["schema_version"] == "world_cohort_report.v1"
+    assert report["phase"] == "collection_closed"
+    _assert_claims(report)
+
+    invalidate_code, invalidated = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        [
+            "world",
+            "cohort",
+            "invalidate",
+            expected.cohort_id,
+            "--reason",
+            "accepted_drift",
+        ],
+    )
+    assert invalidate_code == 0
+    assert invalidated["ok"] is True
+    assert invalidated["command"] == "invalidate"
+    assert invalidated["phase"] == "invalidated"
+    assert invalidated["event_type"] == "world_cohort_invalidated"
+    _assert_claims(invalidated)
+
+
+def test_world_cohort_validate_does_not_register(tmp_path, monkeypatch, capsys) -> None:
+    manifest_path = _write_manifest(tmp_path)
+    expected = _manifest()
+    validate_code, _payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "validate", "--manifest", str(manifest_path), "--json"],
+    )
+    assert validate_code == 0
+    assert not _db_path(tmp_path).exists()
+
+    status_code, status = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "cohort", "status", expected.cohort_id, "--json"],
+    )
+    assert status_code == 0
+    assert status["status"] == "not_started"
+    assert not _db_path(tmp_path).exists()
+
+
+def test_world_cohort_parser_exposes_rfc_commands() -> None:
+    parser = cli.build_parser()
+    validate = parser.parse_args(["world", "cohort", "validate", "--manifest", "m.json", "--json"])
+    assert validate.cohort_command == "validate"
+    register = parser.parse_args(["world", "cohort", "register", "--manifest", "m.json"])
+    assert register.cohort_command == "register"
+    arm = parser.parse_args(["world", "cohort", "arm", COHORT_ID])
+    assert arm.cohort_command == "arm"
+    start = parser.parse_args(["world", "cohort", "start", COHORT_ID])
+    assert start.cohort_command == "start"
+    status = parser.parse_args(["world", "cohort", "status", COHORT_ID, "--json"])
+    assert status.cohort_command == "status"
+    report = parser.parse_args(["world", "cohort", "report", COHORT_ID, "--json"])
+    assert report.cohort_command == "report"
+    close = parser.parse_args(["world", "cohort", "close", COHORT_ID, "--reason", "done"])
+    assert close.cohort_command == "close"
+    invalidate = parser.parse_args(
+        ["world", "cohort", "invalidate", COHORT_ID, "--reason", "future_leak"]
+    )
+    assert invalidate.cohort_command == "invalidate"
+    world_status = parser.parse_args(["world", "status", "--json"])
+    assert world_status.world_command == "status"
