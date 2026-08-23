@@ -44,7 +44,7 @@ from trader.domain.world_episode import (
 class WorldContextSource(Protocol):
     """Application-owned port. Infrastructure supplies a frozen file reader."""
 
-    def lookup_macro(self, *, venue: str, cutoff_at: datetime | str) -> SensorEvidence: ...
+    def lookup_macro(self, *, venue: str, symbol: str, cutoff_at: datetime | str) -> SensorEvidence: ...
 
     def lookup_company(self, *, symbol: str, cutoff_at: datetime | str) -> SensorEvidence: ...
 
@@ -69,7 +69,10 @@ def attach_world_context(
             continue
         if observation.available_at is None or cutoff > observation.available_at:
             continue
-        macro = model_facing_sensor_evidence(context_source.lookup_macro(venue=venue, cutoff_at=cutoff), cutoff)
+        macro = model_facing_sensor_evidence(
+            context_source.lookup_macro(venue=venue, symbol=symbol, cutoff_at=cutoff),
+            cutoff,
+        )
         company = model_facing_sensor_evidence(context_source.lookup_company(symbol=symbol, cutoff_at=cutoff), cutoff)
         snapshot = build_world_context_snapshot(
             symbol=symbol,
@@ -159,7 +162,7 @@ def build_world_context_snapshot(
     venue_ref = EntityRef("venue", venue)
     proofs: list[dict[str, object]] = []
     artifact_refs: list[str] = []
-    proofs.append(_proof("news_macro", macro))
+    proofs.append(_proof("macro_world_observation", macro))
     if macro.artifact is not None and macro.proven and macro.status in {"complete", "partial"}:
         artifact_refs.append(macro.artifact.artifact_id)
         if macro.artifact.ready_at is not None and macro.artifact.ready_at <= cutoff:
@@ -167,11 +170,11 @@ def build_world_context_snapshot(
                 TopologyEdge(
                     kind="DESCRIBED_BY",
                     source=venue_ref,
-                    target=EntityRef("sensor", "news_macro"),
+                    target=EntityRef("sensor", "macro_world_observation"),
                     effective_from=cutoff,
                     ready_at=macro.artifact.ready_at,
                     ontology_revision=ONTOLOGY_REVISION,
-                    source_refs=macro.artifact.source_refs or ("news_macro",),
+                    source_refs=macro.artifact.source_refs or ("macro_world_observation",),
                 )
             )
     proofs.append(_proof("company_intelligence", company))
@@ -209,7 +212,7 @@ def build_world_context_snapshot(
                 )
 
     sensor_statuses = {
-        "news_macro": macro.status,
+        "macro_world_observation": macro.status,
         "company_intelligence": company.status,
     }
     status = overall_context_status(sensor_statuses)
@@ -260,22 +263,43 @@ def _proof(kind: str, evidence: SensorEvidence) -> dict[str, object]:
         proof["content_sha256"] = evidence.artifact.content_sha256
         if evidence.artifact.valid_until is not None:
             proof["valid_until"] = evidence.artifact.valid_until.isoformat()
+    resolution = None
+    if evidence.payload is not None:
+        raw = evidence.payload.get("scope_resolution")
+        if isinstance(raw, Mapping):
+            resolution = raw
+    if resolution is not None:
+        mapping_id = str(resolution.get("mapping_id") or "").strip()
+        mapping_sha256 = str(resolution.get("mapping_sha256") or "").strip()
+        status = str(resolution.get("resolution_status") or resolution.get("status") or "").strip()
+        if mapping_id:
+            proof["mapping_id"] = mapping_id
+        if mapping_sha256:
+            proof["mapping_sha256"] = mapping_sha256
+        if status:
+            proof["resolution_status"] = status
+        anchor = resolution.get("anchor")
+        if isinstance(anchor, Mapping):
+            proof["anchor"] = dict(anchor)
     return proof
 
 
 def _macro_features(evidence: SensorEvidence) -> dict[str, str]:
-    if evidence.status != "complete" or evidence.payload is None:
-        return {
-            "context_macro_regime": "missing",
-            "context_rates_regime": "missing",
-            "context_usd_regime": "missing",
-        }
+    missing = {
+        "context_macro_regime": "missing",
+        "context_rates_regime": "missing",
+        "context_usd_regime": "missing",
+    }
+    if evidence.status not in {"complete", "partial"} or evidence.payload is None:
+        return missing
     payload = evidence.payload
-    # Only exact structured fields. NewsMacroBrief currently has none of these.
+    features = payload.get("features") if isinstance(payload.get("features"), Mapping) else payload
+    if not isinstance(features, Mapping):
+        return missing
     return {
-        "context_macro_regime": _structured_text(payload, "macro_regime", "regime") or "missing",
-        "context_rates_regime": _structured_text(payload, "rates_regime", "rates") or "missing",
-        "context_usd_regime": _structured_text(payload, "usd_regime", "usd") or "missing",
+        "context_macro_regime": _structured_text(features, "macro_regime", "regime") or "missing",
+        "context_rates_regime": _structured_text(features, "rates_regime", "rates") or "missing",
+        "context_usd_regime": _structured_text(features, "usd_regime", "usd") or "missing",
     }
 
 

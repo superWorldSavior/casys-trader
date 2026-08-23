@@ -552,3 +552,37 @@ def test_encoding_and_models_stay_free_of_networkx() -> None:
                 assert all(alias.name.split(".", 1)[0] != "networkx" for alias in node.names)
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert node.module.split(".", 1)[0] != "networkx"
+
+
+def test_v1_feature_fingerprint_stays_frozen_after_macro_source_only() -> None:
+    from trader.application.world_model.context_capture import attach_world_context as capture_fn
+
+    assert FEATURE_CONTRACT_FINGERPRINT == FROZEN_V1_ENCODER_FINGERPRINT
+    assert FEATURE_CONTRACT_FINGERPRINT_V2 == FROZEN_V2_ENCODER_FINGERPRINT
+    v1 = _v1_episode()
+    v2 = attach_world_context(
+        (v1,),
+        _FakeSource(
+            SensorEvidence(status="missing", reason="no_artifact"),
+            SensorEvidence(status="missing", reason="no_artifact"),
+        ),
+    )[0]
+    assert v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_VERSION
+    assert v2.observation.feature_contract_version == CONTEXT_FEATURE_CONTRACT_VERSION
+    assert capture_fn is attach_world_context
+
+
+def test_world_context_model_path_excludes_news_macro_brief() -> None:
+    paths = (
+        Path("trader/application/world_model/context_capture.py"),
+        Path("trader/application/world_model/world_scope_resolver.py"),
+        Path("trader/infrastructure/state_db/world_context_reader.py"),
+        Path("trader/domain/world_context.py"),
+    )
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        assert "NewsMacroBrief" not in source
+        assert "NewsMacroBriefStore" not in source
+        assert "gdelt" not in source.lower()
+    capture = Path("trader/application/world_model/context_capture.py").read_text(encoding="utf-8")
+    assert "news_macro" not in capture

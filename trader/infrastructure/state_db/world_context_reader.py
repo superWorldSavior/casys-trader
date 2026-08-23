@@ -12,6 +12,9 @@ the model-facing lookup collapses them to canonical missing
 (``no_proven_artifact_at_cutoff``, ``proven=False``, no artifact metadata).
 A restart is intentionally conservative for old cutoffs unless a canonical V2
 episode already exists.
+
+Macro lookup consumes source-only ``MacroWorldObservation`` envelopes.  It does
+not read Univers news-macro briefs as a model source.
 """
 
 from __future__ import annotations
@@ -22,17 +25,23 @@ from pathlib import Path
 from typing import Any
 
 from trader.domain.company import CompanyIntelligenceBrief
-from trader.domain.situation import NewsMacroBrief
 from trader.domain.world_context import (
-    POLICY_CONTAMINATED_REASON,
+    SCOPE_AMBIGUOUS_REASON,
+    SCOPE_UNMAPPED_REASON,
     EntityRef,
     KnowledgeArtifact,
     SensorEvidence,
-    assert_context_schema,
     neutral_missing_sensor_evidence,
     temporally_eligible,
 )
 from trader.domain.world_episode import parse_utc_timestamp
+from trader.domain.world_macro import (
+    MACRO_WORLD_OBSERVATION_SCHEMA,
+    MacroObservationEnvelope,
+    MacroScope,
+    evaluate_macro_point_in_time,
+)
+from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping, WorldScopeResolution
 from trader.infrastructure.state_db._jsonl_store import read_jsonl_objects
 from trader.infrastructure.state_db.availability_receipt import (
     UtcClock,
@@ -45,22 +54,12 @@ from trader.infrastructure.state_db.availability_receipt import (
     validate_availability_receipt,
 )
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
-from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
+from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
 
 
-_POLICY_KEY_FRAGMENTS = (
-    "candidate",
-    "hotlist",
-    "mandate",
-    "rank",
-    "attractiveness",
-    "feedback",
-    "policy",
-    "decision",
-    "portfolio",
-)
 _EXPLICIT_PUBLICATION_FIELDS = ("published_at", "publication_time", "published")
 _MALFORMED = object()
+_SNAPSHOT_MACRO_STATUSES = frozenset({"complete", "partial", "stale"})
 
 
 def _aware_utc(value: datetime, *, field_name: str = "clock") -> datetime:
@@ -93,42 +92,6 @@ def _parse_valid_until(value: object) -> datetime | object | None:
         return _MALFORMED
 
 
-def _walk_keys(value: object) -> Iterator[str]:
-    if isinstance(value, Mapping):
-        for key, nested in value.items():
-            yield str(key)
-            yield from _walk_keys(nested)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from _walk_keys(item)
-
-
-def macro_payload_contaminated(payload: Mapping[str, Any]) -> bool:
-    """Exclude policy/candidate/company-anchor leakage from the macro sensor."""
-
-    try:
-        assert_context_schema({"input_refs": payload.get("input_refs") or {}}, "macro.input_refs")
-    except (TypeError, ValueError):
-        return True
-    for key in _walk_keys(payload.get("input_refs") or {}):
-        compact = str(key).strip().lower()
-        if any(fragment in compact for fragment in _POLICY_KEY_FRAGMENTS):
-            return True
-    for key in payload:
-        compact = str(key).strip().lower()
-        if any(fragment in compact for fragment in _POLICY_KEY_FRAGMENTS):
-            return True
-    return False
-
-
-def _explicit_published_at(payload: Mapping[str, Any]) -> datetime | None:
-    for name in _EXPLICIT_PUBLICATION_FIELDS:
-        parsed = _parse_optional(payload.get(name))
-        if parsed is not None:
-            return parsed
-    return None
-
-
 class WorldContextReader:
     """Frozen, local-file adapter. No network and no LLM I/O.
 
@@ -140,40 +103,52 @@ class WorldContextReader:
     def __init__(
         self,
         *,
-        news_store: NewsMacroBriefStore | None = None,
+        news_store: object | None = None,
         company_store: CompanyIntelligenceStore | None = None,
         news_dir: str | Path | None = None,
         company_dir: str | Path | None = None,
         clock: UtcClock | None = None,
+        macro_store: WorldMacroStore | None = None,
+        macro_dir: str | Path | None = None,
+        scope_mapping: WorldScopeMapping | None = None,
     ) -> None:
-        if news_store is None and news_dir is not None:
-            news_store = NewsMacroBriefStore(news_dir)
         if company_store is None and company_dir is not None:
             company_store = CompanyIntelligenceStore(company_dir)
         self.news_store = news_store
         self.company_store = company_store
         self._clock = clock or default_utc_clock
         self._first_seen_at: dict[str, datetime] = {}
+        self._macro_first_seen_at: dict[str, datetime] = {}
+        self._scope_mapping = scope_mapping
+        if macro_store is None and macro_dir is not None:
+            macro_store = WorldMacroStore(macro_dir, clock=self._clock)
+        self._macro_store = macro_store
         self._prime_existing_receipts()
 
-    def lookup_macro(self, *, venue: str, cutoff_at: datetime | str) -> SensorEvidence:
+    def lookup_macro(self, *, venue: str, cutoff_at: datetime | str, symbol: str) -> SensorEvidence:
         cutoff = parse_utc_timestamp(cutoff_at, "cutoff_at")
-        if self.news_store is None:
+        resolution = self._resolve_scope(venue, symbol)
+        if resolution is None:
             return neutral_missing_sensor_evidence()
-        records = [
-            record
-            for record in self._iter_news_rows()
-            if str((record["payload"] or {}).get("venue") or "").strip() == venue
-        ]
-        return self._select_sensor(
-            records,
-            cutoff=cutoff,
-            kind="news_macro",
-            subject=EntityRef("venue", venue),
-            schema_version="news_macro_brief.v1",
-            artifact_id_field="brief_id",
-            contamination=macro_payload_contaminated,
-        )
+        if resolution.status != "resolved":
+            reason = SCOPE_UNMAPPED_REASON if resolution.status == "unmapped" else SCOPE_AMBIGUOUS_REASON
+            return SensorEvidence(
+                status="missing",
+                reason=reason,
+                proven=False,
+                payload={"scope_resolution": _resolution_payload(resolution)},
+            )
+        venue_ref = resolution.scopes[0]
+        scope = MacroScope(kind=venue_ref.kind, entity_id=venue_ref.entity_id)
+        if self._macro_store is None:
+            return SensorEvidence(
+                status="missing",
+                reason="no_proven_artifact_at_cutoff",
+                proven=False,
+                payload={"scope_resolution": _resolution_payload(resolution)},
+            )
+        candidates = self._macro_store.list_candidates_available_through(scope, cutoff)
+        return self._select_macro_observation(candidates, cutoff=cutoff, scope=scope, resolution=resolution)
 
     def lookup_company(self, *, symbol: str, cutoff_at: datetime | str) -> SensorEvidence:
         cutoff = parse_utc_timestamp(cutoff_at, "cutoff_at")
@@ -191,21 +166,119 @@ class WorldContextReader:
             subject=EntityRef("instrument", symbol),
             schema_version="company_intelligence_brief.v1",
             artifact_id_field="brief_id",
-            contamination=None,
         )
 
-    def _iter_news_rows(self) -> Iterator[dict[str, Any]]:
-        base = self.news_store.base_dir
-        receipts_root = receipt_dir(base)
-        for path in sorted(base.glob("????-??-??.jsonl")):
-            if path.name.startswith("latest-"):
+    def _resolve_scope(self, venue: str, symbol: str) -> WorldScopeResolution | None:
+        if self._scope_mapping is None:
+            return None
+        market_venue = str(venue or "").strip()
+        instrument = str(symbol or "").strip()
+        if not market_venue or not instrument:
+            return None
+        return self._scope_mapping.resolve(WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument))
+
+    def _select_macro_observation(
+        self,
+        candidates: tuple[MacroObservationEnvelope, ...],
+        *,
+        cutoff: datetime,
+        scope: MacroScope,
+        resolution: WorldScopeResolution,
+    ) -> SensorEvidence:
+        eligible: list[tuple[MacroObservationEnvelope, datetime]] = []
+        stale: list[tuple[MacroObservationEnvelope, datetime]] = []
+        for envelope in candidates:
+            observation = envelope.observation
+            if observation.scope != scope:
                 continue
-            yield from self._rows_from_path(
-                path,
-                receipt_path=receipts_root / path.name,
-                scope=path.stem,
-                history_path=str(path.relative_to(base)),
+            store_decision = evaluate_macro_point_in_time(
+                evidence=envelope.evidence,
+                cutoff_at=cutoff,
+                valid_until=observation.valid_until,
+                version=observation.transform_version,
             )
+            reader_seen = self._remember_macro_receipt(envelope)
+            effective = max(envelope.evidence.effective_ready_at, reader_seen)
+            if effective > cutoff:
+                continue
+            if store_decision.status == "eligible":
+                eligible.append((envelope, effective))
+            elif store_decision.status == "stale":
+                stale.append((envelope, effective))
+        if eligible:
+            chosen, effective = max(
+                eligible,
+                key=lambda item: (item[0].observation.cutoff_at, item[0].observation.observation_id),
+            )
+            status = chosen.observation.coverage.status
+            if status not in _SNAPSHOT_MACRO_STATUSES:
+                status = "partial"
+            return self._macro_evidence(chosen, resolution, status=status, ready_at=effective)
+        if stale:
+            chosen, effective = max(
+                stale,
+                key=lambda item: (item[0].observation.cutoff_at, item[0].observation.observation_id),
+            )
+            return self._macro_evidence(
+                chosen,
+                resolution,
+                status="stale",
+                ready_at=effective,
+                reason="valid_until_at_or_before_cutoff",
+            )
+        return SensorEvidence(
+            status="missing",
+            reason="no_proven_artifact_at_cutoff",
+            proven=False,
+            payload={"scope_resolution": _resolution_payload(resolution)},
+        )
+
+    def _macro_evidence(
+        self,
+        envelope: MacroObservationEnvelope,
+        resolution: WorldScopeResolution,
+        *,
+        status: str,
+        ready_at: datetime,
+        reason: str = "sidecar_ready",
+    ) -> SensorEvidence:
+        observation = envelope.observation
+        artifact = KnowledgeArtifact(
+            kind="macro_world_observation",
+            artifact_id=observation.observation_id,
+            subjects=(EntityRef("venue", observation.scope.entity_id),),
+            schema_version=observation.schema_version or MACRO_WORLD_OBSERVATION_SCHEMA,
+            content_sha256=observation.content_sha256,
+            occurred_at=observation.cutoff_at,
+            ready_at=ready_at,
+            ingested_at=ready_at,
+            valid_until=observation.valid_until,
+            source_refs=observation.fact_refs,
+        )
+        payload = {
+            "features": dict(observation.features),
+            "dimensions": [item.to_dict() for item in observation.dimensions],
+            "coverage": observation.coverage.to_dict(),
+            "scope_resolution": _resolution_payload(resolution),
+        }
+        return SensorEvidence(
+            status=status,
+            reason=reason,
+            proven=True,
+            payload=payload,
+            artifact=artifact,
+        )
+
+    def _remember_macro_receipt(self, envelope: MacroObservationEnvelope) -> datetime:
+        digest = envelope.persisted.receipt.receipt_sha256
+        if not digest:
+            digest = envelope.observation.content_sha256
+        existing = self._macro_first_seen_at.get(digest)
+        if existing is not None:
+            return existing
+        stamped = _aware_utc(self._clock(), field_name="clock")
+        self._macro_first_seen_at[digest] = stamped
+        return stamped
 
     def _iter_company_rows(self, symbol: str) -> Iterator[dict[str, Any]]:
         path = self.company_store.history_path(symbol)
@@ -261,8 +334,6 @@ class WorldContextReader:
 
     def _prime_existing_receipts(self) -> None:
         roots: list[Path] = []
-        if self.news_store is not None:
-            roots.append(receipt_dir(self.news_store.base_dir))
         if self.company_store is not None:
             roots.append(receipt_dir(self.company_store.base_dir))
         for root in roots:
@@ -293,7 +364,6 @@ class WorldContextReader:
         subject: EntityRef,
         schema_version: str,
         artifact_id_field: str,
-        contamination: Any,
     ) -> SensorEvidence:
         if not records:
             return neutral_missing_sensor_evidence()
@@ -331,14 +401,6 @@ class WorldContextReader:
                 schema_version=schema_version,
                 artifact_id_field=artifact_id_field,
             )
-            if contamination is not None and contamination(payload):
-                return SensorEvidence(
-                    status="missing",
-                    reason=POLICY_CONTAMINATED_REASON,
-                    proven=True,
-                    payload=payload,
-                    artifact=artifact,
-                )
             return SensorEvidence(
                 status="complete",
                 reason="sidecar_ready",
@@ -399,8 +461,23 @@ class WorldContextReader:
         )
 
 
-def parse_macro_brief(payload: Mapping[str, Any]) -> NewsMacroBrief | None:
-    return NewsMacroBrief.from_mapping(payload)
+def _explicit_published_at(payload: Mapping[str, Any]) -> datetime | None:
+    for name in _EXPLICIT_PUBLICATION_FIELDS:
+        parsed = _parse_optional(payload.get(name))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _resolution_payload(resolution: WorldScopeResolution) -> dict[str, Any]:
+    return {
+        "mapping_id": resolution.mapping_id,
+        "mapping_sha256": resolution.mapping_sha256,
+        "resolution_status": resolution.status,
+        "status": resolution.status,
+        "anchor": resolution.anchor.to_dict(),
+        "scopes": [scope.to_dict() for scope in resolution.scopes],
+    }
 
 
 def parse_company_brief(payload: Mapping[str, Any]) -> CompanyIntelligenceBrief | None:
@@ -409,7 +486,5 @@ def parse_company_brief(payload: Mapping[str, Any]) -> CompanyIntelligenceBrief 
 
 __all__ = [
     "WorldContextReader",
-    "macro_payload_contaminated",
     "parse_company_brief",
-    "parse_macro_brief",
 ]

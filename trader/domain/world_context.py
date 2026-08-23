@@ -60,7 +60,12 @@ SNAPSHOT_STATUSES = frozenset({"complete", "partial", "missing", "stale"})
 NON_NEUTRAL_UNAVAILABLE_STATUSES = frozenset({"availability_unproven", "late"})
 NO_PROVEN_ARTIFACT_REASON = "no_proven_artifact_at_cutoff"
 POLICY_CONTAMINATED_REASON = "policy_contaminated"
+SCOPE_UNMAPPED_REASON = "scope_unmapped"
+SCOPE_AMBIGUOUS_REASON = "scope_ambiguous"
+_SCOPE_MISSING_REASONS = frozenset({SCOPE_UNMAPPED_REASON, SCOPE_AMBIGUOUS_REASON})
+_SCOPE_RESOLUTION_STATUSES = frozenset({"resolved", "unmapped", "ambiguous"})
 _NEUTRAL_MISSING_PROOF_KEYS = frozenset({"kind", "status", "proven", "reason"})
+_SCOPE_RESOLUTION_PROOF_KEYS = frozenset({"mapping_id", "mapping_sha256", "resolution_status", "anchor"})
 _MISSING_PROOF_ARTIFACT_FIELDS = (
     "artifact_id",
     "content_sha256",
@@ -69,7 +74,7 @@ _MISSING_PROOF_ARTIFACT_FIELDS = (
     "ingested_at",
     "published_at",
 )
-ARTIFACT_KINDS = frozenset({"news_macro", "company_intelligence"})
+ARTIFACT_KINDS = frozenset({"news_macro", "company_intelligence", "macro_world_observation"})
 
 ALLOWED_CONTEXT_CATEGORICAL_FEATURES = frozenset(
     {
@@ -698,10 +703,20 @@ class WorldContextSnapshot:
     def _validate_missing_proof(self, proof: Mapping[str, Any]) -> None:
         reason = str(proof.get("reason") or "").strip()
         extra_keys = [key for key in proof if key not in _NEUTRAL_MISSING_PROOF_KEYS]
+        mapping_keys = [key for key in extra_keys if key in _SCOPE_RESOLUTION_PROOF_KEYS]
+        other_keys = [key for key in extra_keys if key not in _SCOPE_RESOLUTION_PROOF_KEYS]
         has_artifact_meta = any(proof.get(name) not in (None, "") for name in _MISSING_PROOF_ARTIFACT_FIELDS)
         if reason == NO_PROVEN_ARTIFACT_REASON:
-            if proof.get("proven") is not False or extra_keys or has_artifact_meta:
+            if proof.get("proven") is not False or other_keys or has_artifact_meta:
                 raise ValueError("neutral missing proof requires proven=False and no artifact metadata")
+            if mapping_keys:
+                _validate_scope_resolution_fields(proof)
+            return
+        if reason in _SCOPE_MISSING_REASONS:
+            if proof.get("proven") is not False or other_keys or has_artifact_meta:
+                raise ValueError("scope resolution missing proof requires proven=False and no artifact metadata")
+            expected = "unmapped" if reason == SCOPE_UNMAPPED_REASON else "ambiguous"
+            _validate_scope_resolution_fields(proof, expected_status=expected)
             return
         if reason == POLICY_CONTAMINATED_REASON:
             if proof.get("proven") is not True:
@@ -1041,6 +1056,31 @@ def _require_optional_valid_until_after_cutoff(proof: Mapping[str, Any], cutoff:
         raise ValueError("artifact valid_until must be after cutoff")
 
 
+def _validate_scope_resolution_fields(proof: Mapping[str, Any], *, expected_status: str | None = None) -> None:
+    mapping_id = str(proof.get("mapping_id") or "").strip()
+    mapping_sha256 = str(proof.get("mapping_sha256") or "").strip()
+    status = str(proof.get("resolution_status") or "").strip()
+    if not mapping_id or not mapping_sha256 or status not in _SCOPE_RESOLUTION_STATUSES:
+        raise ValueError("scope resolution proof requires mapping_id, mapping_sha256, and resolution_status")
+    if expected_status is not None and status != expected_status:
+        raise ValueError("resolution_status must match the missing reason")
+    anchor = proof.get("anchor")
+    if anchor is not None and not isinstance(anchor, Mapping):
+        raise TypeError("scope resolution anchor must be a mapping")
+
+
+def payload_has_scope_resolution(payload: Mapping[str, Any] | None) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    raw = payload.get("scope_resolution")
+    if not isinstance(raw, Mapping):
+        return False
+    mapping_id = str(raw.get("mapping_id") or "").strip()
+    mapping_sha256 = str(raw.get("mapping_sha256") or "").strip()
+    status = str(raw.get("resolution_status") or raw.get("status") or "").strip()
+    return bool(mapping_id and mapping_sha256 and status in _SCOPE_RESOLUTION_STATUSES)
+
+
 def _model_facing_temporally_eligible(
     *,
     cutoff_at: datetime,
@@ -1086,6 +1126,12 @@ def model_facing_sensor_evidence(evidence: SensorEvidence, cutoff_at: datetime |
         ):
             return evidence
         return neutral_missing_sensor_evidence()
+    if evidence.status == "missing" and (
+        evidence.reason in _SCOPE_MISSING_REASONS or payload_has_scope_resolution(evidence.payload)
+    ):
+        if evidence.reason in _SCOPE_MISSING_REASONS and not payload_has_scope_resolution(evidence.payload):
+            return neutral_missing_sensor_evidence()
+        return evidence
     return neutral_missing_sensor_evidence()
 
 
@@ -1107,6 +1153,8 @@ __all__ = [
     "NON_NEUTRAL_UNAVAILABLE_STATUSES",
     "NO_PROVEN_ARTIFACT_REASON",
     "POLICY_CONTAMINATED_REASON",
+    "SCOPE_AMBIGUOUS_REASON",
+    "SCOPE_UNMAPPED_REASON",
     "ONTOLOGY_REVISION",
     "SNAPSHOT_STATUSES",
     "EntityRef",

@@ -4,10 +4,19 @@ from datetime import datetime, timezone
 
 import pytest
 
+from pathlib import Path
+
 from trader.application.world_model.capture import FEATURE_CONTRACT_VERSION, capture_world_episodes
-from trader.application.world_model.context_capture import attach_world_context
+from trader.application.world_model.context_capture import attach_world_context, build_world_context_snapshot
 from trader.application.world_model.encoding import FEATURE_CONTRACT_FINGERPRINT
-from trader.domain.world_context import CONTEXT_FEATURE_CONTRACT_VERSION, NO_PROVEN_ARTIFACT_REASON, SensorEvidence
+from trader.domain.world_context import (
+    CONTEXT_FEATURE_CONTRACT_VERSION,
+    NO_PROVEN_ARTIFACT_REASON,
+    SCOPE_UNMAPPED_REASON,
+    EntityRef,
+    KnowledgeArtifact,
+    SensorEvidence,
+)
 from trader.domain.world_episode import WorldEpisode
 
 
@@ -21,8 +30,10 @@ class _FakeSource:
     def __init__(self, macro: SensorEvidence, company: SensorEvidence) -> None:
         self.macro = macro
         self.company = company
+        self.macro_calls: list[tuple[str, str]] = []
 
-    def lookup_macro(self, *, venue: str, cutoff_at) -> SensorEvidence:
+    def lookup_macro(self, *, venue: str, cutoff_at, symbol: str) -> SensorEvidence:
+        self.macro_calls.append((venue, symbol))
         return self.macro
 
     def lookup_company(self, *, symbol: str, cutoff_at) -> SensorEvidence:
@@ -370,6 +381,103 @@ def test_frozen_v1_asset_family_is_not_reminted_from_catalog_or_injected_lookup(
     assert "FamilyLookup" not in text
     with pytest.raises(TypeError):
         attach_world_context((v1,), _missing_source(), family_lookup=lambda _symbol: "crypto")
+
+
+def test_attach_passes_instrument_into_macro_lookup() -> None:
+    source = _missing_source()
+    attach_world_context((_v1_episode(),), source)
+    assert source.macro_calls == [("XTAI", "AAA")]
+
+
+def test_v2_macro_sensor_is_source_only_observation_not_news_brief() -> None:
+    v2 = attach_world_context((_v1_episode(),), _missing_source())[0]
+    kinds = {item["kind"] for item in v2.observation.context["artifact_proofs"]}
+    statuses = v2.observation.context["sensor_statuses"]
+    assert "macro_world_observation" in kinds
+    assert "macro_world_observation" in statuses
+    assert "news_macro" not in kinds
+    assert "news_macro" not in statuses
+    capture_source = (
+        Path(__file__).resolve().parents[2] / "trader" / "application" / "world_model" / "context_capture.py"
+    ).read_text(encoding="utf-8")
+    assert "NewsMacroBrief" not in capture_source
+    assert "'news_macro'" not in capture_source
+    assert '"news_macro"' not in capture_source
+
+
+def test_partial_macro_observation_extracts_proven_dimensions_and_keeps_unknown_usd() -> None:
+    ready = datetime(2026, 8, 22, 9, 0, tzinfo=timezone.utc)
+    artifact = KnowledgeArtifact(
+        kind="macro_world_observation",
+        artifact_id="macro_world_observation:v1:" + "a" * 64,
+        subjects=[EntityRef("venue", "mic:XTAI")],
+        schema_version="macro_world_observation.v1",
+        content_sha256="abc",
+        ready_at=ready,
+        valid_until=datetime(2026, 8, 23, 10, 0, tzinfo=timezone.utc),
+    )
+    snapshot = build_world_context_snapshot(
+        symbol="2301.TW",
+        venue="TW",
+        cutoff_at=CUTOFF,
+        family="equity",
+        macro=SensorEvidence(
+            status="partial",
+            reason="sidecar_ready",
+            proven=True,
+            artifact=artifact,
+            payload={
+                "features": {"macro_regime": "mixed", "rates_regime": "stable", "usd_regime": "unknown"},
+                "scope_resolution": {
+                    "mapping_id": "world_scope_mapping.v1",
+                    "mapping_sha256": "b" * 64,
+                    "resolution_status": "resolved",
+                    "anchor": {"market_venue": "TW", "instrument": "2301.TW"},
+                },
+            },
+        ),
+        company=SensorEvidence(status="missing", reason="no_artifact"),
+    )
+    features = snapshot.categorical_features
+    assert features["macro_status"] == "partial"
+    assert features["context_macro_regime"] == "mixed"
+    assert features["context_rates_regime"] == "stable"
+    assert features["context_usd_regime"] == "unknown"
+    assert snapshot.sensor_statuses["macro_world_observation"] == "partial"
+    assert snapshot.status == "partial"
+    proofs = [item for item in snapshot.artifact_proofs if item["kind"] == "macro_world_observation"]
+    assert proofs[0]["mapping_id"] == "world_scope_mapping.v1"
+    assert proofs[0]["resolution_status"] == "resolved"
+
+
+def test_unmapped_gm_stays_missing_with_explicit_resolution_status() -> None:
+    snapshot = build_world_context_snapshot(
+        symbol="BMW.DE",
+        venue="GM",
+        cutoff_at=CUTOFF,
+        family="equity",
+        macro=SensorEvidence(
+            status="missing",
+            reason=SCOPE_UNMAPPED_REASON,
+            proven=False,
+            payload={
+                "scope_resolution": {
+                    "mapping_id": "world_scope_mapping.v1",
+                    "mapping_sha256": "b" * 64,
+                    "resolution_status": "unmapped",
+                    "anchor": {"market_venue": "GM", "instrument": "BMW.DE"},
+                }
+            },
+        ),
+        company=SensorEvidence(status="missing", reason="no_artifact"),
+    )
+    assert snapshot.categorical_features["macro_status"] == "missing"
+    assert snapshot.categorical_features["context_usd_regime"] == "missing"
+    proof = next(item for item in snapshot.artifact_proofs if item["kind"] == "macro_world_observation")
+    assert proof["reason"] == SCOPE_UNMAPPED_REASON
+    assert proof["resolution_status"] == "unmapped"
+    assert proof["mapping_id"] == "world_scope_mapping.v1"
+    assert snapshot.artifact_refs == ()
 
 
 def test_absent_frozen_asset_family_omits_member_of_family_edge() -> None:

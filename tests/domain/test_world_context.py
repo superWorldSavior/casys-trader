@@ -7,9 +7,12 @@ import pytest
 
 from trader.application.world_model.capture import capture_world_episodes
 from trader.domain.world_context import (
+    ARTIFACT_KINDS,
     CONTEXT_FEATURE_CONTRACT_VERSION,
     NO_PROVEN_ARTIFACT_REASON,
     POLICY_CONTAMINATED_REASON,
+    SCOPE_AMBIGUOUS_REASON,
+    SCOPE_UNMAPPED_REASON,
     EntityRef,
     KnowledgeArtifact,
     SensorEvidence,
@@ -843,3 +846,111 @@ def test_snapshot_rejects_declared_sensor_without_proof() -> None:
             sensor_statuses={"news_macro": "missing", "company_intelligence": "missing"},
             categorical_features={"context_status": "missing", "macro_status": "missing"},
         )
+
+
+def _scope_resolution_fields(
+    *,
+    status: str = "unmapped",
+    mapping_id: str = "world_scope_mapping.v1",
+    mapping_sha256: str = "b" * 64,
+) -> dict[str, object]:
+    return {
+        "mapping_id": mapping_id,
+        "mapping_sha256": mapping_sha256,
+        "resolution_status": status,
+        "anchor": {"market_venue": "GM", "instrument": "BMW.DE"},
+    }
+
+
+def test_macro_world_observation_is_an_allowed_artifact_kind() -> None:
+    assert "macro_world_observation" in ARTIFACT_KINDS
+    artifact = KnowledgeArtifact(
+        kind="macro_world_observation",
+        artifact_id="macro_world_observation:v1:" + "a" * 64,
+        subjects=[EntityRef("venue", "mic:XTAI")],
+        schema_version="macro_world_observation.v1",
+        content_sha256="abc",
+        ready_at="2026-08-22T10:00:00+00:00",
+        valid_until="2026-08-23T10:00:00+00:00",
+    )
+    assert artifact.eligible_at(CUTOFF)
+    assert artifact.kind == "macro_world_observation"
+
+
+def test_unmapped_and_ambiguous_missing_proofs_persist_mapping_identity() -> None:
+    for reason, status in (
+        (SCOPE_UNMAPPED_REASON, "unmapped"),
+        (SCOPE_AMBIGUOUS_REASON, "ambiguous"),
+    ):
+        snapshot = _snapshot(
+            artifact_proofs=(
+                {
+                    "kind": "macro_world_observation",
+                    "status": "missing",
+                    "proven": False,
+                    "reason": reason,
+                    **_scope_resolution_fields(status=status),
+                },
+            ),
+            sensor_statuses={"macro_world_observation": "missing"},
+            categorical_features={"context_status": "missing", "macro_status": "missing"},
+        )
+        proof = snapshot.artifact_proofs[0]
+        assert proof["reason"] == reason
+        assert proof["mapping_id"] == "world_scope_mapping.v1"
+        assert proof["mapping_sha256"] == "b" * 64
+        assert proof["resolution_status"] == status
+        assert snapshot.artifact_refs == ()
+
+
+def test_neutral_missing_may_carry_scope_resolution_without_artifact_metadata() -> None:
+    snapshot = _snapshot(
+        artifact_proofs=(
+            {
+                "kind": "macro_world_observation",
+                "status": "missing",
+                "proven": False,
+                "reason": NO_PROVEN_ARTIFACT_REASON,
+                **_scope_resolution_fields(status="resolved"),
+            },
+        ),
+        sensor_statuses={"macro_world_observation": "missing"},
+        categorical_features={"context_status": "missing", "macro_status": "missing"},
+    )
+    proof = snapshot.artifact_proofs[0]
+    assert proof["mapping_id"] == "world_scope_mapping.v1"
+    assert proof["resolution_status"] == "resolved"
+    assert proof.get("artifact_id") in (None, "")
+    with pytest.raises(ValueError, match="neutral missing"):
+        _snapshot(
+            artifact_proofs=(
+                {
+                    "kind": "macro_world_observation",
+                    "status": "missing",
+                    "proven": False,
+                    "reason": NO_PROVEN_ARTIFACT_REASON,
+                    "artifact_id": "ghost",
+                    **_scope_resolution_fields(status="resolved"),
+                },
+            ),
+            sensor_statuses={"macro_world_observation": "missing"},
+        )
+
+
+def test_model_facing_preserves_unmapped_scope_resolution() -> None:
+    evidence = SensorEvidence(
+        status="missing",
+        reason=SCOPE_UNMAPPED_REASON,
+        proven=False,
+        payload={"scope_resolution": _scope_resolution_fields()},
+    )
+    kept = model_facing_sensor_evidence(evidence, CUTOFF)
+    assert kept.reason == SCOPE_UNMAPPED_REASON
+    assert kept.payload is not None
+    assert kept.payload["scope_resolution"]["mapping_id"] == "world_scope_mapping.v1"
+    collapsed = model_facing_sensor_evidence(
+        SensorEvidence(status="missing", reason="other"),
+        CUTOFF,
+    )
+    assert collapsed.reason == NO_PROVEN_ARTIFACT_REASON
+    assert collapsed.payload is None
