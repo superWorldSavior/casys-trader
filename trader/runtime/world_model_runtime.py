@@ -317,6 +317,73 @@ def _adapt_world_bar_provider(provider: object | None) -> object | None:
     return CallableWorldBarProvider(provider)
 
 
+def _wire_cohort_service(store: object, cohort_service: object | None) -> object | None:
+    if cohort_service is not None:
+        return cohort_service
+    required = ("register", "append_event", "load", "list_slots", "envelope_for")
+    if not all(callable(getattr(store, name, None)) for name in required):
+        return None
+    from trader.application.world_model.cohort_service import WorldCohortService
+
+    return WorldCohortService(repository=store, query=store)  # type: ignore[arg-type]
+
+
+def _predictor_key(predictor: object) -> tuple[str, str]:
+    model_id = str(getattr(predictor, "model_id", "") or "").strip()
+    model_version = str(getattr(predictor, "model_version", "") or "").strip()
+    if not model_id:
+        predictor_type = type(predictor)
+        model_id = f"{predictor_type.__module__}.{predictor_type.__qualname__}"
+    return model_id, model_version or "unversioned"
+
+
+def _mint_collecting_cohort_predictors(store: object, cohort_service: object | None) -> tuple[object, ...]:
+    """Mint cold lane models only after a proven WorldCohortStarted. Fail-open otherwise."""
+
+    if cohort_service is None:
+        return ()
+    list_ids = getattr(store, "list_collecting_cohort_ids", None)
+    load = getattr(store, "load", None)
+    cold_lanes = getattr(cohort_service, "cold_lanes", None)
+    if not callable(list_ids) or not callable(load) or not callable(cold_lanes):
+        return ()
+    from trader.application.world_model.baseline import cold_markov_challenger
+    from trader.application.world_model.encoding import world_lane_encoder_profile
+    from trader.application.world_model.gru import cold_gru_challenger
+    from trader.domain.world_cohort import ModelFamily
+
+    minted: list[object] = []
+    for cohort_id in list_ids():
+        try:
+            cold = cold_lanes(cohort_id)
+            cohort = load(cohort_id)
+        except Exception:  # noqa: BLE001 - unproven start never blocks V1 shadow
+            continue
+        by_id = {lane.lane_id: lane for lane in cohort.manifest.lanes}
+        for item in cold:
+            lane = by_id.get(item.lane_id)
+            if lane is None:
+                continue
+            try:
+                kind = lane.feature_mask_id.rsplit(".v", 1)[0]
+                profile = world_lane_encoder_profile(kind)
+                kwargs = {
+                    "lane": lane,
+                    "contract": profile.contract,
+                    "mask": profile.mask,
+                    "study_cohort_id": item.study_cohort_id,
+                    "manifest_sha256": item.manifest_sha256,
+                    "started_event_id": item.started_event_id,
+                }
+                if lane.model_family is ModelFamily.MARKOV:
+                    minted.append(cold_markov_challenger(**kwargs))
+                elif lane.model_family is ModelFamily.GRU:
+                    minted.append(cold_gru_challenger(**kwargs))
+            except Exception:  # noqa: BLE001 - a broken lane stays isolated
+                continue
+    return tuple(minted)
+
+
 class WorldModelRuntime(WorldModelService):
     """Composition adapter: wrap legacy labeler/bar shapes onto explicit ports."""
 
@@ -332,17 +399,29 @@ class WorldModelRuntime(WorldModelService):
         logger: object | None = None,
         lookback: str = "5d",
         run_id: str = "world_shadow.v1",
+        cohort_service: object | None = None,
     ) -> None:
+        resolved = _wire_cohort_service(store, cohort_service)
+        configured = ([predictor] if predictor is not None else []) + list(predictors or ())
+        taken = {_predictor_key(item) for item in configured}
+        extras: list[object] = []
+        for item in _mint_collecting_cohort_predictors(store, resolved):
+            key = _predictor_key(item)
+            if key in taken:
+                continue
+            taken.add(key)
+            extras.append(item)
         super().__init__(
             store=store,
             predictor=predictor,
-            predictors=predictors,
+            predictors=tuple(predictors or ()) + tuple(extras),
             labeler=_adapt_world_labeler(labeler),
             bar_provider=_adapt_world_bar_provider(bar_provider),
             horizons=horizons,
             logger=logger,
             lookback=lookback,
             run_id=run_id,
+            cohort_service=resolved,
         )
 
 

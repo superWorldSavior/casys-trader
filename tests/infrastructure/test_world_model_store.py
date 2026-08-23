@@ -1057,3 +1057,70 @@ def test_prediction_cohort_columns_are_indexed_and_override_json(store: WorldMod
     assert "idx_world_predictions_lane" in indexes or "idx_world_predictions_study_cohort" in indexes
     assert any("manifest" in name for name in indexes)
     assert any("feature" in name for name in indexes)
+
+
+def test_list_collecting_cohort_ids_requires_started_phase(tmp_path: Path) -> None:
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.domain.world_cohort import RegisterWorldCohort, WorldCohortId
+    from tests.application.test_world_cohort_service import (
+        START_READY,
+        _arm_command,
+        _manifest,
+        _start_command,
+    )
+
+    ready = START_READY
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: ready)
+    try:
+        assert store.list_collecting_cohort_ids() == ()
+        service = WorldCohortService(repository=store, query=store)
+        manifest = _manifest()
+        service.register(RegisterWorldCohort(manifest=manifest))
+        assert store.list_collecting_cohort_ids() == ()
+        service.arm(_arm_command(manifest))
+        assert store.list_collecting_cohort_ids() == ()
+        service.start(_start_command(manifest))
+        assert store.list_collecting_cohort_ids() == (WorldCohortId(manifest.cohort_id),)
+    finally:
+        store.close()
+
+
+def test_append_event_cas_and_restart_keep_conservative_first_seen(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    from trader.domain.world_cohort import WorldCohortSlotAdmitted
+    from tests.application.test_world_cohort_service import START_READY, _admit_command
+    from tests.application.test_world_context_lanes import _collecting_cohort_service
+
+    boot = datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc)
+    path = tmp_path / "world_model.db"
+    store = WorldModelStore(path, clock=lambda: START_READY)
+    try:
+        service, cohort, _ready = _collecting_cohort_service(store)
+        started = store.envelope_for(cohort.started_event)
+        assert started.require_proven().first_seen_at == START_READY
+        assert started.require_proven().receipt.ready_at == START_READY
+        admitted = service.admit_slot(_admit_command(cohort, store))
+        assert isinstance(admitted.event, WorldCohortSlotAdmitted)
+        assert admitted.sequence == 4
+        replayed = store.append_event(admitted.event, expected_sequence=3)
+        assert replayed.event.event_id == admitted.event.event_id
+        assert replayed.sequence == 4
+        store.close()
+
+        restarted = WorldModelStore(path, clock=lambda: boot)
+        looked_up = restarted.envelope_for(admitted.event)
+        evidence = looked_up.require_proven()
+        assert evidence.receipt.ready_at == START_READY
+        assert evidence.first_seen_at == boot
+        assert evidence.effective_ready_at == boot
+        started_again = restarted.envelope_for(cohort.started_event).require_proven()
+        assert started_again.receipt.ready_at == START_READY
+        assert started_again.first_seen_at == boot
+        identical = restarted.append_event(admitted.event, expected_sequence=3)
+        assert identical.event.event_id == admitted.event.event_id
+        assert identical.sequence == 4
+        assert identical.require_proven().first_seen_at == boot
+        restarted.close()
+    finally:
+        store.close()

@@ -30,6 +30,7 @@ from trader.domain.world_availability import (
 )
 from trader.domain.world_cohort import (
     WORLD_COHORT_EVENTS,
+    CohortPhase,
     WorldCohort,
     WorldCohortEvent,
     WorldCohortEventEnvelope,
@@ -1353,6 +1354,20 @@ class WorldModelStore:
 
     def list_slots(self, cohort_id: WorldCohortId) -> tuple[WorldCohortSlot, ...]:
         return self.load(cohort_id).admitted_slots
+
+    def list_collecting_cohort_ids(self) -> tuple[WorldCohortId, ...]:
+        """Return reconstructed collecting cohorts. Never registers, arms, or starts."""
+
+        rows = self._db.query_all("SELECT cohort_id FROM world_cohort_manifests ORDER BY cohort_id")
+        collecting: list[WorldCohortId] = []
+        for row in rows:
+            try:
+                cohort = self.load(WorldCohortId(row["cohort_id"]))
+            except (LookupError, TypeError, ValueError):
+                continue
+            if cohort.phase is CohortPhase.COLLECTING and cohort.started_event is not None:
+                collecting.append(WorldCohortId(cohort.cohort_id))
+        return tuple(collecting)
 
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
         parsed = self._require_cohort_event(event)

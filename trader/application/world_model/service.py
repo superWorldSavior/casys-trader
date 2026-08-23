@@ -17,12 +17,21 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 
-from trader.application.world_model.encoding import common_training_replay_key
+from trader.application.world_model.encoding import (
+    common_training_replay_key,
+    feature_contract_version_of,
+    observation_market_anchor,
+)
 from trader.application.world_model.protocols import (
     WorldBarProvider,
     WorldLabeler,
     WorldModelLedger,
     WorldPredictor,
+)
+from trader.domain.world_cohort import (
+    AdmitWorldCohortSlot,
+    LaneOperationalStatus,
+    WorldCohortSlot,
 )
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
@@ -385,6 +394,7 @@ class WorldModelService:
         logger: object | None = None,
         lookback: str = "5d",
         run_id: str = "world_shadow.v1",
+        cohort_service: object | None = None,
     ) -> None:
         normalized = _normalise_horizons(horizons)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
@@ -404,6 +414,7 @@ class WorldModelService:
         self.horizons = normalized or DEFAULT_HORIZONS
         self.lookback = str(lookback)
         self.run_id = str(run_id).strip() or "world_shadow.v1"
+        self.cohort_service = cohort_service
         self.log = logger or logging.getLogger("casys-trader")
         self._lock = threading.Lock()
         self._running: str | None = None
@@ -414,6 +425,9 @@ class WorldModelService:
         self._eligible_episode_fingerprint: str | None = None
         self._eligible_episode_signatures: dict[str, str] | None = None
         self._model_hydrated_through: datetime | None = None
+        self._started_cutoffs: dict[str, datetime] | None = None
+        self._admitted_ids_by_cohort: dict[str, set[str]] | None = None
+        self._blocked_lanes_by_cohort: dict[str, set[str]] | None = None
 
     def capture_and_predict(
         self,
@@ -451,6 +465,7 @@ class WorldModelService:
             self._hydrate_baseline(report, _parse_timestamp(report["as_of"]))
             self._hydrate_prediction_keys(report)
             canonical_episodes = self._capture_episodes(episodes, report)
+            self._admit_collecting_slots(canonical_episodes, report)
             # Persist the entire cohort before prediction.  A late eligible
             # episode can change an older target sequence, so reconcile the
             # canonical episode ledger before emitting any forecast.
@@ -739,6 +754,8 @@ class WorldModelService:
         for predictor in self.predictors:
             if not _predictor_accepts(predictor, episode):
                 continue
+            if not self._predictor_sees_episode(predictor, episode):
+                continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             key = (identifier, horizon, model_id, model_version)
             if key in self._prediction_keys:
@@ -756,6 +773,7 @@ class WorldModelService:
                     report["as_of"],
                     model_id=model_id,
                     model_version=model_version,
+                    predictor=predictor,
                 )
                 appended = self.store.append_prediction(_clone(event))
             except Exception as exc:  # noqa: BLE001
@@ -792,12 +810,15 @@ class WorldModelService:
         *,
         model_id: str,
         model_version: str,
+        predictor: object | None = None,
     ) -> dict[str, object]:
         """Normalize a prediction into the append-only store envelope.
 
         The nested ``prediction`` remains the predictor's detached payload;
         the surrounding fields make older and newer store variants equally
         replayable without asking the predictor to know persistence details.
+        Indexed cohort lineage columns are stamped from a cold-lane identity
+        when present; V1/V2 shadow predictions omit them.
         """
 
         if isinstance(prediction, WorldPrediction):
@@ -811,6 +832,9 @@ class WorldModelService:
             raise ValueError(
                 f"prediction model_version mismatch: expected {model_version!r}, got {payload_model_version!r}"
             )
+        lineage = _predictor_cohort_lineage(predictor)
+        if lineage:
+            payload.update(lineage)
         prediction_id = str(payload.get("prediction_id") or "").strip()
         if not prediction_id:
             prediction_id = _stable_id(
@@ -824,7 +848,7 @@ class WorldModelService:
                     "payload": payload,
                 },
             )
-        return {
+        event = {
             "prediction_id": prediction_id,
             "run_id": payload.get("run_id") or payload.get("model_run_id") or self.run_id,
             "episode_id": episode_id,
@@ -836,6 +860,9 @@ class WorldModelService:
             "input": _observation_payload(episode),
             "prediction": payload,
         }
+        if lineage:
+            event.update(lineage)
+        return event
 
     def _hydrate_prediction_keys(self, report: dict[str, object]) -> None:
         try:
@@ -874,6 +901,8 @@ class WorldModelService:
             if not callable(observe):
                 continue
             if not _predictor_accepts(predictor, episode):
+                continue
+            if not self._predictor_sees_episode(predictor, episode):
                 continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             try:
@@ -1105,6 +1134,8 @@ class WorldModelService:
                 continue
             for predictor in apply_predictors:
                 if not _predictor_accepts(predictor, episode):
+                    continue
+                if not self._predictor_sees_episode(predictor, episode):
                     continue
                 model_id, model_version = self._predictor_identities[id(predictor)]
                 try:
@@ -1355,6 +1386,8 @@ class WorldModelService:
                 continue
             if not _predictor_accepts(predictor, episode):
                 continue
+            if not self._predictor_sees_episode(predictor, episode):
+                continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             try:
                 applied = self._call_baseline_apply(apply_outcome, outcome, episode, now)
@@ -1447,6 +1480,204 @@ class WorldModelService:
             return False
         available_at = _parse_timestamp(outcome.get("available_at") or outcome.get("label_available_at"))
         return now is not None and available_at is not None and available_at <= now
+
+    def _invalidate_cohort_runtime_state(self) -> None:
+        self._started_cutoffs = None
+        self._admitted_ids_by_cohort = None
+        self._blocked_lanes_by_cohort = None
+
+    def _refresh_cohort_runtime_state(self) -> None:
+        cutoffs: dict[str, datetime] = {}
+        admitted: dict[str, set[str]] = {}
+        blocked: dict[str, set[str]] = {}
+        list_ids = getattr(self.store, "list_collecting_cohort_ids", None)
+        load = getattr(self.store, "load", None)
+        query = getattr(self.cohort_service, "query", None)
+        if self.cohort_service is None or not callable(list_ids) or not callable(load) or query is None:
+            self._started_cutoffs = cutoffs
+            self._admitted_ids_by_cohort = admitted
+            self._blocked_lanes_by_cohort = blocked
+            return
+        envelope_for = getattr(query, "envelope_for", None)
+        if not callable(envelope_for):
+            self._started_cutoffs = cutoffs
+            self._admitted_ids_by_cohort = admitted
+            self._blocked_lanes_by_cohort = blocked
+            return
+        for cohort_id in list_ids():
+            try:
+                cohort = load(cohort_id)
+                started = getattr(cohort, "started_event", None)
+                if started is None:
+                    continue
+                evidence = envelope_for(started).require_proven()
+                cutoffs[started.event_id] = evidence.effective_ready_at
+                refs: set[str] = set()
+                for slot in getattr(cohort, "admitted_slots", ()):
+                    refs.update(dict(slot.episode_refs_by_contract).values())
+                admitted[str(cohort.cohort_id)] = refs
+                blocked[str(cohort.cohort_id)] = {
+                    lane_id
+                    for lane_id, state in dict(getattr(cohort, "lane_states", {})).items()
+                    if getattr(state, "status", None) is LaneOperationalStatus.BLOCKED
+                }
+            except Exception:  # noqa: BLE001 - missing start evidence stays fail-open
+                continue
+        self._started_cutoffs = cutoffs
+        self._admitted_ids_by_cohort = admitted
+        self._blocked_lanes_by_cohort = blocked
+
+    def _cohort_runtime_state(self) -> tuple[dict[str, datetime], dict[str, set[str]], dict[str, set[str]]]:
+        if (
+            self._started_cutoffs is None
+            or self._admitted_ids_by_cohort is None
+            or self._blocked_lanes_by_cohort is None
+        ):
+            self._refresh_cohort_runtime_state()
+        assert self._started_cutoffs is not None
+        assert self._admitted_ids_by_cohort is not None
+        assert self._blocked_lanes_by_cohort is not None
+        return self._started_cutoffs, self._admitted_ids_by_cohort, self._blocked_lanes_by_cohort
+
+    def _predictor_sees_episode(self, predictor: object, episode: object) -> bool:
+        identity = getattr(predictor, "lane_identity", None)
+        if identity is None:
+            return True
+        cutoffs, admitted, blocked = self._cohort_runtime_state()
+        cutoff = cutoffs.get(str(getattr(identity, "started_event_id", "") or ""))
+        if cutoff is None:
+            return False
+        as_of = _episode_as_of(episode)
+        if as_of is None or as_of <= cutoff:
+            return False
+        cohort_id = str(getattr(identity, "study_cohort_id", "") or "")
+        identifier = _episode_id(episode)
+        if identifier is None or identifier not in admitted.get(cohort_id, set()):
+            return False
+        lane_id = str(getattr(identity, "lane_id", "") or "")
+        if lane_id in blocked.get(cohort_id, set()):
+            return False
+        return True
+
+    def _admit_collecting_slots(self, episodes: Iterable[object], report: dict[str, object]) -> None:
+        if self.cohort_service is None:
+            return
+        list_ids = getattr(self.store, "list_collecting_cohort_ids", None)
+        load = getattr(self.store, "load", None)
+        admit = getattr(self.cohort_service, "admit_slot", None)
+        query = getattr(self.cohort_service, "query", None)
+        envelope_for = getattr(query, "envelope_for", None) if query is not None else None
+        if not callable(list_ids) or not callable(load) or not callable(admit) or not callable(envelope_for):
+            return
+        for cohort_id in list_ids():
+            try:
+                cohort = load(cohort_id)
+                started = getattr(cohort, "started_event", None)
+                if started is None:
+                    continue
+                evidence = envelope_for(started).require_proven()
+            except Exception:  # noqa: BLE001 - unproven start never blocks V1 shadow
+                continue
+            grouped: dict[tuple[str, str, str, str], dict[str, str]] = {}
+            for episode in episodes:
+                anchor = observation_market_anchor(episode)
+                if anchor is None:
+                    continue
+                venue, symbol, interval, as_of = anchor
+                if venue not in set(cohort.manifest.venues) or interval != cohort.manifest.bar_interval:
+                    continue
+                as_of_dt = _parse_timestamp(as_of)
+                if as_of_dt is None or as_of_dt <= evidence.effective_ready_at:
+                    continue
+                identifier = _episode_id(episode)
+                if identifier is None:
+                    continue
+                try:
+                    contract_id = feature_contract_version_of(episode)
+                except Exception:  # noqa: BLE001
+                    continue
+                if not contract_id:
+                    continue
+                grouped.setdefault(anchor, {}).setdefault(contract_id, identifier)
+            for anchor, refs in grouped.items():
+                try:
+                    slot = _slot_from_captured(cohort, anchor, refs, started.event_id)
+                    admit(AdmitWorldCohortSlot(slot=slot, started_evidence=evidence))
+                except Exception as exc:  # noqa: BLE001 - admission failure stays shadow-local
+                    self._error(report, stage="cohort_admit", error=exc)
+        self._invalidate_cohort_runtime_state()
+
+
+def _predictor_cohort_lineage(predictor: object | None) -> dict[str, str] | None:
+    if predictor is None:
+        return None
+    identity = getattr(predictor, "lane_identity", None)
+    if identity is None:
+        return None
+    contract = getattr(predictor, "feature_contract", None)
+    mask = getattr(predictor, "feature_mask", None)
+    contract_fp = getattr(contract, "fingerprint", None)
+    mask_fp = getattr(mask, "fingerprint", None)
+    study_cohort_id = str(getattr(identity, "study_cohort_id", "") or "").strip()
+    lane_id = str(getattr(identity, "lane_id", "") or "").strip()
+    manifest_sha256 = str(getattr(identity, "manifest_sha256", "") or "").strip()
+    if not study_cohort_id or not lane_id or not manifest_sha256:
+        return None
+    if not isinstance(contract_fp, str) or not contract_fp.strip():
+        return None
+    if not isinstance(mask_fp, str) or not mask_fp.strip():
+        return None
+    return {
+        "study_cohort_id": study_cohort_id,
+        "lane_id": lane_id,
+        "manifest_sha256": manifest_sha256,
+        "feature_contract_fingerprint": contract_fp.strip(),
+        "feature_mask_fingerprint": mask_fp.strip(),
+    }
+
+
+def _episode_as_of(episode: object) -> datetime | None:
+    payload = _episode_payload(episode)
+    observation = _field(payload, "observation")
+    raw = _field(payload, "as_of_bar_ts")
+    if raw is None and observation is not None:
+        raw = _field(observation, "as_of_bar_ts")
+    return _parse_timestamp(raw)
+
+
+def _slot_from_captured(
+    cohort: object,
+    anchor: tuple[str, str, str, str],
+    refs: Mapping[str, str],
+    started_event_id: str,
+) -> WorldCohortSlot:
+    venue, symbol, interval, as_of = anchor
+    manifest = cohort.manifest
+    lanes = tuple(manifest.lanes)
+    return WorldCohortSlot(
+        cohort_id=cohort.cohort_id,
+        manifest_sha256=manifest.manifest_sha256,
+        venue=venue,
+        symbol=symbol,
+        bar_interval=interval,
+        as_of_bar_ts=as_of,
+        anchor_end_at=as_of,
+        comparison_batch_id=_stable_id(
+            "world-cohort-slot-batch",
+            {
+                "study_cohort_id": cohort.cohort_id,
+                "venue": venue,
+                "symbol": symbol,
+                "bar_interval": interval,
+                "as_of_bar_ts": as_of,
+            },
+        ),
+        episode_refs_by_contract=dict(refs),
+        expected_lane_ids=tuple(lane.lane_id for lane in lanes),
+        feature_contract_fingerprints={lane.lane_id: lane.feature_contract_fingerprint for lane in lanes},
+        feature_mask_fingerprints={lane.lane_id: lane.feature_mask_fingerprint for lane in lanes},
+        started_event_id=started_event_id,
+    )
 
 
 WorldModelRuntime = WorldModelService

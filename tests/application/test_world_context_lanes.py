@@ -469,3 +469,271 @@ def _second_company_artifact():
         content_sha256="def",
         ready_at="2026-08-22T09:00:00+00:00",
     )
+
+
+_COHORT_LINEAGE_FIELDS = (
+    "study_cohort_id",
+    "lane_id",
+    "manifest_sha256",
+    "feature_contract_fingerprint",
+    "feature_mask_fingerprint",
+)
+
+
+def _collecting_cohort_service(store):
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.domain.world_cohort import RegisterWorldCohort, WorldCohortId
+    from tests.application.test_world_cohort_service import (
+        START_READY,
+        _arm_command,
+        _manifest,
+        _start_command,
+    )
+
+    service = WorldCohortService(repository=store, query=store)
+    manifest = _manifest()
+    service.register(RegisterWorldCohort(manifest=manifest))
+    service.arm(_arm_command(manifest))
+    service.start(_start_command(manifest))
+    return service, store.load(WorldCohortId(manifest.cohort_id)), START_READY
+
+
+def _cohort_market_episode(at, *, symbol: str = "AAPL", market_return: float = 0.01):
+    from datetime import timedelta
+
+    from trader.domain.world_episode import (
+        MARKET_FEATURE_CONTRACT_VERSION,
+        AnchorBar,
+        WorldEpisode,
+        WorldObservation,
+    )
+
+    return WorldEpisode(
+        observation=WorldObservation(
+            venue="US",
+            symbol=symbol,
+            bar_interval="1h",
+            as_of_bar_ts=at,
+            feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
+            sampling_policy_version="active_tradable_completed_bar.v1",
+            anchor=AnchorBar(
+                ts=at,
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1_000.0,
+                source="fixture",
+            ),
+            available_at=at,
+            captured_at=at + timedelta(minutes=1),
+            freshness="fresh",
+            categorical_features={
+                "asset_family": "equities",
+                "venue": "US",
+                "bar_interval": "1h",
+                "session_phase": "regular",
+                "market_regime": "trend_up" if market_return >= 0 else "trend_down",
+                "volatility_state": "normal",
+            },
+            numeric_features={"return": market_return, "atr_pct": 0.01},
+        )
+    )
+
+
+def test_v1_shadow_predictions_omit_cohort_lineage_when_no_cohort_is_active() -> None:
+    v1 = _v1_episode()
+    store = MemoryStore()
+    service = WorldModelService(
+        store=store,
+        predictor=HierarchicalDirichletWorldBaseline(),
+        labeler=None,
+        bar_provider=None,
+        horizons=("elapsed_4h.v1",),
+    )
+    report = service.capture_and_predict((v1,), now=NOW)
+    assert report["errors"] == []
+    assert report["predictions_appended"] == 1
+    row = store.predictions[0]
+    for field in _COHORT_LINEAGE_FIELDS:
+        assert not row.get(field)
+        nested = row.get("prediction") if isinstance(row.get("prediction"), dict) else {}
+        assert not nested.get(field)
+
+
+def test_collecting_cohort_admits_slots_and_stamps_lane_lineage_on_predictions(tmp_path) -> None:
+    from pathlib import Path
+
+    from trader.domain.world_cohort import WorldCohortId
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import WorldModelRuntime
+    from tests.application.test_world_cohort_service import ANCHOR_TS, START_READY, V1
+
+    store = WorldModelStore(Path(tmp_path) / "world_model.db", clock=lambda: START_READY)
+    try:
+        cohort_service, cohort, _ready = _collecting_cohort_service(store)
+        episode = _cohort_market_episode(ANCHOR_TS)
+        runtime = WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=cohort_service,
+        )
+        report = runtime.capture_and_predict((episode,), now=ANCHOR_TS)
+        assert report["errors"] == []
+        slots = cohort_service.list_slots(WorldCohortId(cohort.cohort_id))
+        assert len(slots) == 1
+        assert slots[0].started_event_id == cohort.started_event.event_id
+        assert slots[0].episode_refs_by_contract[V1.contract_id] == episode.episode_id
+        assert slots[0].anchor_end_at > _ready
+        rows = store.list_predictions()
+        cohort_rows = [row for row in rows if row.get("study_cohort_id")]
+        assert cohort_rows
+        lane_ids = {row["lane_id"] for row in cohort_rows}
+        assert "markov.market" in lane_ids
+        for row in cohort_rows:
+            for field in _COHORT_LINEAGE_FIELDS:
+                assert row[field]
+                assert row["prediction_record"][field] == row[field]
+                if isinstance(row.get("prediction"), dict) and field in row["prediction"]:
+                    assert row["prediction"][field] == row[field]
+            assert row["study_cohort_id"] == cohort.cohort_id
+            assert row["manifest_sha256"] == cohort.manifest.manifest_sha256
+            lane = next(item for item in cohort.manifest.lanes if item.lane_id == row["lane_id"])
+            assert row["feature_contract_fingerprint"] == lane.feature_contract_fingerprint
+            assert row["feature_mask_fingerprint"] == lane.feature_mask_fingerprint
+            nested = row["prediction"] if isinstance(row.get("prediction"), dict) else {}
+            record = row["prediction_record"] if isinstance(row.get("prediction_record"), dict) else {}
+            assert nested.get("authority") == "shadow_only" or record.get("authority") == "shadow_only"
+            assert nested.get("decision_effect", record.get("decision_effect", "none")) == "none"
+        v1_rows = [row for row in rows if not row.get("study_cohort_id")]
+        assert v1_rows
+    finally:
+        store.close()
+
+
+def test_cold_factories_and_lane_predictions_require_proven_world_cohort_started(tmp_path) -> None:
+    from pathlib import Path
+
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.domain.world_cohort import RegisterWorldCohort, WorldCohortId
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import WorldModelRuntime
+    from tests.application.test_world_cohort_service import (
+        ANCHOR_TS,
+        START_READY,
+        _arm_command,
+        _manifest,
+        _start_command,
+    )
+
+    store = WorldModelStore(Path(tmp_path) / "world_model.db", clock=lambda: START_READY)
+    try:
+        service = WorldCohortService(repository=store, query=store)
+        manifest = _manifest()
+        service.register(RegisterWorldCohort(manifest=manifest))
+        service.arm(_arm_command(manifest))
+
+        def boom(*_args, **_kwargs):
+            raise OSError("receipt commit failed")
+
+        original = store._commit_availability_receipt
+        store._commit_availability_receipt = boom  # type: ignore[method-assign]
+        try:
+            with pytest.raises(OSError, match="receipt commit failed"):
+                service.start(_start_command(manifest))
+        finally:
+            store._commit_availability_receipt = original  # type: ignore[method-assign]
+
+        loaded = store.load(WorldCohortId(manifest.cohort_id))
+        assert loaded.started_event is not None
+        unproven = store.envelope_for(loaded.started_event)
+        assert unproven.availability_status == "availability_unproven"
+        with pytest.raises(ValueError, match="proven|availability_unproven"):
+            service.cold_lanes(WorldCohortId(manifest.cohort_id))
+
+        episode = _cohort_market_episode(ANCHOR_TS)
+        runtime = WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=service,
+        )
+        report = runtime.capture_and_predict((episode,), now=ANCHOR_TS)
+        assert report["errors"] == []
+        assert service.list_slots(WorldCohortId(manifest.cohort_id)) == ()
+        rows = store.list_predictions()
+        assert rows
+        assert all(not row.get("study_cohort_id") for row in rows)
+        assert all(not row.get("lane_id") for row in rows)
+    finally:
+        store.close()
+
+
+def test_pre_start_episodes_are_not_replayed_and_downtime_is_not_backfilled(tmp_path) -> None:
+    from datetime import timedelta
+    from pathlib import Path
+
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import WorldModelRuntime
+    from tests.application.test_world_cohort_service import ANCHOR_TS, LATER_TS, START_READY
+
+    store = WorldModelStore(Path(tmp_path) / "world_model.db", clock=lambda: START_READY)
+    try:
+        pre_start = _cohort_market_episode(START_READY - timedelta(hours=2), symbol="AAPL")
+        shadow = WorldModelService(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+        )
+        assert shadow.capture_and_predict((pre_start,), now=START_READY - timedelta(hours=2))["errors"] == []
+
+        cohort_service, cohort, ready = _collecting_cohort_service(store)
+        first = _cohort_market_episode(ANCHOR_TS, symbol="AAPL", market_return=0.02)
+        later = _cohort_market_episode(LATER_TS, symbol="AAPL", market_return=-0.01)
+        runtime = WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=cohort_service,
+        )
+        first_report = runtime.capture_and_predict((first,), now=ANCHOR_TS)
+        assert first_report["errors"] == []
+        later_report = runtime.capture_and_predict((later,), now=LATER_TS)
+        assert later_report["errors"] == []
+
+        slots = cohort_service.list_slots(cohort.cohort_id)
+        assert len(slots) == 2
+        admitted_as_of = {slot.as_of_bar_ts for slot in slots}
+        assert pre_start.observation.as_of_bar_ts not in admitted_as_of
+        assert first.observation.as_of_bar_ts in admitted_as_of
+        assert later.observation.as_of_bar_ts in admitted_as_of
+        gap_hours = (LATER_TS - ANCHOR_TS).total_seconds() / 3600
+        assert gap_hours == 2
+        expected_missing_hours = {ANCHOR_TS + timedelta(hours=1)}
+        assert expected_missing_hours.isdisjoint(admitted_as_of)
+
+        market_lane = next(
+            predictor
+            for predictor in runtime.predictors
+            if getattr(getattr(predictor, "lane_identity", None), "lane_id", None) == "markov.market"
+        )
+        assert market_lane.lane_identity.replay_bound_event_id == cohort.started_event.event_id
+        applied = [
+            event_id
+            for counts in getattr(market_lane, "_horizons", {}).values()
+            for event_id in counts.applied_events
+        ]
+        assert pre_start.episode_id not in "".join(applied)
+        assert all(slot.anchor_end_at > ready for slot in slots)
+    finally:
+        store.close()

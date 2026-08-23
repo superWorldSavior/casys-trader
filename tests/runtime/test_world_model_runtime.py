@@ -1027,3 +1027,111 @@ def test_late_causally_earlier_episode_reconciles_training_sequence_before_predi
     assert replay["errors"] == []
     assert restarted_gru.model_fingerprint(horizon) == gru.model_fingerprint(horizon)
     store.close()
+
+
+def test_runtime_wires_cohort_service_from_store_without_starting_a_cohort(tmp_path) -> None:
+    from inspect import signature
+
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.application.world_model.service import WorldModelService
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    try:
+        runtime = WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+        )
+        assert "cohort_service" in signature(WorldModelRuntime.__init__).parameters
+        assert isinstance(runtime.cohort_service, WorldCohortService)
+        assert runtime.cohort_service.repository is store
+        assert runtime.cohort_service.query is store
+        assert store.list_collecting_cohort_ids() == ()
+        assert all(getattr(predictor, "lane_identity", None) is None for predictor in runtime.predictors)
+        episode = _domain_episode(NOW)
+        report = runtime.capture_and_predict((episode,), now=NOW)
+        assert report["errors"] == []
+        rows = store.list_predictions()
+        assert rows
+        assert all(not row.get("study_cohort_id") for row in rows)
+        assert all(row.get("prediction_record", {}).get("decision_effect", "none") == "none" for row in rows)
+        assert WorldModelService is not WorldModelRuntime
+    finally:
+        store.close()
+
+
+def test_runtime_restart_keeps_cohort_fingerprints_and_does_not_backfill_downtime(tmp_path) -> None:
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from tests.application.test_world_cohort_service import ANCHOR_TS, LATER_TS, START_READY
+    from tests.application.test_world_context_lanes import (
+        _cohort_market_episode,
+        _collecting_cohort_service,
+    )
+
+    path = tmp_path / "world_model.db"
+    store = WorldModelStore(path, clock=lambda: START_READY)
+    try:
+        cohort_service, cohort, _ready = _collecting_cohort_service(store)
+        first = _cohort_market_episode(ANCHOR_TS)
+        runtime = WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            predictors=(OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4),),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=cohort_service,
+        )
+        first_report = runtime.capture_and_predict((first,), now=ANCHOR_TS)
+        assert first_report["errors"] == []
+        first_rows = {
+            (row["lane_id"], row["horizon_code"], row["prediction_sha256"], row["feature_contract_fingerprint"])
+            for row in store.list_predictions()
+            if row.get("lane_id") == "markov.market"
+        }
+        assert first_rows
+        fingerprints = {
+            predictor.model_fingerprint("elapsed_4h.v1")
+            for predictor in runtime.predictors
+            if getattr(getattr(predictor, "lane_identity", None), "lane_id", None) == "markov.market"
+        }
+        store.close()
+
+        restarted_store = WorldModelStore(path, clock=lambda: ANCHOR_TS + timedelta(minutes=5))
+        restarted_service = WorldCohortService(repository=restarted_store, query=restarted_store)
+        restarted = WorldModelRuntime(
+            store=restarted_store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            predictors=(OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4),),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=restarted_service,
+        )
+        replay = restarted.capture_and_predict((first,), now=LATER_TS)
+        assert replay["errors"] == []
+        replay_rows = {
+            (row["lane_id"], row["horizon_code"], row["prediction_sha256"], row["feature_contract_fingerprint"])
+            for row in restarted_store.list_predictions()
+            if row.get("lane_id") == "markov.market"
+        }
+        assert replay_rows == first_rows
+        restarted_fingerprints = {
+            predictor.model_fingerprint("elapsed_4h.v1")
+            for predictor in restarted.predictors
+            if getattr(getattr(predictor, "lane_identity", None), "lane_id", None) == "markov.market"
+        }
+        assert restarted_fingerprints == fingerprints
+        later = _cohort_market_episode(LATER_TS, market_return=-0.02)
+        later_report = restarted.capture_and_predict((later,), now=LATER_TS)
+        assert later_report["errors"] == []
+        slots = restarted_service.list_slots(cohort.cohort_id)
+        assert {slot.as_of_bar_ts for slot in slots} == {ANCHOR_TS, LATER_TS}
+        assert ANCHOR_TS + timedelta(hours=1) not in {slot.as_of_bar_ts for slot in slots}
+        started_envelope = restarted_store.envelope_for(cohort.started_event)
+        assert started_envelope.require_proven().receipt.ready_at == START_READY
+        restarted_store.close()
+    finally:
+        store.close()

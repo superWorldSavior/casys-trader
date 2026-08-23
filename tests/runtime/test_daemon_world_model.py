@@ -484,6 +484,79 @@ def test_flag_off_keeps_two_lanes_without_an_enricher() -> None:
     assert len(identities) == 2
 
 
+def test_daemon_boot_wires_world_cohort_service_but_never_registers_or_starts() -> None:
+    from inspect import signature
+    from pathlib import Path
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    boot_start = source.index("if _env_int(\"CASYS_WORLD_MODEL_SHADOW_ENABLED\"")
+    boot = source[boot_start : source.index("claimed_resources.learning_sync_runner", boot_start)]
+    assert "WorldCohortService(" in boot
+    assert "repository=_world_model_store" in boot
+    assert "query=_world_model_store" in boot
+    assert "cohort_service=_world_cohort_service" in boot
+    assert "RegisterWorldCohort" not in boot
+    assert "ArmWorldCohort" not in boot
+    assert "StartWorldCohort" not in boot
+    assert "AdmitWorldCohortSlot" not in boot
+    assert ".register(" not in boot
+    assert ".arm(" not in boot
+    assert ".start(" not in boot.replace("thread.start()", "")
+    assert "HierarchicalDirichletWorldBaseline()" in boot
+    assert "OnlineGRUWorldChallenger()" in boot
+    assert "authority=shadow_only" in boot
+    assert signature(daemon.run_cycle).parameters["world_model_runner"].default is None
+
+
+def test_daemon_shadow_without_active_cohort_keeps_v1_gru_lanes(tmp_path) -> None:
+    from trader.application.world_model import labeler
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.application.world_model.gru import OnlineGRUWorldChallenger
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, WorldModelRuntime
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    cohort_service = WorldCohortService(repository=store, query=store)
+    runner = WorldModelBackgroundRunner(
+        runtime=WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            predictors=(OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4),),
+            labeler=labeler,
+            bar_provider=None,
+            cohort_service=cohort_service,
+        )
+    )
+    try:
+        assert store.list_collecting_cohort_ids() == ()
+        result = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=100.0)},
+            data_age_by_symbol={"AAA": 3.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW,
+        )
+        assert result["triggered"] is True
+        result["_thread"].join(timeout=2)
+        assert runner.status()["running"] is False
+        rows = store.list_predictions()
+        assert rows
+        assert all(not row.get("study_cohort_id") for row in rows)
+        assert all((row.get("prediction_record") or {}).get("decision_effect", "none") == "none" for row in rows)
+        assert {row["model_kind"] for row in rows} >= {
+            HierarchicalDirichletWorldBaseline().model_id,
+            OnlineGRUWorldChallenger().model_id,
+        }
+    finally:
+        runner.stop()
+        store.close()
+
+
 def _contains_control_field(value: object) -> bool:
     forbidden = {
         "action",

@@ -2081,6 +2081,7 @@ def main(
                 ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
                 CONTEXT_FEATURE_CONTRACT_VERSION,
             )
+            from trader.application.world_model.cohort_service import WorldCohortService
             from trader.infrastructure.state_db.world_model_store import WorldModelStore
             from trader.runtime.world_model_runtime import (
                 CallableWorldBarProvider,
@@ -2090,6 +2091,10 @@ def main(
             )
 
             _world_model_store = WorldModelStore(STATE_DIR / "world_model.db")
+            _world_cohort_service = WorldCohortService(
+                repository=_world_model_store,
+                query=_world_model_store,
+            )
             extra_predictors: list[object] = [OnlineGRUWorldChallenger()]
             context_enricher = None
             if _world_model_context_v2:
@@ -2129,6 +2134,7 @@ def main(
                 bar_provider=CallableWorldBarProvider(make_indirect_get_bars(_ds_handle.get)),
                 logger=log,
                 lookback=DEFAULT_RUNTIME_LOOKBACK,
+                cohort_service=_world_cohort_service,
             )
             _world_model_runner = WorldModelBackgroundRunner(
                 runtime=_world_model_runtime,
