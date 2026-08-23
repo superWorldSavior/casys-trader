@@ -31,13 +31,20 @@ from trader.domain.world_cohort import (
     StartWorldCohort,
     WORLD_COHORT_COMMANDS,
     WorldCohort,
+    WorldCohortArmed,
+    WorldCohortCollectionClosed,
     WorldCohortCommand,
+    WorldCohortCompleted,
     WorldCohortEvent,
     WorldCohortEventEnvelope,
     WorldCohortId,
+    WorldCohortInvalidated,
+    WorldCohortLaneBlocked,
+    WorldCohortLaneRestored,
     WorldCohortManifest,
     WorldCohortRegistered,
     WorldCohortSlot,
+    WorldCohortSlotAdmitted,
     WorldCohortStarted,
     WorldLaneDefinition,
 )
@@ -127,11 +134,64 @@ def create_cold_lane(
     )
 
 
-def build_cold_lanes(cohort: WorldCohort) -> tuple[WorldCohortColdLane, ...]:
+def _proven_started(cohort: WorldCohort, started_envelope: WorldCohortEventEnvelope) -> WorldCohortStarted:
     started = cohort.started_event
     if started is None:
         raise ValueError("cold factories require a proven start")
+    if not isinstance(started_envelope, WorldCohortEventEnvelope):
+        raise TypeError("started_envelope must be WorldCohortEventEnvelope")
+    if started_envelope.event.event_id != started.event_id:
+        raise ValueError("started_envelope must prove WorldCohortStarted")
+    started_envelope.require_proven()
+    return started
+
+
+def build_cold_lanes(
+    cohort: WorldCohort,
+    *,
+    started_envelope: WorldCohortEventEnvelope,
+) -> tuple[WorldCohortColdLane, ...]:
+    started = _proven_started(cohort, started_envelope)
     return tuple(create_cold_lane(lane, started=started, manifest=cohort.manifest) for lane in cohort.manifest.lanes)
+
+
+def _existing_event_for(cohort: WorldCohort, command: WorldCohortCommand) -> WorldCohortEvent:
+    events = cohort.events
+    if isinstance(command, ArmWorldCohort):
+        matches = [event for event in events if isinstance(event, WorldCohortArmed)]
+    elif isinstance(command, StartWorldCohort):
+        matches = [event for event in events if isinstance(event, WorldCohortStarted)]
+    elif isinstance(command, AdmitWorldCohortSlot):
+        matches = [
+            event
+            for event in events
+            if isinstance(event, WorldCohortSlotAdmitted) and event.slot.slot_id == command.slot.slot_id
+        ]
+    elif isinstance(command, BlockWorldCohortLane):
+        matches = [
+            event
+            for event in events
+            if isinstance(event, WorldCohortLaneBlocked)
+            and event.state.lane_id == command.lane_id
+            and event.state.reason is command.reason
+        ]
+    elif isinstance(command, RestoreWorldCohortLane):
+        matches = [
+            event
+            for event in events
+            if isinstance(event, WorldCohortLaneRestored) and event.state.lane_id == command.lane_id
+        ]
+    elif isinstance(command, CloseWorldCohort):
+        matches = [event for event in events if isinstance(event, WorldCohortCollectionClosed)]
+    elif isinstance(command, CompleteWorldCohort):
+        matches = [event for event in events if isinstance(event, WorldCohortCompleted)]
+    elif isinstance(command, InvalidateWorldCohort):
+        matches = [event for event in events if isinstance(event, WorldCohortInvalidated)]
+    else:
+        raise TypeError(f"unsupported command: {type(command).__name__}")
+    if not matches:
+        raise ValueError("no existing event matches the idempotent command")
+    return matches[-1]
 
 
 def _reject_warm_lane(item: WorldCohortColdLane, *, started: WorldCohortStarted) -> WorldCohortColdLane:
@@ -249,7 +309,7 @@ class WorldCohortService:
         started = cohort.started_event
         if started is None:
             raise ValueError("cold factories require a proven start")
-        self.query.envelope_for(started).require_proven()
+        started = _proven_started(cohort, self.query.envelope_for(started))
         return tuple(
             _reject_warm_lane(
                 self.cold_lane_factory(lane, started=started, manifest=cohort.manifest),
@@ -268,9 +328,15 @@ class WorldCohortService:
             return None
 
     def _apply(self, cohort: WorldCohort, command: WorldCohortCommand) -> WorldCohortEventEnvelope:
+        expected_sequence = len(cohort.events)
         next_cohort = cohort.handle(command)
-        event: WorldCohortEvent = next_cohort.events[-1]
-        return self.repository.append_event(event)
+        if len(next_cohort.events) == expected_sequence:
+            event = _existing_event_for(next_cohort, command)
+        else:
+            if len(next_cohort.events) != expected_sequence + 1:
+                raise ValueError("command must append at most one event")
+            event = next_cohort.events[-1]
+        return self.repository.append_event(event, expected_sequence=expected_sequence)
 
 
 __all__ = [

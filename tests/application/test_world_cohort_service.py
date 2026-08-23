@@ -250,6 +250,7 @@ class _MemoryWorldCohortStore:
     ) -> None:
         self.crash_before_receipt = crash_before_receipt
         self.crash_event_types = crash_event_types
+        self.before_insert = None
         self.manifests: dict[str, WorldCohortManifest] = {}
         self.events: dict[str, list[WorldCohortEvent]] = {}
         self.envelopes: dict[str, WorldCohortEventEnvelope] = {}
@@ -268,15 +269,24 @@ class _MemoryWorldCohortStore:
         self.events[manifest.cohort_id] = [event]
         return self._seal(event)
 
-    def append_event(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
+    def append_event(self, event: WorldCohortEvent, *, expected_sequence: int) -> WorldCohortEventEnvelope:
+        if not isinstance(expected_sequence, int) or isinstance(expected_sequence, bool) or expected_sequence < 0:
+            raise ValueError("expected_sequence must be a non-negative int")
+        stored = self.events.get(event.cohort_id)
+        if stored is None:
+            raise LookupError(event.cohort_id)
         existing = self.envelopes.get(event.event_id)
         if existing is not None:
             if world_cohort_event_payload_hash(existing.event) != world_cohort_event_payload_hash(event):
                 raise ValueError("event_id reused with a different payload")
             return self._seal(event)
-        stored = self.events.get(event.cohort_id)
-        if stored is None:
-            raise LookupError(event.cohort_id)
+        if self.before_insert is not None:
+            hook = self.before_insert
+            self.before_insert = None
+            hook()
+            stored = self.events[event.cohort_id]
+        if len(stored) != expected_sequence:
+            raise ValueError("conflicting sequence")
         stored.append(event)
         return self._seal(event)
 
@@ -380,8 +390,30 @@ def _slot_for(cohort: WorldCohort, **overrides: object) -> WorldCohortSlot:
 def _admit_command(cohort: WorldCohort, store: _MemoryWorldCohortStore, **slot_overrides: object) -> AdmitWorldCohortSlot:
     started = cohort.started_event
     assert started is not None
-    envelope = store.append_event(started)
+    envelope = store.envelope_for(started)
     return AdmitWorldCohortSlot(slot=_slot_for(cohort, **slot_overrides), started_evidence=envelope.require_proven())
+
+
+def _msft_slot(cohort: WorldCohort) -> WorldCohortSlot:
+    return _slot_for(
+        cohort,
+        as_of_bar_ts=LATER_TS,
+        anchor_end_at=LATER_TS,
+        symbol="MSFT",
+        comparison_batch_id="batch:v1:anchor-msft",
+        episode_refs_by_contract={
+            V1.contract_id: "world-episode:v1:" + "3" * 64,
+            V2.contract_id: "world-episode:v1:" + "4" * 64,
+        },
+    )
+
+
+def _block_company() -> BlockWorldCohortLane:
+    return BlockWorldCohortLane(
+        lane_id="markov.company",
+        reason=LaneBlockReason.CONFIG_DRIFT,
+        affected_from=LATER_TS,
+    )
 
 
 def _completion_evidence(cohort: WorldCohort) -> WorldCohortCompletionEvidence:
@@ -425,8 +457,11 @@ def test_ports_are_consumer_owned_typed_contracts() -> None:
     assert register_hints["return"] is WorldCohortEventEnvelope
 
     append_hints = get_type_hints(WorldCohortRepository.append_event)
-    assert list(inspect.signature(WorldCohortRepository.append_event).parameters) == ["self", "event"]
+    append_signature = inspect.signature(WorldCohortRepository.append_event)
+    assert list(append_signature.parameters) == ["self", "event", "expected_sequence"]
+    assert append_signature.parameters["expected_sequence"].kind is inspect.Parameter.KEYWORD_ONLY
     assert append_hints["event"] == WorldCohortEvent
+    assert append_hints["expected_sequence"] is int
     assert append_hints["return"] is WorldCohortEventEnvelope
 
     load_hints = get_type_hints(WorldCohortRepository.load)
@@ -644,7 +679,7 @@ def test_admit_uses_store_attested_start_evidence_and_rejects_pre_start_and_call
     cohort = _collecting(service, store)
     started = cohort.started_event
     assert started is not None
-    store_envelope = store.append_event(started)
+    store_envelope = store.envelope_for(started)
     assert store_envelope.require_proven().effective_ready_at == START_SEEN
     too_early = _slot_for(cohort, anchor_end_at=START_SEEN, as_of_bar_ts=START_SEEN)
     with pytest.raises(ValueError, match="strictly|after"):
@@ -695,11 +730,30 @@ def test_cold_factories_require_proven_start_and_refuse_warm_models() -> None:
     with pytest.raises(ValueError, match="start"):
         service.cold_lanes(WorldCohortId(manifest.cohort_id))
     service.arm(_arm_command(manifest))
+    armed = store.load(WorldCohortId(manifest.cohort_id))
+    with pytest.raises(TypeError):
+        build_cold_lanes(armed)
     with pytest.raises(ValueError, match="start"):
-        build_cold_lanes(store.load(WorldCohortId(manifest.cohort_id)))
+        build_cold_lanes(armed, started_envelope=store.envelope_for(armed.events[0]))
+    unproven_service, unproven_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_started"}),
+    )
+    unproven_service.register(RegisterWorldCohort(manifest=manifest))
+    unproven_service.arm(_arm_command(manifest))
+    unproven_start = unproven_service.start(_start_command(manifest))
+    assert unproven_start.availability_status == "availability_unproven"
+    unproven_cohort = unproven_store.load(WorldCohortId(manifest.cohort_id))
+    with pytest.raises(ValueError, match="availability_unproven|evidence"):
+        build_cold_lanes(unproven_cohort, started_envelope=unproven_store.envelope_for(unproven_cohort.started_event))
+    with pytest.raises(ValueError, match="availability_unproven|evidence"):
+        unproven_service.cold_lanes(WorldCohortId(manifest.cohort_id))
     service.start(_start_command(manifest))
     cohort = store.load(WorldCohortId(manifest.cohort_id))
-    built = build_cold_lanes(cohort)
+    proven = store.envelope_for(cohort.started_event)
+    with pytest.raises(ValueError, match="started_envelope|WorldCohortStarted|prove"):
+        build_cold_lanes(cohort, started_envelope=store.envelope_for(cohort.events[0]))
+    built = build_cold_lanes(cohort, started_envelope=proven)
     assert built[0].study_cohort_id == cohort.cohort_id
     assert built[0].manifest_sha256 == cohort.manifest.manifest_sha256
     with pytest.raises((TypeError, ValueError)):
@@ -723,7 +777,7 @@ def test_cold_factories_require_proven_start_and_refuse_warm_models() -> None:
         )
 
     def warm_factory(lane, *, started, manifest):
-        spec = build_cold_lanes(cohort)[0]
+        spec = build_cold_lanes(cohort, started_envelope=proven)[0]
         object.__setattr__(spec, "trained_through", "pre-start-lineage")
         return spec
 
@@ -778,3 +832,188 @@ def test_invalidate_from_collecting_is_terminal_and_keeps_no_go() -> None:
     assert loaded.manifest.decision_effect == "none"
     with pytest.raises(ValueError, match="invalidat"):
         service.admit_slot(_admit_command(cohort, store))
+
+
+def test_append_event_contract_documents_cas_and_identical_event_receipt_repair() -> None:
+    from trader.application.world_model.cohort_ports import WorldCohortRepository
+
+    doc = WorldCohortRepository.append_event.__doc__ or ""
+    source = _PORTS_PATH.read_text(encoding="utf-8")
+    assert "expected_sequence" in source
+    assert "conflicting sequence" in source or "sequence conflict" in source or "CAS" in source
+    assert "repair" in source.lower() or "receipt" in source.lower()
+    assert "expected_sequence" in doc or "expected_sequence" in source
+
+
+def test_idempotent_retry_seals_the_command_event_not_the_head() -> None:
+    manifest = _manifest()
+
+    arm_service, arm_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_armed"}),
+    )
+    arm_service.register(RegisterWorldCohort(manifest=manifest))
+    armed = arm_service.arm(_arm_command(manifest))
+    assert armed.availability_status == "availability_unproven"
+    arm_retry = arm_service.arm(_arm_command(manifest))
+    assert arm_retry.event.event_id == armed.event.event_id
+    assert arm_retry.event.event_type == "world_cohort_armed"
+    assert arm_retry.availability_status == "eligible"
+
+    start_service, start_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_started"}),
+    )
+    start_service.register(RegisterWorldCohort(manifest=manifest))
+    start_service.arm(_arm_command(manifest))
+    started = start_service.start(_start_command(manifest))
+    assert started.availability_status == "availability_unproven"
+    blocked_after_unproven_start = start_service.block_lane(WorldCohortId(manifest.cohort_id), _block_company())
+    assert blocked_after_unproven_start.event.event_type == "world_cohort_lane_blocked"
+    start_retry = start_service.start(_start_command(manifest))
+    assert start_retry.event.event_id == started.event.event_id
+    assert start_retry.event.event_type == "world_cohort_started"
+    assert start_retry.availability_status == "eligible"
+    assert start_store.envelope_for(blocked_after_unproven_start.event).event.event_id == blocked_after_unproven_start.event.event_id
+
+    admit_service, admit_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_slot_admitted"}),
+    )
+    first_cohort = _collecting(admit_service, admit_store, manifest)
+    first_admit = admit_service.admit_slot(_admit_command(first_cohort, admit_store))
+    assert first_admit.availability_status == "availability_unproven"
+    second = admit_service.admit_slot(_admit_command(admit_store.load(WorldCohortId(manifest.cohort_id)), admit_store, **{
+        "as_of_bar_ts": LATER_TS,
+        "anchor_end_at": LATER_TS,
+        "symbol": "MSFT",
+        "comparison_batch_id": "batch:v1:anchor-msft",
+        "episode_refs_by_contract": {
+            V1.contract_id: "world-episode:v1:" + "3" * 64,
+            V2.contract_id: "world-episode:v1:" + "4" * 64,
+        },
+    }))
+    assert second.event.event_type == "world_cohort_slot_admitted"
+    assert second.event.event_id != first_admit.event.event_id
+    admit_retry = admit_service.admit_slot(_admit_command(admit_store.load(WorldCohortId(manifest.cohort_id)), admit_store))
+    assert admit_retry.event.event_id == first_admit.event.event_id
+    assert admit_retry.availability_status == "eligible"
+
+    block_service, block_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_lane_blocked"}),
+    )
+    _collecting(block_service, block_store, manifest)
+    blocked = block_service.block_lane(WorldCohortId(manifest.cohort_id), _block_company())
+    assert blocked.availability_status == "availability_unproven"
+    block_service.admit_slot(_admit_command(block_store.load(WorldCohortId(manifest.cohort_id)), block_store))
+    block_retry = block_service.block_lane(WorldCohortId(manifest.cohort_id), _block_company())
+    assert block_retry.event.event_id == blocked.event.event_id
+    assert block_retry.event.event_type == "world_cohort_lane_blocked"
+    assert block_retry.availability_status == "eligible"
+
+    restore_service, restore_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_lane_restored"}),
+    )
+    _collecting(restore_service, restore_store, manifest)
+    restore_service.block_lane(WorldCohortId(manifest.cohort_id), _block_company())
+    restored = restore_service.restore_lane(
+        WorldCohortId(manifest.cohort_id),
+        RestoreWorldCohortLane(lane_id="markov.company"),
+    )
+    assert restored.availability_status == "availability_unproven"
+    restore_service.admit_slot(_admit_command(restore_store.load(WorldCohortId(manifest.cohort_id)), restore_store))
+    restore_retry = restore_service.restore_lane(
+        WorldCohortId(manifest.cohort_id),
+        RestoreWorldCohortLane(lane_id="markov.company"),
+    )
+    assert restore_retry.event.event_id == restored.event.event_id
+    assert restore_retry.event.event_type == "world_cohort_lane_restored"
+    assert restore_retry.availability_status == "eligible"
+
+    close_service, close_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_collection_closed"}),
+    )
+    _collecting(close_service, close_store, manifest)
+    closed = close_service.close(WorldCohortId(manifest.cohort_id), CloseWorldCohort(reason="fixed_end reached"))
+    assert closed.availability_status == "availability_unproven"
+    close_retry = close_service.close(WorldCohortId(manifest.cohort_id), CloseWorldCohort(reason="fixed_end reached"))
+    assert close_retry.event.event_id == closed.event.event_id
+    assert close_retry.event.event_type == "world_cohort_collection_closed"
+    assert close_retry.availability_status == "eligible"
+
+    complete_service, complete_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_completed"}),
+    )
+    complete_cohort = _collecting(complete_service, complete_store, manifest)
+    complete_service.admit_slot(_admit_command(complete_cohort, complete_store))
+    complete_service.close(WorldCohortId(manifest.cohort_id), CloseWorldCohort(reason="stop"))
+    closed_for_complete = complete_store.load(WorldCohortId(manifest.cohort_id))
+    completed = complete_service.complete(
+        WorldCohortId(manifest.cohort_id),
+        CompleteWorldCohort(evidence=_completion_evidence(closed_for_complete)),
+    )
+    assert completed.availability_status == "availability_unproven"
+    complete_retry = complete_service.complete(
+        WorldCohortId(manifest.cohort_id),
+        CompleteWorldCohort(evidence=_completion_evidence(closed_for_complete)),
+    )
+    assert complete_retry.event.event_id == completed.event.event_id
+    assert complete_retry.event.event_type == "world_cohort_completed"
+    assert complete_retry.availability_status == "eligible"
+
+    invalidate_service, invalidate_store = _service(
+        crash_before_receipt=1,
+        crash_event_types=frozenset({"world_cohort_invalidated"}),
+    )
+    _collecting(invalidate_service, invalidate_store, manifest)
+    command = InvalidateWorldCohort(
+        reason=InvalidationReason.PRE_START_EPISODE,
+        scope="cohort",
+        proofs=("proof:pre-start",),
+        occurred_at=LATER_TS,
+    )
+    invalidated = invalidate_service.invalidate(WorldCohortId(manifest.cohort_id), command)
+    assert invalidated.availability_status == "availability_unproven"
+    invalidate_retry = invalidate_service.invalidate(WorldCohortId(manifest.cohort_id), command)
+    assert invalidate_retry.event.event_id == invalidated.event.event_id
+    assert invalidate_retry.event.event_type == "world_cohort_invalidated"
+    assert invalidate_retry.availability_status == "eligible"
+
+
+def test_stale_snapshot_insert_is_rejected_and_identical_event_may_repair_after_head_advances() -> None:
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.domain.world_cohort import WorldCohortSlotAdmitted
+
+    service, store = _service()
+    cohort = _collecting(service, store)
+    expected = len(cohort.events)
+    first_event = WorldCohortSlotAdmitted(slot=_slot_for(cohort))
+    first = store.append_event(first_event, expected_sequence=expected)
+    assert first.sequence == expected + 1
+    racing = WorldCohortSlotAdmitted(slot=_msft_slot(cohort))
+    with pytest.raises(ValueError, match="sequence"):
+        store.append_event(racing, expected_sequence=expected)
+    second = store.append_event(racing, expected_sequence=expected + 1)
+    assert second.sequence == expected + 2
+    repaired = store.append_event(first_event, expected_sequence=expected)
+    assert repaired.event.event_id == first.event.event_id
+    assert repaired.sequence == first.sequence
+
+    race_service, race_store = _service()
+    race_cohort = _collecting(race_service, race_store)
+    started = race_cohort.started_event
+    assert started is not None
+    evidence = race_store.envelope_for(started).require_proven()
+
+    def sneak() -> None:
+        WorldCohortService(repository=race_store, query=race_store).admit_slot(
+            AdmitWorldCohortSlot(slot=_msft_slot(race_store.load(WorldCohortId(race_cohort.cohort_id))), started_evidence=evidence)
+        )
+
+    race_store.before_insert = sneak
+    with pytest.raises(ValueError, match="sequence"):
+        race_service.admit_slot(AdmitWorldCohortSlot(slot=_slot_for(race_cohort), started_evidence=evidence))
