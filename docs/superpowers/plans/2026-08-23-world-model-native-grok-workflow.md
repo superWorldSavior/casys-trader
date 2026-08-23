@@ -26,7 +26,7 @@ la convention Git actuelle du dépôt : la définition reste donc locale, tandis
 que ce plan versionné fixe son contrat d'usage. Son SHA-256 validé est :
 
 ```text
-848c63bf7e8b83d34d204dbd4a2e3f65499821d3163d1400698990faf9a4809c
+302ad93c46e5d4aa9a3e5b409d1cee58cab3575c7fca00e74f3b84d4066c5427
 ```
 
 Le workflow Grok natif suffit ici. ACPX n'est pas retenu : il n'apporterait de
