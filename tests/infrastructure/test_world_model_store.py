@@ -1289,15 +1289,97 @@ def test_v3_mapping_rejects_contradictory_envelope_versions(store: WorldModelSto
 
 def test_v3_migration_is_version_8_and_does_not_rewrite_v1_v7() -> None:
     versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions[-1] == 8
+    assert versions[7] == 8
     v8_sql = "\n".join(WORLD_MODEL_MIGRATIONS[7][1])
     assert "world_episodes_v3_canonical_first_write" in v8_sql
     assert "idx_world_episodes_v3_market_slot_candidates" in v8_sql
     assert "market_ohlcv_graph.v3" in v8_sql
+    assert "world_pattern_hypothesis_events" not in v8_sql
+    assert "world_pattern_occurrence_events" not in v8_sql
+    assert "world_pattern_outcome_links" not in v8_sql
     for _version, statements in WORLD_MODEL_MIGRATIONS[:7]:
         blob = "\n".join(statements)
         assert "world_episodes_v3_canonical_first_write" not in blob
         assert "idx_world_episodes_v3_market_slot_candidates" not in blob
+
+
+def test_pattern_migration_is_version_9_reuses_receipts_and_does_not_rewrite_v1_v8() -> None:
+    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    assert versions[-1] == 9
+    assert versions[:9] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    v9_sql = "\n".join(WORLD_MODEL_MIGRATIONS[8][1])
+    assert "CREATE TABLE IF NOT EXISTS world_pattern_hypothesis_events" in v9_sql
+    assert "CREATE TABLE IF NOT EXISTS world_pattern_occurrence_events" in v9_sql
+    assert "CREATE TABLE IF NOT EXISTS world_pattern_outcome_links" in v9_sql
+    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v9_sql
+    assert "idx_world_pattern_occurrence_events_cohort_cutoff" in v9_sql
+    assert "idx_world_pattern_outcome_links_horizon" in v9_sql
+    assert "world_pattern_hypothesis_events_no_update" in v9_sql
+    assert "world_pattern_occurrence_events_no_delete" in v9_sql
+    assert "world_pattern_outcome_links_no_update" in v9_sql
+    for _version, statements in WORLD_MODEL_MIGRATIONS[:8]:
+        blob = "\n".join(statements)
+        assert "world_pattern_hypothesis_events" not in blob
+        assert "world_pattern_occurrence_events" not in blob
+        assert "world_pattern_outcome_links" not in blob
+
+
+def test_v9_does_not_rewrite_existing_episode_graph_or_cohort_bytes(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    db = StateDb(db_path)
+    db.apply_migrations(WORLD_MODEL_MIGRATIONS[:8])
+    recorded = "2026-08-22T11:00:00+00:00"
+    episode_payload = json.dumps({"episode_id": "legacy-pattern", "keep": True}, separators=(",", ":"), sort_keys=True)
+    episode_digest = "sha256:" + hashlib.sha256(episode_payload.encode("utf-8")).hexdigest()
+    with db.transaction() as cur:
+        cur.execute(
+            """
+            INSERT INTO world_episodes(
+                episode_id, capture_id, venue, symbol, observed_at, available_at,
+                as_of_bar_ts, bar_interval, feature_contract_version, sampling_policy_version,
+                training_eligible, training_reason, payload_json, payload_sha256,
+                source_evidence_json, source_evidence_sha256, recorded_at
+            ) VALUES ('legacy-pattern', NULL, 'US', 'AAPL', ?, ?, ?, '1h', 'world-features-v1', 'fresh-active-v1',
+                      1, NULL, ?, ?, '{}', ?, ?)
+            """,
+            (recorded, recorded, recorded, episode_payload, episode_digest, episode_digest, recorded),
+        )
+        cur.execute(
+            """
+            INSERT INTO world_entity_events(
+                event_id, event_type, entity_kind, entity_id, sequence,
+                payload_json, payload_sha256, recorded_at
+            ) VALUES ('legacy-entity', 'world_entity_asserted', 'instrument', 'mic:XTAI:symbol:2330', 1,
+                      '{"keep":true}', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?)
+            """,
+            (recorded,),
+        )
+    before = db.query_one(
+        "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
+        "g.payload_json AS graph_json, g.payload_sha256 AS graph_sha "
+        "FROM world_episodes e JOIN world_entity_events g ON 1=1"
+    )
+    db.close()
+
+    store = WorldModelStore(db_path)
+    try:
+        after = store._db.query_one(
+            "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
+            "g.payload_json AS graph_json, g.payload_sha256 AS graph_sha "
+            "FROM world_episodes e JOIN world_entity_events g ON 1=1"
+        )
+        assert after["episode_json"] == before["episode_json"]
+        assert after["episode_sha"] == before["episode_sha"]
+        assert after["graph_json"] == before["graph_json"]
+        assert after["graph_sha"] == before["graph_sha"]
+        names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "world_pattern_hypothesis_events" in names
+        assert "world_pattern_occurrence_events" in names
+        assert "world_pattern_outcome_links" in names
+        assert "world_availability_receipts" in names
+        assert store._db.query_one("SELECT COUNT(*) FROM world_pattern_hypothesis_events")[0] == 0
+    finally:
+        store.close()
 
 
 def test_v3_slot_lookup_survives_reopen(tmp_path: Path) -> None:

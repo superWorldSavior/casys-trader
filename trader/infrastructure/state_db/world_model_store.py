@@ -631,6 +631,76 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             _V3_SLOT_CANDIDATE_INDEX,
         ],
     ),
+    (
+        9,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS world_pattern_hypothesis_events (
+                event_id          TEXT PRIMARY KEY,
+                hypothesis_id     TEXT NOT NULL,
+                event_type        TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(hypothesis_id, sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_pattern_hypothesis_events_hypothesis
+            ON world_pattern_hypothesis_events(hypothesis_id, sequence, event_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_pattern_occurrence_events (
+                event_id          TEXT PRIMARY KEY,
+                occurrence_id     TEXT NOT NULL,
+                hypothesis_id     TEXT NOT NULL,
+                event_type        TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                cohort_id         TEXT NOT NULL,
+                cutoff_at         TEXT NOT NULL,
+                horizon_id        TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(occurrence_id, sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_pattern_occurrence_events_cohort_cutoff
+            ON world_pattern_occurrence_events(cohort_id, cutoff_at, occurrence_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_pattern_occurrence_events_hypothesis
+            ON world_pattern_occurrence_events(hypothesis_id, cutoff_at, occurrence_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_pattern_outcome_links (
+                link_id                      TEXT PRIMARY KEY,
+                occurrence_id                TEXT NOT NULL,
+                event_id                     TEXT NOT NULL,
+                horizon_id                   TEXT NOT NULL,
+                world_outcome_event_id       TEXT NOT NULL,
+                world_outcome_content_sha256 TEXT NOT NULL,
+                supersedes_link_id           TEXT,
+                payload_json                 TEXT NOT NULL,
+                payload_sha256               TEXT NOT NULL,
+                recorded_at                  TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_pattern_outcome_links_horizon
+            ON world_pattern_outcome_links(horizon_id, occurrence_id, link_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_pattern_outcome_links_occurrence
+            ON world_pattern_outcome_links(occurrence_id, horizon_id, link_id)
+            """,
+            *_append_only_trigger_sql("world_pattern_hypothesis_events"),
+            *_append_only_trigger_sql("world_pattern_occurrence_events"),
+            *_append_only_trigger_sql("world_pattern_outcome_links"),
+        ],
+    ),
 ]
 
 
