@@ -17,7 +17,13 @@ from trader.application.world_model.encoding import world_lane_encoder_profile
 from trader.domain.world_cohort import WorldLaneDefinition
 from trader.domain.world_context import SensorEvidence
 from trader.domain.world_episode import WorldEpisode, WorldObservation, canonical_sha256
-from trader.domain.world_feature_contract import world_v1_feature_contract, world_v2_feature_contract
+from trader.domain.world_feature_contract import (
+    WORLD_V3_MARKOV_MODEL_IDENTITY,
+    WORLD_V3_MODEL_VERSION,
+    world_v1_feature_contract,
+    world_v2_feature_contract,
+    world_v3_feature_contract,
+)
 
 from tests.application.test_world_context_capture import _FakeSource, _v1_episode
 from tests.application.test_world_gru import HORIZON_4H, _outcome as _gru_outcome
@@ -453,3 +459,88 @@ def test_status_only_markov_does_not_see_company_or_macro_content() -> None:
     assert facade.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash == masked_joint.predict(
         intact, HORIZON_4H, prediction_at=predicted_at
     ).feature_hash
+
+
+def test_cold_markov_v3_topology_status_only_is_constructible_and_isolated() -> None:
+    profile = world_lane_encoder_profile("topology_status_only")
+    lane = WorldLaneDefinition(
+        lane_id="markov.topology_status_only",
+        model_family="markov",
+        model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
+        model_version=WORLD_V3_MODEL_VERSION,
+        feature_contract_id=profile.contract.contract_id,
+        feature_contract_fingerprint=profile.contract.fingerprint,
+        feature_mask_id=profile.mask.mask_id,
+        feature_mask_fingerprint=profile.mask.fingerprint,
+        seed=0,
+        sequence_length=None,
+        hyperparameters_sha256=canonical_sha256({"family": "markov", "lane": "topology_status_only"}),
+        role="secondary_challenger",
+    )
+    model = cold_markov_challenger(
+        lane=lane,
+        contract=profile.contract,
+        mask=profile.mask,
+        study_cohort_id=STUDY_COHORT_ID,
+        manifest_sha256=MANIFEST_SHA256,
+        started_event_id=STARTED_EVENT_ID,
+        alpha=1.0,
+        minimum_global_support=1,
+        minimum_coarse_support=1,
+        minimum_exact_support=2,
+    )
+    v1 = _v1_episode()
+    v3 = WorldEpisode(
+        WorldObservation.from_dict(
+            {
+                **v1.observation.to_dict(),
+                "feature_contract_version": profile.contract.accepted_episode_contract,
+            }
+        )
+    )
+    assert model.feature_contract == world_v3_feature_contract()
+    assert model.feature_mask.mask_id == "topology_status_only.v1"
+    assert model.model_id == WORLD_V3_MARKOV_MODEL_IDENTITY
+    assert model.accepts_episode(v3) is True
+    assert model.accepts_episode(v1) is False
+    assert model.lane_identity.prior_training_lineage == ()
+    prediction = model.predict(v3, HORIZON_4H, prediction_at=v3.observation.available_at)
+    assert prediction.global_support == 0
+    with pytest.raises(FeatureBoundaryError):
+        model.predict(v1, HORIZON_4H)
+    mapping = {
+        "available_at": "2026-01-01T00:00:00+00:00",
+        "as_of_bar_ts": "2026-01-01T00:00:00+00:00",
+        "venue": "XNYS",
+        "symbol": "SPY",
+        "bar_interval": "1h",
+        "feature_contract_version": profile.contract.accepted_episode_contract,
+        "categorical_features": {
+            "asset_family": "equities",
+            "venue": "XNYS",
+            "session_phase": "regular",
+            "market_regime": "trend_up",
+            "volatility_state": "normal",
+        },
+        "numeric_features": {"return": 0.006, "atr_pct": 0.01, "range_position": 0.72},
+        "graph_features": {
+            "categorical_features": {
+                "graph_status": "complete",
+                "graph_missingness_status": "none",
+                "graph_path_signature": "sig_a",
+            }
+        },
+    }
+    other = {
+        **mapping,
+        "graph_features": {
+            "categorical_features": {
+                "graph_status": "complete",
+                "graph_missingness_status": "none",
+                "graph_path_signature": "sig_b",
+            }
+        },
+    }
+    first = model.predict(mapping, HORIZON_4H, prediction_at="2026-01-01T00:00:00+00:00")
+    second = model.predict(other, HORIZON_4H, prediction_at="2026-01-01T00:00:00+00:00")
+    assert first.feature_hash == second.feature_hash

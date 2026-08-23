@@ -12,8 +12,10 @@ from trader.application.world_model.context_capture import attach_world_context
 from trader.application.world_model.encoding import (
     FEATURE_CONTRACT_FINGERPRINT,
     FEATURE_CONTRACT_FINGERPRINT_V2,
+    FEATURE_CONTRACT_FINGERPRINT_V3,
     FeatureBoundaryError,
     WorldEncoderProfile,
+    bound_encoder_profile,
     build_feature_state,
     world_encoder_profile_for_include_context,
     world_lane_encoder_profile,
@@ -22,10 +24,16 @@ from trader.application.world_model.gru import OnlineGRUWorldChallenger
 from trader.domain.world_context import CONTEXT_FEATURE_CONTRACT_VERSION, SensorEvidence
 from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_VERSION, WorldEpisode, WorldObservation
 from trader.domain.world_feature_contract import (
+    GRAPH_CONTENT_CATEGORICAL_FEATURES,
+    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_STATUS_CATEGORICAL_FEATURES,
+    WORLD_V3_ENCODER_IDENTITY,
     WorldFeatureContract,
     WorldFeatureMask,
     world_v1_feature_contract,
     world_v2_feature_contract,
+    world_v3_feature_contract,
+    world_v3_topology_status_only_mask,
 )
 
 from tests.application.test_world_context_capture import _FakeSource, _v1_episode
@@ -33,6 +41,7 @@ from tests.application.test_world_gru import HORIZON_4H, _episode, _outcome
 
 FROZEN_V1_ENCODER_FINGERPRINT = "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
 FROZEN_V2_ENCODER_FINGERPRINT = "a039216d5b53dab0c1aea134faabeac7b6f94c656d5880ec84882ebab05dbde5"
+FROZEN_V3_ENCODER_FINGERPRINT = "7d45ebd29211db99e2257cb86a21144d33db41ef5461c5e9bbb1770d11a48456"
 _STATUS_CONTENT = frozenset(
     {
         "context_status",
@@ -454,12 +463,16 @@ def _state_keys(observation: object, profile: WorldEncoderProfile) -> set[str]:
 def test_encoder_fingerprints_stay_frozen_and_distinct_from_domain_contracts() -> None:
     v1 = world_v1_feature_contract()
     v2 = world_v2_feature_contract()
+    v3 = world_v3_feature_contract()
     assert FEATURE_CONTRACT_FINGERPRINT == FROZEN_V1_ENCODER_FINGERPRINT
     assert FEATURE_CONTRACT_FINGERPRINT_V2 == FROZEN_V2_ENCODER_FINGERPRINT
+    assert FEATURE_CONTRACT_FINGERPRINT_V3 == FROZEN_V3_ENCODER_FINGERPRINT
     assert v1.fingerprint != FEATURE_CONTRACT_FINGERPRINT
     assert v2.fingerprint != FEATURE_CONTRACT_FINGERPRINT_V2
+    assert v3.fingerprint != FEATURE_CONTRACT_FINGERPRINT_V3
     assert type(v1) is WorldFeatureContract
     assert type(v2) is WorldFeatureContract
+    assert type(v3) is WorldFeatureContract
 
 
 def test_include_context_facade_binds_frozen_v1_market_and_v2_joint_profiles() -> None:
@@ -586,3 +599,196 @@ def test_world_context_model_path_excludes_news_macro_brief() -> None:
         assert "gdelt" not in source.lower()
     capture = Path("trader/application/world_model/context_capture.py").read_text(encoding="utf-8")
     assert "news_macro" not in capture
+
+
+_C1_LANE_KINDS = ("market", "status_only", "company", "macro", "joint")
+
+
+def _v3_observation(*, path_signature: str = "sig_a", graph_status: str = "complete") -> dict[str, object]:
+    payload = _rich_context_observation()
+    payload["feature_contract_version"] = GRAPH_FEATURE_CONTRACT_VERSION
+    payload["graph_features"] = {
+        "categorical_features": {
+            "graph_status": graph_status,
+            "graph_scope_status": "resolved",
+            "graph_coverage_status": "complete",
+            "graph_freshness_status": "0-4h",
+            "graph_source_count_bucket": "b1",
+            "graph_artifact_count_bucket": "b1",
+            "graph_missingness_status": "none",
+            "graph_path_count_bucket": "b2",
+            "graph_depth_min_bucket": "b1",
+            "graph_depth_max_bucket": "b3",
+            "graph_path_freshness_min_bucket": "0-4h",
+            "graph_path_freshness_max_bucket": "4-24h",
+            "graph_path_signature": path_signature,
+            "graph_macro_agreement_status": "agree",
+            "graph_window_0_4h_count_bucket": "b1",
+            "graph_window_4_24h_count_bucket": "b0",
+            "graph_window_1_7d_count_bucket": "b0",
+            "graph_window_older_count_bucket": "b0",
+        }
+    }
+    return payload
+
+
+def test_technical_c1_lane_profiles_exclude_graph_and_keep_frozen_encoder_fingerprints() -> None:
+    profiles = {kind: world_lane_encoder_profile(kind) for kind in _C1_LANE_KINDS}
+    for kind, profile in profiles.items():
+        assert GRAPH_FEATURE_CONTRACT_VERSION not in {profile.contract.contract_id, profile.mask.contract_id}
+        assert "graph" not in profile.contract.allowed_feature_groups
+        assert "graph_status" not in profile.contract.allowed_feature_groups
+        assert profile.encoder_fingerprint in {FEATURE_CONTRACT_FINGERPRINT, FEATURE_CONTRACT_FINGERPRINT_V2}
+        assert kind != "topology_status_only"
+    assert FEATURE_CONTRACT_FINGERPRINT == FROZEN_V1_ENCODER_FINGERPRINT
+    assert FEATURE_CONTRACT_FINGERPRINT_V2 == FROZEN_V2_ENCODER_FINGERPRINT
+    assert FEATURE_CONTRACT_FINGERPRINT_V3 == FROZEN_V3_ENCODER_FINGERPRINT
+    assert FEATURE_CONTRACT_FINGERPRINT_V3 != FEATURE_CONTRACT_FINGERPRINT
+    assert FEATURE_CONTRACT_FINGERPRINT_V3 != FEATURE_CONTRACT_FINGERPRINT_V2
+    with pytest.raises(ValueError, match="unknown world lane encoder profile"):
+        world_lane_encoder_profile("pipeline_pilot")
+
+
+def test_v3_topology_status_only_profile_is_a_matched_lane_without_graph_content() -> None:
+    profile = world_lane_encoder_profile("topology_status_only")
+    content = world_lane_encoder_profile("graph_content")
+    v3 = world_v3_feature_contract()
+    assert isinstance(profile, WorldEncoderProfile)
+    assert profile.contract == v3 == content.contract
+    assert profile.mask == world_v3_topology_status_only_mask()
+    assert profile.mask.mask_id == "topology_status_only.v1"
+    assert content.mask.mask_id == "graph_content.v1"
+    assert profile.contract.encoder_identity == WORLD_V3_ENCODER_IDENTITY
+    assert profile.encoder_fingerprint == FEATURE_CONTRACT_FINGERPRINT_V3 == content.encoder_fingerprint
+    assert profile.include_context is False
+    assert profile.mask.fingerprint != content.mask.fingerprint
+    observation = _v3_observation(path_signature="sig_a")
+    other = _v3_observation(path_signature="sig_b")
+    status_keys = _state_keys(observation, profile)
+    content_keys = _state_keys(observation, content)
+    assert GRAPH_STATUS_CATEGORICAL_FEATURES <= status_keys
+    assert status_keys.isdisjoint(GRAPH_CONTENT_CATEGORICAL_FEATURES)
+    assert "graph_path_signature" not in status_keys
+    assert GRAPH_CONTENT_CATEGORICAL_FEATURES <= content_keys
+    assert build_feature_state(
+        observation,
+        feature_contract=profile.contract,
+        feature_mask=profile.mask,
+    ).feature_hash == build_feature_state(
+        other,
+        feature_contract=profile.contract,
+        feature_mask=profile.mask,
+    ).feature_hash
+    assert build_feature_state(
+        observation,
+        feature_contract=content.contract,
+        feature_mask=content.mask,
+    ).feature_hash != build_feature_state(
+        other,
+        feature_contract=content.contract,
+        feature_mask=content.mask,
+    ).feature_hash
+    v1 = _rich_context_observation()
+    v1["feature_contract_version"] = MARKET_FEATURE_CONTRACT_VERSION
+    market = world_lane_encoder_profile("market")
+    v1_hash = build_feature_state(v1, feature_contract=market.contract, feature_mask=market.mask).feature_hash
+    assert v1_hash == build_feature_state(v1).feature_hash
+    with pytest.raises(ValueError, match="include_context"):
+        bound_encoder_profile(profile.contract, profile.mask, include_context=True)
+
+
+def test_v3_encoder_is_deterministic_bounded_and_rejects_incompatible_profiles() -> None:
+    profile = world_lane_encoder_profile("topology_status_only")
+    first = build_feature_state(
+        _v3_observation(),
+        feature_contract=profile.contract,
+        feature_mask=profile.mask,
+    )
+    second = build_feature_state(
+        _v3_observation(),
+        feature_contract=profile.contract,
+        feature_mask=profile.mask,
+    )
+    assert first.feature_hash == second.feature_hash
+    assert first.exact_state == second.exact_state
+    assert all(len(value) <= 80 for value in first.features.values())
+    v2 = world_lane_encoder_profile("joint")
+    with pytest.raises(ValueError, match="contract"):
+        profile.mask.assert_compatible_with(v2.contract)
+    with pytest.raises(ValueError, match="unsupported WorldFeatureContract|contract"):
+        build_feature_state(
+            _v3_observation(),
+            feature_contract=_contract_like_custom(),
+            feature_mask=profile.mask,
+        )
+
+
+def _contract_like_custom() -> WorldFeatureContract:
+    return WorldFeatureContract(
+        contract_id="custom.v9",
+        accepted_episode_contract="custom.v9",
+        projection_version="custom.v9",
+        encoder_identity="world_feature_encoder.custom.v9",
+        groups=(
+            {
+                "group_id": "market",
+                "categorical_features": ["venue"],
+                "numeric_features": ["return"],
+            },
+        ),
+        ontology_revision="custom.v9",
+        vocabulary_version="custom.v9",
+    )
+
+
+def test_v3_models_reject_v1_v2_and_c1_models_reject_v3() -> None:
+    v1 = _episode(0)
+    v2 = _v2_episode()
+    v3 = _episode(2, feature_contract_version=GRAPH_FEATURE_CONTRACT_VERSION)
+    v3_profile = world_lane_encoder_profile("topology_status_only")
+    markov_v3 = HierarchicalDirichletWorldBaseline(
+        feature_contract=v3_profile.contract,
+        feature_mask=v3_profile.mask,
+        model_id="hierarchical_dirichlet_world_baseline@graph.v3",
+        model_version="graph.v3",
+    )
+    gru_v3 = OnlineGRUWorldChallenger(
+        feature_contract=v3_profile.contract,
+        feature_mask=v3_profile.mask,
+        model_id="online_gru_world_challenger@graph.v3",
+        model_version="graph.v3",
+        hidden_size=4,
+        sequence_len=4,
+    )
+    markov_v1 = HierarchicalDirichletWorldBaseline()
+    gru_v1 = OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4)
+    markov_v2 = HierarchicalDirichletWorldBaseline(include_context=True, model_version="context.v2")
+    gru_v2 = OnlineGRUWorldChallenger(
+        include_context=True,
+        model_version="context.v2",
+        hidden_size=4,
+        sequence_len=4,
+    )
+    assert markov_v3.accepts_episode(v3) is True
+    assert gru_v3.accepts_episode(v3) is True
+    assert markov_v3.accepts_episode(v1) is False
+    assert gru_v3.accepts_episode(v2) is False
+    assert markov_v1.accepts_episode(v3) is False
+    assert gru_v1.accepts_episode(v3) is False
+    assert markov_v2.accepts_episode(v3) is False
+    assert gru_v2.accepts_episode(v3) is False
+    for model in (markov_v3, gru_v3):
+        with pytest.raises(FeatureBoundaryError):
+            model.predict(v1, HORIZON_4H)
+        with pytest.raises(FeatureBoundaryError):
+            model.predict(v2, HORIZON_4H)
+    for model in (markov_v1, gru_v1, markov_v2, gru_v2):
+        with pytest.raises(FeatureBoundaryError):
+            model.predict(v3, HORIZON_4H)
+    gru_v3.predict(v3, HORIZON_4H)
+    markov_v3.predict(v3, HORIZON_4H)
+    assert gru_v3.encoder_version == "world_gru_encoder.v3"
+    assert markov_v3.feature_contract == world_v3_feature_contract()
+    rejected = markov_v1.apply_outcome(_outcome(v3), v3)
+    assert rejected.applied is False
+    assert rejected.reason == "feature_contract_rejected"

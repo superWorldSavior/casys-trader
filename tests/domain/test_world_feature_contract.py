@@ -6,6 +6,7 @@ import sys
 from dataclasses import FrozenInstanceError
 
 import pytest
+import yaml
 
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_context import (
@@ -18,18 +19,39 @@ from trader.domain.world_episode import (
     ALLOWED_CATEGORICAL_FEATURES,
     ALLOWED_NUMERIC_FEATURES,
     MARKET_FEATURE_CONTRACT_VERSION,
+    canonical_payload,
 )
 from trader.domain.world_feature_contract import (
+    GRAPH_CONTENT_CATEGORICAL_FEATURES,
+    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_GROUP_ID,
+    GRAPH_STATUS_CATEGORICAL_FEATURES,
+    GRAPH_STATUS_FEATURE_GROUP_ID,
     WORLD_FEATURE_CONTRACT_SCHEMA,
     WORLD_FEATURE_MASK_SCHEMA,
+    WORLD_GRAPH_V3_CONFIG_SHA256,
+    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    WORLD_GRAPH_V3_PATH_RULE_VERSION,
+    WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
+    WORLD_SCOPE_MAPPING_ID,
+    WORLD_SCOPE_MAPPING_SHA256,
     WORLD_V1_ENCODER_IDENTITY,
     WORLD_V2_ENCODER_IDENTITY,
+    WORLD_V3_ENCODER_IDENTITY,
+    WORLD_V3_GRAPH_CONTENT_MASK_ID,
+    WORLD_V3_GRU_MODEL_IDENTITY,
+    WORLD_V3_MARKOV_MODEL_IDENTITY,
+    WORLD_V3_MODEL_VERSION,
+    WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID,
     WorldFeatureContract,
     WorldFeatureGroup,
     WorldFeatureMask,
     world_feature_contract_for_include_context,
     world_v1_feature_contract,
     world_v2_feature_contract,
+    world_v3_feature_contract,
+    world_v3_graph_content_mask,
+    world_v3_topology_status_only_mask,
 )
 from trader.domain.world_scope import WorldScopeMapping, WorldScopeResolution
 
@@ -362,3 +384,115 @@ def test_scope_mapping_types_remain_macro0_owners_not_a_cohort_contract() -> Non
                 if root != "trader" and root not in sys.stdlib_module_names:
                     violations.append(alias.name)
     assert violations == []
+
+
+def _committed_graph_config() -> dict[str, object]:
+    return yaml.safe_load((REPO_ROOT / "config" / "world_graph_v3.yaml").read_text(encoding="utf-8"))
+
+
+def _committed_scope_mapping() -> dict[str, object]:
+    return yaml.safe_load((REPO_ROOT / "config" / "world_scope_mapping.yaml").read_text(encoding="utf-8"))
+
+
+def test_v3_contract_is_isolated_from_v1_v2_and_binds_committed_graph_config() -> None:
+    v1 = world_v1_feature_contract()
+    v2 = world_v2_feature_contract()
+    v3 = world_v3_feature_contract()
+    config = _committed_graph_config()
+    mapping = _committed_scope_mapping()
+
+    assert GRAPH_FEATURE_CONTRACT_VERSION == "market_ohlcv_graph.v3"
+    assert v3.contract_id == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.accepted_episode_contract == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.projection_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.encoder_identity == WORLD_V3_ENCODER_IDENTITY == "world_feature_encoder.v3"
+    assert v3.vocabulary_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.ontology_revision == WORLD_GRAPH_V3_ONTOLOGY_REVISION == config["ontology_revision"] == "market_ontology.v1"
+    assert v3.path_rule_version == WORLD_GRAPH_V3_PATH_RULE_VERSION == config["traversal_policy_version"] == "graph_traversal.v1"
+    assert v3.to_dict()["windows_and_decay"] == config["windows_and_decay"]
+    assert canonical_payload(WORLD_GRAPH_V3_WINDOWS_AND_DECAY) == config["windows_and_decay"]
+    assert WORLD_GRAPH_V3_CONFIG_SHA256 == config["content_sha256"]
+    assert WORLD_SCOPE_MAPPING_ID == config["scope_mapping"]["mapping_id"] == mapping["mapping_id"]
+    assert WORLD_SCOPE_MAPPING_SHA256 == config["scope_mapping"]["mapping_sha256"] == mapping["content_sha256"]
+    assert v3.allowed_feature_groups == frozenset({"market", "status", "company", "macro", "graph_status", "graph"})
+    assert v3.group("market").categorical_features == v2.group("market").categorical_features == ALLOWED_CATEGORICAL_FEATURES
+    assert v3.group("market").numeric_features == v2.group("market").numeric_features
+    assert v3.group("status").categorical_features == STATUS_CATEGORICAL
+    assert v3.group("company").categorical_features == COMPANY_CATEGORICAL
+    assert v3.group("macro").categorical_features == MACRO_CATEGORICAL
+    assert v3.group("macro").numeric_features == ALLOWED_CONTEXT_NUMERIC_FEATURES
+    assert v3.group(GRAPH_STATUS_FEATURE_GROUP_ID).categorical_features == GRAPH_STATUS_CATEGORICAL_FEATURES
+    assert v3.group(GRAPH_FEATURE_GROUP_ID).categorical_features == GRAPH_CONTENT_CATEGORICAL_FEATURES
+    assert GRAPH_STATUS_CATEGORICAL_FEATURES.isdisjoint(GRAPH_CONTENT_CATEGORICAL_FEATURES)
+    assert GRAPH_STATUS_CATEGORICAL_FEATURES.isdisjoint(ALLOWED_CATEGORICAL_FEATURES)
+    assert GRAPH_CONTENT_CATEGORICAL_FEATURES.isdisjoint(ALLOWED_CONTEXT_CATEGORICAL_FEATURES)
+    assert "graph_status" in GRAPH_STATUS_CATEGORICAL_FEATURES
+    assert "graph_missingness_status" in GRAPH_STATUS_CATEGORICAL_FEATURES
+    assert "graph_path_signature" in GRAPH_CONTENT_CATEGORICAL_FEATURES
+    assert v3.fingerprint != v1.fingerprint
+    assert v3.fingerprint != v2.fingerprint
+    assert v3.vocabulary_fingerprint != v1.vocabulary_fingerprint
+    assert v3.vocabulary_fingerprint != v2.vocabulary_fingerprint
+    replayed = WorldFeatureContract.from_mapping(v3.to_dict())
+    assert replayed == v3
+    with pytest.raises(ValueError, match="include_context"):
+        v3.include_context_compatibility_flag()
+    with pytest.raises(FrozenInstanceError):
+        v3.contract_id = "mutated"  # type: ignore[misc]
+
+
+def test_v3_model_and_encoder_identities_are_distinct_matched_lane_ids() -> None:
+    assert WORLD_V3_MARKOV_MODEL_IDENTITY == "hierarchical_dirichlet_world_baseline@graph.v3"
+    assert WORLD_V3_GRU_MODEL_IDENTITY == "online_gru_world_challenger@graph.v3"
+    assert WORLD_V3_MODEL_VERSION == "graph.v3"
+    assert WORLD_V3_ENCODER_IDENTITY != WORLD_V1_ENCODER_IDENTITY
+    assert WORLD_V3_ENCODER_IDENTITY != WORLD_V2_ENCODER_IDENTITY
+    assert WORLD_V3_MARKOV_MODEL_IDENTITY != WORLD_V3_GRU_MODEL_IDENTITY
+    assert "@graph.v3" in WORLD_V3_MARKOV_MODEL_IDENTITY
+    assert "@graph.v3" in WORLD_V3_GRU_MODEL_IDENTITY
+
+
+def test_topology_status_only_mask_excludes_graph_content_and_is_not_a_c1_profile() -> None:
+    v3 = world_v3_feature_contract()
+    status_only = world_v3_topology_status_only_mask()
+    content = world_v3_graph_content_mask()
+    assert status_only.mask_id == WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID == "topology_status_only.v1"
+    assert content.mask_id == WORLD_V3_GRAPH_CONTENT_MASK_ID == "graph_content.v1"
+    assert status_only.contract_id == v3.contract_id == GRAPH_FEATURE_CONTRACT_VERSION
+    assert status_only.contract_fingerprint == v3.fingerprint
+    assert set(status_only.selected_groups) == {"market", "status", "company", "macro", "graph_status"}
+    assert set(content.selected_groups) == {"market", "status", "company", "macro", "graph_status", "graph"}
+    selected = status_only.selected_categorical_features(v3)
+    assert GRAPH_STATUS_CATEGORICAL_FEATURES <= selected
+    assert selected.isdisjoint(GRAPH_CONTENT_CATEGORICAL_FEATURES)
+    assert "graph_path_signature" not in selected
+    assert "graph_path_count_bucket" not in selected
+    content_selected = content.selected_categorical_features(v3)
+    assert GRAPH_CONTENT_CATEGORICAL_FEATURES <= content_selected
+    assert GRAPH_STATUS_CATEGORICAL_FEATURES <= content_selected
+    assert status_only.fingerprint != content.fingerprint
+    assert status_only.fingerprint != v3.fingerprint
+    replayed = WorldFeatureMask.from_mapping(status_only.to_dict())
+    assert replayed == status_only
+    v1 = world_v1_feature_contract()
+    v2 = world_v2_feature_contract()
+    with pytest.raises(ValueError, match="contract"):
+        status_only.assert_compatible_with(v1)
+    with pytest.raises(ValueError, match="contract"):
+        status_only.assert_compatible_with(v2)
+    config = _committed_graph_config()
+    assert "topology_status_only" in config["feature_profiles_planned"]
+    assert "graph_content" in config["feature_profiles_planned"]
+
+
+def test_v1_and_v2_contracts_do_not_declare_graph_groups() -> None:
+    v1 = world_v1_feature_contract()
+    v2 = world_v2_feature_contract()
+    assert GRAPH_STATUS_FEATURE_GROUP_ID not in v1.allowed_feature_groups
+    assert GRAPH_FEATURE_GROUP_ID not in v1.allowed_feature_groups
+    assert GRAPH_STATUS_FEATURE_GROUP_ID not in v2.allowed_feature_groups
+    assert GRAPH_FEATURE_GROUP_ID not in v2.allowed_feature_groups
+    assert v1.contract_id == MARKET_FEATURE_CONTRACT_VERSION
+    assert v2.contract_id == CONTEXT_FEATURE_CONTRACT_VERSION
+    assert v1.path_rule_version is None
+    assert v2.windows_and_decay is None

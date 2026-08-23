@@ -16,7 +16,13 @@ from trader.application.world_model.gru import OnlineGRUWorldChallenger, cold_gr
 from trader.domain.world_cohort import WorldLaneDefinition
 from trader.domain.world_context import SensorEvidence
 from trader.domain.world_episode import WorldEpisode, WorldObservation, WorldOutcome, canonical_sha256
-from trader.domain.world_feature_contract import world_v1_feature_contract, world_v2_feature_contract
+from trader.domain.world_feature_contract import (
+    WORLD_V3_GRU_MODEL_IDENTITY,
+    WORLD_V3_MODEL_VERSION,
+    world_v1_feature_contract,
+    world_v2_feature_contract,
+    world_v3_feature_contract,
+)
 
 from tests.application.test_world_context_capture import _FakeSource, _v1_episode
 
@@ -503,5 +509,60 @@ def test_cold_gru_challengers_match_slots_without_warm_reuse_or_content_leakage(
             study_cohort_id=STUDY_COHORT_ID,
             manifest_sha256=MANIFEST_SHA256,
             started_event_id=STARTED_EVENT_ID,
+            hidden_size=4,
+        )
+
+
+def test_cold_gru_v3_topology_status_only_is_constructible_and_isolated() -> None:
+    profile = world_lane_encoder_profile("topology_status_only")
+    lane = WorldLaneDefinition(
+        lane_id="gru.topology_status_only",
+        model_family="gru",
+        model_id=WORLD_V3_GRU_MODEL_IDENTITY,
+        model_version=WORLD_V3_MODEL_VERSION,
+        feature_contract_id=profile.contract.contract_id,
+        feature_contract_fingerprint=profile.contract.fingerprint,
+        feature_mask_id=profile.mask.mask_id,
+        feature_mask_fingerprint=profile.mask.fingerprint,
+        seed=17,
+        sequence_length=4,
+        hyperparameters_sha256=canonical_sha256({"family": "gru", "lane": "topology_status_only"}),
+        role="secondary_challenger",
+    )
+    model = cold_gru_challenger(
+        lane=lane,
+        contract=profile.contract,
+        mask=profile.mask,
+        study_cohort_id=STUDY_COHORT_ID,
+        manifest_sha256=MANIFEST_SHA256,
+        started_event_id=STARTED_EVENT_ID,
+        hidden_size=4,
+        learning_rate=0.05,
+        gradient_clip=0.75,
+        minimum_global_support=2,
+    )
+    v1 = _episode(0)
+    v3 = _episode(0, feature_contract_version=profile.contract.accepted_episode_contract)
+    assert model.feature_contract == world_v3_feature_contract()
+    assert model.feature_mask.mask_id == "topology_status_only.v1"
+    assert model.model_id == WORLD_V3_GRU_MODEL_IDENTITY
+    assert model.encoder_version == "world_gru_encoder.v3"
+    assert model.accepts_episode(v3) is True
+    assert model.accepts_episode(v1) is False
+    assert model.lane_identity.replay_bound_event_id == STARTED_EVENT_ID
+    assert model.support(HORIZON_4H) == 0
+    prediction = model.predict(v3, HORIZON_4H, prediction_at=v3.observation.available_at)
+    assert prediction.global_support == 0
+    with pytest.raises(FeatureBoundaryError):
+        model.predict(v1, HORIZON_4H)
+    with pytest.raises(ValueError, match="warm|trained|reuse"):
+        cold_gru_challenger(
+            lane=lane,
+            contract=profile.contract,
+            mask=profile.mask,
+            study_cohort_id=STUDY_COHORT_ID,
+            manifest_sha256=MANIFEST_SHA256,
+            started_event_id=STARTED_EVENT_ID,
+            prototype=model,
             hidden_size=4,
         )

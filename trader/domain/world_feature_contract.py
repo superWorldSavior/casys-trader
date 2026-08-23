@@ -32,10 +32,31 @@ WORLD_FEATURE_CONTRACT_SCHEMA = "world_feature_contract.v1"
 WORLD_FEATURE_MASK_SCHEMA = "world_feature_mask.v1"
 WORLD_V1_ENCODER_IDENTITY = "world_feature_encoder.v1"
 WORLD_V2_ENCODER_IDENTITY = "world_feature_encoder.v2"
+WORLD_V3_ENCODER_IDENTITY = "world_feature_encoder.v3"
+GRAPH_FEATURE_CONTRACT_VERSION = "market_ohlcv_graph.v3"
 MARKET_FEATURE_GROUP_ID = "market"
 STATUS_FEATURE_GROUP_ID = "status"
 COMPANY_FEATURE_GROUP_ID = "company"
 MACRO_FEATURE_GROUP_ID = "macro"
+GRAPH_STATUS_FEATURE_GROUP_ID = "graph_status"
+GRAPH_FEATURE_GROUP_ID = "graph"
+WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID = "topology_status_only.v1"
+WORLD_V3_GRAPH_CONTENT_MASK_ID = "graph_content.v1"
+WORLD_V3_MARKOV_MODEL_IDENTITY = "hierarchical_dirichlet_world_baseline@graph.v3"
+WORLD_V3_GRU_MODEL_IDENTITY = "online_gru_world_challenger@graph.v3"
+WORLD_V3_MODEL_VERSION = "graph.v3"
+WORLD_GRAPH_V3_ONTOLOGY_REVISION = "market_ontology.v1"
+WORLD_GRAPH_V3_PATH_RULE_VERSION = "graph_traversal.v1"
+WORLD_GRAPH_V3_CONFIG_SHA256 = "f642b3bda5f0985a4d8e27f872b0da5dc904f8c10588e5d0155798f28ec11d6e"
+WORLD_SCOPE_MAPPING_ID = "world_scope_mapping.v1"
+WORLD_SCOPE_MAPPING_SHA256 = "b2393ea7d1812e4d3d82e37858b71c3cac19079ef35a23212b16914f1f8661c6"
+WORLD_GRAPH_V3_WINDOWS_AND_DECAY: Mapping[str, object] = MappingProxyType(
+    {
+        "windows": ("0-4h", "4-24h", "1-7d", "older"),
+        "decay": "none",
+        "aggregates": "counts_on_snapshot_members_only",
+    }
+)
 
 _STATUS_CATEGORICAL_FEATURES = frozenset(
     {
@@ -53,6 +74,32 @@ _MACRO_CATEGORICAL_FEATURES = frozenset(
         "context_macro_regime",
         "context_rates_regime",
         "context_usd_regime",
+    }
+)
+GRAPH_STATUS_CATEGORICAL_FEATURES = frozenset(
+    {
+        "graph_status",
+        "graph_scope_status",
+        "graph_coverage_status",
+        "graph_freshness_status",
+        "graph_source_count_bucket",
+        "graph_artifact_count_bucket",
+        "graph_missingness_status",
+    }
+)
+GRAPH_CONTENT_CATEGORICAL_FEATURES = frozenset(
+    {
+        "graph_path_count_bucket",
+        "graph_depth_min_bucket",
+        "graph_depth_max_bucket",
+        "graph_path_freshness_min_bucket",
+        "graph_path_freshness_max_bucket",
+        "graph_path_signature",
+        "graph_macro_agreement_status",
+        "graph_window_0_4h_count_bucket",
+        "graph_window_4_24h_count_bucket",
+        "graph_window_1_7d_count_bucket",
+        "graph_window_older_count_bucket",
     }
 )
 
@@ -471,6 +518,63 @@ def world_v2_feature_contract() -> WorldFeatureContract:
     )
 
 
+def world_v3_feature_contract() -> WorldFeatureContract:
+    overlap = GRAPH_STATUS_CATEGORICAL_FEATURES & GRAPH_CONTENT_CATEGORICAL_FEATURES
+    if overlap:
+        raise ValueError("V3 graph status and content groups must be disjoint")
+    v2 = world_v2_feature_contract()
+    return WorldFeatureContract(
+        contract_id=GRAPH_FEATURE_CONTRACT_VERSION,
+        accepted_episode_contract=GRAPH_FEATURE_CONTRACT_VERSION,
+        projection_version=GRAPH_FEATURE_CONTRACT_VERSION,
+        encoder_identity=WORLD_V3_ENCODER_IDENTITY,
+        groups=(
+            *v2.groups,
+            WorldFeatureGroup(
+                group_id=GRAPH_STATUS_FEATURE_GROUP_ID,
+                categorical_features=GRAPH_STATUS_CATEGORICAL_FEATURES,
+            ),
+            WorldFeatureGroup(
+                group_id=GRAPH_FEATURE_GROUP_ID,
+                categorical_features=GRAPH_CONTENT_CATEGORICAL_FEATURES,
+            ),
+        ),
+        ontology_revision=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        vocabulary_version=GRAPH_FEATURE_CONTRACT_VERSION,
+        path_rule_version=WORLD_GRAPH_V3_PATH_RULE_VERSION,
+        windows_and_decay=WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
+    )
+
+
+def world_v3_topology_status_only_mask() -> WorldFeatureMask:
+    return WorldFeatureMask.bind(
+        world_v3_feature_contract(),
+        mask_id=WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID,
+        selected_groups=(
+            MARKET_FEATURE_GROUP_ID,
+            STATUS_FEATURE_GROUP_ID,
+            COMPANY_FEATURE_GROUP_ID,
+            MACRO_FEATURE_GROUP_ID,
+            GRAPH_STATUS_FEATURE_GROUP_ID,
+        ),
+    )
+
+
+def world_v3_graph_content_mask() -> WorldFeatureMask:
+    return WorldFeatureMask.bind(
+        world_v3_feature_contract(),
+        mask_id=WORLD_V3_GRAPH_CONTENT_MASK_ID,
+        selected_groups=(
+            MARKET_FEATURE_GROUP_ID,
+            STATUS_FEATURE_GROUP_ID,
+            COMPANY_FEATURE_GROUP_ID,
+            MACRO_FEATURE_GROUP_ID,
+            GRAPH_STATUS_FEATURE_GROUP_ID,
+            GRAPH_FEATURE_GROUP_ID,
+        ),
+    )
+
+
 def world_feature_contract_for_include_context(include_context: bool) -> WorldFeatureContract:
     if include_context:
         return world_v2_feature_contract()
@@ -479,17 +583,37 @@ def world_feature_contract_for_include_context(include_context: bool) -> WorldFe
 
 __all__ = [
     "COMPANY_FEATURE_GROUP_ID",
+    "GRAPH_CONTENT_CATEGORICAL_FEATURES",
+    "GRAPH_FEATURE_CONTRACT_VERSION",
+    "GRAPH_FEATURE_GROUP_ID",
+    "GRAPH_STATUS_CATEGORICAL_FEATURES",
+    "GRAPH_STATUS_FEATURE_GROUP_ID",
     "MACRO_FEATURE_GROUP_ID",
     "MARKET_FEATURE_GROUP_ID",
     "STATUS_FEATURE_GROUP_ID",
     "WORLD_FEATURE_CONTRACT_SCHEMA",
     "WORLD_FEATURE_MASK_SCHEMA",
+    "WORLD_GRAPH_V3_CONFIG_SHA256",
+    "WORLD_GRAPH_V3_ONTOLOGY_REVISION",
+    "WORLD_GRAPH_V3_PATH_RULE_VERSION",
+    "WORLD_GRAPH_V3_WINDOWS_AND_DECAY",
+    "WORLD_SCOPE_MAPPING_ID",
+    "WORLD_SCOPE_MAPPING_SHA256",
     "WORLD_V1_ENCODER_IDENTITY",
     "WORLD_V2_ENCODER_IDENTITY",
+    "WORLD_V3_ENCODER_IDENTITY",
+    "WORLD_V3_GRAPH_CONTENT_MASK_ID",
+    "WORLD_V3_GRU_MODEL_IDENTITY",
+    "WORLD_V3_MARKOV_MODEL_IDENTITY",
+    "WORLD_V3_MODEL_VERSION",
+    "WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID",
     "WorldFeatureContract",
     "WorldFeatureGroup",
     "WorldFeatureMask",
     "world_feature_contract_for_include_context",
     "world_v1_feature_contract",
     "world_v2_feature_contract",
+    "world_v3_feature_contract",
+    "world_v3_graph_content_mask",
+    "world_v3_topology_status_only_mask",
 ]

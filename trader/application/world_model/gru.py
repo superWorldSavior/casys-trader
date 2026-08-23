@@ -43,6 +43,7 @@ from trader.application.world_model.encoding import (
     CONTEXT_V2_NUMERIC_FEATURES,
     FEATURE_CONTRACT_FINGERPRINT,
     FEATURE_CONTRACT_FINGERPRINT_V2,
+    GRAPH_V3_CATEGORICAL_FEATURES,
     MARKET_FEATURE_CONTRACT_VERSION,
     FeatureBoundaryError,
     FutureLabelLeakageError,
@@ -74,13 +75,18 @@ from trader.domain.world_episode import (
     canonical_sha256,
     parse_utc_timestamp,
 )
-from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeatureMask
+from trader.domain.world_feature_contract import (
+    GRAPH_FEATURE_CONTRACT_VERSION,
+    WorldFeatureContract,
+    WorldFeatureMask,
+)
 
 
 OUTCOME_CLASSES: tuple[str, str, str] = PREDICTION_CLASSES
 MODEL_ID = "online_gru_world_challenger"
 MODEL_VERSION = "v1"
 ENCODER_VERSION = "world_gru_encoder.v1"
+ENCODER_VERSION_V3 = "world_gru_encoder.v3"
 DEFAULT_DIRECTION_BAND = 0.005
 
 # These are fixed, reviewed market inputs.  There is no corpus-fitted mean,
@@ -150,6 +156,7 @@ _OBSERVATION_KEYS = frozenset(
         "categorical_features",
         "numeric_features",
         "context",
+        "graph_features",
     }
 )
 _MISSING = object()
@@ -368,7 +375,6 @@ class OnlineGRUWorldChallenger:
         self._series: dict[tuple[str, str, str, str, str], list[str]] = {}
         self.model_id = model_id or MODEL_ID
         self.model_version = model_version or MODEL_VERSION
-        self.encoder_version = encoder_version or ENCODER_VERSION
         self._accepted_feature_contracts = accepted_feature_contracts
         self._profile = bound_encoder_profile(feature_contract, feature_mask, include_context=include_context)
         self._include_context = self._profile.include_context if self._profile is not None else include_context
@@ -376,10 +382,18 @@ class OnlineGRUWorldChallenger:
         extra_keys = extra_categorical_keys or frozenset()
         if self._include_context:
             extra_keys = extra_keys | CONTEXT_V2_CATEGORICAL_FEATURES
+        if self._profile is not None and self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
+            extra_keys = extra_keys | GRAPH_V3_CATEGORICAL_FEATURES
         categorical_keys = _CATEGORICAL_KEYS | extra_keys
         if self._profile is not None:
             categorical_keys = frozenset(name for name in categorical_keys if name in self._profile.allowed_categorical)
         self._categorical_keys = categorical_keys
+        if encoder_version is not None:
+            self.encoder_version = encoder_version
+        elif self._profile is not None and self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
+            self.encoder_version = ENCODER_VERSION_V3
+        else:
+            self.encoder_version = ENCODER_VERSION
         self._feature_contract_fingerprint = feature_contract_fingerprint or (
             self._profile.encoder_fingerprint
             if self._profile is not None
@@ -1165,6 +1179,7 @@ def cold_gru_challenger(
 __all__ = [
     "DEFAULT_DIRECTION_BAND",
     "ENCODER_VERSION",
+    "ENCODER_VERSION_V3",
     "MODEL_ID",
     "MODEL_VERSION",
     "OUTCOME_CLASSES",

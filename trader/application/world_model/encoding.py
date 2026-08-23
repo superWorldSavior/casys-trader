@@ -28,18 +28,27 @@ from trader.domain.world_episode import (
     WorldEpisode,
     WorldObservation,
     WorldOutcome,
+    canonical_payload,
     canonical_sha256,
 )
 from trader.domain.world_feature_contract import (
     COMPANY_FEATURE_GROUP_ID,
+    GRAPH_CONTENT_CATEGORICAL_FEATURES,
+    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_STATUS_CATEGORICAL_FEATURES,
     MACRO_FEATURE_GROUP_ID,
     MARKET_FEATURE_GROUP_ID,
     STATUS_FEATURE_GROUP_ID,
+    WORLD_GRAPH_V3_PATH_RULE_VERSION,
+    WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
     WorldFeatureContract,
     WorldFeatureMask,
     world_feature_contract_for_include_context,
     world_v1_feature_contract,
     world_v2_feature_contract,
+    world_v3_feature_contract,
+    world_v3_graph_content_mask,
+    world_v3_topology_status_only_mask,
 )
 
 
@@ -305,6 +314,38 @@ def _context_v2_feature_contract_fingerprint() -> str:
 
 FEATURE_CONTRACT_FINGERPRINT_V2 = _context_v2_feature_contract_fingerprint()
 
+GRAPH_V3_CATEGORICAL_FEATURES = (
+    CONTEXT_V2_CATEGORICAL_FEATURES | GRAPH_STATUS_CATEGORICAL_FEATURES | GRAPH_CONTENT_CATEGORICAL_FEATURES
+)
+GRAPH_V3_COARSE_FEATURES = CONTEXT_V2_COARSE_FEATURES | frozenset(
+    {
+        "graph_status",
+        "graph_scope_status",
+        "graph_coverage_status",
+        "graph_missingness_status",
+    }
+)
+
+
+def _graph_v3_feature_contract_fingerprint() -> str:
+    payload = {
+        "categorical": sorted(GRAPH_V3_CATEGORICAL_FEATURES),
+        "numeric": sorted(CONTEXT_V2_NUMERIC_FEATURES),
+        "numeric_buckets": {
+            key: {"bucket_key": bucket_key, "thresholds": thresholds}
+            for key, (bucket_key, thresholds) in sorted(_NUMERIC_BUCKETS.items())
+        },
+        "coarse_features": sorted(GRAPH_V3_COARSE_FEATURES),
+        "feature_contract_version": GRAPH_FEATURE_CONTRACT_VERSION,
+        "path_rule_version": WORLD_GRAPH_V3_PATH_RULE_VERSION,
+        "windows_and_decay": canonical_payload(WORLD_GRAPH_V3_WINDOWS_AND_DECAY),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+FEATURE_CONTRACT_FINGERPRINT_V3 = _graph_v3_feature_contract_fingerprint()
+
 _LANE_MASK_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "market": ("market.v1", (MARKET_FEATURE_GROUP_ID,)),
     "status_only": ("status_only.v1", (MARKET_FEATURE_GROUP_ID, STATUS_FEATURE_GROUP_ID)),
@@ -374,7 +415,7 @@ def _unselected_feature_names(contract: WorldFeatureContract, mask: WorldFeature
 
 
 def resolve_encoder_profile(contract: WorldFeatureContract, mask: WorldFeatureMask) -> WorldEncoderProfile:
-    """Intersect a domain mask with the frozen V1/V2 encoder vocabulary."""
+    """Intersect a domain mask with the frozen V1/V2/V3 encoder vocabulary."""
 
     if not isinstance(contract, WorldFeatureContract):
         raise TypeError("encoder profile requires a WorldFeatureContract")
@@ -387,12 +428,20 @@ def resolve_encoder_profile(contract: WorldFeatureContract, mask: WorldFeatureMa
         base_coarse = _COARSE_FEATURES
         encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT
         include_context = False
-    else:
+    elif contract.contract_id == CONTEXT_FEATURE_CONTRACT_VERSION:
         base_categorical = CONTEXT_V2_CATEGORICAL_FEATURES
         base_numeric = CONTEXT_V2_NUMERIC_FEATURES
         base_coarse = CONTEXT_V2_COARSE_FEATURES
         encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT_V2
         include_context = True
+    elif contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
+        base_categorical = GRAPH_V3_CATEGORICAL_FEATURES
+        base_numeric = CONTEXT_V2_NUMERIC_FEATURES
+        base_coarse = GRAPH_V3_COARSE_FEATURES
+        encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT_V3
+        include_context = False
+    else:
+        raise ValueError(f"unsupported WorldFeatureContract: {contract.contract_id}")
     dropped = _unselected_feature_names(contract, mask)
     return WorldEncoderProfile(
         contract=contract,
@@ -407,6 +456,14 @@ def resolve_encoder_profile(contract: WorldFeatureContract, mask: WorldFeatureMa
 
 def world_lane_encoder_profile(kind: str) -> WorldEncoderProfile:
     key = kind.strip() if isinstance(kind, str) else ""
+    if key == "topology_status_only":
+        contract = world_v3_feature_contract()
+        mask = world_v3_topology_status_only_mask()
+        return resolve_encoder_profile(contract, mask)
+    if key == "graph_content":
+        contract = world_v3_feature_contract()
+        mask = world_v3_graph_content_mask()
+        return resolve_encoder_profile(contract, mask)
     spec = _LANE_MASK_SPECS.get(key)
     if spec is None:
         raise ValueError(f"unknown world lane encoder profile: {kind!r}")
@@ -616,6 +673,20 @@ def _context_feature_maps(source: object) -> tuple[dict[str, object], dict[str, 
     return dict(categorical), dict(numeric)
 
 
+def _graph_feature_maps(source: object) -> tuple[dict[str, object], dict[str, object]]:
+    raw = _read_field(source, "graph_features")
+    if raw is _MISSING or raw is None:
+        return {}, {}
+    if not isinstance(raw, Mapping):
+        to_dict = getattr(raw, "to_dict", None)
+        raw = to_dict() if callable(to_dict) else {}
+    if not isinstance(raw, Mapping):
+        return {}, {}
+    categorical = _mapping_or_empty(raw.get("categorical_features"), name="graph_features.categorical_features")
+    numeric = _mapping_or_empty(raw.get("numeric_features"), name="graph_features.numeric_features")
+    return dict(categorical), dict(numeric)
+
+
 def revalidate_context_observation(observation: object) -> None:
     """Replay V2 mappings through the domain object before encoding/training."""
 
@@ -720,6 +791,19 @@ def _feature_maps(
             categorical_map.setdefault(key, value)
         for key, value in extra_numeric.items():
             numeric_map.setdefault(key, value)
+    extra_graph_categorical, extra_graph_numeric = _graph_feature_maps(source)
+    nested_observation = _read_field(observation, "observation")
+    if (
+        not extra_graph_categorical
+        and not extra_graph_numeric
+        and nested_observation is not _MISSING
+        and nested_observation is not None
+    ):
+        extra_graph_categorical, extra_graph_numeric = _graph_feature_maps(nested_observation)
+    for key, value in extra_graph_categorical.items():
+        categorical_map.setdefault(key, value)
+    for key, value in extra_graph_numeric.items():
+        numeric_map.setdefault(key, value)
     return categorical_map, numeric_map
 
 
@@ -776,8 +860,13 @@ def build_feature_state(
         | frozenset(bucket_key for bucket_key, _thresholds in _NUMERIC_BUCKETS.values())
         | ALLOWED_CONTEXT_CATEGORICAL_FEATURES
         | ALLOWED_CONTEXT_NUMERIC_FEATURES
+        | GRAPH_STATUS_CATEGORICAL_FEATURES
+        | GRAPH_CONTENT_CATEGORICAL_FEATURES
     )
-    categorical, numeric = _feature_maps(observation, include_context=include_context)
+    pull_context = include_context or (
+        feature_contract is not None and feature_contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION
+    )
+    categorical, numeric = _feature_maps(observation, include_context=pull_context)
     _assert_no_forbidden_keys(categorical, path="categorical_features", known_feature_keys=known_keys)
     _assert_no_forbidden_keys(numeric, path="numeric_features", known_feature_keys=known_keys)
 
@@ -1129,6 +1218,9 @@ __all__ = [
     "DIRECTION_BAND",
     "FEATURE_CONTRACT_FINGERPRINT",
     "FEATURE_CONTRACT_FINGERPRINT_V2",
+    "FEATURE_CONTRACT_FINGERPRINT_V3",
+    "GRAPH_V3_CATEGORICAL_FEATURES",
+    "GRAPH_V3_COARSE_FEATURES",
     "MARKET_FEATURE_CONTRACT_VERSION",
     "OUTCOME_CLASSES",
     "FeatureBoundaryError",
