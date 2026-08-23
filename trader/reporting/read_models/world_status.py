@@ -2,25 +2,37 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from trader.infrastructure.state_db.world_model_query import HORIZONS, read_world_model_ledger
 from trader.reporting.read_models.world_evaluation import evaluate_shadow
 from trader.reporting.read_models.world_impact import evaluate_world_shadow_impact
+from trader.reporting.read_models.world_macro_status import read_world_macro_status
 
 
-def read_world_model_status(state_dir: str | Path) -> dict[str, Any]:
+def read_world_model_status(
+    state_dir: str | Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """Project live world-model status without creating or migrating the ledger."""
 
     db_path = Path(state_dir) / "world_model.db"
     ledger = read_world_model_ledger(db_path)
+    macro = read_world_macro_status(state_dir, now=now)
     base: dict[str, Any] = {
         "schema_version": "world_model_status.v1",
         "authority": "shadow_only",
         "decision_effect": "none",
+        "recommendation": "NO_GO",
+        "causal_claim": False,
+        "pnl_claim": False,
+        "actual_trader_contribution": "not_attributable",
         "db_path": str(db_path),
         "exists": bool(ledger.get("exists")),
+        "macro": macro,
     }
     status = str(ledger.get("status") or "unavailable")
     if status == "not_started":

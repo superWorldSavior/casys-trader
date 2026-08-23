@@ -361,6 +361,14 @@ def _cmd_world_cohort(args: argparse.Namespace) -> int:
     return code
 
 
+def _cmd_world_macro(args: argparse.Namespace) -> int:
+    from trader.interfaces.cli.world_model import dispatch_world_macro
+
+    payload, code = dispatch_world_macro(args, state_dir=daemon.STATE_DIR)
+    _print_json(payload)
+    return code
+
+
 def _dashboard_url(path: object) -> str:
     return f"http://127.0.0.1:8137/{getattr(path, 'name', path)}"
 
@@ -1067,6 +1075,12 @@ def build_parser() -> argparse.ArgumentParser:
     cohort_invalidate.add_argument("--occurred-at")
     cohort_invalidate.add_argument("--json", action="store_true")
     cohort_invalidate.set_defaults(func=_cmd_world_cohort)
+
+    macro = world_sub.add_parser("macro", help="collecte macro source-only shadow")
+    macro_sub = macro.add_subparsers(dest="macro_command", required=True)
+    macro_status = macro_sub.add_parser("status", help="couverture et fraîcheur source-only")
+    macro_status.add_argument("--json", action="store_true")
+    macro_status.set_defaults(func=_cmd_world_macro)
 
     news_macro = sub.add_parser("news-macro", help="briefs macro/news par marché")
     news_macro_sub = news_macro.add_subparsers(dest="news_macro_command", required=True)

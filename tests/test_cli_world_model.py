@@ -540,3 +540,49 @@ def test_world_cohort_parser_exposes_rfc_commands() -> None:
     assert invalidate.cohort_command == "invalidate"
     world_status = parser.parse_args(["world", "status", "--json"])
     assert world_status.world_command == "status"
+    macro_status = parser.parse_args(["world", "macro", "status", "--json"])
+    assert macro_status.world_command == "macro"
+    assert macro_status.macro_command == "status"
+
+
+def test_world_macro_status_is_read_only_machine_readable_and_shadow_bounded(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    (tmp_path / "gdelt").mkdir()
+    (tmp_path / "gdelt" / "events.jsonl").write_text("{}", encoding="utf-8")
+
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, ["world", "macro", "status", "--json"])
+
+    assert code == 0
+    assert payload["schema_version"] == "world_macro_status.v1"
+    assert payload["status"] == "not_started"
+    assert payload["command"] == "status"
+    assert "collection" in payload
+    assert "coverage" in payload
+    assert "freshness" in payload
+    assert "gaps" in payload
+    assert "attach" in payload
+    assert "evaluation" not in payload
+    assert "impact" not in payload
+    assert payload["gaps"]["gdelt"] == "excluded"
+    assert "should-not" not in json.dumps(payload)
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert not (tmp_path / "world_macro").exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_status_json_keeps_macro_separate_from_ml_study(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli.daemon, "STATE_DIR", tmp_path)
+
+    assert cli.main(["world", "status", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "not_started"
+    assert payload["decision_effect"] == "none"
+    assert payload["recommendation"] == "NO_GO"
+    assert payload["macro"]["status"] == "not_started"
+    assert "evaluation" in payload
+    assert "evaluation" not in payload["macro"]
+    assert payload["macro"]["gaps"]["gdelt"] == "excluded"
+    assert not _db_path(tmp_path).exists()
+    assert not (tmp_path / "world_macro").exists()

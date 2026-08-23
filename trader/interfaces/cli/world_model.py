@@ -34,6 +34,7 @@ from trader.domain.world_cohort import (
     WorldCohortManifest,
 )
 from trader.reporting.read_models.world_cohort import read_world_cohort_report
+from trader.reporting.read_models.world_macro_status import read_world_macro_status
 from trader.reporting.read_models.world_status import HORIZONS, read_world_model_status
 
 WORLD_COHORT_INVALIDATION_REASONS = tuple(item.value for item in InvalidationReason)
@@ -361,15 +362,30 @@ def dispatch_world_cohort(args: Any, *, state_dir: str | Path) -> tuple[dict[str
     return _error("unsupported_command", str(command), recovery="use a documented world cohort subcommand"), 2
 
 
+def read_world_macro_cli_status(state_dir: str | Path) -> dict[str, Any]:
+    payload = read_world_macro_status(state_dir)
+    return {"command": "status", **payload}
+
+
+def dispatch_world_macro(args: Any, *, state_dir: str | Path) -> tuple[dict[str, Any], int]:
+    command = getattr(args, "macro_command", None)
+    if command == "status":
+        payload = read_world_macro_cli_status(state_dir)
+        return payload, _read_exit_code(payload)
+    return _error("unsupported_command", str(command), recovery="use a documented world macro subcommand"), 2
+
+
 __all__ = [
     "HORIZONS",
     "WORLD_COHORT_INVALIDATION_REASONS",
     "arm_world_cohort",
     "close_world_cohort",
     "dispatch_world_cohort",
+    "dispatch_world_macro",
     "invalidate_world_cohort",
     "read_world_cohort_report",
     "read_world_cohort_status",
+    "read_world_macro_status",
     "read_world_model_status",
     "register_world_cohort",
     "start_world_cohort",
