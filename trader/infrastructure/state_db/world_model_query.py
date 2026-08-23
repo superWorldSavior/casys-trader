@@ -42,7 +42,35 @@ _PREDICTION_COHORT_FIELDS = (
     "feature_mask_fingerprint",
 )
 _EPISODE_SLOT_FIELDS = ("venue", "symbol", "bar_interval", "as_of_bar_ts")
-_KNOWN_TABLES = _COHORT_TABLES | frozenset({"world_availability_receipts"})
+_PATTERN_TABLES = frozenset(
+    {
+        "world_pattern_hypothesis_events",
+        "world_pattern_occurrence_events",
+        "world_pattern_outcome_links",
+    }
+)
+_PATTERN_REQUIRED_TABLES = _PATTERN_TABLES | frozenset({"world_outcome_events"})
+_PATTERN_OCCURRENCE_FIELDS = (
+    "event_id",
+    "occurrence_id",
+    "hypothesis_id",
+    "event_type",
+    "sequence",
+    "cohort_id",
+    "cutoff_at",
+    "horizon_id",
+)
+_PATTERN_HYPOTHESIS_FIELDS = ("event_id", "hypothesis_id", "event_type", "sequence")
+_PATTERN_LINK_FIELDS = (
+    "link_id",
+    "occurrence_id",
+    "event_id",
+    "horizon_id",
+    "world_outcome_event_id",
+    "world_outcome_content_sha256",
+    "supersedes_link_id",
+)
+_KNOWN_TABLES = _COHORT_TABLES | _PATTERN_TABLES | frozenset({"world_availability_receipts"})
 
 
 def read_world_model_ledger(db_path: str | Path) -> dict[str, Any]:
@@ -207,6 +235,94 @@ def read_world_cohort_ledger(db_path: str | Path, cohort_id: str) -> dict[str, A
         }
 
 
+def read_world_pattern_ledger(db_path: str | Path, cohort_id: str) -> dict[str, Any]:
+    """Read reconstructible pattern events without creating or migrating the ledger."""
+
+    path = Path(db_path)
+    empty = {
+        "cohort_id": cohort_id,
+        "hypothesis_events": [],
+        "occurrence_events": [],
+        "outcome_links": [],
+        "episodes": [],
+        "outcomes": [],
+        "predictions": [],
+        "receipts": [],
+    }
+    if not path.exists():
+        return {"status": "not_started", "exists": False, **empty}
+
+    try:
+        with _readonly_connection(path) as connection:
+            tables = _table_names(connection)
+            if not _PATTERN_REQUIRED_TABLES.issubset(tables):
+                return {
+                    "status": "schema_unavailable",
+                    "exists": True,
+                    "cohort_id": cohort_id,
+                    "missing_tables": sorted(_PATTERN_REQUIRED_TABLES.difference(tables)),
+                }
+            occurrence_rows = _fetch_pattern_occurrence_events(connection, cohort_id)
+            hypothesis_ids = {
+                str(row["hypothesis_id"])
+                for row in occurrence_rows
+                if "hypothesis_id" in row.keys() and row["hypothesis_id"]
+            }
+            occurrence_ids = {
+                str(row["occurrence_id"])
+                for row in occurrence_rows
+                if "occurrence_id" in row.keys() and row["occurrence_id"]
+            }
+            hypothesis_rows = _fetch_pattern_hypothesis_events(connection, hypothesis_ids)
+            link_rows = _fetch_pattern_outcome_links(connection, occurrence_ids)
+            episode_ids = _pattern_episode_ids(occurrence_rows)
+            prediction_rows: list[sqlite3.Row] = []
+            if "world_shadow_predictions" in tables:
+                prediction_columns = _table_columns(connection, "world_shadow_predictions")
+                if "study_cohort_id" in prediction_columns:
+                    prediction_rows = _fetch_predictions(connection, study_cohort_id=cohort_id)
+                else:
+                    prediction_rows = _fetch_predictions(connection)
+                episode_ids.update(str(row["episode_id"]) for row in prediction_rows if row["episode_id"])
+            episodes = _fetch_episodes(connection, episode_ids) if "world_episodes" in tables else []
+            outcomes = _fetch_outcomes(connection, episode_ids=episode_ids)
+            receipt_rows: list[sqlite3.Row] = []
+            if "world_availability_receipts" in tables:
+                receipt_rows = connection.execute(
+                    "SELECT payload_json FROM world_availability_receipts "
+                    "WHERE subject_kind IN ('pattern_hypothesis_event', 'pattern_occurrence_event') "
+                    "ORDER BY ready_at, receipt_id"
+                ).fetchall()
+    except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
+        return {
+            "status": "unavailable",
+            "exists": True,
+            "cohort_id": cohort_id,
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+
+    try:
+        return {
+            "status": "loaded",
+            "exists": True,
+            "cohort_id": cohort_id,
+            "hypothesis_events": [_project_pattern_hypothesis_event(row) for row in hypothesis_rows],
+            "occurrence_events": [_project_pattern_occurrence_event(row) for row in occurrence_rows],
+            "outcome_links": [_project_pattern_outcome_link(row) for row in link_rows],
+            "episodes": [_project_episode(row) for row in episodes],
+            "outcomes": [_project_outcome(row) for row in outcomes],
+            "predictions": [_project_prediction(row) for row in prediction_rows],
+            "receipts": [_json_object(row["payload_json"]) for row in receipt_rows],
+        }
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "unavailable",
+            "exists": True,
+            "cohort_id": cohort_id,
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+
+
 def _readonly_connection(path: Path) -> sqlite3.Connection:
     uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
     connection = sqlite3.connect(uri, uri=True)
@@ -295,6 +411,99 @@ def _fetch_outcomes(
     else:
         sql += " ORDER BY outcome_event_id"
     return list(connection.execute(sql, params).fetchall())
+
+
+def _fetch_pattern_occurrence_events(connection: sqlite3.Connection, cohort_id: str) -> list[sqlite3.Row]:
+    columns = _table_columns(connection, "world_pattern_occurrence_events")
+    selected = [name for name in (*_PATTERN_OCCURRENCE_FIELDS, "payload_json") if name in columns]
+    sql = (
+        f"SELECT {', '.join(selected)} FROM world_pattern_occurrence_events "
+        "WHERE cohort_id=? ORDER BY sequence ASC, event_id ASC"
+    )
+    return list(connection.execute(sql, (cohort_id,)).fetchall())
+
+
+def _fetch_pattern_hypothesis_events(
+    connection: sqlite3.Connection,
+    hypothesis_ids: set[str],
+) -> list[sqlite3.Row]:
+    if not hypothesis_ids:
+        return []
+    columns = _table_columns(connection, "world_pattern_hypothesis_events")
+    selected = [name for name in (*_PATTERN_HYPOTHESIS_FIELDS, "payload_json") if name in columns]
+    placeholders = ", ".join("?" for _ in hypothesis_ids)
+    sql = (
+        f"SELECT {', '.join(selected)} FROM world_pattern_hypothesis_events "
+        f"WHERE hypothesis_id IN ({placeholders}) ORDER BY hypothesis_id ASC, sequence ASC, event_id ASC"
+    )
+    return list(connection.execute(sql, tuple(sorted(hypothesis_ids))).fetchall())
+
+
+def _fetch_pattern_outcome_links(
+    connection: sqlite3.Connection,
+    occurrence_ids: set[str],
+) -> list[sqlite3.Row]:
+    if not occurrence_ids:
+        return []
+    columns = _table_columns(connection, "world_pattern_outcome_links")
+    selected = [name for name in (*_PATTERN_LINK_FIELDS, "payload_json") if name in columns]
+    placeholders = ", ".join("?" for _ in occurrence_ids)
+    sql = (
+        f"SELECT {', '.join(selected)} FROM world_pattern_outcome_links "
+        f"WHERE occurrence_id IN ({placeholders}) ORDER BY occurrence_id ASC, horizon_id ASC, link_id ASC"
+    )
+    return list(connection.execute(sql, tuple(sorted(occurrence_ids))).fetchall())
+
+
+def _pattern_episode_ids(rows: list[sqlite3.Row]) -> set[str]:
+    episode_ids: set[str] = set()
+    for row in rows:
+        payload = _json_object(row["payload_json"]) if "payload_json" in row.keys() else {}
+        occurrence = payload.get("occurrence")
+        forecast = occurrence.get("forecast") if isinstance(occurrence, dict) else payload.get("forecast")
+        if isinstance(forecast, dict):
+            episode_id = forecast.get("episode_id")
+            if episode_id:
+                episode_ids.add(str(episode_id))
+    return episode_ids
+
+
+def _project_pattern_hypothesis_event(row: sqlite3.Row) -> dict[str, Any]:
+    payload = _json_object(row["payload_json"])
+    projected = {**payload}
+    for field in _PATTERN_HYPOTHESIS_FIELDS:
+        if field in row.keys() and row[field] not in (None, ""):
+            projected[field] = row[field]
+    return projected
+
+
+def _project_pattern_occurrence_event(row: sqlite3.Row) -> dict[str, Any]:
+    payload = _json_object(row["payload_json"])
+    projected = {**payload}
+    for field in _PATTERN_OCCURRENCE_FIELDS:
+        if field in row.keys() and row[field] not in (None, ""):
+            projected[field] = row[field]
+    occurrence = projected.get("occurrence")
+    if isinstance(occurrence, dict):
+        if projected.get("cohort_id"):
+            occurrence["cohort_id"] = projected["cohort_id"]
+        if projected.get("hypothesis_id"):
+            occurrence["hypothesis_id"] = projected["hypothesis_id"]
+        if projected.get("occurrence_id"):
+            occurrence["occurrence_id"] = projected["occurrence_id"]
+        forecast = occurrence.get("forecast")
+        if isinstance(forecast, dict) and projected.get("horizon_id"):
+            forecast["horizon_id"] = projected["horizon_id"]
+    return projected
+
+
+def _project_pattern_outcome_link(row: sqlite3.Row) -> dict[str, Any]:
+    payload = _json_object(row["payload_json"])
+    projected = {**payload}
+    for field in _PATTERN_LINK_FIELDS:
+        if field in row.keys() and row[field] not in (None, ""):
+            projected[field] = row[field]
+    return projected
 
 
 def _fetch_episodes(connection: sqlite3.Connection, episode_ids: set[str]) -> list[sqlite3.Row]:
@@ -462,4 +671,4 @@ def _as_dict(value: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-__all__ = ["HORIZONS", "read_world_cohort_ledger", "read_world_model_ledger"]
+__all__ = ["HORIZONS", "read_world_cohort_ledger", "read_world_model_ledger", "read_world_pattern_ledger"]
