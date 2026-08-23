@@ -1332,9 +1332,11 @@ class WorldModelStore:
         receipt = self._commit_availability_receipt(event)
         return self._bind_envelope(event, sequence=sequence, receipt=receipt)
 
-    def append_event(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
+    def append_event(self, event: WorldCohortEvent, *, expected_sequence: int) -> WorldCohortEventEnvelope:
+        if not isinstance(expected_sequence, int) or isinstance(expected_sequence, bool) or expected_sequence < 0:
+            raise ValueError("expected_sequence must be a non-negative int")
         parsed = self._require_cohort_event(event)
-        sequence = self._persist_cohort_event(parsed)
+        sequence = self._persist_cohort_event(parsed, expected_sequence=expected_sequence)
         receipt = self._commit_availability_receipt(parsed)
         return self._bind_envelope(parsed, sequence=sequence, receipt=receipt)
 
@@ -1430,55 +1432,69 @@ class WorldModelStore:
             )
             return 1
 
-    def _persist_cohort_event(self, event: WorldCohortEvent) -> int:
+    def _persist_cohort_event(self, event: WorldCohortEvent, *, expected_sequence: int) -> int:
         payload_json = canonical_json(event.to_dict())
         payload_sha256 = world_cohort_event_payload_hash(event)
         recorded_at = _utc_now()
-        with self._db.transaction() as cur:
-            existing = cur.execute(
-                "SELECT payload_sha256, sequence FROM world_cohort_events WHERE event_id=?",
-                (event.event_id,),
-            ).fetchone()
+        try:
+            with self._db.transaction() as cur:
+                existing = cur.execute(
+                    "SELECT payload_sha256, sequence FROM world_cohort_events WHERE event_id=?",
+                    (event.event_id,),
+                ).fetchone()
+                if existing is not None:
+                    if existing["payload_sha256"] != payload_sha256:
+                        raise WorldModelConflictError(
+                            f"event_id {event.event_id!r} already exists with different canonical content"
+                        )
+                    return int(existing["sequence"])
+                manifest = cur.execute(
+                    "SELECT manifest_sha256 FROM world_cohort_manifests WHERE cohort_id=?",
+                    (event.cohort_id,),
+                ).fetchone()
+                if manifest is None:
+                    raise LookupError(event.cohort_id)
+                if manifest["manifest_sha256"] != event.manifest_sha256:
+                    raise WorldModelConflictError("event manifest hash does not match the durable manifest")
+                count_row = cur.execute(
+                    "SELECT COUNT(*) FROM world_cohort_events WHERE cohort_id=?",
+                    (event.cohort_id,),
+                ).fetchone()
+                persisted_count = int(count_row[0])
+                # CAS on persisted count, not MAX(sequence)+1: a stale snapshot must not append.
+                if persisted_count != expected_sequence:
+                    raise WorldModelConflictError("conflicting sequence")
+                sequence = expected_sequence + 1
+                cur.execute(
+                    """
+                    INSERT INTO world_cohort_events(
+                        event_id, cohort_id, event_type, sequence, manifest_sha256,
+                        payload_json, payload_sha256, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.event_id,
+                        event.cohort_id,
+                        event.event_type,
+                        sequence,
+                        event.manifest_sha256,
+                        payload_json,
+                        payload_sha256,
+                        recorded_at,
+                    ),
+                )
+                if isinstance(event, WorldCohortSlotAdmitted):
+                    self._insert_slot_projection(cur, event, recorded_at=recorded_at)
+                return sequence
+        except sqlite3.IntegrityError:
+            existing = self._event_row(event.event_id)
             if existing is not None:
                 if existing["payload_sha256"] != payload_sha256:
                     raise WorldModelConflictError(
                         f"event_id {event.event_id!r} already exists with different canonical content"
-                    )
+                    ) from None
                 return int(existing["sequence"])
-            manifest = cur.execute(
-                "SELECT manifest_sha256 FROM world_cohort_manifests WHERE cohort_id=?",
-                (event.cohort_id,),
-            ).fetchone()
-            if manifest is None:
-                raise LookupError(event.cohort_id)
-            if manifest["manifest_sha256"] != event.manifest_sha256:
-                raise WorldModelConflictError("event manifest hash does not match the durable manifest")
-            maximum = cur.execute(
-                "SELECT COALESCE(MAX(sequence), 0) FROM world_cohort_events WHERE cohort_id=?",
-                (event.cohort_id,),
-            ).fetchone()
-            sequence = int(maximum[0]) + 1
-            cur.execute(
-                """
-                INSERT INTO world_cohort_events(
-                    event_id, cohort_id, event_type, sequence, manifest_sha256,
-                    payload_json, payload_sha256, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.event_id,
-                    event.cohort_id,
-                    event.event_type,
-                    sequence,
-                    event.manifest_sha256,
-                    payload_json,
-                    payload_sha256,
-                    recorded_at,
-                ),
-            )
-            if isinstance(event, WorldCohortSlotAdmitted):
-                self._insert_slot_projection(cur, event, recorded_at=recorded_at)
-            return sequence
+            raise WorldModelConflictError("conflicting sequence") from None
 
     def _insert_slot_projection(
         self,

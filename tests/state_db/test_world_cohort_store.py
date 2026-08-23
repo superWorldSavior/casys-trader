@@ -202,6 +202,35 @@ def _registered(manifest: WorldCohortManifest) -> WorldCohortRegistered:
     return event
 
 
+def _armed(manifest: WorldCohortManifest) -> WorldCohortArmed:
+    return WorldCohortArmed(
+        cohort_id=manifest.cohort_id,
+        manifest_sha256=manifest.manifest_sha256,
+        runtime_identity=manifest.runtime_identity,
+        satisfied_sensor_ids=("company",),
+    )
+
+
+def _started(manifest: WorldCohortManifest) -> WorldCohortStarted:
+    return WorldCohortStarted(
+        cohort_id=manifest.cohort_id,
+        manifest_sha256=manifest.manifest_sha256,
+        runtime_identity=manifest.runtime_identity,
+    )
+
+
+def _msft_slot(cohort: WorldCohort) -> WorldCohortSlot:
+    return _slot_for(
+        cohort,
+        symbol="MSFT",
+        comparison_batch_id="batch:v1:anchor-msft",
+        episode_refs_by_contract={
+            V1.contract_id: "world-episode:v1:" + "3" * 64,
+            V2.contract_id: "world-episode:v1:" + "4" * 64,
+        },
+    )
+
+
 def _store(tmp_path: Path, *, clock: datetime = READY) -> WorldModelStore:
     return WorldModelStore(tmp_path / "world_model.db", clock=lambda: clock)
 
@@ -265,7 +294,9 @@ def test_ports_surface_has_no_status_slot_append_or_caller_ready_at() -> None:
     assert "ready_at" not in register.parameters
     assert "ready_at" not in append_event.parameters
     assert list(register.parameters) == ["self", "manifest", "event"]
-    assert list(append_event.parameters) == ["self", "event"]
+    assert list(append_event.parameters) == ["self", "event", "expected_sequence"]
+    assert append_event.parameters["expected_sequence"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert append_event.parameters["expected_sequence"].default is inspect.Parameter.empty
 
 
 def test_register_assigns_store_ready_at_after_subject_commit(tmp_path: Path) -> None:
@@ -370,24 +401,15 @@ def test_append_event_is_idempotent_and_sequences_are_monotone(tmp_path: Path) -
     store = _store(tmp_path)
     manifest = _manifest()
     store.register(manifest, _registered(manifest))
-    armed = WorldCohortArmed(
-        cohort_id=manifest.cohort_id,
-        manifest_sha256=manifest.manifest_sha256,
-        runtime_identity=manifest.runtime_identity,
-        satisfied_sensor_ids=("company",),
-    )
-    first = store.append_event(armed)
-    replay = store.append_event(armed)
+    armed = _armed(manifest)
+    first = store.append_event(armed, expected_sequence=1)
+    replay = store.append_event(armed, expected_sequence=1)
     assert first.sequence == 2
     assert replay.sequence == 2
     assert replay.event_id == first.event_id
     assert replay.require_proven().receipt.receipt_id == first.require_proven().receipt.receipt_id
-    started = WorldCohortStarted(
-        cohort_id=manifest.cohort_id,
-        manifest_sha256=manifest.manifest_sha256,
-        runtime_identity=manifest.runtime_identity,
-    )
-    third = store.append_event(started)
+    started = _started(manifest)
+    third = store.append_event(started, expected_sequence=2)
     assert third.sequence == 3
     loaded = store.load(WorldCohortId(manifest.cohort_id))
     assert [item.event_type for item in loaded.events] == [
@@ -403,14 +425,14 @@ def test_slot_projection_is_transactional_and_not_publicly_appendable(tmp_path: 
     cohort = _collecting(store)
     slot = _slot_for(cohort)
     admitted = WorldCohortSlotAdmitted(slot=slot)
-    envelope = store.append_event(admitted)
+    envelope = store.append_event(admitted, expected_sequence=3)
     assert envelope.sequence == 4
     listed = store.list_slots(WorldCohortId(cohort.cohort_id))
     assert listed == (slot,)
     row = store._db.query_one("SELECT slot_id, event_id FROM world_cohort_slots WHERE slot_id=?", (slot.slot_id,))
     assert row is not None
     assert row["event_id"] == admitted.event_id
-    replay = store.append_event(admitted)
+    replay = store.append_event(admitted, expected_sequence=3)
     assert replay.event_id == envelope.event_id
     assert store._db.query_one("SELECT COUNT(*) FROM world_cohort_slots")[0] == 1
     reconstructed = store.load(WorldCohortId(cohort.cohort_id))
@@ -421,20 +443,15 @@ def test_slot_projection_is_transactional_and_not_publicly_appendable(tmp_path: 
 def test_append_event_without_manifest_fails_closed(tmp_path: Path) -> None:
     store = _store(tmp_path)
     other = _manifest(cohort_id="world_cohort:v1:" + "d" * 64, question="other study")
-    orphan = WorldCohortArmed(
-        cohort_id=other.cohort_id,
-        manifest_sha256=other.manifest_sha256,
-        runtime_identity=other.runtime_identity,
-        satisfied_sensor_ids=("company",),
-    )
+    orphan = _armed(other)
     with pytest.raises(LookupError):
-        store.append_event(orphan)
+        store.append_event(orphan, expected_sequence=0)
 
 
 def test_anti_update_delete_triggers_cover_cohort_and_receipt_tables(tmp_path: Path) -> None:
     store = _store(tmp_path)
     cohort = _collecting(store)
-    store.append_event(WorldCohortSlotAdmitted(slot=_slot_for(cohort)))
+    store.append_event(WorldCohortSlotAdmitted(slot=_slot_for(cohort)), expected_sequence=3)
     mutations = (
         "UPDATE world_cohort_manifests SET manifest_sha256='tampered'",
         "DELETE FROM world_cohort_manifests",
@@ -589,13 +606,8 @@ def test_append_event_content_conflict_fails_closed(tmp_path: Path) -> None:
     store = _store(tmp_path)
     manifest = _manifest()
     store.register(manifest, _registered(manifest))
-    armed = WorldCohortArmed(
-        cohort_id=manifest.cohort_id,
-        manifest_sha256=manifest.manifest_sha256,
-        runtime_identity=manifest.runtime_identity,
-        satisfied_sensor_ids=("company",),
-    )
-    store.append_event(armed)
+    armed = _armed(manifest)
+    store.append_event(armed, expected_sequence=1)
     with store._db.transaction() as cur:
         cur.execute("DROP TRIGGER world_cohort_events_no_update")
         cur.execute(
@@ -612,7 +624,7 @@ def test_append_event_content_conflict_fails_closed(tmp_path: Path) -> None:
             """
         )
     with pytest.raises(WorldModelConflictError, match="different canonical content"):
-        store.append_event(armed)
+        store.append_event(armed, expected_sequence=1)
 
 
 def test_migration_creates_append_only_cohort_schema(tmp_path: Path) -> None:
@@ -652,3 +664,147 @@ def test_block_lane_event_round_trips_through_reconstruction(tmp_path: Path) -> 
     loaded = store.load(WorldCohortId(cohort.cohort_id))
     assert loaded.lane_states["markov.market"].reason is LaneBlockReason.CONFIG_DRIFT
     assert store.envelope_for(envelope.event).sequence == envelope.sequence
+
+
+def test_stale_snapshot_insert_is_rejected(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    manifest = _manifest()
+    store.register(manifest, _registered(manifest))
+    store.append_event(_armed(manifest), expected_sequence=1)
+    started = _started(manifest)
+    with pytest.raises(ValueError, match="sequence"):
+        store.append_event(started, expected_sequence=1)
+    with pytest.raises(ValueError, match="sequence"):
+        store.append_event(started, expected_sequence=99)
+    loaded = store.load(WorldCohortId(manifest.cohort_id))
+    assert [event.event_type for event in loaded.events] == [
+        "world_cohort_registered",
+        "world_cohort_armed",
+    ]
+    assert store._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 2
+
+
+def test_identical_event_repairs_missing_receipt_after_head_advances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "world_model.db"
+    store = WorldModelStore(path, clock=lambda: READY)
+    manifest = _manifest()
+    store.register(manifest, _registered(manifest))
+    armed = _armed(manifest)
+
+    def boom(*_args: object, **_kwargs: object) -> Any:
+        raise OSError("receipt commit failed")
+
+    monkeypatch.setattr(store, "_commit_availability_receipt", boom)
+    with pytest.raises(OSError, match="receipt commit failed"):
+        store.append_event(armed, expected_sequence=1)
+    assert store._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 2
+    assert store._db.query_one("SELECT COUNT(*) FROM world_availability_receipts")[0] == 1
+    unproven = store.envelope_for(armed)
+    assert unproven.availability_status == "availability_unproven"
+    assert unproven.sequence == 2
+    with pytest.raises(ValueError, match="availability_unproven"):
+        unproven.require_proven()
+
+    monkeypatch.undo()
+    started = store.append_event(_started(manifest), expected_sequence=2)
+    assert started.sequence == 3
+    assert started.event.event_type == "world_cohort_started"
+    repaired = store.append_event(armed, expected_sequence=1)
+    assert repaired.event.event_id == armed.event_id
+    assert repaired.event.event_type == "world_cohort_armed"
+    assert repaired.sequence == 2
+    assert repaired.availability_status == "eligible"
+    assert repaired.require_proven().receipt.ready_at == READY
+    assert store._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 3
+    assert store._db.query_one("SELECT COUNT(*) FROM world_availability_receipts")[0] == 3
+    loaded = store.load(WorldCohortId(manifest.cohort_id))
+    assert [event.event_type for event in loaded.events] == [
+        "world_cohort_registered",
+        "world_cohort_armed",
+        "world_cohort_started",
+    ]
+
+
+def test_concurrent_stale_writer_cannot_append_at_wrong_sequence(tmp_path: Path) -> None:
+    path = tmp_path / "world_model.db"
+    setup = WorldModelStore(path, clock=lambda: READY)
+    manifest = _manifest()
+    setup.register(manifest, _registered(manifest))
+    setup.append_event(_armed(manifest), expected_sequence=1)
+    setup.append_event(_started(manifest), expected_sequence=2)
+    cohort = setup.load(WorldCohortId(manifest.cohort_id))
+    first_event = WorldCohortSlotAdmitted(slot=_slot_for(cohort))
+    racing = WorldCohortSlotAdmitted(slot=_msft_slot(cohort))
+    setup.close()
+
+    barrier = threading.Barrier(2)
+    outcomes: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    def worker(event: WorldCohortSlotAdmitted) -> None:
+        barrier.wait()
+        local = WorldModelStore(path, clock=lambda: READY)
+        try:
+            envelope = local.append_event(event, expected_sequence=3)
+            with lock:
+                outcomes.append(("ok", envelope.event.event_id))
+        except ValueError as exc:
+            with lock:
+                outcomes.append(("conflict", str(exc)))
+        finally:
+            local.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (executor.submit(worker, first_event), executor.submit(worker, racing))
+        for future in futures:
+            future.result()
+
+    oks = [item for item in outcomes if item[0] == "ok"]
+    conflicts = [item for item in outcomes if item[0] == "conflict"]
+    assert len(oks) == 1
+    assert len(conflicts) == 1
+    assert "sequence" in conflicts[0][1]
+    verifier = WorldModelStore(path, clock=lambda: READY)
+    try:
+        assert verifier._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 4
+        loaded = verifier.load(WorldCohortId(manifest.cohort_id))
+        admitted_ids = {
+            event.event_id for event in loaded.events if isinstance(event, WorldCohortSlotAdmitted)
+        }
+        assert admitted_ids == {oks[0][1]}
+        leftover = racing if oks[0][1] == first_event.event_id else first_event
+        with pytest.raises(ValueError, match="sequence"):
+            verifier.append_event(leftover, expected_sequence=3)
+        winner = first_event if oks[0][1] == first_event.event_id else racing
+        replayed = verifier.append_event(winner, expected_sequence=3)
+        assert replayed.sequence == 4
+        assert replayed.event.event_id == oks[0][1]
+        assert verifier._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 4
+    finally:
+        verifier.close()
+
+
+def test_append_event_keeps_restart_conservative_first_seen(tmp_path: Path) -> None:
+    path = tmp_path / "world_model.db"
+    writer = WorldModelStore(path, clock=lambda: READY)
+    manifest = _manifest()
+    writer.register(manifest, _registered(manifest))
+    armed = _armed(manifest)
+    written = writer.append_event(armed, expected_sequence=1)
+    assert written.require_proven().first_seen_at == READY
+    assert written.require_proven().receipt.ready_at == READY
+    writer.close()
+
+    restarted = WorldModelStore(path, clock=lambda: BOOT)
+    replayed = restarted.append_event(armed, expected_sequence=1)
+    evidence = replayed.require_proven()
+    assert evidence.first_seen_at == BOOT
+    assert evidence.effective_ready_at == BOOT
+    assert evidence.receipt.ready_at == READY
+    looked_up = restarted.envelope_for(armed)
+    assert looked_up.require_proven().first_seen_at == BOOT
+    assert looked_up.require_proven().receipt.ready_at == READY
+    assert replayed.sequence == 2
+    assert restarted._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 2
