@@ -19,13 +19,22 @@ import type {
 import { buildMarketInfluenceGraph } from "../src/lib/market-influence-network.ts";
 import {
   clusterIdForNode,
+  explorerFallbackForFocus,
+  explorerGroups,
+  FAMILY_HULL_PADDING,
   focusedPath,
   graphHulls,
+  groupEnvelope,
   groupGraph,
+  LENS_HULL_PADDING,
   linkForceParams,
+  MAX_LABEL_LEADER_DISTANCE,
   nodeLabelVisible,
+  placeGraphLabels,
   presentGraph,
   seedNodePositions,
+  separateGroupEnvelopes,
+  separateSiblingGroupEnvelopes,
 } from "../src/lib/market-influence-layout.ts";
 
 function family(
@@ -231,6 +240,95 @@ function hullMembers(
 ): string[] {
   const hull = graphHulls(graph, lens).find((item) => item.id === hullId);
   return hull?.memberIds.slice().sort() ?? [];
+}
+
+function applyEnvelopeMoves(
+  envelopes: Array<{
+    id: string;
+    x: number;
+    y: number;
+    halfWidth: number;
+    halfHeight: number;
+  }>,
+  moves: Array<{ id: string; dx: number; dy: number }>,
+) {
+  const moved = envelopes.map((item) => ({ ...item }));
+  const byId = new Map(moved.map((item) => [item.id, item]));
+  for (const move of moves) {
+    const item = byId.get(move.id);
+    if (!item) continue;
+    item.x += move.dx;
+    item.y += move.dy;
+  }
+  return moved;
+}
+
+function envelopesOverlap(
+  left: { x: number; y: number; halfWidth: number; halfHeight: number },
+  right: { x: number; y: number; halfWidth: number; halfHeight: number },
+): boolean {
+  const overlapX = left.halfWidth + right.halfWidth -
+    Math.abs(left.x - right.x);
+  const overlapY = left.halfHeight + right.halfHeight -
+    Math.abs(left.y - right.y);
+  return overlapX > 1e-6 && overlapY > 1e-6;
+}
+
+function familyHullEnvelopes(
+  graph: MarketInfluenceGraph,
+  lens: "domain" | "macro" | "market",
+  positions: Record<string, { x: number; y: number; radius: number }>,
+) {
+  const grouping = groupGraph(graph, lens);
+  const envelopes: Array<{
+    id: string;
+    parentId: string;
+    x: number;
+    y: number;
+    halfWidth: number;
+    halfHeight: number;
+  }> = [];
+  for (const hull of graphHulls(graph, lens)) {
+    if (hull.kind !== "family") continue;
+    const members = hull.memberIds.flatMap((id) => {
+      const position = positions[id];
+      return position ? [position] : [];
+    });
+    const envelope = groupEnvelope(members, FAMILY_HULL_PADDING);
+    if (!envelope) continue;
+    envelopes.push({
+      id: hull.groupId,
+      parentId: grouping.groupByFamily.get(hull.groupId) ?? "other",
+      ...envelope,
+    });
+  }
+  return envelopes;
+}
+
+function labelRequest(
+  id: string,
+  text: string,
+  priority: "selected" | "hovered" | "path" | "lens" | "market" | "secondary",
+) {
+  return {
+    id,
+    text,
+    x: 80,
+    y: 60,
+    nodeRadius: 8,
+    fontSize: 11,
+    priority,
+  };
+}
+
+function labelBoxesOverlap(
+  left: { left: number; top: number; width: number; height: number },
+  right: { left: number; top: number; width: number; height: number },
+): boolean {
+  return left.left < right.left + right.width &&
+    left.left + left.width > right.left &&
+    left.top < right.top + right.height &&
+    left.top + left.height > right.top;
 }
 
 Deno.test("company size is uniform because reach is not a company metric", () => {
@@ -585,6 +683,451 @@ Deno.test("initial seeds are deterministic and not a fixed column layout", () =>
   const maxY = Math.max(...ys);
   assertGreater(maxX - minX, 40);
   assertGreater(maxY - minY, 40);
+});
+
+Deno.test("held companies keep a uniform radius and a held class", () => {
+  const graph = atlasGraph();
+  const withHoldings = buildMarketInfluenceGraph({
+    nodes: buildMarketAtlas({
+      current: { FR: {}, ASEAN: {}, LATAM: {} },
+      families: [
+        family("FR", "fr_energy", {
+          rank: 1,
+          symbols: ["ENGI.PA", "TTE.PA"],
+        }),
+      ],
+    }).nodes,
+    threads: [],
+    companyNames: { "ENGI.PA": "Engie", "TTE.PA": "TotalEnergies" },
+    holdings: [{ symbol: "ENGI.PA", quantity: 3, last_price: 12, fx_rate: 1 }],
+  });
+  const presented = presentGraph(withHoldings);
+  const engie = withHoldings.nodes.find((item) =>
+    item.data.symbol === "ENGI.PA"
+  );
+  const total = withHoldings.nodes.find((item) =>
+    item.data.symbol === "TTE.PA"
+  );
+  assert(engie && total);
+  assert(engie.classes.includes("held"));
+  assertEquals(total.classes.includes("held"), false);
+  assertEquals(
+    presented.radiusById.get(engie.data.id),
+    presented.radiusById.get(total.data.id),
+  );
+  assertEquals(
+    presented.radiusById.get(engie.data.id),
+    presentGraph(graph).radiusById.get(
+      graph.nodes.find((item) => item.data.symbol === "ENGI.PA")!.data.id,
+    ),
+  );
+});
+
+Deno.test("groupEnvelope includes node radius and the outer lens-hull padding", () => {
+  const single = groupEnvelope(
+    [{ x: 10, y: -4, radius: 10 }],
+    LENS_HULL_PADDING,
+  );
+  assert(single);
+  assertEquals(single.x, 10);
+  assertEquals(single.y, -4);
+  assertEquals(single.halfWidth, 10 + LENS_HULL_PADDING);
+  assertEquals(single.halfHeight, 10 + LENS_HULL_PADDING);
+
+  const pair = groupEnvelope([
+    { x: 0, y: 0, radius: 10 },
+    { x: 20, y: 0, radius: 10 },
+  ], LENS_HULL_PADDING);
+  assert(pair);
+  assertEquals(pair.x, 10);
+  assertEquals(pair.halfWidth, 10 + 10 + LENS_HULL_PADDING);
+  assertEquals(pair.halfHeight, 10 + LENS_HULL_PADDING);
+});
+
+Deno.test("separateGroupEnvelopes is deterministic and clears covering group overlap", () => {
+  const envelopes = [
+    {
+      id: "real-estate",
+      x: 120,
+      y: 80,
+      halfWidth: 90,
+      halfHeight: 70,
+    },
+    {
+      id: "utilities",
+      x: 130,
+      y: 85,
+      halfWidth: 40,
+      halfHeight: 36,
+    },
+    {
+      id: "energy",
+      x: 118,
+      y: 78,
+      halfWidth: 55,
+      halfHeight: 48,
+    },
+  ];
+  const first = separateGroupEnvelopes(envelopes, { passes: 6 });
+  const second = separateGroupEnvelopes(envelopes, { passes: 6 });
+  assertEquals(first, second);
+
+  const moved = applyEnvelopeMoves(envelopes, first);
+  for (let index = 0; index < moved.length; index += 1) {
+    for (let other = index + 1; other < moved.length; other += 1) {
+      assertEquals(envelopesOverlap(moved[index], moved[other]), false);
+    }
+  }
+});
+
+Deno.test("separateGroupEnvelopes resolves the overlap on the axis of least penetration", () => {
+  const left = {
+    id: "a",
+    x: 0,
+    y: 0,
+    halfWidth: 40,
+    halfHeight: 40,
+  };
+  const right = {
+    id: "b",
+    x: 10,
+    y: 0,
+    halfWidth: 40,
+    halfHeight: 40,
+  };
+  const moves = Object.fromEntries(
+    separateGroupEnvelopes([left, right], { passes: 1 }).map((item) => [
+      item.id,
+      item,
+    ]),
+  );
+  assert(Math.abs(moves.a.dx) > 0);
+  assertEquals(moves.a.dy, 0);
+  assertEquals(moves.b.dy, 0);
+  assert(moves.a.dx < 0);
+  assert(moves.b.dx > 0);
+});
+
+Deno.test("sibling family envelopes inside one market parent separate", () => {
+  assertEquals(FAMILY_HULL_PADDING, 14);
+  const graph = handmadeGraph();
+  const envelopes = familyHullEnvelopes(graph, "market", {
+    "family:fr-energy": { x: 120, y: 80, radius: 12 },
+    "company:unique": { x: 126, y: 82, radius: 4.25 },
+    "family:fr-banks": { x: 128, y: 84, radius: 11 },
+    "family:tw-energy": { x: 400, y: 80, radius: 11 },
+  });
+  const frEnergy = envelopes.find((item) => item.id === "family:fr-energy");
+  const frBanks = envelopes.find((item) => item.id === "family:fr-banks");
+  assert(frEnergy && frBanks);
+  assertEquals(frEnergy.parentId, "market:fr");
+  assertEquals(frBanks.parentId, "market:fr");
+  assertEquals(envelopesOverlap(frEnergy, frBanks), true);
+
+  const first = separateSiblingGroupEnvelopes(envelopes, { passes: 6 });
+  const second = separateSiblingGroupEnvelopes(envelopes, { passes: 6 });
+  assertEquals(first, second);
+
+  const moved = applyEnvelopeMoves(envelopes, first);
+  const movedFrEnergy = moved.find((item) => item.id === "family:fr-energy");
+  const movedFrBanks = moved.find((item) => item.id === "family:fr-banks");
+  assert(movedFrEnergy && movedFrBanks);
+  assertEquals(envelopesOverlap(movedFrEnergy, movedFrBanks), false);
+});
+
+Deno.test("sibling family envelopes inside one domain parent separate", () => {
+  const graph = handmadeGraph();
+  const envelopes = familyHullEnvelopes(graph, "domain", {
+    "family:fr-energy": { x: 40, y: 30, radius: 12 },
+    "company:unique": { x: 46, y: 32, radius: 4.25 },
+    "family:tw-energy": { x: 48, y: 34, radius: 11 },
+    "family:fr-banks": { x: 320, y: 30, radius: 11 },
+  });
+  const frEnergy = envelopes.find((item) => item.id === "family:fr-energy");
+  const twEnergy = envelopes.find((item) => item.id === "family:tw-energy");
+  assert(frEnergy && twEnergy);
+  assertEquals(frEnergy.parentId, "domain:energy");
+  assertEquals(twEnergy.parentId, "domain:energy");
+  assertEquals(envelopesOverlap(frEnergy, twEnergy), true);
+
+  const moved = applyEnvelopeMoves(
+    envelopes,
+    separateSiblingGroupEnvelopes(envelopes, { passes: 6 }),
+  );
+  const movedFrEnergy = moved.find((item) => item.id === "family:fr-energy");
+  const movedTwEnergy = moved.find((item) => item.id === "family:tw-energy");
+  assert(movedFrEnergy && movedTwEnergy);
+  assertEquals(envelopesOverlap(movedFrEnergy, movedTwEnergy), false);
+});
+
+Deno.test("family envelopes with different parents are not pushed by the inner resolver", () => {
+  const graph = handmadeGraph();
+  const envelopes = familyHullEnvelopes(graph, "market", {
+    "family:fr-energy": { x: 100, y: 80, radius: 12 },
+    "company:unique": { x: 106, y: 82, radius: 4.25 },
+    "family:tw-energy": { x: 108, y: 84, radius: 11 },
+    "family:fr-banks": { x: 400, y: 80, radius: 11 },
+  });
+  const frEnergy = envelopes.find((item) => item.id === "family:fr-energy");
+  const twEnergy = envelopes.find((item) => item.id === "family:tw-energy");
+  assert(frEnergy && twEnergy);
+  assertEquals(frEnergy.parentId, "market:fr");
+  assertEquals(twEnergy.parentId, "market:tw");
+  assertEquals(envelopesOverlap(frEnergy, twEnergy), true);
+
+  const moves = Object.fromEntries(
+    separateSiblingGroupEnvelopes(envelopes, { passes: 6 }).map((item) => [
+      item.id,
+      item,
+    ]),
+  );
+  assertEquals(moves["family:fr-energy"]?.dx ?? 0, 0);
+  assertEquals(moves["family:fr-energy"]?.dy ?? 0, 0);
+  assertEquals(moves["family:tw-energy"]?.dx ?? 0, 0);
+  assertEquals(moves["family:tw-energy"]?.dy ?? 0, 0);
+
+  const moved = applyEnvelopeMoves(envelopes, Object.values(moves));
+  const movedFrEnergy = moved.find((item) => item.id === "family:fr-energy");
+  const movedTwEnergy = moved.find((item) => item.id === "family:tw-energy");
+  assert(movedFrEnergy && movedTwEnergy);
+  assertEquals(envelopesOverlap(movedFrEnergy, movedTwEnergy), true);
+});
+
+Deno.test("a fixed family envelope stays put and the free sibling takes the full displacement", () => {
+  const left = {
+    id: "family:fr-energy",
+    parentId: "market:fr",
+    x: 0,
+    y: 0,
+    halfWidth: 40,
+    halfHeight: 40,
+  };
+  const right = {
+    id: "family:fr-banks",
+    parentId: "market:fr",
+    x: 10,
+    y: 0,
+    halfWidth: 40,
+    halfHeight: 40,
+  };
+  const split = Object.fromEntries(
+    separateSiblingGroupEnvelopes([left, right], { passes: 1 }).map((item) => [
+      item.id,
+      item,
+    ]),
+  );
+  const pinned = Object.fromEntries(
+    separateSiblingGroupEnvelopes([left, right], {
+      passes: 1,
+      fixedIds: new Set(["family:fr-energy"]),
+    }).map((item) => [item.id, item]),
+  );
+
+  assertEquals(pinned["family:fr-energy"].dx, 0);
+  assertEquals(pinned["family:fr-energy"].dy, 0);
+  assertEquals(pinned["family:fr-banks"].dy, 0);
+  assertEquals(
+    pinned["family:fr-banks"].dx,
+    split["family:fr-banks"].dx - split["family:fr-energy"].dx,
+  );
+  assert(pinned["family:fr-banks"].dx > split["family:fr-banks"].dx);
+
+  const bothFixed = separateSiblingGroupEnvelopes([left, right], {
+    passes: 1,
+    fixedIds: new Set(["family:fr-energy", "family:fr-banks"]),
+  });
+  assert(bothFixed.every((item) => item.dx === 0 && item.dy === 0));
+
+  const moved = applyEnvelopeMoves(
+    [left, right],
+    separateSiblingGroupEnvelopes([left, right], {
+      passes: 6,
+      fixedIds: new Set(["family:fr-energy"]),
+    }),
+  );
+  assertEquals(moved[0].x, left.x);
+  assertEquals(moved[0].y, left.y);
+  assertEquals(envelopesOverlap(moved[0], moved[1]), false);
+});
+
+Deno.test("placeGraphLabels never accepts overlapping boxes and is deterministic", () => {
+  const requests = [
+    labelRequest("selected", "Selected company", "selected"),
+    labelRequest("hovered", "Hovered theme", "hovered"),
+    labelRequest("path", "Path market", "path"),
+    labelRequest("lens", "Energy", "lens"),
+    labelRequest("market", "France", "market"),
+    labelRequest("sec-a", "Secondary A", "secondary"),
+    labelRequest("sec-b", "Secondary B", "secondary"),
+    labelRequest("sec-c", "Secondary C", "secondary"),
+  ];
+  const first = placeGraphLabels(requests);
+  const second = placeGraphLabels(requests);
+  assertEquals(first, second);
+
+  const visible = first.filter((item) => item.visible);
+  assert(visible.length >= 3);
+  for (let index = 0; index < visible.length; index += 1) {
+    for (let other = index + 1; other < visible.length; other += 1) {
+      assertEquals(labelBoxesOverlap(visible[index], visible[other]), false);
+    }
+  }
+  assertEquals(first.find((item) => item.id === "selected")?.visible, true);
+  assertEquals(first.find((item) => item.id === "hovered")?.visible, true);
+  assertEquals(first.find((item) => item.id === "path")?.visible, true);
+});
+
+Deno.test("placeGraphLabels keeps selected and hovered labels when the field is crowded", () => {
+  const requests = Array.from({ length: 16 }, (_, index) =>
+    labelRequest(
+      `n${index}`,
+      "Same crowded label",
+      index === 0
+        ? "selected"
+        : index === 1
+        ? "hovered"
+        : index === 2
+        ? "path"
+        : "secondary",
+    ));
+  const placed = placeGraphLabels(requests);
+  assertEquals(placed.find((item) => item.id === "n0")?.visible, true);
+  assertEquals(placed.find((item) => item.id === "n1")?.visible, true);
+  const visible = placed.filter((item) => item.visible);
+  for (let index = 0; index < visible.length; index += 1) {
+    for (let other = index + 1; other < visible.length; other += 1) {
+      assertEquals(labelBoxesOverlap(visible[index], visible[other]), false);
+    }
+  }
+});
+
+Deno.test("placeGraphLabels hides dense path labels instead of sending them off-canvas", () => {
+  const bounds = { width: 320, height: 220 };
+  const requests = [
+    {
+      id: "selected",
+      text: "Taiwan",
+      x: 28,
+      y: 24,
+      nodeRadius: 16,
+      fontSize: 11,
+      priority: "selected" as const,
+    },
+    {
+      id: "hovered",
+      text: "Hovered theme",
+      x: 292,
+      y: 198,
+      nodeRadius: 8,
+      fontSize: 10,
+      priority: "hovered" as const,
+    },
+    ...Array.from({ length: 48 }, (_, index) => ({
+      id: `path-${index}`,
+      text: `Path company ${index}`,
+      x: 150 + (index % 6) * 4,
+      y: 110 + Math.floor(index / 6) * 4,
+      nodeRadius: 4.25,
+      fontSize: 9,
+      priority: "path" as const,
+    })),
+  ];
+  const first = placeGraphLabels(requests, { bounds });
+  const second = placeGraphLabels(requests, { bounds });
+  assertEquals(first, second);
+
+  const byId = new Map(requests.map((item) => [item.id, item]));
+  const visible = first.filter((item) => item.visible);
+  assertEquals(first.find((item) => item.id === "selected")?.visible, true);
+  assertEquals(first.find((item) => item.id === "hovered")?.visible, true);
+  assert(
+    first.filter((item) => item.id.startsWith("path-") && item.visible).length <
+      48,
+  );
+  for (const label of visible) {
+    const request = byId.get(label.id);
+    assert(request);
+    assert(label.left >= 8 - 1e-6);
+    assert(label.top >= 8 - 1e-6);
+    assert(label.left + label.width <= bounds.width - 8 + 1e-6);
+    assert(label.top + label.height <= bounds.height - 8 + 1e-6);
+    assert(
+      Math.hypot(label.x - request.x, label.y - request.y) <=
+        MAX_LABEL_LEADER_DISTANCE + 1e-6,
+    );
+  }
+  for (let index = 0; index < visible.length; index += 1) {
+    for (let other = index + 1; other < visible.length; other += 1) {
+      assertEquals(labelBoxesOverlap(visible[index], visible[other]), false);
+    }
+  }
+});
+
+Deno.test("shared companies and lens changes do not keep an unresolved explorer group", () => {
+  const graph = handmadeGraph();
+  assertEquals(
+    explorerFallbackForFocus(graph, "market", "market:tw"),
+    "market:tw",
+  );
+  assertEquals(
+    explorerFallbackForFocus(
+      graph,
+      "market",
+      "company:cross-market",
+      "market:tw",
+    ),
+    null,
+  );
+  assertEquals(
+    explorerFallbackForFocus(graph, "domain", "company:cross-market"),
+    "domain:energy",
+  );
+  assertEquals(explorerFallbackForFocus(graph, "domain", "market:tw"), null);
+  assertEquals(explorerFallbackForFocus(graph, "macro", "market:tw"), null);
+});
+
+Deno.test("explorer groups follow the active lens without dropping semantic nodes", () => {
+  const graph = handmadeGraph();
+  const nodeIds = graph.nodes.map((item) => item.data.id).sort();
+  const markets = explorerGroups(graph, "market");
+  const domains = explorerGroups(graph, "domain");
+  const macro = explorerGroups(graph, "macro");
+
+  assertEquals(markets.map((group) => group.id), ["market:fr", "market:tw"]);
+  assertEquals(
+    markets.find((group) => group.id === "market:fr")?.childIds.slice().sort(),
+    ["family:fr-banks", "family:fr-energy"],
+  );
+  assertEquals(domains.map((group) => group.id), [
+    "domain:energy",
+    "domain:banks",
+  ]);
+  assertEquals(
+    domains.find((group) => group.id === "domain:energy")?.childIds.slice()
+      .sort(),
+    ["family:fr-energy", "family:tw-energy"],
+  );
+  assertEquals(macro.map((group) => group.id).sort(), [
+    "driver:oil-prices",
+    "driver:rates",
+  ]);
+  assertEquals(
+    macro.some((group) => group.id === "driver:evidence-oil"),
+    false,
+  );
+  assertEquals(
+    macro.find((group) => group.id === "driver:oil-prices")?.childIds.slice()
+      .sort(),
+    ["family:fr-energy", "family:tw-energy"],
+  );
+  assertEquals(graph.nodes.map((item) => item.data.id).sort(), nodeIds);
+  for (const lens of ["market", "domain", "macro"] as const) {
+    assertEquals(
+      graphHulls(graph, lens).some((item) => item.kind === "lens"),
+      true,
+    );
+    assertEquals(graph.nodes.map((item) => item.data.id).sort(), nodeIds);
+  }
 });
 
 Deno.test("semantic zoom hides company names until hover, path, or close zoom", () => {

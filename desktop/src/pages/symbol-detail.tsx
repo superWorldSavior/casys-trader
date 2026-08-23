@@ -89,14 +89,21 @@ export function SymbolDetailPage({ symbol, onBack }: Props) {
                 ) : null}
               </div>
               <p className="border-l-2 border-accent/70 pl-3 text-sm leading-relaxed text-muted">
-                {data.why.rationale || "—"}
+                {data.why.review_summary ||
+                  (whyProvenance === "ai"
+                    ? "No Casys review found in the available record."
+                    : "No summary is available for this record.")}
               </p>
               {whyProvenance && whyProvenance !== "ai" ? (
                 <p className="mt-2 text-xs leading-5 text-dim">{provenanceDetail(whyProvenance)}</p>
               ) : null}
             </div>
+          ) : query.error ? (
+            <p className="text-sm italic text-faint">The latest review is unavailable.</p>
           ) : (
-            <p className="text-sm italic text-faint">No reasoning recorded.</p>
+            <p className="text-sm italic text-faint">
+              No Casys review found in the available record.
+            </p>
           )}
         </CardBody>
       </Card>
@@ -176,7 +183,9 @@ export function SymbolDetailPage({ symbol, onBack }: Props) {
                   <span className="text-xs text-dim">{Math.round(Number(row.confidence) * 100)}% confidence</span>
                 ) : null}
               </div>
-              <p className="mt-2 text-sm leading-relaxed text-muted">{row.rationale || row.reason || "—"}</p>
+              {row.review_summary ? (
+                <p className="mt-2 text-sm leading-relaxed text-muted">{row.review_summary}</p>
+              ) : null}
             </div>
           ))}
           {(data?.decisions ?? []).length === 0 ? (

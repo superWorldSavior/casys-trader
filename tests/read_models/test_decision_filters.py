@@ -664,3 +664,643 @@ def test_handle_decisions_non_executed_row_omits_execution_status(monkeypatch) -
 
     assert payload["rows"][0].get("executed") is not True
     _assert_public_execution_contract(payload, execution_status=None)
+
+
+def _symbol_state(rows: list[dict], symbol: str = "AAPL") -> dict:
+    return {
+        "recent_decisions": rows,
+        "company_map": {symbol: "Apple"},
+        "portfolio": {"holdings": []},
+        "trade_plans": [],
+        "indicator_watches": [],
+        "armed_plans": [],
+        "symbol_wakes": {},
+        "stale_market_data": {},
+    }
+
+
+_FORBIDDEN_SYMBOL_PUBLIC_KEYS = _FORBIDDEN_PUBLIC_KEYS | {
+    "armed_plan_id",
+    "data_source",
+    "rationale",
+    "reason",
+    "reject_reason",
+    "runtime",
+}
+
+
+def _symbol_payload(
+    monkeypatch,
+    rows: list[dict],
+    symbol: str = "AAPL",
+    *,
+    ledger_path: Path | None = None,
+) -> dict:
+    bridge_api = _load_desktop_bridge_api()
+    monkeypatch.setattr(bridge_api, "load_state", lambda: _symbol_state(rows, symbol))
+    monkeypatch.setattr(
+        bridge_api,
+        "DECISIONS_LEDGER_PATH",
+        ledger_path if ledger_path is not None else Path("/nonexistent/casys-decisions.jsonl"),
+    )
+    payload = bridge_api.handle_symbol(SimpleNamespace(symbol=symbol))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _write_decisions_ledger(path: Path, rows: list[dict]) -> Path:
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _assert_symbol_public_surface(payload: dict) -> None:
+    for key in ("decisions", "why"):
+        blob = payload.get(key)
+        leaked = _walk_keys(blob) & _FORBIDDEN_SYMBOL_PUBLIC_KEYS
+        assert not leaked, (key, leaked)
+    for token in ("armed_plan_id", "execution.enabled", "sticky_unmandated", "chart_breakout"):
+        packed = json.dumps({"decisions": payload.get("decisions"), "why": payload.get("why")})
+        assert token not in packed
+
+
+def _assert_symbol_why_is_llm(payload: dict, **expected: object) -> dict:
+    why = payload["why"]
+    assert isinstance(why, dict)
+    assert str(why.get("decision_source") or "").strip().lower() == "llm"
+    assert why.get("model_called") is True
+    for key, value in expected.items():
+        assert why.get(key) == value, (key, why.get(key), value)
+    return why
+
+
+def test_handle_symbol_newer_infra_does_not_hide_latest_strict_llm(monkeypatch) -> None:
+    payload = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                rationale="Keep the position after review.",
+                cycle_ts="2026-07-01T01:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "HOLD",
+                decision_source="infra",
+                model_called=False,
+                reason="quiet_gate",
+                rationale="",
+                cycle_ts="2026-07-01T02:00:00+00:00",
+            ),
+        ],
+    )
+
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="HOLD",
+        cycle_ts="2026-07-01T01:00:00+00:00",
+    )
+    assert "rationale" not in why
+    assert "reason" not in why
+    assert why["review_summary"] == (
+        "Casys reviewed the company and kept the portfolio unchanged."
+    )
+    assert payload["decisions"][0]["decision_source"] == "infra"
+    assert "quiet_gate" not in json.dumps(payload["decisions"][0])
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_excludes_llm_without_model_called(monkeypatch) -> None:
+    payload = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                rationale="Authoritative review.",
+                cycle_ts="2026-07-01T01:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "HOLD",
+                model_called=False,
+                rationale="Cached leftover text.",
+                cycle_ts="2026-07-01T02:00:00+00:00",
+            ),
+        ],
+    )
+
+    why = _assert_symbol_why_is_llm(
+        payload,
+        cycle_ts="2026-07-01T01:00:00+00:00",
+    )
+    assert why["review_summary"] == (
+        "Casys reviewed the company and kept the portfolio unchanged."
+    )
+    assert "Cached leftover text." not in json.dumps(why)
+    assert "Authoritative review." not in json.dumps(why)
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_empty_llm_rationale_does_not_borrow_old_text(monkeypatch) -> None:
+    payload = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                rationale="Older written review.",
+                cycle_ts="2026-07-01T01:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "BUY",
+                rationale="",
+                reason="hold",
+                cycle_ts="2026-07-01T02:00:00+00:00",
+            ),
+        ],
+    )
+
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="BUY",
+        cycle_ts="2026-07-01T02:00:00+00:00",
+    )
+    assert "rationale" not in why
+    assert "reason" not in why
+    assert "Older written review." not in json.dumps(why)
+    assert "kept the portfolio unchanged" not in why["review_summary"]
+    assert why["review_summary"] == (
+        "Casys decided to buy. No execution is claimed here."
+    )
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_projects_confirmed_and_recorded_without_proof_leak(
+    monkeypatch,
+) -> None:
+    confirmed = _symbol_payload(
+        monkeypatch,
+        [_executed_row(decision=_verified_nested_decision())],
+    )
+    recorded = _symbol_payload(
+        monkeypatch,
+        [_executed_row()],
+    )
+
+    assert confirmed["decisions"][0]["executed"] is True
+    assert confirmed["decisions"][0]["execution_status"] == "confirmed"
+    assert recorded["decisions"][0]["executed"] is True
+    assert recorded["decisions"][0]["execution_status"] == "recorded"
+    for payload in (confirmed, recorded):
+        _assert_public_execution_contract(
+            {"rows": payload["decisions"]},
+            execution_status=payload["decisions"][0]["execution_status"],
+        )
+        leaked = _walk_keys(payload["decisions"]) & _FORBIDDEN_SYMBOL_PUBLIC_KEYS
+        assert not leaked, leaked
+        leaked_why = _walk_keys(payload.get("why") or {}) & _FORBIDDEN_SYMBOL_PUBLIC_KEYS
+        assert not leaked_why, leaked_why
+        blob = json.dumps({"decisions": payload["decisions"], "why": payload.get("why")})
+        for token in _INTERNAL_IDS.values():
+            assert token not in blob
+        _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_why_scan_continues_after_display_cap(monkeypatch) -> None:
+    rows = [
+        _decision(
+            "AAPL",
+            "HOLD",
+            rationale="Keep after the full review.",
+            cycle_ts="2026-07-01T00:00:00+00:00",
+        )
+    ]
+    for index in range(20):
+        rows.append(
+            _decision(
+                "AAPL",
+                "HOLD",
+                decision_source="infra",
+                model_called=False,
+                reason="quiet_gate",
+                rationale="",
+                cycle_ts=f"2026-07-02T00:{index:02d}:00+00:00",
+            )
+        )
+
+    payload = _symbol_payload(monkeypatch, rows)
+
+    assert len(payload["decisions"]) == 20
+    assert all(row.get("decision_source") == "infra" for row in payload["decisions"])
+    why = _assert_symbol_why_is_llm(
+        payload,
+        cycle_ts="2026-07-01T00:00:00+00:00",
+    )
+    assert "Keep after the full review." not in json.dumps(why)
+    assert why["review_summary"] == (
+        "Casys reviewed the company and kept the portfolio unchanged."
+    )
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_watch_and_trade_summaries_omit_raw_fields(monkeypatch) -> None:
+    watch = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                rationale="chart_breakout == -1 @4h range_pos execution.enabled=false",
+                reason="hold",
+                runtime={
+                    "indicator_watch_created": True,
+                    "armed_plan_id": "plan-secret",
+                    "data_source": "ib",
+                    "reject_reason": "sticky_unmandated",
+                },
+            )
+        ],
+    )
+    buy = _symbol_payload(
+        monkeypatch,
+        [_decision("AAPL", "BUY", rationale="ER/RS/SL24 plan-secret", reason="ok")],
+    )
+    sell = _symbol_payload(
+        monkeypatch,
+        [_decision("AAPL", "SELL", rationale="session_closed", reason="ok")],
+    )
+    close = _symbol_payload(
+        monkeypatch,
+        [_decision("AAPL", "CLOSE", rationale="sticky_unmandated", reason="ok")],
+    )
+    stale = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                decision_reason_code="DATA_STALE",
+                reason="stale_market_data",
+                rationale="stale_market_data",
+            )
+        ],
+    )
+    closed = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                decision_reason_code="MARKET_CLOSED",
+                reason="session_closed",
+                rationale="marché fermé",
+            )
+        ],
+    )
+
+    assert watch["why"]["review_summary"] == (
+        "Casys kept the portfolio unchanged and recorded another market condition to watch."
+    )
+    assert buy["why"]["review_summary"] == (
+        "Casys decided to buy. No execution is claimed here."
+    )
+    assert sell["why"]["review_summary"] == (
+        "Casys decided to sell. No execution is claimed here."
+    )
+    assert close["why"]["review_summary"] == (
+        "Casys decided to close the position. No execution is claimed here."
+    )
+    assert stale["why"]["review_summary"] == (
+        "Casys waited because the available market data was too old."
+    )
+    assert closed["why"]["review_summary"] == (
+        "Casys reviewed the company while the market was closed."
+    )
+    for payload in (watch, buy, sell, close, stale, closed):
+        _assert_symbol_public_surface(payload)
+        assert payload["why"].get("runtime") is None
+        assert "plan-secret" not in json.dumps(payload["why"])
+
+
+def test_handle_symbol_reads_strict_review_from_durable_ledger(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ledger = _write_decisions_ledger(
+        tmp_path / "decisions.jsonl",
+        [
+            _decision(
+                "MSFT",
+                "HOLD",
+                rationale="Other company.",
+                cycle_ts="2026-07-01T03:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "HOLD",
+                rationale="Keep after a durable review.",
+                cycle_ts="2026-07-01T02:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "HOLD",
+                decision_source="infra",
+                model_called=False,
+                reason="quiet_gate",
+                cycle_ts="2026-07-01T04:00:00+00:00",
+            ),
+        ],
+    )
+    tail = [
+        _decision(
+            "MSFT",
+            "HOLD",
+            cycle_ts="2026-07-02T00:00:00+00:00",
+        ),
+        _decision(
+            "AAPL",
+            "HOLD",
+            decision_source="infra",
+            model_called=False,
+            reason="quiet_gate",
+            cycle_ts="2026-07-02T01:00:00+00:00",
+        ),
+    ]
+    payload = _symbol_payload(monkeypatch, tail, ledger_path=ledger)
+
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="HOLD",
+        cycle_ts="2026-07-01T02:00:00+00:00",
+    )
+    assert why["review_summary"] == (
+        "Casys reviewed the company and kept the portfolio unchanged."
+    )
+    assert "Keep after a durable review." not in json.dumps(payload)
+    assert payload["decisions"][0]["decision_source"] == "infra"
+    assert all(row.get("cycle_ts") != "2026-07-01T02:00:00+00:00" for row in payload["decisions"])
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_durable_newest_matching_row_wins(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ledger = _write_decisions_ledger(
+        tmp_path / "decisions.jsonl",
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                cycle_ts="2026-07-01T01:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "BUY",
+                cycle_ts="2026-07-01T02:00:00+00:00",
+            ),
+            _decision(
+                "MSFT",
+                "SELL",
+                cycle_ts="2026-07-01T03:00:00+00:00",
+            ),
+        ],
+    )
+    payload = _symbol_payload(monkeypatch, [], ledger_path=ledger)
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="BUY",
+        cycle_ts="2026-07-01T02:00:00+00:00",
+    )
+    assert why["review_summary"].startswith("Casys decided to buy.")
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_durable_long_line_crossing_blocks(
+    monkeypatch, tmp_path: Path
+) -> None:
+    api = _load_desktop_bridge_api()
+    monkeypatch.setattr(api, "_DECISIONS_SCAN_BLOCK_SIZE", 64)
+    long_row = _decision(
+        "AAPL",
+        "HOLD",
+        rationale="L" * 400,
+        cycle_ts="2026-07-01T01:00:00+00:00",
+    )
+    ledger = _write_decisions_ledger(
+        tmp_path / "decisions.jsonl",
+        [
+            _decision("MSFT", "HOLD", cycle_ts="2026-07-01T00:00:00+00:00"),
+            long_row,
+            _decision("MSFT", "BUY", cycle_ts="2026-07-01T02:00:00+00:00"),
+        ],
+    )
+    monkeypatch.setattr(api, "DECISIONS_LEDGER_PATH", ledger)
+    monkeypatch.setattr(api, "load_state", lambda: _symbol_state([], "AAPL"))
+    payload = api.handle_symbol(SimpleNamespace(symbol="AAPL"))
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="HOLD",
+        cycle_ts="2026-07-01T01:00:00+00:00",
+    )
+    packed = json.dumps(why)
+    assert "L" * 20 not in packed
+    assert why["review_summary"] == (
+        "Casys reviewed the company and kept the portfolio unchanged."
+    )
+
+
+def test_handle_symbol_durable_malformed_lines_fail_closed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "decisions.jsonl"
+    good = _decision(
+        "AAPL",
+        "HOLD",
+        cycle_ts="2026-07-01T01:00:00+00:00",
+    )
+    path.write_text(
+        "\n".join(
+            [
+                "{not json",
+                json.dumps(["not", "an", "object"]),
+                json.dumps(good),
+                "{still-broken",
+                json.dumps(_decision("MSFT", "BUY")),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = _symbol_payload(monkeypatch, [], ledger_path=path)
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="HOLD",
+        cycle_ts="2026-07-01T01:00:00+00:00",
+    )
+    assert why["review_summary"].startswith("Casys reviewed the company")
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_durable_excludes_llm_without_model_called(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ledger = _write_decisions_ledger(
+        tmp_path / "decisions.jsonl",
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                rationale="Authoritative durable review.",
+                cycle_ts="2026-07-01T01:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "BUY",
+                model_called=False,
+                rationale="Cached leftover.",
+                cycle_ts="2026-07-01T02:00:00+00:00",
+            ),
+            _decision(
+                "AAPL",
+                "SELL",
+                decision_source="infra",
+                model_called=True,
+                cycle_ts="2026-07-01T03:00:00+00:00",
+            ),
+        ],
+    )
+    payload = _symbol_payload(monkeypatch, [], ledger_path=ledger)
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="HOLD",
+        cycle_ts="2026-07-01T01:00:00+00:00",
+    )
+    assert why["review_summary"].startswith("Casys reviewed the company")
+    assert "Cached leftover." not in json.dumps(payload)
+    _assert_symbol_public_surface(payload)
+
+
+def test_handle_symbol_memory_strict_review_skips_durable_ledger(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ledger = _write_decisions_ledger(
+        tmp_path / "decisions.jsonl",
+        [
+            _decision(
+                "AAPL",
+                "BUY",
+                cycle_ts="2026-07-02T00:00:00+00:00",
+            )
+        ],
+    )
+    payload = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                cycle_ts="2026-07-01T00:00:00+00:00",
+            )
+        ],
+        ledger_path=ledger,
+    )
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="HOLD",
+        cycle_ts="2026-07-01T00:00:00+00:00",
+    )
+    assert why["review_summary"].startswith("Casys reviewed the company")
+    assert payload["why"]["action"] != "BUY"
+
+
+def test_handle_symbol_hold_risk_limit_does_not_claim_a_stopped_trade(
+    monkeypatch,
+) -> None:
+    payload = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                decision_reason_code="RISK_LIMIT",
+                reason="risk:gross_exposure",
+                executed=False,
+                rationale="risk:gross_exposure would leak",
+            )
+        ],
+    )
+    why = _assert_symbol_why_is_llm(
+        payload,
+        action="HOLD",
+        executed=False,
+    )
+    assert why["review_summary"] == (
+        "Casys kept the portfolio unchanged because risk limits left no room "
+        "for a new position."
+    )
+    assert "stopped a trade" not in why["review_summary"]
+    assert "before execution" not in why["review_summary"]
+    packed = json.dumps(payload)
+    assert "risk:gross_exposure would leak" not in packed
+    assert "gross_exposure" not in json.dumps(why)
+    _assert_symbol_public_surface(payload)
+
+    blocked = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "BUY",
+                decision_reason_code="RISK_LIMIT",
+                reason="risk:order_value_exceeded",
+                executed=False,
+                runtime={"blocked": True},
+            )
+        ],
+    )
+    blocked_why = _assert_symbol_why_is_llm(blocked, action="BUY", executed=False)
+    assert blocked_why["review_summary"] == (
+        "Risk controls stopped a trade before execution."
+    )
+    _assert_symbol_public_surface(blocked)
+
+    recorded = _symbol_payload(
+        monkeypatch,
+        [
+            _decision(
+                "AAPL",
+                "HOLD",
+                decision_source="armed_plan",
+                model_called=False,
+                decision_reason_code="RISK_LIMIT",
+                reason="risk:gross_exposure",
+                executed=False,
+            )
+        ],
+    )
+    assert recorded["why"] is None
+    assert all(
+        "stopped a trade" not in json.dumps(row.get("review_summary") or "")
+        for row in recorded["decisions"]
+    )
+    _assert_symbol_public_surface(recorded)
+
+
+def test_handle_symbol_durable_io_failure_fails_closed(monkeypatch) -> None:
+    api = _load_desktop_bridge_api()
+    monkeypatch.setattr(
+        api,
+        "DECISIONS_LEDGER_PATH",
+        SimpleNamespace(
+            is_file=lambda: True,
+            open=lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk gone")),
+        ),
+    )
+    monkeypatch.setattr(api, "load_state", lambda: _symbol_state([], "AAPL"))
+    payload = api.handle_symbol(SimpleNamespace(symbol="AAPL"))
+    assert payload["why"] is None
+    assert payload["decisions"] == []

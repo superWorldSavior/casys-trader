@@ -26,6 +26,8 @@ export type GraphPresentation = {
 };
 
 const COMPANY_RADIUS = 4.25;
+export const LENS_HULL_PADDING = 28;
+export const FAMILY_HULL_PADDING = 14;
 const RADIUS_BOUNDS: Record<
   Exclude<InfluenceNodeKind, "company">,
   { min: number; max: number }
@@ -243,8 +245,9 @@ export function graphHulls(
 export function clusterIdForNode(
   graph: MarketInfluenceGraph,
   lens: GraphLens,
-  nodeId: string,
+  nodeId: string | null,
 ): string | null {
+  if (!nodeId) return null;
   const grouping = groupGraph(graph, lens);
   const node = graph.nodes.find((item) => item.data.id === nodeId);
   if (!node) return null;
@@ -269,6 +272,16 @@ export function clusterIdForNode(
       : null;
   }
   return null;
+}
+
+/** Explorer opens only a uniquely resolved group; a previous group is never kept. */
+export function explorerFallbackForFocus(
+  graph: MarketInfluenceGraph,
+  lens: GraphLens,
+  nodeId: string | null,
+  _previousFallback: string | null = null,
+): string | null {
+  return clusterIdForNode(graph, lens, nodeId);
 }
 
 export function linkForceParams(
@@ -368,6 +381,554 @@ function walkPath(
     }
   }
   return { nodeIds, edgeIds };
+}
+
+export type GroupEnvelope = {
+  id: string;
+  x: number;
+  y: number;
+  halfWidth: number;
+  halfHeight: number;
+};
+
+export type GroupDisplacement = {
+  id: string;
+  dx: number;
+  dy: number;
+};
+
+export function groupEnvelope(
+  members: readonly { x: number; y: number; radius: number }[],
+  padding = LENS_HULL_PADDING,
+): Omit<GroupEnvelope, "id"> | null {
+  if (!members.length) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const member of members) {
+    minX = Math.min(minX, member.x - member.radius - padding);
+    minY = Math.min(minY, member.y - member.radius - padding);
+    maxX = Math.max(maxX, member.x + member.radius + padding);
+    maxY = Math.max(maxY, member.y + member.radius + padding);
+  }
+  return {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+    halfWidth: (maxX - minX) / 2,
+    halfHeight: (maxY - minY) / 2,
+  };
+}
+
+export type GroupEnvelopeOptions = {
+  passes?: number;
+  gap?: number;
+  fixedIds?: ReadonlySet<string>;
+};
+
+export type SiblingGroupEnvelope = GroupEnvelope & {
+  parentId: string;
+};
+
+export function separateGroupEnvelopes(
+  envelopes: readonly GroupEnvelope[],
+  options?: GroupEnvelopeOptions,
+): GroupDisplacement[] {
+  const passes = options?.passes ?? 6;
+  const gap = options?.gap ?? 4;
+  const fixedIds = options?.fixedIds;
+  const work = envelopes
+    .map((item) => ({ ...item, dx: 0, dy: 0 }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  for (let pass = 0; pass < passes; pass += 1) {
+    for (let index = 0; index < work.length; index += 1) {
+      for (let other = index + 1; other < work.length; other += 1) {
+        const left = work[index];
+        const right = work[other];
+        const leftFixed = fixedIds?.has(left.id) === true;
+        const rightFixed = fixedIds?.has(right.id) === true;
+        if (leftFixed && rightFixed) continue;
+        const overlapX = left.halfWidth + right.halfWidth + gap -
+          Math.abs(left.x - right.x);
+        const overlapY = left.halfHeight + right.halfHeight + gap -
+          Math.abs(left.y - right.y);
+        if (overlapX <= 0 || overlapY <= 0) continue;
+        if (overlapX <= overlapY) {
+          applyEnvelopeAxisPush(
+            left,
+            right,
+            "x",
+            overlapX,
+            leftFixed,
+            rightFixed,
+          );
+        } else {
+          applyEnvelopeAxisPush(
+            left,
+            right,
+            "y",
+            overlapY,
+            leftFixed,
+            rightFixed,
+          );
+        }
+      }
+    }
+  }
+  return work
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((item) => ({ id: item.id, dx: item.dx, dy: item.dy }));
+}
+
+export function separateSiblingGroupEnvelopes(
+  envelopes: readonly SiblingGroupEnvelope[],
+  options?: GroupEnvelopeOptions,
+): GroupDisplacement[] {
+  const byParent = new Map<string, GroupEnvelope[]>();
+  for (const envelope of envelopes) {
+    const group = byParent.get(envelope.parentId) ?? [];
+    group.push(envelope);
+    byParent.set(envelope.parentId, group);
+  }
+  const moves: GroupDisplacement[] = [];
+  for (const parentId of Array.from(byParent.keys()).sort()) {
+    const group = byParent.get(parentId);
+    if (!group) continue;
+    moves.push(...separateGroupEnvelopes(group, options));
+  }
+  return moves.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+type EnvelopeWork = GroupEnvelope & { dx: number; dy: number };
+
+function applyEnvelopeAxisPush(
+  left: EnvelopeWork,
+  right: EnvelopeWork,
+  axis: "x" | "y",
+  overlap: number,
+  leftFixed: boolean,
+  rightFixed: boolean,
+): void {
+  const delta = axis === "x" ? "dx" : "dy";
+  const dir = left[axis] <= right[axis] ? -1 : 1;
+  if (leftFixed) {
+    right[axis] -= dir * overlap;
+    right[delta] -= dir * overlap;
+    return;
+  }
+  if (rightFixed) {
+    left[axis] += dir * overlap;
+    left[delta] += dir * overlap;
+    return;
+  }
+  const push = overlap / 2;
+  left[axis] += dir * push;
+  right[axis] -= dir * push;
+  left[delta] += dir * push;
+  right[delta] -= dir * push;
+}
+
+export type LabelPriority =
+  | "selected"
+  | "hovered"
+  | "path"
+  | "lens"
+  | "market"
+  | "secondary";
+
+export type LabelRequest = {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  nodeRadius: number;
+  fontSize: number;
+  priority: LabelPriority;
+};
+
+export type PlacedLabel = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  left: number;
+  top: number;
+  visible: boolean;
+  leader: boolean;
+  textAnchor: "start" | "middle" | "end";
+};
+
+const LABEL_PRIORITY_RANK: Record<LabelPriority, number> = {
+  selected: 0,
+  hovered: 1,
+  path: 2,
+  lens: 3,
+  market: 4,
+  secondary: 5,
+};
+
+const REQUIRED_LABEL = new Set<LabelPriority>([
+  "selected",
+  "hovered",
+]);
+
+export const LABEL_CANVAS_INSET = 8;
+export const MAX_LABEL_LEADER_DISTANCE = 64;
+
+export type GraphLabelBounds = {
+  width: number;
+  height: number;
+  inset?: number;
+};
+
+export type GraphLabelOptions = {
+  bounds?: GraphLabelBounds;
+  maxLeaderDistance?: number;
+};
+
+export function placeGraphLabels(
+  requests: readonly LabelRequest[],
+  options?: GraphLabelOptions,
+): PlacedLabel[] {
+  const accepted: PlacedLabel[] = [];
+  const byId = new Map<string, PlacedLabel>();
+  const bounds = options?.bounds;
+  const inset = bounds?.inset ?? LABEL_CANVAS_INSET;
+  const maxLeader = options?.maxLeaderDistance ?? MAX_LABEL_LEADER_DISTANCE;
+  const ordered = requests
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) =>
+      LABEL_PRIORITY_RANK[left.item.priority] -
+        LABEL_PRIORITY_RANK[right.item.priority] ||
+      left.item.id.localeCompare(right.item.id) ||
+      left.index - right.index
+    );
+
+  for (const { item } of ordered) {
+    const size = estimateLabelSize(item.text, item.fontSize);
+    const required = REQUIRED_LABEL.has(item.priority);
+    let placed: PlacedLabel | null = null;
+    for (const slot of labelSlots(item.nodeRadius, required, maxLeader)) {
+      const candidate = makeLabelCandidate(item, size, slot);
+      if (
+        !labelCandidateAllowed(
+          candidate,
+          item,
+          accepted,
+          bounds,
+          inset,
+          maxLeader,
+        )
+      ) continue;
+      placed = candidate;
+      break;
+    }
+    if (!placed && required) {
+      placed = forceRequiredLabel(
+        item,
+        size,
+        accepted,
+        bounds,
+        inset,
+        maxLeader,
+      );
+    }
+    if (!placed) {
+      placed = {
+        id: item.id,
+        x: item.x + item.nodeRadius + 8,
+        y: item.y,
+        width: size.width,
+        height: size.height,
+        left: item.x + item.nodeRadius + 8,
+        top: item.y - size.height / 2,
+        visible: false,
+        leader: false,
+        textAnchor: "start",
+      };
+    }
+    if (placed.visible) accepted.push(placed);
+    byId.set(item.id, placed);
+  }
+
+  return requests.map((item) =>
+    byId.get(item.id) ?? {
+      id: item.id,
+      x: item.x,
+      y: item.y,
+      width: 0,
+      height: 0,
+      left: item.x,
+      top: item.y,
+      visible: false,
+      leader: false,
+      textAnchor: "middle",
+    }
+  );
+}
+
+export type ExplorerGroup = {
+  id: string;
+  childIds: string[];
+};
+
+export function explorerGroups(
+  graph: MarketInfluenceGraph,
+  lens: GraphLens,
+): ExplorerGroup[] {
+  const grouping = groupGraph(graph, lens);
+  const childrenByGroup = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    if (node.data.kind !== "family") continue;
+    const groupId = grouping.groupByFamily.get(node.data.id) ?? "other";
+    const children = childrenByGroup.get(groupId) ?? [];
+    children.push(node.data.id);
+    childrenByGroup.set(groupId, children);
+  }
+  const groupedDriverIds = new Set(grouping.groupByFamily.values());
+  const roots = graph.nodes.filter((node) => {
+    if (lens === "market") return node.data.kind === "market";
+    if (lens === "domain") return node.data.kind === "domain";
+    return node.data.kind === "driver" && groupedDriverIds.has(node.data.id);
+  });
+  const groups = roots.map((node) => ({
+    id: node.data.id,
+    childIds: childrenByGroup.get(node.data.id) ?? [],
+  }));
+  const otherChildren = childrenByGroup.get("other") ?? [];
+  if (otherChildren.length) {
+    groups.push({ id: "other", childIds: otherChildren });
+  }
+  return groups;
+}
+
+function estimateLabelSize(
+  text: string,
+  fontSize: number,
+): { width: number; height: number } {
+  const width = Math.max(12, Array.from(text).length * fontSize * 0.62) + 8;
+  const height = fontSize * 1.25 + 4;
+  return { width, height };
+}
+
+function labelBox(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  anchor: "start" | "middle" | "end",
+): { left: number; top: number } {
+  const left = anchor === "start"
+    ? x
+    : anchor === "end"
+    ? x - width
+    : x - width / 2;
+  return { left, top: y - height / 2 };
+}
+
+function labelRectsOverlap(
+  left: { left: number; top: number; width: number; height: number },
+  right: { left: number; top: number; width: number; height: number },
+): boolean {
+  return left.left < right.left + right.width &&
+    left.left + left.width > right.left &&
+    left.top < right.top + right.height &&
+    left.top + left.height > right.top;
+}
+
+type LabelSlot = {
+  dx: number;
+  dy: number;
+  anchor: "start" | "middle" | "end";
+  leader: boolean;
+};
+
+function makeLabelCandidate(
+  item: LabelRequest,
+  size: { width: number; height: number },
+  slot: LabelSlot,
+): PlacedLabel {
+  const x = item.x + slot.dx;
+  const y = item.y + slot.dy;
+  const box = labelBox(x, y, size.width, size.height, slot.anchor);
+  return {
+    id: item.id,
+    x,
+    y,
+    width: size.width,
+    height: size.height,
+    left: box.left,
+    top: box.top,
+    visible: true,
+    leader: slot.leader,
+    textAnchor: slot.anchor,
+  };
+}
+
+function labelLeaderDistance(item: LabelRequest, placed: PlacedLabel): number {
+  return Math.hypot(placed.x - item.x, placed.y - item.y);
+}
+
+function labelFitsBounds(
+  label: { left: number; top: number; width: number; height: number },
+  bounds: GraphLabelBounds,
+  inset: number,
+): boolean {
+  return label.left >= inset - 1e-6 &&
+    label.top >= inset - 1e-6 &&
+    label.left + label.width <= bounds.width - inset + 1e-6 &&
+    label.top + label.height <= bounds.height - inset + 1e-6;
+}
+
+function clampLabelToBounds(
+  label: PlacedLabel,
+  bounds: GraphLabelBounds,
+  inset: number,
+): PlacedLabel {
+  const innerWidth = Math.max(0, bounds.width - 2 * inset);
+  const innerHeight = Math.max(0, bounds.height - 2 * inset);
+  let left = label.left;
+  let top = label.top;
+  if (label.width <= innerWidth) {
+    left = Math.min(
+      Math.max(left, inset),
+      bounds.width - inset - label.width,
+    );
+  } else {
+    left = inset;
+  }
+  if (label.height <= innerHeight) {
+    top = Math.min(
+      Math.max(top, inset),
+      bounds.height - inset - label.height,
+    );
+  } else {
+    top = inset;
+  }
+  const x = label.textAnchor === "start"
+    ? left
+    : label.textAnchor === "end"
+    ? left + label.width
+    : left + label.width / 2;
+  return { ...label, x, y: top + label.height / 2, left, top, leader: true };
+}
+
+function labelCandidateAllowed(
+  candidate: PlacedLabel,
+  item: LabelRequest,
+  accepted: readonly PlacedLabel[],
+  bounds: GraphLabelBounds | undefined,
+  inset: number,
+  maxLeader: number,
+): boolean {
+  if (accepted.some((other) => labelRectsOverlap(candidate, other))) {
+    return false;
+  }
+  if (labelLeaderDistance(item, candidate) > maxLeader + 1e-6) return false;
+  if (bounds && !labelFitsBounds(candidate, bounds, inset)) return false;
+  return true;
+}
+
+function forceRequiredLabel(
+  item: LabelRequest,
+  size: { width: number; height: number },
+  accepted: readonly PlacedLabel[],
+  bounds: GraphLabelBounds | undefined,
+  inset: number,
+  maxLeader: number,
+): PlacedLabel | null {
+  const minDist = item.nodeRadius + 8;
+  for (let dist = minDist; dist <= maxLeader + 1e-6; dist += 6) {
+    for (let step = 0; step < 16; step += 1) {
+      const angle = (Math.PI * 2 * step) / 16;
+      const dx = Math.cos(angle) * dist;
+      const dy = Math.sin(angle) * dist;
+      const candidate = makeLabelCandidate(item, size, {
+        dx,
+        dy,
+        anchor: Math.abs(dx) >= Math.abs(dy)
+          ? (dx >= 0 ? "start" : "end")
+          : "middle",
+        leader: dist > minDist + 1,
+      });
+      if (
+        labelCandidateAllowed(
+          candidate,
+          item,
+          accepted,
+          bounds,
+          inset,
+          maxLeader,
+        )
+      ) {
+        return candidate;
+      }
+    }
+  }
+  if (!bounds) return null;
+  for (const slot of labelSlots(item.nodeRadius, true, maxLeader)) {
+    const clamped = clampLabelToBounds(
+      makeLabelCandidate(item, size, slot),
+      bounds,
+      inset,
+    );
+    if (
+      labelCandidateAllowed(clamped, item, accepted, bounds, inset, maxLeader)
+    ) {
+      return clamped;
+    }
+  }
+  const pinned = clampLabelToBounds(
+    makeLabelCandidate(item, size, {
+      dx: item.nodeRadius + 8,
+      dy: 0,
+      anchor: "start",
+      leader: true,
+    }),
+    bounds,
+    inset,
+  );
+  if (accepted.some((other) => labelRectsOverlap(pinned, other))) return null;
+  if (labelLeaderDistance(item, pinned) > maxLeader + 1e-6) return null;
+  if (!labelFitsBounds(pinned, bounds, inset)) return null;
+  return pinned;
+}
+
+function labelSlots(
+  radius: number,
+  required: boolean,
+  maxLeader: number,
+): LabelSlot[] {
+  const base: Array<
+    { dx: number; dy: number; anchor: "start" | "middle" | "end" }
+  > = [
+    { dx: radius + 8, dy: 0, anchor: "start" },
+    { dx: -(radius + 8), dy: 0, anchor: "end" },
+    { dx: 0, dy: radius + 10, anchor: "middle" },
+    { dx: 0, dy: -(radius + 10), anchor: "middle" },
+    { dx: radius + 8, dy: radius + 8, anchor: "start" },
+    { dx: -(radius + 8), dy: radius + 8, anchor: "end" },
+    { dx: radius + 8, dy: -(radius + 8), anchor: "start" },
+    { dx: -(radius + 8), dy: -(radius + 8), anchor: "end" },
+  ];
+  const scales = required ? [1, 1.35, 1.7, 2.05, 2.4] : [1];
+  const slots: LabelSlot[] = [];
+  for (const scale of scales) {
+    for (const slot of base) {
+      const dx = slot.dx * scale;
+      const dy = slot.dy * scale;
+      if (scale > 1 && Math.hypot(dx, dy) > maxLeader + 1e-6) continue;
+      slots.push({
+        dx,
+        dy,
+        anchor: slot.anchor,
+        leader: scale > 1,
+      });
+    }
+  }
+  return slots;
 }
 
 function hash01(value: string): number {

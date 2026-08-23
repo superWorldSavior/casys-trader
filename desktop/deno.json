@@ -10,7 +10,8 @@
   "imports": {
     "@std/assert": "jsr:@std/assert@1",
     "@std/media-types": "jsr:@std/media-types@1",
-    "@std/path": "jsr:@std/path@1"
+    "@std/path": "jsr:@std/path@1",
+    "@/lib/types": "./src/lib/types.ts"
   },
   "tasks": {
     "ui:dev": "./node_modules/.bin/vite --open",

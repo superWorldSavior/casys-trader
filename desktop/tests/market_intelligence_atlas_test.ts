@@ -132,6 +132,34 @@ Deno.test("rank 1 sits nearer its own scope center than a worse rank in that sco
   assertEquals(andesBest.scopeKey, "ANDES");
 });
 
+Deno.test("family symbols are the stable case-insensitive union of current and sticky symbols", () => {
+  const layout = buildMarketAtlas({
+    current: { FR: {} },
+    families: [
+      family("FR", "energy", {
+        rank: 1,
+        symbols: ["ENGI.PA", "tte.pa", "  "],
+        sticky_symbols: ["TTE.PA", "EDF.PA", "engi.pa", ""],
+      }),
+    ],
+  });
+  assertEquals(layout.nodes[0].symbols, ["ENGI.PA", "tte.pa", "EDF.PA"]);
+});
+
+Deno.test("sticky-only symbols stay on the family when they left the live candidate list", () => {
+  const layout = buildMarketAtlas({
+    current: { FR: {} },
+    families: [
+      family("FR", "utilities", {
+        rank: 2,
+        symbols: [],
+        sticky_symbols: ["ENGI.PA"],
+      }),
+    ],
+  });
+  assertEquals(layout.nodes[0].symbols, ["ENGI.PA"]);
+});
+
 Deno.test("candidate_count of zero is preserved and still receives a visible ranked radius", () => {
   const layout = buildMarketAtlas({
     current: { LEVANT: {} },
@@ -293,15 +321,30 @@ Deno.test("family threads project governed groups across arbitrary market scopes
     group: "technology",
     label: "Technology & semiconductors",
     venues: {
-      FR: { leader: "memory", families: [{ family: "memory" }, { family: "boards" }] },
+      FR: {
+        leader: "memory",
+        families: [{ family: "memory" }, { family: "boards" }],
+      },
       ASEAN: { leader: "semis", families: [{ family: "semis" }] },
-      LATAM: { leader: "software", families: [{ family: "software" }, { family: "missing" }] },
+      LATAM: {
+        leader: "software",
+        families: [{ family: "software" }, { family: "missing" }],
+      },
     },
   }]);
 
   assertEquals(threads.length, 1);
-  assertEquals(threads[0].nodeIds, ["FR::memory", "FR::boards", "ASEAN::semis", "LATAM::software"]);
-  assertEquals(threads[0].leaderIds, ["FR::memory", "ASEAN::semis", "LATAM::software"]);
+  assertEquals(threads[0].nodeIds, [
+    "FR::memory",
+    "FR::boards",
+    "ASEAN::semis",
+    "LATAM::software",
+  ]);
+  assertEquals(threads[0].leaderIds, [
+    "FR::memory",
+    "ASEAN::semis",
+    "LATAM::software",
+  ]);
   assertEquals(threads[0].possibleInfluence, "AI and compute investment");
   assertEquals(threadForNode(threads, "LATAM::banks"), null);
   assertEquals(threadForNode(threads, "ASEAN::semis")?.key, "technology");
@@ -325,7 +368,12 @@ Deno.test("thread relations keep close peers and one leader per other market", (
     group: "materials",
     label: "Materials",
     venues: {
-      ALPHA: { leader: "a1", families: ["a1", "a2", "a3", "a4", "a5"].map((name) => ({ family: name })) },
+      ALPHA: {
+        leader: "a1",
+        families: ["a1", "a2", "a3", "a4", "a5"].map((name) => ({
+          family: name,
+        })),
+      },
       BETA: { leader: "b1", families: [{ family: "b1" }, { family: "b2" }] },
       GAMMA: { leader: "g1", families: [{ family: "g1" }] },
     },
@@ -340,25 +388,53 @@ Deno.test("thread relations keep close peers and one leader per other market", (
     "BETA::b1",
     "GAMMA::g1",
   ]);
-  assertEquals(relations.map((relation) => relation.crossScope), [false, false, false, true, true]);
+  assertEquals(relations.map((relation) => relation.crossScope), [
+    false,
+    false,
+    false,
+    true,
+    true,
+  ]);
 });
 
 Deno.test("possible influence labels stay heuristic and have a safe fallback", () => {
-  assertEquals(possibleInfluenceLabel("energy", "Energy"), "Oil and gas prices");
-  assertEquals(possibleInfluenceLabel("real_estate", "Real estate"), "Rates and financing");
-  assertEquals(possibleInfluenceLabel("novel", "Unmapped domain"), "Broader market conditions");
+  assertEquals(
+    possibleInfluenceLabel("energy", "Energy"),
+    "Oil and gas prices",
+  );
+  assertEquals(
+    possibleInfluenceLabel("real_estate", "Real estate"),
+    "Rates and financing",
+  );
+  assertEquals(
+    possibleInfluenceLabel("novel", "Unmapped domain"),
+    "Broader market conditions",
+  );
 });
 
 Deno.test("evidence links prefer shared sources, then symbols, then explicit topic matches", () => {
   const node = buildMarketAtlas({
     current: { X: {} },
-    families: [family("X", "energy", { rank: 1, summary: "Oil and inflation remain the main inputs." })],
+    families: [
+      family("X", "energy", {
+        rank: 1,
+        summary: "Oil and inflation remain the main inputs.",
+      }),
+    ],
   }).nodes[0];
   const links = buildAtlasEvidenceLinks(node, {
     zones: {
       oil: [
-        { point: "Operational oil placeholder", source_refs: ["ignored"], is_operational: true },
-        { point: "Brent crude is elevated.", source_refs: ["oil:1"], symbols: ["AAA"] },
+        {
+          point: "Operational oil placeholder",
+          source_refs: ["ignored"],
+          is_operational: true,
+        },
+        {
+          point: "Brent crude is elevated.",
+          source_refs: ["oil:1"],
+          symbols: ["AAA"],
+        },
       ],
       rates: [{ point: "Rates remain restrictive.", symbols: ["AAA"] }],
       inflation: [{ point: "Inflation reflects higher input prices." }],
@@ -388,8 +464,16 @@ Deno.test("opposing family observations make an evidence path mixed", () => {
     zones: { gold: [{ point: "Gold moved higher.", source_refs: ["gold:1"] }] },
     families: {
       materials: [
-        { point: "Gold supports miners.", direction: "bullish", source_refs: ["gold:1"] },
-        { point: "Costs pressure margins.", direction: "bearish", source_refs: ["gold:1"] },
+        {
+          point: "Gold supports miners.",
+          direction: "bullish",
+          source_refs: ["gold:1"],
+        },
+        {
+          point: "Costs pressure margins.",
+          direction: "bearish",
+          source_refs: ["gold:1"],
+        },
       ],
     },
   });

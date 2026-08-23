@@ -257,6 +257,7 @@ export function TodayPage({ snapshot, onSymbol }: Props) {
             families={regionQuery.data.families}
             comparison={regionQuery.data.comparison}
             companyMap={snapshot?.company_map ?? {}}
+            holdings={snapshot?.portfolio.holdings}
             activeScope={activeMarket}
             onSelectScope={setSelectedMarket}
           />

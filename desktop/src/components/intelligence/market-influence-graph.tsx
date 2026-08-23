@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { drag } from "d3-drag";
 import {
   type Force,
@@ -22,31 +22,80 @@ import {
   zoomIdentity,
   type ZoomTransform,
 } from "d3-zoom";
-import { familyLabel, plainMarketLanguage, venueLabel } from "@/lib/humanize";
+import { useSymbol } from "@/hooks/use-desk-api";
+import { useCompanyIntelligence } from "@/hooks/use-intelligence";
+import {
+  formatAgo,
+  formatMarketPrice,
+  formatQty,
+  formatUsd,
+} from "@/lib/format";
+import {
+  conditionLabel,
+  decisionActionLabel,
+  plainMarketLanguage,
+  venueLabel,
+} from "@/lib/humanize";
 import type { AtlasNode } from "@/lib/market-intelligence-atlas";
 import {
   clusterIdForNode,
+  explorerFallbackForFocus,
+  explorerGroups,
+  FAMILY_HULL_PADDING,
   focusedPath,
   type GraphHull,
   graphHulls,
   type GraphLens,
+  groupEnvelope,
+  type LabelPriority,
+  LENS_HULL_PADDING,
   linkForceParams,
   nodeLabelVisible,
+  placeGraphLabels,
   presentGraph,
   seedNodePositions,
+  separateGroupEnvelopes,
+  separateSiblingGroupEnvelopes,
 } from "@/lib/market-influence-layout";
 import {
+  chooseInitialPortfolioFocus,
+  type CompanyHolding,
+  directedContextPath,
   familyGraphId,
+  type GuidedPortfolioPath,
+  guidedPortfolioPath,
+  impliedPathOrigin,
   type InfluenceEdgeBasis,
   type InfluenceNodeKind,
   type MarketInfluenceGraph,
+  retainedPathOrigin,
 } from "@/lib/market-influence-network";
+import {
+  graphNodeLabel,
+  interactiveGraphLabel,
+  type MarketIntelligenceContext,
+  matchingCompany,
+  projectCompanyDigest,
+  projectDomainReading,
+  projectFactorReading,
+  projectMarketReading,
+  projectThemeEvidence,
+} from "@/lib/market-intelligence-reading";
+import { decisionProvenance } from "@/lib/provenance";
+import type {
+  ArmedRow,
+  DecisionRow,
+  ExitPlanRow,
+  SymbolDetail,
+  WatchRow,
+} from "@/lib/types";
 
 type Props = {
   graph: MarketInfluenceGraph;
   atlasNodes: readonly AtlasNode[];
   selectedAtlasNodeId: string;
   onSelect: (node: AtlasNode) => void;
+  intelligenceContext?: MarketIntelligenceContext;
 };
 
 type SimNode = SimulationNodeDatum & {
@@ -57,6 +106,8 @@ type SimNode = SimulationNodeDatum & {
   extraClass: string;
   radius: number;
   clusterId: string | null;
+  held: boolean;
+  holdShare: number | null;
 };
 
 type SimLink = SimulationLinkDatum<SimNode> & {
@@ -76,8 +127,12 @@ type ForceGraphController = {
     lens: GraphLens;
     compact: boolean;
     focusId?: string | null;
+    originId?: string | null;
   }) => void;
-  setFocus: (nodeId: string | null, options?: { recenter?: boolean }) => void;
+  setFocus: (
+    nodeId: string | null,
+    options?: { recenter?: boolean; originId?: string | null },
+  ) => void;
   fit: () => void;
   reorganize: () => void;
   zoomBy: (factor: number) => void;
@@ -99,65 +154,83 @@ export function MarketInfluenceGraphView({
   atlasNodes,
   selectedAtlasNodeId,
   onSelect,
+  intelligenceContext,
 }: Props) {
   const graphContainerRef = useRef<HTMLDivElement | null>(null);
   const graphControllerRef = useRef<ForceGraphController | null>(null);
   const latestGraphRef = useRef(graph);
   const compactRef = useRef(false);
   const lensRef = useRef<GraphLens>("market");
+  const userHasChosenRef = useRef(false);
+  const pathOriginIdRef = useRef<string | null>(null);
   const focusIdRef = useRef<string | null>(
-    familyGraphId(selectedAtlasNodeId),
+    chooseInitialPortfolioFocus(graph, familyGraphId(selectedAtlasNodeId)),
   );
   const atlasNodesRef = useRef(
     new Map(atlasNodes.map((node) => [node.id, node])),
   );
   const onSelectRef = useRef(onSelect);
-  const chooseNodeRef = useRef<(graphNodeId: string) => void>(() => {});
+  const chooseNodeRef = useRef<
+    (graphNodeId: string, originId?: string | null) => void
+  >(() => {});
   const [compact, setCompact] = useState(false);
   const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [lens, setLens] = useState<GraphLens>("market");
   const [detailNodeId, setDetailNodeId] = useState(() =>
-    familyGraphId(selectedAtlasNodeId)
+    chooseInitialPortfolioFocus(graph, familyGraphId(selectedAtlasNodeId))
   );
-  const [explorerScope, setExplorerScope] = useState(() =>
-    atlasNodes.find((node) => node.id === selectedAtlasNodeId)?.scopeKey ??
-      atlasNodes[0]?.scopeKey ?? ""
+  const [graphFocusId, setGraphFocusId] = useState<string | null>(() =>
+    chooseInitialPortfolioFocus(graph, familyGraphId(selectedAtlasNodeId))
   );
+  const [pathOriginId, setPathOriginId] = useState<string | null>(null);
+  const [fallbackGroupId, setFallbackGroupId] = useState<string | null>(null);
+  const detailNodeIdRef = useRef(detailNodeId);
+  detailNodeIdRef.current = detailNodeId;
 
   const selectedGraphNodeId = useMemo(
     () => familyGraphId(selectedAtlasNodeId),
     [selectedAtlasNodeId],
   );
-  const pathSummary = useMemo(() => {
-    const selected = graph.nodes.find((node) =>
-      node.data.id === selectedGraphNodeId
-    );
-    if (!selected) return "The complete market map is visible.";
-    return `${
-      displayNodeLabel(selected.data)
-    } is selected. Its incoming market paths are highlighted while the complete map remains visible.`;
-  }, [graph.nodes, selectedGraphNodeId]);
-
   latestGraphRef.current = graph;
   compactRef.current = compact;
   lensRef.current = lens;
   atlasNodesRef.current = new Map(atlasNodes.map((node) => [node.id, node]));
   onSelectRef.current = onSelect;
-  chooseNodeRef.current = (graphNodeId: string) => {
+  chooseNodeRef.current = (graphNodeId: string, originId?: string | null) => {
+    userHasChosenRef.current = true;
+    const graph = latestGraphRef.current;
+    const graphNode = graph.nodes.find((node) => node.data.id === graphNodeId);
+    const nextOrigin = originId === undefined
+      ? impliedPathOrigin(
+        graph,
+        graphNodeId,
+        pathOriginIdRef.current,
+        focusIdRef.current,
+      )
+      : typeof originId === "string" && originId.length > 0 &&
+          originId !== graphNodeId
+      ? originId
+      : null;
+    pathOriginIdRef.current = nextOrigin;
+    setPathOriginId(nextOrigin);
     focusIdRef.current = graphNodeId;
+    setGraphFocusId(graphNodeId);
     setDetailNodeId(graphNodeId);
-    graphControllerRef.current?.setFocus(graphNodeId, { recenter: true });
-    const graphNode = latestGraphRef.current.nodes.find((node) =>
-      node.data.id === graphNodeId
-    );
+    graphControllerRef.current?.setFocus(graphNodeId, {
+      recenter: true,
+      originId: nextOrigin,
+    });
     const atlasNode = atlasNodesRef.current.get(
       String(graphNode?.data.atlasNodeId ?? ""),
     );
-    if (graphNode?.data.scopeKey) {
-      setExplorerScope(graphNode.data.scopeKey);
-    } else if (atlasNode?.scopeKey) {
-      setExplorerScope(atlasNode.scopeKey);
-    }
+    setFallbackGroupId(
+      explorerFallbackForFocus(
+        latestGraphRef.current,
+        lensRef.current,
+        graphNodeId,
+        fallbackGroupId,
+      ),
+    );
     if (atlasNode) onSelectRef.current(atlasNode);
   };
 
@@ -181,7 +254,11 @@ export function MarketInfluenceGraphView({
       controller = createMarketForceGraph(container, {
         onSelect: (graphNodeId) => chooseNodeRef.current(graphNodeId),
         onClearFocus: () => {
+          userHasChosenRef.current = true;
+          pathOriginIdRef.current = null;
+          setPathOriginId(null);
           focusIdRef.current = null;
+          setGraphFocusId(null);
           graphControllerRef.current?.setFocus(null);
         },
       });
@@ -192,6 +269,7 @@ export function MarketInfluenceGraphView({
         lens: lensRef.current,
         compact: compactRef.current,
         focusId: focusIdRef.current,
+        originId: pathOriginIdRef.current,
       });
     } catch (error: unknown) {
       setLoadFailed(
@@ -207,27 +285,90 @@ export function MarketInfluenceGraphView({
   }, []);
 
   useEffect(() => {
+    const origin = retainedPathOrigin(
+      graph,
+      focusIdRef.current,
+      pathOriginIdRef.current,
+    );
+    if (origin !== pathOriginIdRef.current) {
+      pathOriginIdRef.current = origin;
+      setPathOriginId(origin);
+    }
     graphControllerRef.current?.update({
       graph,
       lens,
       compact,
       focusId: focusIdRef.current,
+      originId: origin,
     });
   }, [compact, graph, lens]);
 
   useEffect(() => {
-    focusIdRef.current = selectedGraphNodeId;
-    setDetailNodeId(selectedGraphNodeId);
-    const selectedAtlasNode = atlasNodesRef.current.get(selectedAtlasNodeId);
-    if (selectedAtlasNode) setExplorerScope(selectedAtlasNode.scopeKey);
-    graphControllerRef.current?.setFocus(selectedGraphNodeId, {
-      recenter: true,
-    });
-  }, [selectedAtlasNodeId, selectedGraphNodeId]);
+    const desired = chooseInitialPortfolioFocus(
+      graph,
+      familyGraphId(selectedAtlasNodeId),
+    );
+    const adopt = (next: string, recenter = false) => {
+      focusIdRef.current = next;
+      pathOriginIdRef.current = null;
+      setPathOriginId(null);
+      setGraphFocusId(next);
+      setDetailNodeId(next);
+      setFallbackGroupId(
+        explorerFallbackForFocus(graph, lensRef.current, next),
+      );
+      graphControllerRef.current?.setFocus(next, {
+        originId: null,
+        recenter,
+      });
+    };
+    if (!userHasChosenRef.current) {
+      if (!desired || desired === focusIdRef.current) return;
+      adopt(desired);
+      return;
+    }
+    if (focusIdRef.current == null) {
+      const retained = detailNodeIdRef.current;
+      if (
+        retained &&
+        !graph.nodes.some((node) => node.data.id === retained) &&
+        desired
+      ) {
+        setDetailNodeId(desired);
+      }
+      return;
+    }
+    const stillThere = graph.nodes.some((node) =>
+      node.data.id === focusIdRef.current
+    );
+    if (stillThere) return;
+    if (!desired) {
+      focusIdRef.current = null;
+      pathOriginIdRef.current = null;
+      setPathOriginId(null);
+      setGraphFocusId(null);
+      graphControllerRef.current?.setFocus(null);
+      return;
+    }
+    adopt(desired, true);
+  }, [graph, selectedAtlasNodeId]);
 
   const detailNode =
     graph.nodes.find((node) => node.data.id === detailNodeId) ??
       graph.nodes.find((node) => node.data.id === selectedGraphNodeId) ?? null;
+  const focusedNode =
+    graph.nodes.find((node) => node.data.id === graphFocusId) ?? null;
+  const pathSummary = focusedNode
+    ? `The map is focused on ${
+      displayNodeLabel(focusedNode.data)
+    }. Related paths are highlighted; everything else remains visible.`
+    : "The complete market map is visible.";
+  const explorerGroupId = explorerFallbackForFocus(
+    graph,
+    lens,
+    graphFocusId,
+    fallbackGroupId,
+  );
 
   return (
     <div className="border-b border-hairline bg-[#fbfcfd]">
@@ -241,14 +382,17 @@ export function MarketInfluenceGraphView({
         <GraphLegend stroke="dotted" color="#b7c6cd">
           Market or domain
         </GraphLegend>
+        <HoldingLegend />
         <span className="sm:ml-auto">Select any item to light its path</span>
       </div>
 
-      <div className="grid xl:grid-cols-[230px_minmax(0,1fr)_300px]">
+      <div className="grid min-[1180px]:grid-cols-[190px_minmax(0,1fr)_270px]">
         <GraphExplorerPanel
           graph={graph}
-          activeNodeId={detailNode?.data.id ?? null}
-          activeScope={explorerScope}
+          lens={lens}
+          activeNodeId={graphFocusId}
+          activeGroupId={explorerGroupId}
+          selectedNode={focusedNode}
           onChoose={(nodeId) => chooseNodeRef.current(nodeId)}
         />
         <div className="relative min-w-0">
@@ -257,7 +401,17 @@ export function MarketInfluenceGraphView({
           </p>
           <GraphControls
             lens={lens}
-            onLensChange={setLens}
+            onLensChange={(next) => {
+              setLens(next);
+              setFallbackGroupId(
+                explorerFallbackForFocus(
+                  latestGraphRef.current,
+                  next,
+                  focusIdRef.current,
+                  fallbackGroupId,
+                ),
+              );
+            }}
             onFit={() => graphControllerRef.current?.fit()}
             onReorganize={() => graphControllerRef.current?.reorganize()}
             onZoomIn={() => graphControllerRef.current?.zoomBy(1.18)}
@@ -283,7 +437,10 @@ export function MarketInfluenceGraphView({
           node={detailNode}
           graph={graph}
           atlasNodes={atlasNodes}
-          onChoose={(nodeId) => chooseNodeRef.current(nodeId)}
+          originId={pathOriginId}
+          intelligenceContext={intelligenceContext}
+          onChoose={(nodeId, originId) =>
+            chooseNodeRef.current(nodeId, originId)}
         />
       </div>
 
@@ -313,34 +470,52 @@ export function MarketInfluenceGraphView({
 
 function GraphExplorerPanel({
   graph,
+  lens,
   activeNodeId,
-  activeScope,
+  activeGroupId,
+  selectedNode,
   onChoose,
 }: {
   graph: MarketInfluenceGraph;
+  lens: GraphLens;
   activeNodeId: string | null;
-  activeScope: string;
+  activeGroupId: string | null;
+  selectedNode: MarketInfluenceGraph["nodes"][number] | null;
   onChoose: (nodeId: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const markets = graph.nodes.filter((node) => node.data.kind === "market");
-  const themes = graph.nodes.filter((node) =>
-    node.data.kind === "family" && node.data.scopeKey === activeScope
-  );
-  const domains = graph.nodes.filter((node) => node.data.kind === "domain");
   const normalizedQuery = query.trim().toLowerCase();
   const results = normalizedQuery
     ? graph.nodes.filter((node) =>
       `${node.data.label} ${node.data.symbol ?? ""} ${
         displayNodeLabel(node.data)
+      } ${node.data.scopeKey ?? ""} ${
+        node.data.scopeKey ? venueLabel(node.data.scopeKey) : ""
       }`
         .toLowerCase()
         .includes(normalizedQuery)
     ).slice(0, 30)
     : [];
+  const groups = explorerGroups(graph, lens);
+  const nodesById = new Map(
+    graph.nodes.map((node) => [node.data.id, node]),
+  );
+  const sectionTitle = lens === "market"
+    ? "Markets"
+    : lens === "domain"
+    ? "Domains"
+    : "Factors";
+  const showSelected = Boolean(
+    selectedNode &&
+      !selectedVisibleInExplorer(
+        selectedNode.data.id,
+        groups,
+        activeGroupId,
+      ),
+  );
 
   return (
-    <aside className="max-h-[520px] overflow-y-auto border-b border-hairline bg-white xl:h-[clamp(640px,68vh,780px)] xl:max-h-none xl:border-b-0 xl:border-r">
+    <aside className="max-h-[520px] overflow-y-auto border-b border-hairline bg-white min-[1180px]:h-[clamp(640px,68vh,780px)] min-[1180px]:max-h-none min-[1180px]:border-b-0 min-[1180px]:border-r">
       <div className="sticky top-0 z-10 border-b border-hairline bg-white px-3 py-3">
         <label className="sr-only" htmlFor="market-map-search">
           Search the market map
@@ -362,6 +537,7 @@ function GraphExplorerPanel({
               <ExplorerNodeButton
                 key={`search-${node.data.id}`}
                 node={node}
+                peers={results}
                 active={activeNodeId === node.data.id}
                 onChoose={onChoose}
               />
@@ -377,38 +553,65 @@ function GraphExplorerPanel({
         )
         : (
           <>
-            <ExplorerSection title="Markets">
-              {markets.map((node) => (
-                <ExplorerNodeButton
-                  key={node.data.id}
-                  node={node}
-                  active={activeNodeId === node.data.id ||
-                    node.data.scopeKey === activeScope}
-                  onChoose={onChoose}
-                />
-              ))}
-            </ExplorerSection>
-            <ExplorerSection
-              title={`Themes · ${venueLabel(activeScope)}`}
-            >
-              {themes.map((node) => (
-                <ExplorerNodeButton
-                  key={node.data.id}
-                  node={node}
-                  active={activeNodeId === node.data.id}
-                  onChoose={onChoose}
-                />
-              ))}
-            </ExplorerSection>
-            <ExplorerSection title="Domains">
-              {domains.map((node) => (
-                <ExplorerNodeButton
-                  key={node.data.id}
-                  node={node}
-                  active={activeNodeId === node.data.id}
-                  onChoose={onChoose}
-                />
-              ))}
+            {showSelected && selectedNode
+              ? (
+                <ExplorerSection title="Selected">
+                  <ExplorerNodeButton
+                    node={selectedNode}
+                    peers={graph.nodes.filter((item) =>
+                      item.data.kind === selectedNode.data.kind
+                    )}
+                    active
+                    onChoose={onChoose}
+                  />
+                </ExplorerSection>
+              )
+              : null}
+            <ExplorerSection title={sectionTitle}>
+              {groups.map((group) => {
+                const root = nodesById.get(group.id);
+                const open = group.id === activeGroupId;
+                const children = group.childIds
+                  .map((childId) => nodesById.get(childId))
+                  .filter((
+                    item,
+                  ): item is MarketInfluenceGraph["nodes"][number] =>
+                    Boolean(item)
+                  );
+                return (
+                  <div key={group.id}>
+                    {root
+                      ? (
+                        <ExplorerNodeButton
+                          node={root}
+                          peers={groups.flatMap((item) => {
+                            const groupRoot = nodesById.get(item.id);
+                            return groupRoot ? [groupRoot] : [];
+                          })}
+                          active={activeNodeId === root.data.id || open}
+                          onChoose={onChoose}
+                        />
+                      )
+                      : (
+                        <p className="px-2 py-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+                          {lens === "macro" ? "Other factors" : "Other"}
+                        </p>
+                      )}
+                    {open
+                      ? children.map((child) => (
+                        <ExplorerNodeButton
+                          key={child.data.id}
+                          node={child}
+                          peers={children}
+                          active={activeNodeId === child.data.id}
+                          depth={1}
+                          onChoose={onChoose}
+                        />
+                      ))
+                      : null}
+                  </div>
+                );
+              })}
             </ExplorerSection>
           </>
         )}
@@ -437,17 +640,31 @@ function ExplorerNodeButton({
   node,
   active,
   onChoose,
+  depth = 0,
+  peers,
 }: {
   node: MarketInfluenceGraph["nodes"][number];
   active: boolean;
   onChoose: (nodeId: string) => void;
+  depth?: number;
+  peers?: MarketInfluenceGraph["nodes"];
 }) {
+  const label = interactiveGraphLabel(
+    node.data,
+    (peers ?? [node]).map((item) => item.data),
+  );
+  const accessibleName = node.data.symbol
+    ? `${label} ${node.data.symbol}`
+    : label;
   return (
     <button
       type="button"
       onClick={() => onChoose(node.data.id)}
+      aria-label={accessibleName}
       aria-pressed={active}
       className={`flex min-h-8 w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+        depth > 0 ? "pl-6" : ""
+      } ${
         active
           ? "bg-accent/10 font-medium text-accent"
           : "text-dim hover:bg-panel-hover hover:text-fg"
@@ -455,8 +672,15 @@ function ExplorerNodeButton({
     >
       <NodeKindMark kind={node.data.kind} />
       <span className="min-w-0 flex-1 truncate">
-        {displayNodeLabel(node.data)}
+        {label}
       </span>
+      {node.data.holding
+        ? (
+          <span className="shrink-0 font-mono text-[8px] uppercase tracking-[0.12em] text-faint">
+            Held
+          </span>
+        )
+        : null}
       {node.data.symbol
         ? (
           <span className="shrink-0 font-mono text-[8px] text-faint">
@@ -489,16 +713,28 @@ function GraphDetailPanel({
   node,
   graph,
   atlasNodes,
+  originId,
+  intelligenceContext,
   onChoose,
 }: {
   node: MarketInfluenceGraph["nodes"][number] | null;
   graph: MarketInfluenceGraph;
   atlasNodes: readonly AtlasNode[];
-  onChoose: (nodeId: string) => void;
+  originId: string | null;
+  intelligenceContext?: MarketIntelligenceContext;
+  onChoose: (nodeId: string, originId?: string | null) => void;
 }) {
+  const railRef = useRef<HTMLElement | null>(null);
+  const nodeId = node?.data.id ?? "";
+  useLayoutEffect(() => {
+    railRef.current?.scrollTo(0, 0);
+  }, [nodeId]);
   if (!node) {
     return (
-      <aside className="border-t border-hairline bg-white px-4 py-5 text-sm text-faint xl:border-l xl:border-t-0">
+      <aside
+        ref={railRef}
+        className="border-t border-hairline bg-white px-4 py-5 text-sm text-faint min-[1180px]:border-l min-[1180px]:border-t-0"
+      >
         Select an item in the map.
       </aside>
     );
@@ -506,25 +742,19 @@ function GraphDetailPanel({
 
   const atlasNode =
     atlasNodes.find((item) => item.id === node.data.atlasNodeId) ?? null;
-  const incoming = connectedGraphNodes(graph, node.data.id, "incoming");
-  const outgoing = connectedGraphNodes(graph, node.data.id, "outgoing");
-  const companies = outgoing.filter((item) => item.data.kind === "company");
-  const themes = (node.data.kind === "company" ? incoming : outgoing).filter(
-    (item) => item.data.kind === "family",
-  );
-  const context = incoming.filter((item) =>
-    item.data.kind !== "family" && item.data.kind !== "company"
-  );
   const scope = node.data.scopeKey
     ? venueLabel(node.data.scopeKey)
     : atlasNode
     ? venueLabel(atlasNode.scopeKey)
     : null;
+  const chooseFromHere = (nodeId: string) =>
+    onChoose(nodeId, originId ?? node.data.id);
 
   return (
     <aside
+      ref={railRef}
       aria-live="polite"
-      className="max-h-[520px] overflow-y-auto border-t border-hairline bg-white xl:h-[clamp(640px,68vh,780px)] xl:max-h-none xl:border-l xl:border-t-0"
+      className="max-h-[520px] overflow-y-auto border-t border-hairline bg-white min-[1180px]:h-[clamp(640px,68vh,780px)] min-[1180px]:max-h-none min-[1180px]:border-l min-[1180px]:border-t-0"
     >
       <header className="border-b border-hairline px-4 py-4">
         <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
@@ -542,44 +772,426 @@ function GraphDetailPanel({
           )
           : null}
       </header>
-
-      {atlasNode
+      {node.data.kind === "company"
         ? (
-          <div className="border-b border-hairline px-4 py-4">
-            <p className="text-[12px] font-medium text-fg">
-              {priorityLabel(atlasNode.priority)}
-              {atlasNode.rank != null
-                ? ` · ${ordinalLabel(atlasNode.rank)} in this market`
-                : " · No current read"}
+          <CompanyReading
+            node={node}
+            graph={graph}
+            originId={originId}
+            onChoose={onChoose}
+          />
+        )
+        : node.data.kind === "family"
+        ? (
+          <FamilyReading
+            node={node}
+            atlasNode={atlasNode}
+            graph={graph}
+            intelligenceContext={intelligenceContext}
+            onChoose={chooseFromHere}
+          />
+        )
+        : node.data.kind === "market" || node.data.kind === "domain"
+        ? (
+          <GroupReading
+            node={node}
+            graph={graph}
+            intelligenceContext={intelligenceContext}
+            onChoose={chooseFromHere}
+          />
+        )
+        : (
+          <DriverReading
+            node={node}
+            graph={graph}
+            onChoose={chooseFromHere}
+          />
+        )}
+    </aside>
+  );
+}
+
+function CompanyReading({
+  node,
+  graph,
+  originId,
+  onChoose,
+}: {
+  node: MarketInfluenceGraph["nodes"][number];
+  graph: MarketInfluenceGraph;
+  originId: string | null;
+  onChoose: (nodeId: string, originId?: string | null) => void;
+}) {
+  const thread = guidedPortfolioPath(graph, node.data.id, originId);
+  return (
+    <>
+      {node.data.holding
+        ? <CompanyHoldingDetail holding={node.data.holding} />
+        : null}
+      {node.data.symbol
+        ? (
+          <CompanyReviewSection
+            symbol={node.data.symbol}
+            hasHolding={Boolean(node.data.holding)}
+          />
+        )
+        : null}
+      {node.data.symbol
+        ? (
+          <CompanyViewSection
+            key={node.data.symbol}
+            symbol={node.data.symbol}
+          />
+        )
+        : null}
+      <CompanyThread
+        graph={graph}
+        thread={thread}
+        originId={originId}
+        onChoose={onChoose}
+      />
+    </>
+  );
+}
+
+function CompanyThread({
+  graph,
+  thread,
+  originId,
+  onChoose,
+}: {
+  graph: MarketInfluenceGraph;
+  thread: GuidedPortfolioPath;
+  originId: string | null;
+  onChoose: (nodeId: string, originId?: string | null) => void;
+}) {
+  const nodes = thread.nodeIds
+    .map((id) => graph.nodes.find((item) => item.data.id === id))
+    .filter((item): item is MarketInfluenceGraph["nodes"][number] =>
+      Boolean(item)
+    );
+  if (nodes.length < 2) return null;
+  const company = nodes[nodes.length - 1];
+  const family = nodes.find((item) => item.data.kind === "family");
+  const driver = nodes.find((item) => item.data.kind === "driver");
+  const place = nodes.find((item) =>
+    item.data.kind === "market" || item.data.kind === "domain" ||
+    item.data.kind === "family"
+  );
+  const origin = nodes.find((item) => item.data.id === originId) ?? nodes[0];
+  const title = thread.kind === "shared_evidence"
+    ? "Recorded context"
+    : thread.kind === "possible"
+    ? "Possible context"
+    : "Where it sits";
+  const body = thread.kind === "shared_evidence" && driver && family
+    ? `${displayNodeLabel(driver.data)} and ${
+      displayNodeLabel(family.data)
+    } appear in the same source material. This is context, not a measured cause.`
+    : thread.kind === "possible"
+    ? "This relationship has not been measured."
+    : place
+    ? `${displayNodeLabel(company.data)} is grouped in ${
+      displayNodeLabel(place.data)
+    }.`
+    : null;
+
+  return (
+    <div className="border-b border-hairline px-4 py-3.5">
+      <nav
+        aria-label="Context thread"
+        className="flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px] text-dim"
+      >
+        {nodes.map((item, index) => (
+          <span
+            key={`thread-${item.data.id}`}
+            className="inline-flex items-center gap-1"
+          >
+            {index > 0
+              ? <span aria-hidden="true" className="text-faint">→</span>
+              : null}
+            <button
+              type="button"
+              onClick={() => onChoose(item.data.id, originId ?? undefined)}
+              className={`rounded px-0.5 text-left hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                item.data.id === origin.data.id ? "text-accent" : ""
+              }`}
+            >
+              {displayNodeLabel(item.data)}
+            </button>
+          </span>
+        ))}
+      </nav>
+      <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+        {title}
+      </p>
+      {body
+        ? <p className="mt-1.5 text-[12px] leading-relaxed text-fg">{body}</p>
+        : null}
+    </div>
+  );
+}
+
+function CompanyReviewSection({
+  symbol,
+  hasHolding,
+}: {
+  symbol: string;
+  hasHolding: boolean;
+}) {
+  const query = useSymbol(symbol);
+  if (query.isPending && !query.data) {
+    return (
+      <div className="border-b border-hairline px-4 py-3.5">
+        <p className="text-[11px] text-faint">Looking up the latest review.</p>
+      </div>
+    );
+  }
+  if (query.error && !query.data) {
+    return (
+      <div className="border-b border-hairline px-4 py-3.5">
+        <p className="text-[11px] text-faint">
+          The latest review is unavailable.
+        </p>
+      </div>
+    );
+  }
+
+  const why = query.data?.why ?? null;
+  const aiWhy = why && decisionProvenance(why) === "ai" ? why : null;
+  const planLines = currentPlanLines(query.data, hasHolding);
+  const summary = String(aiWhy?.review_summary ?? "").trim();
+
+  return (
+    <>
+      {planLines.length
+        ? (
+          <div className="border-b border-hairline px-4 py-3.5">
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              Current plan
             </p>
-            <p className="mt-1.5 text-[11px] text-dim">
-              {atlasNode.symbols.length}{" "}
-              {atlasNode.symbols.length === 1 ? "company" : "companies"}
-              {atlasNode.movement !== "unknown"
-                ? ` · ${movementLabel(atlasNode.movement)}`
-                : ""}
-            </p>
-            <p className="mt-3 text-[11px] font-medium text-accent">
-              Latest market review
-            </p>
-            <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
-              {plainMarketLanguage(atlasNode.summary) ||
-                "No recent market review is recorded."}
-            </p>
+            {planLines.map((line) => (
+              <p
+                key={line}
+                className="mt-1.5 text-[12px] leading-relaxed text-fg first:mt-2"
+              >
+                {line}
+              </p>
+            ))}
           </div>
         )
         : null}
+      <div className="border-b border-hairline px-4 py-3.5 last:border-b-0">
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+          Latest Casys review
+        </p>
+        {aiWhy
+          ? (
+            <>
+              <p className="mt-2 text-[12px] font-medium text-fg">
+                {[
+                  casysActionLabel(aiWhy.action),
+                  recordedTimeLabel(aiWhy.cycle_ts),
+                  confidenceLabel(aiWhy.confidence),
+                ].filter(Boolean).join(" · ")}
+              </p>
+              {summary
+                ? (
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+                    {summary}
+                  </p>
+                )
+                : null}
+              <p className="mt-1.5 text-[11px] text-dim">
+                {decisionActionStatus(aiWhy)}
+              </p>
+            </>
+          )
+          : (
+            <p className="mt-2 text-[12px] text-dim">
+              No Casys review found in the available record.
+            </p>
+          )}
+      </div>
+    </>
+  );
+}
 
-      {node.data.kind === "company" && themes.length
+function CompanyViewSection({ symbol }: { symbol: string }) {
+  const query = useCompanyIntelligence({ symbol, limit: 1 }, true);
+  const companies = query.data?.companies;
+  const company = matchingCompany(companies, symbol);
+  const reading = projectCompanyDigest({
+    pending: query.isPending && !query.data,
+    error: Boolean(query.error),
+    company,
+    companies,
+    symbol,
+  });
+
+  if (reading.state === "pending") {
+    return (
+      <div
+        className="border-b border-hairline px-4 py-3.5"
+        role="status"
+        aria-label="Reading the company view"
+      >
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+          Company view
+        </p>
+        <div className="mt-2 h-2 w-4/5 animate-pulse rounded bg-hairline motion-reduce:animate-none" />
+        <div className="mt-1.5 h-2 w-1/2 animate-pulse rounded bg-hairline motion-reduce:animate-none" />
+      </div>
+    );
+  }
+  if (reading.state === "unavailable") {
+    return (
+      <div className="border-b border-hairline px-4 py-3.5">
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+          Company view
+        </p>
+        <p className="mt-2 text-[12px] leading-relaxed text-dim">
+          The company view is unavailable.
+        </p>
+      </div>
+    );
+  }
+
+  const meta = [reading.freshnessLabel, ...reading.evidenceLimits].filter(
+    Boolean,
+  );
+  return (
+    <div className="border-b border-hairline px-4 py-3.5">
+      <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+        Company view
+      </p>
+      <p className="mt-2 text-[12px] leading-relaxed text-fg">
+        {reading.summary || "No current company view has been recorded."}
+      </p>
+      {reading.refreshNote
         ? (
-          <GraphDetailLinks
-            title="Theme"
-            nodes={themes}
+          <p className="mt-1.5 font-mono text-[9px] text-faint">
+            {reading.refreshNote}
+          </p>
+        )
+        : null}
+      {reading.catalyst
+        ? (
+          <>
+            <p className="mt-2.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              What could help
+            </p>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+              {reading.catalyst}
+            </p>
+          </>
+        )
+        : null}
+      {reading.risk
+        ? (
+          <>
+            <p className="mt-2.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              What could hurt
+            </p>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+              {reading.risk}
+            </p>
+          </>
+        )
+        : reading.openQuestion
+        ? (
+          <>
+            <p className="mt-2.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              What still needs answering
+            </p>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+              {reading.openQuestion}
+            </p>
+          </>
+        )
+        : null}
+      {meta.length
+        ? (
+          <p className="mt-2 font-mono text-[9px] text-faint">
+            {meta.join(" · ")}
+          </p>
+        )
+        : null}
+    </div>
+  );
+}
+
+function FamilyReading({
+  node,
+  atlasNode,
+  graph,
+  intelligenceContext,
+  onChoose,
+}: {
+  node: MarketInfluenceGraph["nodes"][number];
+  atlasNode: AtlasNode | null;
+  graph: MarketInfluenceGraph;
+  intelligenceContext?: MarketIntelligenceContext;
+  onChoose: (nodeId: string) => void;
+}) {
+  const companies = connectedGraphNodes(graph, node.data.id, "outgoing")
+    .filter((item) => item.data.kind === "company");
+  const held = companies.filter((item) => item.data.holding);
+  const evidence = projectThemeEvidence({
+    family: node.data.family ?? atlasNode?.family,
+    scopeKey: node.data.scopeKey ?? atlasNode?.scopeKey,
+    summary: atlasNode?.summary,
+    current: intelligenceContext?.current,
+  });
+  return (
+    <>
+      <div className="border-b border-hairline px-4 py-3.5">
+        <p className="text-[12px] font-medium text-fg">
+          {priorityLabel(
+            atlasNode?.priority ?? node.data.priority ?? "neutral",
+          )}
+          {atlasNode?.rank != null
+            ? ` · ${ordinalLabel(atlasNode.rank)} in this market`
+            : node.data.rank != null
+            ? ` · ${ordinalLabel(node.data.rank)} in this market`
+            : " · No current read"}
+          {atlasNode && atlasNode.movement !== "unknown"
+            ? ` · ${movementLabel(atlasNode.movement)}`
+            : ""}
+        </p>
+        <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+          {plainMarketLanguage(atlasNode?.summary) ||
+            "No recent market review is recorded."}
+        </p>
+        {evidence.point
+          ? (
+            <>
+              <p className="mt-2.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+                Current evidence
+                {evidence.freshnessLabel
+                  ? (
+                    <span className="normal-case tracking-normal">
+                      {` · ${evidence.freshnessLabel}`}
+                    </span>
+                  )
+                  : null}
+              </p>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+                {evidence.point}
+              </p>
+            </>
+          )
+          : null}
+      </div>
+      {held.length
+        ? (
+          <ConnectedHoldingsDetail
+            nodes={held}
             onChoose={onChoose}
           />
         )
         : null}
-      {node.data.kind === "family" && companies.length
+      {companies.length
         ? (
           <GraphDetailLinks
             title="Companies"
@@ -588,8 +1200,88 @@ function GraphDetailPanel({
           />
         )
         : null}
-      {(node.data.kind === "market" || node.data.kind === "domain") &&
-          themes.length
+    </>
+  );
+}
+
+function GroupReading({
+  node,
+  graph,
+  intelligenceContext,
+  onChoose,
+}: {
+  node: MarketInfluenceGraph["nodes"][number];
+  graph: MarketInfluenceGraph;
+  intelligenceContext?: MarketIntelligenceContext;
+  onChoose: (nodeId: string) => void;
+}) {
+  const basis = node.data.kind === "market"
+    ? "market_membership"
+    : "governed_domain";
+  const familyIds = new Set(
+    graph.edges
+      .filter((edge) =>
+        edge.data.source === node.data.id && edge.data.basis === basis
+      )
+      .map((edge) => edge.data.target),
+  );
+  const themes = graph.nodes.filter((item) => familyIds.has(item.data.id));
+  const preferred = themes.filter((item) => item.data.priority === "favored");
+  const lower = themes.filter((item) => item.data.priority === "deprioritized");
+  const companies = companiesInFamilies(graph, familyIds);
+  const held = companies.filter((item) => item.data.holding);
+  const known = held
+    .map((item) => item.data.holding?.notionalUsd)
+    .filter((value): value is number => value != null);
+  const knownTotal = known.length
+    ? known.reduce((sum, value) => sum + value, 0)
+    : null;
+  const unknownCount = held.length - known.length;
+  const bits = [
+    `${preferred.length} preferred ${
+      preferred.length === 1 ? "theme" : "themes"
+    }`,
+    `${lower.length} lower-priority`,
+    `${held.length} represented ${held.length === 1 ? "holding" : "holdings"}`,
+  ];
+  return (
+    <>
+      {node.data.kind === "market"
+        ? (
+          <MarketContextSection
+            scopeKey={node.data.scopeKey}
+            current={intelligenceContext?.current}
+          />
+        )
+        : (
+          <DomainAcrossMarketsSection
+            domainKey={node.data.domainKey}
+            label={node.data.label}
+            comparisons={intelligenceContext?.comparisons}
+          />
+        )}
+      <div className="border-b border-hairline px-4 py-3.5">
+        <p className="text-[12px] leading-relaxed text-fg">
+          {bits.join(" · ")}
+        </p>
+        {knownTotal != null
+          ? (
+            <p className="mt-1.5 text-[11px] text-dim">
+              Known recorded exposure {formatUsd(knownTotal, 0)}
+              {unknownCount ? " · some holdings have unrecorded exposure" : ""}
+            </p>
+          )
+          : null}
+      </div>
+      {held.length
+        ? (
+          <ConnectedHoldingsDetail
+            nodes={held}
+            onChoose={onChoose}
+          />
+        )
+        : null}
+      {themes.length
         ? (
           <GraphDetailLinks
             title="Themes"
@@ -598,27 +1290,199 @@ function GraphDetailPanel({
           />
         )
         : null}
-      {node.data.kind === "driver" && outgoing.length
+    </>
+  );
+}
+
+function DriverReading({
+  node,
+  graph,
+  onChoose,
+}: {
+  node: MarketInfluenceGraph["nodes"][number];
+  graph: MarketInfluenceGraph;
+  onChoose: (nodeId: string) => void;
+}) {
+  const factor = projectFactorReading(graph, node.data.id);
+  const recorded = factor.recorded.flatMap((item) => {
+    const target = graph.nodes.find((nodeItem) =>
+      nodeItem.data.id === item.targetId
+    );
+    return target ? [{ ...item, target }] : [];
+  });
+  const possible = factor.possibleTargetIds.flatMap((id) => {
+    const target = graph.nodes.find((item) => item.data.id === id);
+    return target ? [target] : [];
+  });
+  const held = heldCompaniesThroughDirectLinks(graph, node.data.id);
+  return (
+    <>
+      {held.length
         ? (
-          <GraphDetailLinks
-            title="Connected views"
-            nodes={outgoing}
+          <ConnectedHoldingsDetail
+            nodes={held}
             onChoose={onChoose}
           />
         )
         : null}
-      {context.length
+      {recorded.length
         ? (
-          <GraphDetailLinks
-            title={node.data.kind === "family"
-              ? "Connected through"
-              : "Context"}
-            nodes={context}
-            onChoose={onChoose}
-          />
+          <div className="border-b border-hairline px-4 py-3.5">
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              Recorded context
+            </p>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+              Appears alongside these themes. This is context, not a measured
+              cause.
+            </p>
+            <ul className="mt-2 space-y-2">
+              {recorded.map((item) => {
+                const label = interactiveGraphLabel(
+                  item.target.data,
+                  recorded.map((row) => row.target.data),
+                );
+                return (
+                  <li key={`recorded-${item.targetId}`}>
+                    <button
+                      type="button"
+                      onClick={() => onChoose(item.target.data.id)}
+                      aria-label={label}
+                      className="flex min-h-8 w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-[11px] text-dim transition-colors hover:bg-panel-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      <span className="min-w-0 truncate">
+                        {label}
+                      </span>
+                      <span className="shrink-0 font-mono text-[8px] uppercase tracking-[0.1em] text-faint">
+                        {graphKindLabel(item.target.data.kind)}
+                      </span>
+                    </button>
+                    {item.driverPoint
+                      ? (
+                        <p className="px-2 text-[12px] leading-relaxed text-fg">
+                          {item.driverPoint}
+                        </p>
+                      )
+                      : null}
+                    {item.familyPoint
+                      ? (
+                        <p className="mt-1 px-2 text-[11px] leading-relaxed text-dim">
+                          {item.familyPoint}
+                        </p>
+                      )
+                      : null}
+                    {item.freshnessLabel
+                      ? (
+                        <p className="mt-1 px-2 font-mono text-[9px] text-faint">
+                          {item.freshnessLabel}
+                        </p>
+                      )
+                      : null}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )
         : null}
-    </aside>
+      {possible.length
+        ? (
+          <div className="border-b border-hairline px-4 py-3.5 last:border-b-0">
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              Possible context
+            </p>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+              These links have not been measured.
+            </p>
+            <GraphDetailLinkList nodes={possible} onChoose={onChoose} />
+          </div>
+        )
+        : null}
+    </>
+  );
+}
+
+function MarketContextSection({
+  scopeKey,
+  current,
+}: {
+  scopeKey?: string;
+  current?: MarketIntelligenceContext["current"];
+}) {
+  const reading = projectMarketReading({ scopeKey, current });
+  if (
+    !reading.summary && !reading.posture && !reading.points.length &&
+    !reading.freshnessLabel
+  ) {
+    return null;
+  }
+  return (
+    <div className="border-b border-hairline px-4 py-3.5">
+      {reading.summary
+        ? (
+          <p className="text-[12px] leading-relaxed text-fg">
+            {reading.summary}
+          </p>
+        )
+        : null}
+      {reading.posture
+        ? (
+          <p
+            className={`text-[12px] ${
+              reading.summary ? "mt-1.5 text-dim" : "text-fg"
+            }`}
+          >
+            {reading.posture}
+          </p>
+        )
+        : null}
+      {reading.points.map((point) => (
+        <p
+          key={point}
+          className="mt-1.5 text-[12px] leading-relaxed text-fg"
+        >
+          {point}
+        </p>
+      ))}
+      {reading.freshnessLabel
+        ? (
+          <p className="mt-1.5 font-mono text-[9px] text-faint">
+            {reading.freshnessLabel}
+          </p>
+        )
+        : null}
+    </div>
+  );
+}
+
+function DomainAcrossMarketsSection({
+  domainKey,
+  label,
+  comparisons,
+}: {
+  domainKey?: string;
+  label?: string;
+  comparisons?: MarketIntelligenceContext["comparisons"];
+}) {
+  const reading = projectDomainReading({ domainKey, label, comparisons });
+  if (!reading) return null;
+  return (
+    <div className="border-b border-hairline px-4 py-3.5">
+      <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+        Across markets
+      </p>
+      <ul className="mt-2 space-y-1.5">
+        {reading.venues.map((row) => (
+          <li
+            key={row.venueKey}
+            className="text-[12px] leading-relaxed text-fg"
+          >
+            {[row.venue, row.statusLabel, row.leader, row.rankLabel].filter(
+              Boolean,
+            ).join(" · ")}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -636,25 +1500,205 @@ function GraphDetailLinks({
       <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
         {title}
       </p>
-      <ul className="mt-2 space-y-1">
-        {nodes.map((item) => (
-          <li key={`${title}-${item.data.id}`}>
+      <GraphDetailLinkList nodes={nodes} onChoose={onChoose} />
+    </div>
+  );
+}
+
+function GraphDetailLinkList({
+  nodes,
+  onChoose,
+}: {
+  nodes: MarketInfluenceGraph["nodes"];
+  onChoose: (nodeId: string) => void;
+}) {
+  return (
+    <ul className="mt-2 space-y-1">
+      {nodes.map((item) => {
+        const label = interactiveGraphLabel(
+          item.data,
+          nodes.map((node) => node.data),
+        );
+        return (
+          <li key={item.data.id}>
             <button
               type="button"
               onClick={() => onChoose(item.data.id)}
+              aria-label={label}
               className="flex min-h-8 w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-[11px] text-dim transition-colors hover:bg-panel-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             >
               <span className="min-w-0 truncate">
-                {displayNodeLabel(item.data)}
+                {label}
               </span>
               <span className="shrink-0 font-mono text-[8px] uppercase tracking-[0.1em] text-faint">
                 {graphKindLabel(item.data.kind)}
               </span>
             </button>
           </li>
-        ))}
-      </ul>
-    </div>
+        );
+      })}
+    </ul>
+  );
+}
+
+function selectedVisibleInExplorer(
+  nodeId: string,
+  groups: ReturnType<typeof explorerGroups>,
+  activeGroupId: string | null,
+): boolean {
+  if (!activeGroupId) return false;
+  const group = groups.find((item) => item.id === activeGroupId);
+  if (!group) return false;
+  return group.id === nodeId || group.childIds.includes(nodeId);
+}
+
+function companiesInFamilies(
+  graph: MarketInfluenceGraph,
+  familyIds: Set<string>,
+): MarketInfluenceGraph["nodes"] {
+  const companyIds = new Set(
+    graph.edges
+      .filter((edge) =>
+        edge.data.basis === "family_membership" &&
+        familyIds.has(edge.data.source)
+      )
+      .map((edge) => edge.data.target),
+  );
+  return graph.nodes.filter((item) => companyIds.has(item.data.id));
+}
+
+function casysActionLabel(action?: string | null): string {
+  if (String(action ?? "").toUpperCase() === "HOLD") {
+    return "Portfolio unchanged";
+  }
+  return decisionActionLabel(action);
+}
+
+function decisionActionStatus(row: DecisionRow): string {
+  if (row.execution_status === "confirmed") return "Action confirmed";
+  if (row.executed === true) return "Action recorded";
+  return "Decision recorded";
+}
+
+function recordedTimeLabel(value?: string | null): string | null {
+  const label = formatAgo(value);
+  return label === "—" ? null : label;
+}
+
+function confidenceLabel(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 0 || value > 1) return null;
+  return `${Math.round(value * 100)}% confidence`;
+}
+
+function currentPlanLines(
+  data: SymbolDetail | undefined,
+  hasHolding: boolean,
+): string[] {
+  if (!data) return [];
+  const lines: string[] = [];
+  const plan = data.exit_plans[0] as ExitPlanRow | undefined;
+  const armed = data.armed[0] as ArmedRow | undefined;
+  const watch = (data.watches[0] ?? data.exit_watches[0]) as
+    | WatchRow
+    | undefined;
+
+  if (hasHolding && plan) {
+    const stop = resolvedPrice(plan.stop_price);
+    if (stop != null) {
+      lines.push(`Protection at ${formatMarketPrice(stop, 2)}`);
+    }
+    const target = usableTargetLabel(plan.take_profit_label);
+    if (target) lines.push(`Target ${target}`);
+    if (lines.length) return lines;
+  }
+
+  if (armed) {
+    const condition = armed.conditions?.[0]
+      ? conditionLabel(armed.conditions[0])
+      : "";
+    const countdown = usableCountdown(armed.countdown);
+    if (!isPlaceholderText(condition)) {
+      lines.push(
+        [watchingPhrase(condition), countdown].filter(Boolean).join(" · "),
+      );
+    } else {
+      const prepared = `Prepared ${
+        casysActionLabel(armed.action).toLowerCase()
+      }`;
+      lines.push([prepared, countdown].filter(Boolean).join(" · "));
+    }
+    if (lines.length) return lines;
+  }
+
+  if (watch) {
+    const condition = conditionLabel(watch.condition_label);
+    const countdown = usableCountdown(watch.countdown);
+    if (!isPlaceholderText(condition)) {
+      lines.push(
+        [watchingPhrase(condition), countdown].filter(Boolean).join(" · "),
+      );
+    }
+  }
+  return lines.filter((line) => !isPlaceholderText(line));
+}
+
+function isPlaceholderText(value?: string | null): boolean {
+  const text = String(value ?? "").trim();
+  return !text || text === "—";
+}
+
+function resolvedPrice(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function usableCountdown(value?: string | null): string {
+  return isPlaceholderText(value) ? "" : String(value).trim();
+}
+
+function usableTargetLabel(value?: string | null): string | null {
+  if (isPlaceholderText(value)) return null;
+  const text = String(value).trim();
+  const numeric = Number(text.replaceAll(",", ""));
+  if (Number.isFinite(numeric) && numeric <= 0) return null;
+  return text;
+}
+
+function watchingPhrase(condition: string): string {
+  const trimmed = condition.trim();
+  if (isPlaceholderText(trimmed)) return "";
+  if (/^watching\b/i.test(trimmed)) return trimmed;
+  return `Watching for a ${trimmed.charAt(0).toLowerCase()}${trimmed.slice(1)}`;
+}
+
+function heldCompaniesThroughDirectLinks(
+  graph: MarketInfluenceGraph,
+  driverId: string,
+): MarketInfluenceGraph["nodes"] {
+  const familyIds = new Set<string>();
+  const nodeById = new Map(
+    graph.nodes.map((node) => [node.data.id, node] as const),
+  );
+  for (const edge of graph.edges) {
+    if (edge.data.source !== driverId) continue;
+    const target = nodeById.get(edge.data.target);
+    if (!target) continue;
+    if (target.data.kind === "family") familyIds.add(target.data.id);
+    if (target.data.kind === "domain") {
+      for (const nested of graph.edges) {
+        if (
+          nested.data.source === target.data.id &&
+          nested.data.basis === "governed_domain"
+        ) {
+          familyIds.add(nested.data.target);
+        }
+      }
+    }
+  }
+  return companiesInFamilies(graph, familyIds).filter((item) =>
+    item.data.holding
   );
 }
 
@@ -790,6 +1834,137 @@ function GraphControls({
   );
 }
 
+function CompanyHoldingDetail({ holding }: { holding: CompanyHolding }) {
+  return (
+    <div className="border-b border-hairline px-4 py-3.5">
+      <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+        Position
+      </p>
+      <p className="mt-2 text-[12px] font-medium text-fg">
+        {holding.side === "short" ? "Short" : "Long"}
+      </p>
+      <p className="mt-1 text-[11px] text-dim">
+        Quantity {formatQty(Math.abs(holding.quantity))}
+      </p>
+      {holding.notionalUsd != null
+        ? (
+          <p className="mt-1 text-[11px] text-dim">
+            Recorded exposure {formatUsd(holding.notionalUsd, 0)}
+          </p>
+        )
+        : null}
+    </div>
+  );
+}
+
+function ConnectedHoldingsDetail({
+  nodes,
+  onChoose,
+}: {
+  nodes: MarketInfluenceGraph["nodes"];
+  onChoose: (nodeId: string) => void;
+}) {
+  const known = nodes
+    .map((item) => item.data.holding?.notionalUsd)
+    .filter((value): value is number => value != null);
+  const knownTotal = known.length
+    ? known.reduce((sum, value) => sum + value, 0)
+    : null;
+  const unknownCount = nodes.length - known.length;
+  return (
+    <div className="border-b border-hairline px-4 py-3.5 last:border-b-0">
+      <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+        Positions here
+      </p>
+      <ul className="mt-2 space-y-1">
+        {nodes.map((item) => {
+          const holding = item.data.holding;
+          return (
+            <li key={`held-${item.data.id}`}>
+              <button
+                type="button"
+                onClick={() => onChoose(item.data.id)}
+                className="flex min-h-8 w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-[11px] text-dim transition-colors hover:bg-panel-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              >
+                <span className="min-w-0 truncate">
+                  {displayNodeLabel(item.data)}
+                  {holding
+                    ? ` · ${holding.side === "short" ? "Short" : "Long"}`
+                    : ""}
+                </span>
+                <span className="shrink-0 font-mono text-[8px] text-faint">
+                  {holding?.notionalUsd != null
+                    ? formatUsd(holding.notionalUsd, 0)
+                    : "Not recorded"}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {knownTotal != null
+        ? (
+          <p className="mt-2 px-2 text-[11px] text-dim">
+            Known recorded exposure {formatUsd(knownTotal, 0)}
+            {unknownCount ? " · some holdings have unrecorded exposure" : ""}
+          </p>
+        )
+        : null}
+    </div>
+  );
+}
+
+function HoldingLegend() {
+  return (
+    <span className="inline-flex items-center gap-3">
+      <span className="inline-flex items-center gap-1.5">
+        <HoldingLegendMark />
+        Ring: company is held
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <HoldingLegendMark share={0.42} />
+        Darker arc: relative recorded position size among known holdings
+      </span>
+    </span>
+  );
+}
+
+function HoldingLegendMark({ share }: { share?: number }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+      aria-hidden="true"
+      className="shrink-0"
+    >
+      <circle cx="6" cy="6" r="2.3" fill="#9eb4be" />
+      <circle
+        cx="6"
+        cy="6"
+        r="4.6"
+        fill="none"
+        stroke="#176887"
+        strokeOpacity="0.55"
+        strokeWidth="1.1"
+      />
+      {share != null
+        ? (
+          <g transform="translate(6 6)">
+            <path
+              d={holdArcPath(4.6, share)}
+              fill="none"
+              stroke="#114b5f"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </g>
+        )
+        : null}
+    </svg>
+  );
+}
+
 function GraphLegend({
   stroke,
   color,
@@ -839,6 +2014,7 @@ function createMarketForceGraph(
   let lens: GraphLens = "market";
   let compact = false;
   let focusId: string | null = null;
+  let originId: string | null = null;
   let hoveredId: string | null = null;
   let topologyKey = "";
   let nodes: SimNode[] = [];
@@ -956,6 +2132,8 @@ function createMarketForceGraph(
     .strength((node) => nodeCharge(node.kind, compact))
     .distanceMax(320);
   const clusterForce = createClusterForce(0.18);
+  const familyHullForce = createFamilyHullForce(() => hulls, () => nodeById);
+  const hullForce = createLensHullForce(() => hulls, () => nodeById);
   const centerForce = forceCenter(width / 2, height / 2).strength(0.055);
   const xForce = forceX(width / 2).strength(0.035);
   const yForce = forceY(height / 2).strength(0.035);
@@ -968,6 +2146,8 @@ function createMarketForceGraph(
     .force("charge", chargeForce)
     .force("collide", collideForce)
     .force("cluster", clusterForce)
+    .force("familyHull", familyHullForce)
+    .force("hull", hullForce)
     .force("center", centerForce)
     .force("x", xForce)
     .force("y", yForce)
@@ -1065,7 +2245,10 @@ function createMarketForceGraph(
         applySemanticZoom();
       });
     entered.append("circle").attr("class", "node-glow");
+    entered.append("circle").attr("class", "node-hold-ring");
+    entered.append("path").attr("class", "node-hold-arc");
     entered.append("circle").attr("class", "node-core");
+    entered.append("line").attr("class", "node-leader");
     entered.append("text")
       .attr("class", "node-label")
       .style("font-family", FONT_FAMILY)
@@ -1084,7 +2267,10 @@ function createMarketForceGraph(
       .attr("stroke-dasharray", `${6 / k} ${5 / k}`);
 
     familyHullLayer.selectAll<SVGPathElement, GraphHull>("path")
-      .attr("d", (hull) => roundedHullPath(hullMembers(hull), 14) ?? "")
+      .attr(
+        "d",
+        (hull) => roundedHullPath(hullMembers(hull), FAMILY_HULL_PADDING) ?? "",
+      )
       .attr("fill", "rgba(255,255,255,0.34)")
       .attr("stroke", "#d5dfe4")
       .attr("stroke-width", 1 / k)
@@ -1130,7 +2316,7 @@ function createMarketForceGraph(
         "opacity",
         (link) =>
           hasFocus && pathEdgeIds.has(link.id) &&
-            (link.classes.includes("influence-path") || k >= 1.15)
+            link.classes.includes("influence-path")
             ? 1
             : 0,
       );
@@ -1153,6 +2339,29 @@ function createMarketForceGraph(
           .attr("r", node.radius + (selected ? 8 : onPath ? 5 : 0))
           .attr("fill", selected || onPath ? "#176887" : "transparent")
           .attr("fill-opacity", selected ? 0.11 : onPath ? 0.07 : 0);
+        group.select("circle.node-hold-ring")
+          .attr("r", node.radius + 2.6)
+          .attr("fill", "none")
+          .attr("stroke", node.held ? "#176887" : "none")
+          .attr("stroke-opacity", node.held ? 0.45 : 0)
+          .attr("stroke-width", 1.2 / k);
+        group.select("path.node-hold-arc")
+          .attr(
+            "d",
+            node.held && node.holdShare != null && node.holdShare > 0
+              ? holdArcPath(node.radius + 2.6, node.holdShare)
+              : "",
+          )
+          .attr("fill", "none")
+          .attr("stroke", "#114b5f")
+          .attr("stroke-width", 1.7 / k)
+          .attr("stroke-linecap", "round")
+          .attr(
+            "stroke-opacity",
+            node.held && node.holdShare != null && node.holdShare > 0
+              ? 0.92
+              : 0,
+          );
         group.select("circle.node-core")
           .attr("r", node.radius)
           .attr("fill", visual.fill)
@@ -1170,29 +2379,61 @@ function createMarketForceGraph(
 
   function applySemanticZoom() {
     const k = transform.k || 1;
+    const requests = nodes.flatMap((node) => {
+      const priority = labelPriorityForNode(node, {
+        focusId,
+        hoveredId,
+        pathNodeIds,
+        lens,
+        zoom: k,
+      });
+      if (!priority) return [];
+      return [{
+        id: node.id,
+        text: node.label,
+        x: transform.applyX(node.x ?? 0),
+        y: transform.applyY(node.y ?? 0),
+        nodeRadius: node.radius * k,
+        fontSize: node.kind === "market"
+          ? 11
+          : node.kind === "company"
+          ? 9
+          : 10,
+        priority,
+      }];
+    });
+    const placedById = new Map(
+      placeGraphLabels(requests, {
+        bounds: { width, height },
+      }).map((item) => [item.id, item]),
+    );
     nodeLayer.selectAll<SVGGElement, SimNode>("g.graph-node")
       .each(function (node) {
         const visual = nodeVisual(node);
-        const highlighted = hoveredId === node.id || node.id === focusId ||
-          pathNodeIds.has(node.id);
-        const visible = nodeLabelVisible({
-          kind: node.kind,
-          zoom: k,
-          hovered: hoveredId === node.id,
-          focused: highlighted,
-        }) &&
-          (highlighted || k >= 1.08 || node.kind === "market" ||
-            node.kind === lensNodeKind(lens));
+        const placed = placedById.get(node.id);
+        const visible = Boolean(placed?.visible);
         const screen = node.kind === "market"
           ? 11
           : node.kind === "company"
           ? 9
           : 10;
-        select(this).select("text.node-label")
+        const dx = placed ? (placed.x - transform.applyX(node.x ?? 0)) / k : 0;
+        const dy = placed ? (placed.y - transform.applyY(node.y ?? 0)) / k : 0;
+        const reach = Math.hypot(dx, dy);
+        const group = select(this);
+        group.select("line.node-leader")
+          .attr("x1", reach > 0 ? (dx / reach) * node.radius : 0)
+          .attr("y1", reach > 0 ? (dy / reach) * node.radius : 0)
+          .attr("x2", dx)
+          .attr("y2", dy)
+          .attr("stroke", "#8aa0aa")
+          .attr("stroke-width", 1 / k)
+          .attr("stroke-opacity", visible && placed?.leader ? 0.55 : 0);
+        group.select("text.node-label")
           .text(node.label)
-          .attr("x", node.kind === "company" ? node.radius + 6 : 0)
-          .attr("y", node.kind === "company" ? 0 : 0.35)
-          .attr("text-anchor", node.kind === "company" ? "start" : "middle")
+          .attr("x", dx)
+          .attr("y", dy)
+          .attr("text-anchor", placed?.textAnchor ?? "middle")
           .attr("dominant-baseline", "middle")
           .attr("fill", visual.text)
           .style("font-size", `${screen / k}px`)
@@ -1217,6 +2458,34 @@ function createMarketForceGraph(
   }
 
   function refreshFocusPath() {
+    const node = graph.nodes.find((item) => item.data.id === focusId);
+    if (node?.data.kind === "company" && focusId) {
+      const honoredOrigin = retainedPathOrigin(graph, focusId, originId);
+      const path = guidedPortfolioPath(graph, focusId, honoredOrigin);
+      pathNodeIds = new Set(path.nodeIds);
+      pathEdgeIds = new Set(path.edgeIds);
+      return;
+    }
+    if (originId && focusId && originId !== focusId) {
+      const bounded = directedContextPath(graph, originId, focusId);
+      if (bounded) {
+        pathNodeIds = new Set(bounded.nodeIds);
+        pathEdgeIds = new Set(bounded.edgeIds);
+        return;
+      }
+    }
+    if (node?.data.kind === "driver" && focusId) {
+      const nodeIds = new Set<string>([focusId]);
+      const edgeIds = new Set<string>();
+      for (const edge of graph.edges) {
+        if (edge.data.source !== focusId) continue;
+        edgeIds.add(edge.data.id);
+        nodeIds.add(edge.data.target);
+      }
+      pathNodeIds = nodeIds;
+      pathEdgeIds = edgeIds;
+      return;
+    }
     const path = focusedPath(graph, focusId);
     pathNodeIds = path.nodeIds;
     pathEdgeIds = path.edgeIds;
@@ -1241,6 +2510,8 @@ function createMarketForceGraph(
         extraClass: presentation.extraClassById.get(node.data.id) ?? "",
         radius: presentation.radiusById.get(node.data.id) ?? 8,
         clusterId: clusterIdForNode(nextGraph, lens, node.data.id),
+        held: Boolean(node.data.holding),
+        holdShare: node.data.holding?.shareOfKnownGross ?? null,
         x: seed.x,
         y: seed.y,
         vx: 0,
@@ -1255,6 +2526,8 @@ function createMarketForceGraph(
       prior.extraClass = next.extraClass;
       prior.radius = next.radius;
       prior.clusterId = next.clusterId;
+      prior.held = next.held;
+      prior.holdShare = next.holdShare;
       return prior;
     });
     links = nextGraph.edges.map((edge) => {
@@ -1287,6 +2560,8 @@ function createMarketForceGraph(
       node.extraClass = presentation.extraClassById.get(node.id) ?? "";
       node.radius = presentation.radiusById.get(node.id) ?? node.radius;
       node.clusterId = clusterIdForNode(nextGraph, lens, node.id);
+      node.held = Boolean(source.data.holding);
+      node.holdShare = source.data.holding?.shareOfKnownGross ?? null;
     }
     const sourceEdges = new Map(
       nextGraph.edges.map((edge) => [edge.data.id, edge]),
@@ -1330,10 +2605,11 @@ function createMarketForceGraph(
     for (const node of nodes) {
       const x = node.x ?? 0;
       const y = node.y ?? 0;
-      minX = Math.min(minX, x - node.radius);
-      minY = Math.min(minY, y - node.radius);
-      maxX = Math.max(maxX, x + node.radius);
-      maxY = Math.max(maxY, y + node.radius);
+      const pad = node.radius + LENS_HULL_PADDING;
+      minX = Math.min(minX, x - pad);
+      minY = Math.min(minY, y - pad);
+      maxX = Math.max(maxX, x + pad);
+      maxY = Math.max(maxY, y + pad);
     }
     if (!Number.isFinite(minX) || !Number.isFinite(minY)) return;
     const padding = 52;
@@ -1408,6 +2684,7 @@ function createMarketForceGraph(
       lens = input.lens;
       compact = input.compact;
       if (input.focusId !== undefined) focusId = input.focusId;
+      if (input.originId !== undefined) originId = input.originId ?? null;
       if (topologyChanged) {
         topologyKey = nextKey;
         rebuild(graph);
@@ -1431,6 +2708,10 @@ function createMarketForceGraph(
     },
     setFocus(nodeId, options) {
       focusId = nodeId;
+      if (!nodeId) originId = null;
+      else if (options && "originId" in options) {
+        originId = options.originId ?? null;
+      }
       refreshFocusPath();
       applyAppearance();
       applySemanticZoom();
@@ -1474,6 +2755,137 @@ function createMarketForceGraph(
       svg.remove();
     },
   };
+}
+
+function createFamilyHullForce(
+  currentHulls: () => GraphHull[],
+  nodesById: () => Map<string, SimNode>,
+): Force<SimNode, SimLink> {
+  const force = () => {
+    const nodeById = nodesById();
+    const envelopes = [];
+    const fixedIds = new Set<string>();
+    for (const hull of currentHulls()) {
+      if (hull.kind !== "family") continue;
+      const members: Array<{ x: number; y: number; radius: number }> = [];
+      let anchored = false;
+      for (const id of hull.memberIds) {
+        const node = nodeById.get(id);
+        if (!node || node.x == null || node.y == null) continue;
+        members.push({ x: node.x, y: node.y, radius: node.radius });
+        if (node.fx != null || node.fy != null) anchored = true;
+      }
+      const envelope = groupEnvelope(members, FAMILY_HULL_PADDING);
+      if (!envelope) continue;
+      const familyNode = nodeById.get(hull.groupId);
+      envelopes.push({
+        id: hull.groupId,
+        parentId: familyNode?.clusterId ?? "other",
+        ...envelope,
+      });
+      if (anchored) fixedIds.add(hull.groupId);
+    }
+    const moves = separateSiblingGroupEnvelopes(envelopes, {
+      passes: 6,
+      fixedIds,
+    });
+    const moveByGroup = new Map(moves.map((item) => [item.id, item]));
+    for (const hull of currentHulls()) {
+      if (hull.kind !== "family") continue;
+      if (fixedIds.has(hull.groupId)) continue;
+      const move = moveByGroup.get(hull.groupId);
+      if (!move || (move.dx === 0 && move.dy === 0)) continue;
+      for (const id of hull.memberIds) {
+        const node = nodeById.get(id);
+        if (!node) continue;
+        if (node.fx != null || node.fy != null) continue;
+        node.vx = (node.vx ?? 0) + move.dx * 0.45;
+        node.vy = (node.vy ?? 0) + move.dy * 0.45;
+      }
+    }
+  };
+  force.initialize = () => {};
+  return force;
+}
+
+function createLensHullForce(
+  currentHulls: () => GraphHull[],
+  nodesById: () => Map<string, SimNode>,
+): Force<SimNode, SimLink> {
+  const force = () => {
+    const nodeById = nodesById();
+    const envelopes = [];
+    for (const hull of currentHulls()) {
+      if (hull.kind !== "lens") continue;
+      const members: Array<{ x: number; y: number; radius: number }> = [];
+      for (const id of hull.memberIds) {
+        const node = nodeById.get(id);
+        if (!node || node.x == null || node.y == null) continue;
+        members.push({ x: node.x, y: node.y, radius: node.radius });
+      }
+      const envelope = groupEnvelope(members, LENS_HULL_PADDING);
+      if (!envelope) continue;
+      envelopes.push({ id: hull.groupId, ...envelope });
+    }
+    const moves = separateGroupEnvelopes(envelopes, { passes: 6 });
+    const moveByGroup = new Map(moves.map((item) => [item.id, item]));
+    for (const hull of currentHulls()) {
+      if (hull.kind !== "lens") continue;
+      const move = moveByGroup.get(hull.groupId);
+      if (!move || (move.dx === 0 && move.dy === 0)) continue;
+      for (const id of hull.memberIds) {
+        const node = nodeById.get(id);
+        if (!node) continue;
+        if (node.fx != null || node.fy != null) continue;
+        node.vx = (node.vx ?? 0) + move.dx * 0.45;
+        node.vy = (node.vy ?? 0) + move.dy * 0.45;
+      }
+    }
+  };
+  force.initialize = () => {};
+  return force;
+}
+
+function labelPriorityForNode(
+  node: SimNode,
+  input: {
+    focusId: string | null;
+    hoveredId: string | null;
+    pathNodeIds: Set<string>;
+    lens: GraphLens;
+    zoom: number;
+  },
+): LabelPriority | null {
+  if (node.id === input.focusId) return "selected";
+  if (node.id === input.hoveredId) return "hovered";
+  if (input.pathNodeIds.has(node.id)) return "path";
+  if (node.kind === lensNodeKind(input.lens)) return "lens";
+  if (node.kind === "market") return "market";
+  if (
+    input.zoom >= 1.08 &&
+    nodeLabelVisible({ kind: node.kind, zoom: input.zoom })
+  ) {
+    return "secondary";
+  }
+  return null;
+}
+
+function holdArcPath(radius: number, share: number): string {
+  const fraction = Math.min(1, Math.max(0, share));
+  if (fraction <= 0) return "";
+  if (fraction >= 1) {
+    return `M 0 ${-radius} a ${radius} ${radius} 0 1 1 0 ${
+      radius * 2
+    } a ${radius} ${radius} 0 1 1 0 ${-radius * 2}`;
+  }
+  const start = -Math.PI / 2;
+  const end = start + fraction * Math.PI * 2;
+  const large = fraction > 0.5 ? 1 : 0;
+  return `M ${Math.cos(start) * radius} ${
+    Math.sin(start) * radius
+  } A ${radius} ${radius} 0 ${large} 1 ${Math.cos(end) * radius} ${
+    Math.sin(end) * radius
+  }`;
 }
 
 function createClusterForce(strength: number): Force<SimNode, SimLink> {
@@ -1767,31 +3179,5 @@ function lcg(seed: number): () => number {
 function displayNodeLabel(
   data: MarketInfluenceGraph["nodes"][number]["data"],
 ): string {
-  if (data.kind === "market") return venueLabel(data.scopeKey || data.label);
-  if (data.kind === "family") {
-    return compactFamilyLabel(data.family, data.scopeKey);
-  }
-  return data.label;
-}
-
-function compactFamilyLabel(family?: string, scopeKey?: string): string {
-  const full = familyLabel(family);
-  const market = venueLabel(scopeKey);
-  if (
-    String(family ?? "").toLowerCase().startsWith(
-      `${String(scopeKey ?? "").toLowerCase()}_`,
-    )
-  ) {
-    const withoutFirstWord = full.split(/\s+/).slice(1).join(" ").trim();
-    if (withoutFirstWord) return withoutFirstWord;
-  }
-  for (const prefix of [market, market.replace(/e$/, "") + "n", scopeKey]) {
-    const candidate = String(prefix ?? "").trim();
-    if (
-      candidate && full.toLowerCase().startsWith(`${candidate.toLowerCase()} `)
-    ) {
-      return full.slice(candidate.length + 1).trim() || full;
-    }
-  }
-  return full;
+  return graphNodeLabel(data);
 }

@@ -17,9 +17,11 @@ import {
   buildMarketAtlas,
 } from "@/lib/market-intelligence-atlas";
 import { buildMarketInfluenceGraph } from "@/lib/market-influence-network";
+import type { MarketIntelligenceContext } from "@/lib/market-intelligence-reading";
 import type {
   FamilyComparison,
   FamilyIntelligence,
+  Holding,
   RegionCurrentIntelligence,
 } from "@/lib/types";
 
@@ -29,6 +31,7 @@ type Props = {
   comparison?: readonly FamilyComparison[] | null;
   activeScope?: string;
   companyMap?: Readonly<Record<string, string>>;
+  holdings?: readonly Holding[] | null;
   onSelectScope?: (scope: string) => void;
 };
 
@@ -44,6 +47,7 @@ export function MarketIntelligenceAtlas({
   comparison,
   activeScope,
   companyMap,
+  holdings,
   onSelectScope,
 }: Props) {
   const worldQuery = useWorldIntelligence(30);
@@ -70,16 +74,20 @@ export function MarketIntelligenceAtlas({
   );
   const evidenceByNode = useMemo(
     () =>
-      layout.nodes.map((node) => ({
-        nodeId: node.id,
-        links: buildAtlasEvidenceLinks(
-          node,
-          current?.[node.scopeKey]?.macro_brief as
-            | AtlasMacroBriefInput
-            | null
-            | undefined,
-        ),
-      })),
+      layout.nodes.map((node) => {
+        const brief = current?.[node.scopeKey]?.macro_brief;
+        return {
+          nodeId: node.id,
+          links: buildAtlasEvidenceLinks(
+            node,
+            brief as AtlasMacroBriefInput | null | undefined,
+          ),
+          as_of: brief?.as_of ?? null,
+          valid_until: brief?.valid_until ?? null,
+          status: brief?.status ?? null,
+          coverage: brief?.coverage ?? null,
+        };
+      }),
     [current, layout.nodes],
   );
   const influenceGraph = useMemo(
@@ -89,8 +97,16 @@ export function MarketIntelligenceAtlas({
         threads: familyThreads,
         evidenceByNode,
         companyNames: companyMap,
+        holdings,
       }),
-    [companyMap, evidenceByNode, familyThreads, layout.nodes],
+    [companyMap, evidenceByNode, familyThreads, holdings, layout.nodes],
+  );
+  const intelligenceContext = useMemo<MarketIntelligenceContext>(
+    () => ({
+      current: current ?? {},
+      comparisons: comparison ?? [],
+    }),
+    [comparison, current],
   );
 
   function selectNode(node: AtlasNode) {
@@ -164,6 +180,7 @@ export function MarketIntelligenceAtlas({
             atlasNodes={layout.nodes}
             selectedAtlasNodeId={selected.id}
             onSelect={selectNode}
+            intelligenceContext={intelligenceContext}
           />
         )
         : (

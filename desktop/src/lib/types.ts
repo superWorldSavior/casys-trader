@@ -6,6 +6,7 @@ export type DecisionRow = {
   decision_reason_code?: string;
   decision_source?: string;
   executed?: boolean;
+  execution_status?: "confirmed" | "recorded";
   intent?: string;
   llm_model?: string;
   llm_provider?: string;
@@ -16,6 +17,7 @@ export type DecisionRow = {
   qty?: number;
   rationale?: string;
   reason?: string;
+  review_summary?: string;
   sequence?: number;
   symbol?: string;
   ts?: string;
@@ -566,6 +568,7 @@ export type MacroBrief = {
     severity?: string;
     horizon?: string;
     source_refs?: string[];
+    is_operational?: boolean;
   }>;
   zones?: Record<string, Array<Record<string, unknown>>>;
   families?: Record<string, Array<Record<string, unknown>>>;

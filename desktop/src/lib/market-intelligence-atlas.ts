@@ -12,6 +12,7 @@ export type AtlasFamilyInput = {
   situation_status?: string | null;
   summary?: string | null;
   symbols?: readonly string[] | null;
+  sticky_symbols?: readonly string[] | null;
 };
 
 export type AtlasBuildInput = {
@@ -623,14 +624,25 @@ function prepareFamily(row: AtlasFamilyInput, family: string): PreparedFamily {
     persistence,
     isNew: persistence.toLowerCase() === "new",
     summary: String(row.summary ?? "").trim(),
-    symbols: Array.from(
-      new Set(
-        (row.symbols ?? [])
-          .map((symbol) => String(symbol).trim())
-          .filter(Boolean),
-      ),
-    ),
+    symbols: unionFamilySymbols(row.symbols, row.sticky_symbols),
   };
+}
+
+export function unionFamilySymbols(
+  symbols?: readonly string[] | null,
+  stickySymbols?: readonly string[] | null,
+): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const raw of [...(symbols ?? []), ...(stickySymbols ?? [])]) {
+    const symbol = String(raw ?? "").trim();
+    if (!symbol) continue;
+    const key = symbol.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(symbol);
+  }
+  return merged;
 }
 
 function comparePrepared(left: PreparedFamily, right: PreparedFamily): number {

@@ -439,6 +439,153 @@ def handle_settings(_args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+DECISIONS_LEDGER_PATH = REPO_ROOT / "state" / "decisions.jsonl"
+_DECISIONS_SCAN_BLOCK_SIZE = 64 * 1024
+_SYMBOL_DECISION_LIMIT = 20
+
+
+def _is_strict_ai_decision(row: dict[str, Any]) -> bool:
+    source = str(row.get("decision_source") or "").strip().lower()
+    return source == "llm" and row.get("model_called") is True
+
+
+def _review_summary(row: dict[str, Any]) -> str | None:
+    action = str(row.get("action") or "").strip().upper()
+    if not action:
+        return None
+    strict = _is_strict_ai_decision(row)
+    reason_code = str(row.get("decision_reason_code") or "").strip().upper()
+    reason = str(row.get("reason") or "").strip().lower()
+    runtime = as_dict(row.get("runtime"))
+    watch_created = runtime.get("indicator_watch_created") is True
+    blocked = runtime.get("blocked") is True
+    stale = reason_code == "DATA_STALE" or reason.startswith("stale")
+    closed = reason_code == "MARKET_CLOSED" or "session_closed" in reason or reason in {
+        "market_closed",
+        "session_closed",
+    }
+    risk = (
+        reason_code == "RISK_LIMIT"
+        or reason.startswith("risk:")
+        or reason.startswith("blocked_")
+        or blocked
+    )
+    watch = watch_created or reason_code == "WATCH_ARMED"
+
+    if stale:
+        if strict:
+            return "Casys waited because the available market data was too old."
+        return "The record shows the available market data was too old."
+    if closed:
+        if strict:
+            return "Casys reviewed the company while the market was closed."
+        return "The record shows the market was closed."
+    if risk:
+        if action == "HOLD":
+            if strict:
+                return (
+                    "Casys kept the portfolio unchanged because risk limits "
+                    "left no room for a new position."
+                )
+            return (
+                "The record shows the portfolio stayed unchanged because "
+                "risk limits left no room for a new position."
+            )
+        if row.get("executed") is not True:
+            return "Risk controls stopped a trade before execution."
+    if action == "HOLD":
+        if strict and watch:
+            return (
+                "Casys kept the portfolio unchanged and recorded another "
+                "market condition to watch."
+            )
+        if strict:
+            return "Casys reviewed the company and kept the portfolio unchanged."
+        return "The record shows the portfolio stayed unchanged."
+    if action == "BUY":
+        if strict:
+            return "Casys decided to buy. No execution is claimed here."
+        return "A buy decision was recorded. No execution is claimed here."
+    if action == "SELL":
+        if strict:
+            return "Casys decided to sell. No execution is claimed here."
+        return "A sell decision was recorded. No execution is claimed here."
+    if action == "CLOSE":
+        if strict:
+            return "Casys decided to close the position. No execution is claimed here."
+        return "A close decision was recorded. No execution is claimed here."
+    if strict:
+        return "Casys recorded a portfolio decision. No execution is claimed here."
+    return "A portfolio decision was recorded. No execution is claimed here."
+
+
+def _symbol_decision_item(row: dict[str, Any]) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "cycle_ts": row.get("cycle_ts") or row.get("ts"),
+        "action": row.get("action"),
+        "confidence": row.get("confidence"),
+        "executed": row.get("executed"),
+        "decision_source": row.get("decision_source"),
+        "model_called": row.get("model_called"),
+    }
+    for key in ("qty", "price", "ts"):
+        if row.get(key) is not None:
+            item[key] = row.get(key)
+    summary = _review_summary(row)
+    if summary:
+        item["review_summary"] = summary
+    execution_status = _execution_status(row)
+    if execution_status is not None:
+        item["execution_status"] = execution_status
+    return item
+
+
+def _parse_strict_ai_ledger_row(raw: bytes, symbol: str) -> dict[str, Any] | None:
+    line = raw.strip()
+    if not line:
+        return None
+    try:
+        row = json.loads(line.decode("utf-8", errors="replace"))
+    except (UnicodeError, json.JSONDecodeError, ValueError, TypeError):
+        return None
+    if not isinstance(row, dict):
+        return None
+    if str(row.get("symbol") or "") != symbol:
+        return None
+    if not _is_strict_ai_decision(row):
+        return None
+    return row
+
+
+def _latest_strict_ai_decision_from_ledger(symbol: str) -> dict[str, Any] | None:
+    path = DECISIONS_LEDGER_PATH
+    try:
+        if not path.is_file():
+            return None
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            leftover = b""
+            position = handle.tell()
+            block_size = max(1, int(_DECISIONS_SCAN_BLOCK_SIZE))
+            while position > 0:
+                read_size = min(block_size, position)
+                position -= read_size
+                handle.seek(position)
+                chunk = handle.read(read_size)
+                data = chunk + leftover
+                parts = data.split(b"\n")
+                leftover = parts[0]
+                for raw in reversed(parts[1:]):
+                    row = _parse_strict_ai_ledger_row(raw, symbol)
+                    if row is not None:
+                        return row
+            if leftover.strip():
+                return _parse_strict_ai_ledger_row(leftover, symbol)
+    except OSError:
+        return None
+    return None
+
+
 def handle_symbol(args: argparse.Namespace) -> dict[str, Any]:
     from trader.interfaces.cockpit import format as cockpit_format
     from trader.interfaces.cockpit.derive import positions_by_pnl
@@ -457,27 +604,20 @@ def handle_symbol(args: argparse.Namespace) -> dict[str, Any]:
         for row in positions_by_pnl(state)
         if str(row.get("symbol") or "") == symbol
     ]
-    decisions = []
+    decisions: list[dict[str, Any]] = []
     why = None
     for row in reversed(as_list(state.get("recent_decisions"))):
         if not isinstance(row, dict) or str(row.get("symbol") or "") != symbol:
             continue
-        item = {
-            "cycle_ts": row.get("cycle_ts") or row.get("ts"),
-            "action": row.get("action"),
-            "rationale": row.get("rationale") or row.get("reason"),
-            "reason": row.get("reason"),
-            "confidence": row.get("confidence"),
-            "executed": row.get("executed"),
-            "decision_source": row.get("decision_source"),
-            "model_called": row.get("model_called"),
-            "llm_model": row.get("llm_model"),
-        }
-        decisions.append(item)
-        if why is None and str(row.get("rationale") or "").strip():
+        item = _symbol_decision_item(row)
+        if len(decisions) < _SYMBOL_DECISION_LIMIT:
+            decisions.append(item)
+        if why is None and _is_strict_ai_decision(row):
             why = item
-        if len(decisions) >= 20:
-            break
+    if why is None:
+        durable = _latest_strict_ai_decision_from_ledger(symbol)
+        if durable is not None:
+            why = _symbol_decision_item(durable)
     return {
         "symbol": symbol,
         "name": as_dict(state.get("company_map")).get(symbol),
