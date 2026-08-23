@@ -192,6 +192,42 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert "xnys" not in scope_path.read_text(encoding="utf-8").lower()
 
 
+def test_world_feature_contract_is_stdlib_domain_single_v1_v2_v3_type() -> None:
+    contract_path = REPO_ROOT / "trader" / "domain" / "world_feature_contract.py"
+    assert contract_path.exists()
+    assert _domain_import_violations([contract_path], REPO_ROOT) == []
+
+    from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeatureMask
+    from trader.domain.world_scope import WorldScopeMapping, WorldScopeResolution
+
+    assert WorldFeatureContract.__module__ == "trader.domain.world_feature_contract"
+    assert WorldFeatureMask.__module__ == "trader.domain.world_feature_contract"
+    assert WorldScopeMapping.__module__ == "trader.domain.world_scope"
+    assert WorldScopeResolution.__module__ == "trader.domain.world_scope"
+    source = contract_path.read_text(encoding="utf-8")
+    assert "class WorldScopeMapping" not in source
+    assert "class WorldScopeResolution" not in source
+    assert "trader.application" not in source
+    assert "trader.infrastructure" not in source
+    assert "trader.runtime" not in source
+    assert "numpy" not in source.lower()
+    assert "networkx" not in source.lower()
+    assert "class WorldFeatureContract" in source
+    assert "class WorldFeatureMask" in source
+
+    encoding_path = REPO_ROOT / "trader" / "application" / "world_model" / "encoding.py"
+    assert encoding_path.exists()
+    from trader.application.world_model.encoding import (
+        FEATURE_CONTRACT_FINGERPRINT,
+        FEATURE_CONTRACT_FINGERPRINT_V2,
+    )
+
+    assert FEATURE_CONTRACT_FINGERPRINT == "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
+    assert FEATURE_CONTRACT_FINGERPRINT_V2 == "a039216d5b53dab0c1aea134faabeac7b6f94c656d5880ec84882ebab05dbde5"
+    assert "FEATURE_CONTRACT_FINGERPRINT" not in source
+    assert "trader.application.world_model.encoding" not in source
+
+
 def test_world_availability_receipt_public_surface_does_not_mint_ready_at() -> None:
     import trader.infrastructure.state_db.availability_receipt as receipt_mod
     from trader.infrastructure.state_db.availability_receipt import WorldAvailabilityJsonlReceiptStore
