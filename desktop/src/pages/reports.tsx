@@ -5,6 +5,7 @@ import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { useReports } from "@/hooks/use-desk-api";
 import { readReport } from "@/lib/api";
 import { formatAgo } from "@/lib/format";
+import { grossModeLabel, humanToken, marketRegimeLabel, netBiasLabel } from "@/lib/humanize";
 import { cn } from "@/lib/utils";
 
 const KINDS = ["global", "macro", "regional", "micro"] as const;
@@ -27,17 +28,19 @@ export function ReportsPage() {
   const payload = detail.data?.payload ?? {};
 
   return (
-    <div className="grid grid-cols-[320px_1fr] gap-4">
+    <div className="grid gap-4 min-[900px]:grid-cols-[320px_minmax(0,1fr)]">
       <Card className="max-h-[calc(100vh-8rem)] overflow-auto">
         <CardHeader>
-          <CardTitle>Reports</CardTitle>
+          <CardTitle>Report history</CardTitle>
           <span className="font-mono text-[10px] text-faint">{items.length}</span>
         </CardHeader>
         <CardBody className="space-y-4">
           {list.error ? (
             <p className="text-sm text-loss">{list.error instanceof Error ? list.error.message : String(list.error)}</p>
           ) : null}
-          {grouped.map((group) => (
+          {list.isPending && !list.data ? <p className="text-sm text-faint">Loading report history…</p> : null}
+          {list.data && !items.length ? <p className="text-sm text-faint">No reports are available.</p> : null}
+          {list.data ? grouped.map((group) => (
             <div key={group.kind}>
               <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">{group.kind}</p>
               <div className="space-y-1">
@@ -46,6 +49,7 @@ export function ReportsPage() {
                     key={item.key}
                     type="button"
                     onClick={() => setKey(item.key)}
+                    aria-pressed={selected === item.key}
                     className={cn(
                       "w-full rounded-md px-2 py-1.5 text-left hover:bg-panel-hover",
                       selected === item.key && "bg-panel-hover",
@@ -61,7 +65,7 @@ export function ReportsPage() {
                 {group.items.length === 0 ? <p className="text-xs text-faint">None</p> : null}
               </div>
             </div>
-          ))}
+          )) : null}
         </CardBody>
       </Card>
       <Card className="min-h-[480px]">
@@ -70,38 +74,45 @@ export function ReportsPage() {
           {detail.data?.kind ? <Badge>{detail.data.kind}</Badge> : null}
         </CardHeader>
         <CardBody className="space-y-4">
+          {selected && detail.isPending && !detail.data ? <p className="text-sm text-faint">Loading the selected report…</p> : null}
+          {!selected && list.data ? <p className="text-sm text-faint">Select a report when one becomes available.</p> : null}
           {detail.error ? (
             <p className="text-sm text-loss">
               {detail.error instanceof Error ? detail.error.message : String(detail.error)}
             </p>
           ) : null}
-          {detail.data?.error ? <p className="text-sm text-loss">Report not found.</p> : null}
-          {detail.data?.kind === "regional" ? (
-            <RegionalDetail payload={payload} />
-          ) : (
+          {detail.data && !detail.data.error ? (
             <>
-              <Block
-                title="Posture"
-                value={pick(payload, ["posture", "stance", "regime", "gross_mode", "net_bias"])}
-              />
-              <List
-                title="Points"
-                values={listish(payload, ["points", "key_points", "bullets", "takeaways", "family_priority", "venue_posture"])}
-              />
-              <Block
-                title="Brief"
-                value={pick(payload, ["brief", "summary", "thesis", "narrative", "text", "rationale"])}
-              />
+              {detail.data.kind === "regional" ? (
+                <RegionalDetail payload={payload} />
+              ) : (
+                <>
+                  <Block
+                    title="Posture"
+                    value={pick(payload, ["posture", "stance", "regime", "gross_mode", "net_bias"])}
+                  />
+                  <List
+                    title="Points"
+                    values={listish(payload, ["points", "key_points", "bullets", "takeaways", "family_priority", "venue_posture"])}
+                  />
+                  <Block
+                    title="Brief"
+                    value={pick(payload, ["brief", "summary", "thesis", "narrative", "text", "rationale"])}
+                  />
+                </>
+              )}
+              <details className="rounded-md border border-hairline px-3 py-2">
+                <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
+                  Raw report data
+                </summary>
+                <pre className="mt-2 max-h-[360px] overflow-auto text-xs text-dim">
+                  {JSON.stringify(payload, null, 2)}
+                </pre>
+              </details>
             </>
-          )}
-          <details className="rounded-md border border-hairline px-3 py-2">
-            <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.16em] text-faint">
-              Raw payload
-            </summary>
-            <pre className="mt-2 max-h-[360px] overflow-auto text-xs text-dim">
-              {JSON.stringify(payload, null, 2)}
-            </pre>
-          </details>
+          ) : detail.data?.error ? (
+            <p className="text-sm text-loss">This report could not be opened.</p>
+          ) : null}
         </CardBody>
       </Card>
     </div>
@@ -146,12 +157,12 @@ function RegionalDetail({ payload }: { payload: Record<string, unknown> }) {
       ) : null}
       <Block title="Summary" value={summary} />
       <List
-        title="Family postures"
+        title="Theme outlooks"
         values={Object.entries(postures).map(([name, value]) =>
           typeof value === "string" ? `${name}: ${value}` : `${name}: ${JSON.stringify(value)}`,
         )}
       />
-      <List title="Hotlist" values={hotlist} />
+      <List title="Companies in focus" values={hotlist} />
     </>
   );
 }
@@ -183,9 +194,18 @@ function Block({ title, value }: { title: string; value: string | null }) {
   return (
     <section>
       <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-faint">{title}</p>
-      <p className="text-sm leading-relaxed text-muted">{value || "—"}</p>
+      <p className="text-sm leading-relaxed text-muted">{reportValueLabel(value)}</p>
     </section>
   );
+}
+
+function reportValueLabel(value: string | null): string {
+  if (!value) return "—";
+  const key = value.toLowerCase();
+  if (["risk_off", "risk_on"].includes(key)) return marketRegimeLabel(value);
+  if (["cautious", "normal"].includes(key)) return grossModeLabel(value);
+  if (["short", "neutral", "long"].includes(key)) return netBiasLabel(value);
+  return humanToken(value);
 }
 
 function List({ title, values }: { title: string; values: string[] }) {

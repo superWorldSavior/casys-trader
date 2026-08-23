@@ -48,7 +48,7 @@ export function SettingsPage() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Cycle / budget</CardTitle>
+              <CardTitle>Portfolio rules</CardTitle>
             <Button size="sm" onClick={() => notWired("Write portfolio.yaml")}>
               Write
             </Button>

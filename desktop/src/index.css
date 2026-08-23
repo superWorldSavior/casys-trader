@@ -61,3 +61,109 @@ body {
     radial-gradient(circle at 12% -15%, rgb(23 104 135 / 7%), transparent 32rem),
     linear-gradient(to bottom, rgb(255 255 255 / 38%), transparent 18rem);
 }
+
+@keyframes live-work-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  }
+}
+
+@keyframes live-work-sheen {
+  0%,
+  14% {
+    transform: translateX(-120%);
+  }
+  68%,
+  100% {
+    transform: translateX(420%);
+  }
+}
+
+.live-work-surface {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--color-accent) 5%, white),
+      var(--color-panel) 34%
+    );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 82%),
+    0 7px 24px rgb(23 104 135 / 4%);
+}
+
+.live-work-halo {
+  animation: live-work-breathe 2.8s ease-in-out infinite;
+}
+
+.live-work-lane-sheen {
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.live-work-lane-sheen::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 28%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-accent) 42%, white),
+    transparent
+  );
+  animation: live-work-sheen 3.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-work-halo,
+  .live-work-lane-sheen,
+  .live-work-lane-sheen::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .live-work-lane-sheen::after {
+    opacity: 0;
+  }
+}
+
+.atlas-mesh {
+  background-color: #fbfcfd;
+  background-image:
+    radial-gradient(ellipse at 12% 42%, rgb(23 104 135 / 6%), transparent 29%),
+    radial-gradient(ellipse at 82% 64%, rgb(38 115 90 / 3%), transparent 32%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafb 100%);
+}
+
+.atlas-entrance-ring {
+  opacity: 0.55;
+}
+
+@keyframes atlas-thread-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.atlas-family-thread {
+  animation: atlas-thread-reveal 220ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .atlas-entrance-ring {
+    opacity: 0.5;
+  }
+
+  .atlas-family-thread {
+    opacity: 1;
+    animation: none;
+  }
+}

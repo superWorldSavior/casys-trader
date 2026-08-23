@@ -7,11 +7,15 @@ import { IntelligenceTimeline } from "@/components/intelligence/timeline";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useCompanyIntelligence } from "@/hooks/use-intelligence";
+import { venueLabel } from "@/lib/humanize";
+import type { CompanyIntelligence } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const VENUES = ["ALL", "TW", "EU", "US"] as const;
 const DEPTHS = ["all", "deep", "screen"] as const;
 const FRESHNESS = ["all", "fresh", "aging", "stale"] as const;
+const SCOPES = ["relevant", "all"] as const;
+type Scope = (typeof SCOPES)[number];
 
 export function CompaniesPage({
   initialVenue,
@@ -26,14 +30,21 @@ export function CompaniesPage({
   const [depth, setDepth] = useState("all");
   const [freshness, setFreshness] = useState("all");
   const [status, setStatus] = useState("all");
+  const [scope, setScope] = useState<Scope>(initialVenue ? "all" : "relevant");
   const [onBook, setOnBook] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
 
   useEffect(() => {
-    if (initialVenue) setVenue(initialVenue);
+    if (!initialVenue) return;
+    setVenue(initialVenue);
+    setScope("all");
   }, [initialVenue]);
 
   const companies = query.data?.companies ?? [];
+  const companyMap = useMemo(
+    () => Object.fromEntries(companies.map((company) => [company.symbol, company.name])),
+    [companies],
+  );
   const statuses = useMemo(
     () => Array.from(new Set(companies.map((item) => item.thesis_status))).sort(),
     [companies],
@@ -41,6 +52,7 @@ export function CompaniesPage({
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return companies.filter((company) => {
+      if (scope === "relevant" && !isRelevantNow(company)) return false;
       if (venue !== "ALL" && company.venue !== venue) return false;
       if (depth !== "all" && company.depth !== depth) return false;
       if (status !== "all" && company.thesis_status !== status) return false;
@@ -60,8 +72,9 @@ export function CompaniesPage({
       )
         return false;
       return true;
-    });
-  }, [companies, depth, freshness, onBook, search, status, venue]);
+    }).sort(compareCompanyPriority);
+  }, [companies, depth, freshness, onBook, scope, search, status, venue]);
+  const advancedFiltersActive = depth !== "all" || freshness !== "all" || status !== "all";
   const chosen = filtered.find((company) => company.symbol === selected) ?? filtered[0];
   const detailQuery = useCompanyIntelligence(
     { symbol: chosen?.symbol, limit: 240 },
@@ -75,10 +88,12 @@ export function CompaniesPage({
 
   return (
     <div className="grid gap-6">
-      {query.error ? (
-        <p className="text-sm text-loss">{query.error instanceof Error ? query.error.message : String(query.error)}</p>
+      {query.error && !query.data ? (
+        <p className="text-sm text-warn">Company research could not be loaded.</p>
+      ) : query.error ? (
+        <p className="text-xs text-warn">Company research could not be refreshed. The last available view is still shown.</p>
       ) : null}
-      {!query.data && query.isPending ? <p className="text-sm text-faint">Loading company intelligence histories…</p> : null}
+      {!query.data && query.isPending ? <p className="text-sm text-faint">Loading the companies Casys follows…</p> : null}
 
       {query.data ? (
         <>
@@ -87,70 +102,89 @@ export function CompaniesPage({
               name="company-filter"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Symbol, issuer or thesis…"
+              placeholder="Search companies or reasoning…"
               className="w-full sm:w-64"
               aria-label="Filter companies"
             />
-            <div className="flex gap-1">
-              {VENUES.map((item) => (
-                <FilterButton key={item} active={venue === item} onClick={() => setVenue(item)}>
-                  {item}
+            <div className="flex gap-1" role="group" aria-label="Research scope">
+              {SCOPES.map((item) => (
+                <FilterButton key={item} active={scope === item} onClick={() => setScope(item)}>
+                  {item === "relevant" ? "Relevant now" : "All research"}
                 </FilterButton>
               ))}
             </div>
-            <select
-              name="company-depth"
-              value={depth}
-              onChange={(event) => setDepth(event.target.value)}
-              className="h-8 rounded-md border border-line bg-ink px-2 font-mono text-[10px] uppercase text-muted"
-              aria-label="Brief depth"
-            >
-              {DEPTHS.map((item) => (
-                <option key={item} value={item}>
-                  {item === "all" ? "all depths" : item}
-                </option>
+            <div className="flex gap-1" role="group" aria-label="Region">
+              {VENUES.map((item) => (
+                <FilterButton key={item} active={venue === item} onClick={() => setVenue(item)}>
+                  {venueLabel(item)}
+                </FilterButton>
               ))}
-            </select>
-            <select
-              name="company-freshness"
-              value={freshness}
-              onChange={(event) => setFreshness(event.target.value)}
-              className="h-8 rounded-md border border-line bg-ink px-2 font-mono text-[10px] uppercase text-muted"
-              aria-label="Freshness"
-            >
-              {FRESHNESS.map((item) => (
-                <option key={item} value={item}>
-                  {item === "fresh" ? "fresh ≤24h" : item === "aging" ? "aging 24–72h" : item === "stale" ? "stale >72h" : "all ages"}
-                </option>
-              ))}
-            </select>
-            <select
-              name="company-thesis-status"
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
-              className="h-8 max-w-48 rounded-md border border-line bg-ink px-2 font-mono text-[10px] uppercase text-muted"
-              aria-label="Thesis status"
-            >
-              <option value="all">all theses</option>
-              {statuses.map((item) => (
-                <option key={item} value={item}>
-                  {item.replaceAll("_", " ")}
-                </option>
-              ))}
-            </select>
+            </div>
             <FilterButton active={onBook} onClick={() => setOnBook((value) => !value)}>
-              on book
+              In portfolio
             </FilterButton>
-            <Badge className="ml-auto">{filtered.length} visible</Badge>
+            <Badge className="ml-auto">
+              {filtered.length} {search.trim() ? "matches" : scope === "relevant" ? "relevant" : "total"}
+            </Badge>
+
+            <details className="group w-full border-t border-hairline pt-2">
+              <summary className="cursor-pointer list-none font-mono text-[9px] uppercase tracking-[0.16em] text-faint [&::-webkit-details-marker]:hidden">
+                More filters{advancedFiltersActive ? " · active" : ""}
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <select
+                  name="company-depth"
+                  value={depth}
+                  onChange={(event) => setDepth(event.target.value)}
+                  className="h-8 rounded-md border border-line bg-ink px-2 font-mono text-[10px] uppercase text-muted"
+                  aria-label="Review depth"
+                >
+                  {DEPTHS.map((item) => (
+                    <option key={item} value={item}>
+                      {item === "all" ? "Any review depth" : item === "deep" ? "In-depth reviews" : "Quick reviews"}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  name="company-freshness"
+                  value={freshness}
+                  onChange={(event) => setFreshness(event.target.value)}
+                  className="h-8 rounded-md border border-line bg-ink px-2 font-mono text-[10px] uppercase text-muted"
+                  aria-label="Freshness"
+                >
+                  {FRESHNESS.map((item) => (
+                    <option key={item} value={item}>
+                      {item === "fresh" ? "Updated in the last day" : item === "aging" ? "Updated 1–3 days ago" : item === "stale" ? "Needs refreshing" : "Any update date"}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  name="company-thesis-status"
+                  value={status}
+                  onChange={(event) => setStatus(event.target.value)}
+                  className="h-8 max-w-52 rounded-md border border-line bg-ink px-2 font-mono text-[10px] uppercase text-muted"
+                  aria-label="Company view status"
+                >
+                  <option value="all">Any company view</option>
+                  {statuses.map((item) => (
+                    <option key={item} value={item}>
+                      {thesisStatusLabel(item)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </details>
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-[minmax(310px,0.72fr)_minmax(0,1.45fr)]">
+          <section className="grid gap-4 lg:grid-cols-[minmax(310px,0.72fr)_minmax(0,1.45fr)]">
             <div className="overflow-hidden rounded-lg border border-line bg-panel/35">
               <div className="flex items-center justify-between border-b border-line px-3 py-2.5">
-                <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Radar</p>
-                <p className="font-mono text-[9px] text-faint">changed · current · evidenced</p>
+                <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">
+                  {scope === "relevant" && !search.trim() ? "Relevant now" : "Research results"}
+                </p>
+                <p className="font-mono text-[9px] text-faint">{filtered.length}</p>
               </div>
-              <div className="max-h-[520px] overflow-auto xl:max-h-[calc(100vh-14rem)]">
+              <div className="max-h-[520px] overflow-auto lg:max-h-[calc(100vh-14rem)]">
                 {filtered.map((company) => (
                   <CompanyRadarRow
                     key={company.symbol}
@@ -167,19 +201,17 @@ export function CompaniesPage({
               {detailCompany ? (
                 <>
                   <CompanyIntelligenceDetail company={detailCompany} onSymbol={onSymbol} />
-                  <section className="mt-6 border-t border-line pt-5">
-                    <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.2em] text-faint">
-                      Brief & decision lineage
-                    </p>
+                  <details className="group mt-6 border-t border-line pt-5">
+                    <summary className="cursor-pointer list-none font-mono text-[9px] uppercase tracking-[0.2em] text-faint [&::-webkit-details-marker]:hidden">
+                      How this view changed
+                    </summary>
                     {detailQuery.error ? (
-                      <p className="mb-2 text-xs text-loss">
-                        {detailQuery.error instanceof Error
-                          ? detailQuery.error.message
-                          : String(detailQuery.error)}
-                      </p>
+                      <p className="mt-2 text-xs text-warn">Earlier reviews could not be refreshed.</p>
                     ) : null}
-                    <IntelligenceTimeline events={lineageEvents} />
-                  </section>
+                    <div className="mt-3">
+                      <IntelligenceTimeline events={lineageEvents} companyMap={companyMap} />
+                    </div>
+                  </details>
                 </>
               ) : (
                 <p className="text-sm text-faint">Select a company to read its thesis.</p>
@@ -190,6 +222,18 @@ export function CompaniesPage({
       ) : null}
     </div>
   );
+}
+
+function isRelevantNow(company: CompanyIntelligence): boolean {
+  if (company.on_book) return true;
+  return company.thesis_changed && typeof company.age_hours === "number" && company.age_hours <= 24;
+}
+
+function compareCompanyPriority(left: CompanyIntelligence, right: CompanyIntelligence): number {
+  const leftTier = left.on_book ? 0 : left.thesis_changed ? 1 : 2;
+  const rightTier = right.on_book ? 0 : right.thesis_changed ? 1 : 2;
+  if (leftTier !== rightTier) return leftTier - rightTier;
+  return (left.age_hours ?? Number.POSITIVE_INFINITY) - (right.age_hours ?? Number.POSITIVE_INFINITY);
 }
 
 function FilterButton({
@@ -214,4 +258,16 @@ function FilterButton({
       {children}
     </button>
   );
+}
+
+function thesisStatusLabel(value: string): string {
+  const key = value.toLowerCase();
+  if (key === "intact") return "Outlook intact";
+  if (key === "untested" || key === "insufficient_evidence") return "Evidence incomplete";
+  if (key.includes("construct") || key.includes("positive") || key.includes("bull")) return "Positive outlook";
+  if (key.includes("caution") || key.includes("negative") || key.includes("bear")) return "Cautious outlook";
+  if (key.includes("watch")) return "Watch closely";
+  if (key.includes("mixed") || key.includes("neutral")) return "Mixed outlook";
+  if (key === "unknown") return "Not yet assessed";
+  return value.replaceAll("_", " ");
 }

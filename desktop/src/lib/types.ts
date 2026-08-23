@@ -86,6 +86,18 @@ export type Watch = {
   watch_id?: string;
 };
 
+export type IntelligenceLane = {
+  active: boolean;
+  running_tasks?: number;
+  pending_tasks?: number;
+};
+
+export type IntelligenceActivity = {
+  context: IntelligenceLane;
+  companies: IntelligenceLane;
+  decisions: IntelligenceLane;
+};
+
 export type Snapshot = {
   generated_at: string;
   repo_root: string;
@@ -94,6 +106,7 @@ export type Snapshot = {
   starting_cash?: number | null;
   ts?: string;
   daemon: DaemonStatus;
+  intelligence_activity?: IntelligenceActivity;
   portfolio: Portfolio;
   kpis: Record<string, unknown>;
   equity_series: EquityPoint[];
@@ -363,10 +376,20 @@ export type ReportItem = {
 
 export type ReportsPayload = { items: ReportItem[] };
 
-export type ReportDetail = ReportItem & {
-  payload?: Record<string, unknown>;
-  error?: string;
-};
+export type ReportDetail =
+  | (ReportItem & {
+    payload: Record<string, unknown>;
+    error?: never;
+  })
+  | {
+    error: string;
+    key: string;
+    kind?: never;
+    label?: never;
+    as_of?: never;
+    depth?: never;
+    payload?: never;
+  };
 
 export type LogEvent = {
   text: string;
@@ -626,7 +649,7 @@ export type FamilyComparisonCell = {
 export type FamilyComparison = {
   group: string;
   label: string;
-  venues: Record<"TW" | "EU" | "US", FamilyComparisonCell>;
+  venues: Record<string, FamilyComparisonCell>;
 };
 
 export type RegionIntelligencePayload = {

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { familyLabel, venueLabel } from "@/lib/humanize";
 import type { FamilyComparison, FamilyComparisonCell } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -14,9 +15,9 @@ export function RegionalFamilyComparison({ rows }: { rows: FamilyComparison[] })
       <div className="overflow-x-auto">
         <div className="min-w-[720px]">
           <div className="grid grid-cols-[minmax(190px,1fr)_repeat(3,minmax(150px,0.8fr))] border-b border-line bg-ink/55 px-3 py-2 font-mono text-[9px] uppercase tracking-[0.16em] text-faint">
-            <span>Macro family</span>
+            <span>Theme group</span>
             {VENUES.map((venue) => (
-              <span key={venue}>{venue}</span>
+              <span key={venue}>{venueLabel(venue)}</span>
             ))}
           </div>
           {rows.map((row) => (
@@ -83,10 +84,10 @@ function ComparisonCell({ cell }: { cell: FamilyComparisonCell }) {
         <span className="font-mono text-sm font-medium text-fg">
           {cell.best_rank != null ? `#${cell.best_rank}` : "—"}
         </span>
-        <span className="font-mono text-[9px] text-faint">{cell.candidate_count} cand.</span>
+        <span className="font-mono text-[9px] text-faint">{cell.candidate_count} companies</span>
       </div>
       <p className="mt-0.5 truncate text-[11px] text-dim">
-        {cell.leader?.replaceAll("_", " ") || "not observed"}
+        {cell.leader ? familyLabel(cell.leader) : "Not observed"}
       </p>
     </div>
   );
@@ -102,16 +103,16 @@ function VenueExplanation({
   return (
     <section className="rounded-md border border-line bg-panel p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="font-mono text-[10px] font-medium text-fg">{venue}</p>
+        <p className="font-mono text-[10px] font-medium text-fg">{venueLabel(venue)}</p>
         <Badge tone={cell.status === "active" ? "gain" : cell.status === "observed" ? "accent" : "muted"}>
-          {cell.status.replaceAll("_", " ")}
+          {comparisonStatusLabel(cell.status)}
         </Badge>
       </div>
       <p className="mt-2 min-h-10 text-xs leading-relaxed text-dim">{cell.reason}</p>
       <div className="mt-3 space-y-1.5">
         {cell.families.map((family) => (
           <div key={family.family} className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
-            <span className="truncate text-[11px] text-muted">{family.family.replaceAll("_", " ")}</span>
+            <span className="truncate text-[11px] text-muted">{familyLabel(family.family)}</span>
             <span className="shrink-0 font-mono text-[9px] text-faint">
               {family.rank != null ? `#${family.rank}` : "—"}
               {typeof family.attractiveness === "number" ? ` · ${family.attractiveness.toFixed(2)}` : ""}
@@ -122,4 +123,12 @@ function VenueExplanation({
       </div>
     </section>
   );
+}
+
+function comparisonStatusLabel(value: string): string {
+  if (value === "active") return "Actively considered";
+  if (value === "observed") return "Observed";
+  if (value === "not_observed") return "Not observed";
+  if (value === "not_in_taxonomy") return "Not covered";
+  return value.replaceAll("_", " ");
 }

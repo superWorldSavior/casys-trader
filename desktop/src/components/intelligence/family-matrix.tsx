@@ -1,13 +1,17 @@
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { FamilySparkline } from "@/components/intelligence/family-history-chart";
+import { companyDisplayName, familyLabel } from "@/lib/humanize";
 import type { FamilyIntelligence } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function FamilyMatrix({
   rows,
+  companyMap = {},
   onSymbol,
 }: {
   rows: FamilyIntelligence[];
+  companyMap?: Record<string, string>;
   onSymbol: (symbol: string) => void;
 }) {
   return (
@@ -15,11 +19,11 @@ export function FamilyMatrix({
       <div className="min-w-[760px]">
         <div className="grid grid-cols-[48px_minmax(160px,1fr)_120px_110px_130px_minmax(180px,1.35fr)] gap-3 border-b border-line px-3 py-2 font-mono text-[9px] uppercase tracking-[0.18em] text-faint">
           <span>Rank</span>
-          <span>Family</span>
-          <span>30d trajectory</span>
-          <span>Attract.</span>
+          <span>Theme</span>
+          <span>30-day movement</span>
+          <span>Opportunity</span>
           <span>Evidence</span>
-          <span>Names / reading</span>
+          <span>Companies</span>
         </div>
         {rows.map((row) => (
           <div
@@ -30,19 +34,19 @@ export function FamilyMatrix({
               <p className="font-mono text-sm text-fg">{row.rank ?? "—"}</p>
               {row.rank_delta ? (
                 <p className={cn("font-mono text-[10px]", row.rank_delta > 0 ? "text-gain" : "text-loss")}>
-                  {row.rank_delta > 0 ? "↑" : "↓"} {Math.abs(row.rank_delta)}
+                  {row.rank_delta > 0 ? <ArrowUp className="inline size-3" aria-label="Moved up" /> : <ArrowDown className="inline size-3" aria-label="Moved down" />} {Math.abs(row.rank_delta)}
                 </p>
               ) : null}
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-1.5">
-                <p className="text-sm font-medium">{label(row.family)}</p>
+                <p className="text-sm font-medium">{familyLabel(row.family)}</p>
                 {row.priority !== "neutral" ? (
-                  <Badge tone={row.priority === "favored" ? "gain" : "muted"}>{row.priority}</Badge>
+                  <Badge tone={row.priority === "favored" ? "gain" : "muted"}>{priorityLabel(row.priority)}</Badge>
                 ) : null}
               </div>
               <p className="mt-1 font-mono text-[10px] text-faint">
-                {row.candidate_count ?? 0} candidates · {biases(row.bias_counts)}
+                {row.candidate_count ?? 0} companies considered · {biases(row.bias_counts)}
               </p>
             </div>
             <div>
@@ -67,12 +71,10 @@ export function FamilyMatrix({
                     : "muted"
                 }
               >
-                {label(row.situation_status) || "not reported"}
+                {evidenceStatusLabel(row.situation_status)}
               </Badge>
               <p className="mt-1 font-mono text-[10px] text-faint">
-                {Object.entries(row.direction_counts)
-                  .map(([key, value]) => `${key} ${value}`)
-                  .join(" · ") || "no directional evidence"}
+                {directionCounts(row.direction_counts)}
               </p>
             </div>
             <div>
@@ -82,35 +84,61 @@ export function FamilyMatrix({
                     key={symbol}
                     type="button"
                     onClick={() => onSymbol(symbol)}
-                    className="rounded-sm bg-hairline px-1.5 py-0.5 font-mono text-[10px] text-muted hover:text-accent"
+                    className="max-w-44 truncate rounded-sm bg-hairline px-1.5 py-0.5 text-[10px] text-muted hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                    title={`${companyDisplayName(companyMap, symbol)} (${symbol})`}
                   >
-                    {symbol}
+                    {companyDisplayName(companyMap, symbol)} <span className="font-mono text-[9px] text-faint">{symbol}</span>
                   </button>
                 ))}
               </div>
               <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-dim">
-                {row.summary || observation(row.observations) || "No family commentary."}
+                {row.summary || observation(row.observations) || "No explanation is recorded for this theme."}
               </p>
             </div>
           </div>
         ))}
-        {!rows.length ? <p className="px-3 py-8 text-sm text-faint">No family evidence for this venue.</p> : null}
+        {!rows.length ? <p className="px-3 py-8 text-sm text-faint">No theme evidence is recorded for this region.</p> : null}
       </div>
     </div>
   );
-}
-
-function label(value: string | null | undefined): string {
-  return (value ?? "").replaceAll("_", " ");
 }
 
 function biases(value: Record<string, number>): string {
   return (
     Object.entries(value)
       .filter(([, count]) => count)
-      .map(([key, count]) => `${key} ${count}`)
-      .join(" · ") || "no bias"
+      .map(([key, count]) => `${biasLabel(key)} ${count}`)
+      .join(" · ") || "No directional preference"
   );
+}
+
+function priorityLabel(value: string): string {
+  if (value === "favored") return "Preferred";
+  if (value === "deprioritized") return "Lower priority";
+  return "Balanced";
+}
+
+function biasLabel(value: string): string {
+  const key = value.toLowerCase();
+  if (["long", "bullish", "up", "positive"].includes(key)) return "Positive";
+  if (["short", "bearish", "down", "negative"].includes(key)) return "Cautious";
+  if (key === "neutral") return "Balanced";
+  return value.replaceAll("_", " ");
+}
+
+function evidenceStatusLabel(value?: string | null): string {
+  const key = String(value ?? "").toLowerCase();
+  if (!key || ["not_reported", "missing"].includes(key)) return "No supporting brief";
+  if (["complete", "full", "current", "active"].includes(key)) return "Evidence available";
+  if (["partial", "incomplete"].includes(key)) return "Partial evidence";
+  return value?.replaceAll("_", " ") || "No supporting brief";
+}
+
+function directionCounts(value: Record<string, number>): string {
+  return Object.entries(value)
+    .filter(([, count]) => count)
+    .map(([key, count]) => `${biasLabel(key)} ${count}`)
+    .join(" · ") || "No directional evidence";
 }
 
 function observation(rows: Array<Record<string, unknown>>): string {

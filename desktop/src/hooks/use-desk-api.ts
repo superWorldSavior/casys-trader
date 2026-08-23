@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   readDecisions,
   readHealth,
@@ -88,6 +88,7 @@ export function usePortfolio(sort: number) {
   return useQuery({
     queryKey: ["portfolio", sort],
     queryFn: () => readPortfolio(sort),
+    placeholderData: keepPreviousData,
     staleTime: 4000,
     refetchInterval: 8000,
   });

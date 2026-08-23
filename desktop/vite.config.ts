@@ -34,7 +34,12 @@ function deskApi(): Plugin {
           next();
           return;
         }
-        void execFileAsync("uv", ["run", "python", "desktop/bridge/api.py", ...mapped], {
+        void execFileAsync("uv", [
+          "run",
+          "python",
+          "desktop/bridge/api.py",
+          ...mapped,
+        ], {
           cwd: repoRoot,
           timeout: 40_000,
           maxBuffer: 20 * 1024 * 1024,

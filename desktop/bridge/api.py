@@ -558,6 +558,8 @@ def handle_portfolio(args: argparse.Namespace) -> dict[str, Any]:
         sym = str(row.get("symbol") or "")
         if sym not in symbols_in_pos or sym in why_map:
             continue
+        if str(row.get("decision_source") or "").lower() != "llm" or row.get("model_called") is not True:
+            continue
         rationale = str(row.get("rationale") or "").strip()
         if rationale:
             why_map[sym] = {

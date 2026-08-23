@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,11 @@ WATCH_KEYS = (
     "symbol",
     "watch_id",
 )
+_NEWS_MACRO_RUNNER_STATUS = "news_macro_runner_status.json"
+_COMPANY_SCAN_STATUS = "company_scan_status.json"
+_COMPANY_RESEARCH_DB = "company_research_tasks.db"
+_COMPANY_TASK_KIND = "company_micro"
+_DECISION_ACTIVE_PHASES = frozenset({"cycle_started", "deciding_batch", "decision_recorded"})
 
 
 def _json_default(value: Any) -> Any:
@@ -102,9 +109,7 @@ def _slim_decision(row: Any) -> dict[str, Any] | None:
         slim["runtime"] = kept_runtime
     watch = _as_dict(_as_dict(row.get("decision")).get("indicator_watch"))
     if watch:
-        slim["indicator_watch"] = {
-            key: watch.get(key) for key in WATCH_KEYS if watch.get(key) is not None
-        }
+        slim["indicator_watch"] = {key: watch.get(key) for key in WATCH_KEYS if watch.get(key) is not None}
     return slim
 
 
@@ -129,6 +134,93 @@ def _read_pid_file(state_dir: Path) -> int | None:
     if not raw:
         return None
     return int(raw)
+
+
+def _read_activity_status(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _owned_running(payload: dict[str, Any], *, daemon_pid: int | None) -> bool:
+    if not isinstance(daemon_pid, int) or daemon_pid <= 0:
+        return False
+    if payload.get("status") != "running":
+        return False
+    return payload.get("pid") == daemon_pid
+
+
+def _due_company_queue_counts(path: Path, *, now_ms: int | None = None) -> dict[str, int]:
+    empty = {"running_tasks": 0, "pending_tasks": 0}
+    if not path.exists():
+        return empty
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    try:
+        connection = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True, timeout=0.2)
+        try:
+            running = connection.execute(
+                "SELECT COUNT(*) FROM tasks WHERE kind=? AND status=?",
+                (_COMPANY_TASK_KIND, "running"),
+            ).fetchone()
+            pending = connection.execute(
+                "SELECT COUNT(*) FROM tasks WHERE kind=? AND status=? AND scheduled_at <= ?",
+                (_COMPANY_TASK_KIND, "pending", int(now_ms)),
+            ).fetchone()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return empty
+    return {
+        "running_tasks": max(0, int(running[0] if running else 0)),
+        "pending_tasks": max(0, int(pending[0] if pending else 0)),
+    }
+
+
+def _lane(
+    *,
+    active: bool,
+    running_tasks: int | None = None,
+    pending_tasks: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"active": bool(active)}
+    if running_tasks is not None:
+        payload["running_tasks"] = int(running_tasks)
+    if pending_tasks is not None:
+        payload["pending_tasks"] = int(pending_tasks)
+    return payload
+
+
+def _intelligence_activity(
+    state_dir: Path,
+    *,
+    daemon_alive: bool,
+    daemon_pid: int | None,
+    daemon_phase: Any,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    alive = bool(daemon_alive)
+    context_active = alive and _owned_running(
+        _read_activity_status(state_dir / _NEWS_MACRO_RUNNER_STATUS),
+        daemon_pid=daemon_pid,
+    )
+    queue = _due_company_queue_counts(state_dir / _COMPANY_RESEARCH_DB, now_ms=now_ms)
+    scan_active = alive and _owned_running(
+        _read_activity_status(state_dir / _COMPANY_SCAN_STATUS),
+        daemon_pid=daemon_pid,
+    )
+    companies_active = scan_active or (alive and (queue["running_tasks"] > 0 or queue["pending_tasks"] > 0))
+    return {
+        "context": _lane(active=context_active),
+        "companies": _lane(
+            active=companies_active,
+            running_tasks=queue["running_tasks"],
+            pending_tasks=queue["pending_tasks"],
+        ),
+        "decisions": _lane(active=alive and daemon_phase in _DECISION_ACTIVE_PHASES),
+    }
 
 
 def _equity_series(state_dir: Path, *, max_points: int = 480) -> list[dict[str, Any]]:
@@ -181,6 +273,8 @@ def build_snapshot() -> dict[str, Any]:
     except (OSError, ValueError):
         pid = status.get("pid") if isinstance(status.get("pid"), int) else None
 
+    daemon_pid = pid if isinstance(pid, int) else None
+    daemon_alive = _pid_alive(daemon_pid)
     decisions = [slim for row in _as_list(raw.get("decisions")) if (slim := _slim_decision(row))]
     recent = [slim for row in _as_list(raw.get("recent_decisions")) if (slim := _slim_decision(row))]
     watches = [slim for row in _as_list(raw.get("indicator_watches")) if (slim := _slim_watch(row))]
@@ -198,7 +292,7 @@ def build_snapshot() -> dict[str, Any]:
         "ts": raw.get("ts"),
         "daemon": {
             "pid": pid,
-            "alive": _pid_alive(pid if isinstance(pid, int) else None),
+            "alive": daemon_alive,
             "phase": status.get("phase"),
             "dry_run": status.get("dry_run", raw.get("dry_run")),
             "current_symbol": status.get("current_symbol"),
@@ -209,6 +303,12 @@ def build_snapshot() -> dict[str, Any]:
             "max_model_calls_per_cycle": status.get("max_model_calls_per_cycle"),
             "ts": status.get("ts"),
         },
+        "intelligence_activity": _intelligence_activity(
+            state_dir,
+            daemon_alive=daemon_alive,
+            daemon_pid=daemon_pid,
+            daemon_phase=status.get("phase"),
+        ),
         "portfolio": raw.get("portfolio") if isinstance(raw.get("portfolio"), dict) else {},
         "kpis": raw.get("kpis") if isinstance(raw.get("kpis"), dict) else {},
         "equity_series": _equity_series(state_dir),
@@ -216,25 +316,17 @@ def build_snapshot() -> dict[str, Any]:
         "recent_decisions": recent,
         "trade_plans": plans,
         "indicator_watches": watches,
-        "armed_plans": [
-            slim for row in _as_list(raw.get("armed_plans")) if (slim := _slim_watch(row))
-        ],
+        "armed_plans": [slim for row in _as_list(raw.get("armed_plans")) if (slim := _slim_watch(row))],
         "default_next_wake": raw.get("default_next_wake"),
         "symbol_wakes": raw.get("symbol_wakes") if isinstance(raw.get("symbol_wakes"), dict) else {},
-        "stale_market_data": (
-            raw.get("stale_market_data") if isinstance(raw.get("stale_market_data"), dict) else {}
-        ),
+        "stale_market_data": (raw.get("stale_market_data") if isinstance(raw.get("stale_market_data"), dict) else {}),
         "queue_worker_activity": (
-            raw.get("queue_worker_activity")
-            if isinstance(raw.get("queue_worker_activity"), dict)
-            else {}
+            raw.get("queue_worker_activity") if isinstance(raw.get("queue_worker_activity"), dict) else {}
         ),
         "open_venues_list": _as_list(raw.get("open_venues_list")),
         "company_map": raw.get("company_map") if isinstance(raw.get("company_map"), dict) else {},
         "universe_symbols": _as_list(raw.get("universe_symbols")),
-        "attribution": {
-            "recent_trips": _as_list(_as_dict(raw.get("attribution")).get("recent_trips"))[:12]
-        },
+        "attribution": {"recent_trips": _as_list(_as_dict(raw.get("attribution")).get("recent_trips"))[:12]},
         "kill_active": (REPO_ROOT / "KILL").exists(),
     }
 

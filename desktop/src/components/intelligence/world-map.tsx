@@ -11,6 +11,7 @@ import { geoNaturalEarth1, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import type { Topology } from "topojson-specification";
 import type { FeatureCollection } from "geojson";
+import { venueLabel, venuePostureLabel } from "@/lib/humanize";
 // resolveJsonModule: true — Vite + TS bundler resolution gèrent l'import JSON
 // NOTE world-atlas 110m : résolution ~110 km — les micro-États (Singapore, Monaco,
 // Luxembourg, Liechtenstein…) sont absents du fond de carte ou fusionnés avec leurs
@@ -215,7 +216,7 @@ export function WorldMap({ countryCounts, venues }: WorldMapProps) {
               fill="var(--color-fg)"
               style={{ pointerEvents: "none", userSelect: "none" }}
             >
-              {m.venue} · {(m.posture ?? "—").replaceAll("_", " ")}
+              {venueLabel(m.venue)} · {venuePostureLabel(m.posture)}
             </text>
           </g>
         ))}
@@ -252,12 +253,12 @@ export function WorldMap({ countryCounts, venues }: WorldMapProps) {
         />
 
         <span className="ml-1 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
-          Venues
+          Regions
         </span>
-        <LegendTier fill="var(--color-gain)" shape="dot" label="favor" />
-        <LegendTier fill="var(--color-warn)" shape="dot" label="selective" />
-        <LegendTier fill="var(--color-faint)" shape="dot" label="watch" />
-        <LegendTier fill="var(--color-accent)" shape="dot" label="other" />
+        <LegendTier fill="var(--color-gain)" shape="dot" label="Preferred" />
+        <LegendTier fill="var(--color-warn)" shape="dot" label="Selective" />
+        <LegendTier fill="var(--color-faint)" shape="dot" label="Watch closely" />
+        <LegendTier fill="var(--color-accent)" shape="dot" label="Other" />
       </div>
     </div>
   );

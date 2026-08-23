@@ -1,13 +1,28 @@
 import { format } from "date-fns";
-import { ArrowRight, ExternalLink } from "lucide-react";
+import { ChevronDown, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { Line, LineChart, ResponsiveContainer, YAxis } from "recharts";
+import { MarketIntelligenceAtlas } from "@/components/intelligence/market-intelligence-atlas";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
-import type { PageKey } from "@/components/layout/app-shell";
-import { useDailyBriefing, useNewsFeed } from "@/hooks/use-intelligence";
-import { formatAgo, formatCountdown, formatPct, formatUsd, signedClass } from "@/lib/format";
+import {
+  useDailyBriefing,
+  useNewsFeed,
+  useRegionIntelligence,
+} from "@/hooks/use-intelligence";
+import { formatAgo, formatCountdown, signedClass } from "@/lib/format";
+import {
+  companyDisplayName,
+  grossModeLabel,
+  netBiasLabel,
+  plainMarketLanguage,
+  projectionFreshness,
+  venueLabel,
+} from "@/lib/humanize";
+import { collectScopeKeys } from "@/lib/market-intelligence-atlas";
 import type {
   BriefingStory,
+  GlobalIntelligencePosture,
   MacroCalendarEvent,
   MacroIndicator,
   NewsFeedItem,
@@ -20,7 +35,6 @@ import { cn } from "@/lib/utils";
 type Props = {
   snapshot?: Snapshot | null;
   onSymbol: (symbol: string) => void;
-  onPage: (page: PageKey) => void;
 };
 
 // ── Signal label helper ──────────────────────────────────────────────────────
@@ -53,38 +67,85 @@ function knownSignal(value: string | null | undefined): string | null {
   return value;
 }
 
-// ── Inline sparkline ─────────────────────────────────────────────────────────
+function dedupeBriefingStories(stories: BriefingStory[]): BriefingStory[] {
+  const seenRefSets: string[][] = [];
+  const seenPoints = new Set<string>();
 
-function Sparkline({ history }: { history: Array<{ period: string; value: number }> }) {
+  return stories.filter((story) => {
+    const refs = Array.from(new Set(story.source_refs.filter(Boolean))).sort();
+    const pointKey = plainMarketLanguage(story.point).toLowerCase().replace(
+      /[^a-z0-9]+/g,
+      " ",
+    ).trim();
+    const sameEvidenceCluster = refs.length > 0 && seenRefSets.some((seen) => {
+      const shared = refs.filter((ref) => seen.includes(ref)).length;
+      const sameSet = shared === refs.length && shared === seen.length;
+      const containedSet = shared >= 2 &&
+        shared === Math.min(refs.length, seen.length);
+      return sameSet || containedSet;
+    });
+    if (sameEvidenceCluster || seenPoints.has(pointKey)) return false;
+    if (refs.length) seenRefSets.push(refs);
+    seenPoints.add(pointKey);
+    return true;
+  });
+}
+
+function BriefingPosture({ posture }: { posture: GlobalIntelligencePosture }) {
+  const freshness = projectionFreshness(posture);
+  return (
+    <div className="border-t border-line pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
+      <dl className="space-y-3">
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-xs text-dim">Risk appetite</dt>
+          <dd className="text-sm font-semibold text-fg">
+            {grossModeLabel(posture.gross_mode)}
+          </dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-4 border-t border-hairline pt-3">
+          <dt className="text-xs text-dim">Portfolio direction</dt>
+          <dd className="text-sm font-semibold text-fg">
+            {netBiasLabel(posture.net_bias)}
+          </dd>
+        </div>
+      </dl>
+      <p
+        className={cn(
+          "mt-4 font-mono text-[9px] uppercase tracking-[0.16em]",
+          freshness.current ? "text-gain" : "text-warn",
+        )}
+      >
+        {freshness.label}
+      </p>
+    </div>
+  );
+}
+
+// ── Compact trend ────────────────────────────────────────────────────────────
+
+function Sparkline(
+  { history }: { history: Array<{ period: string; value: number }> },
+) {
   if (history.length < 2) return null;
   const values = history.map((p) => p.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const W = 72;
-  const H = 24;
-  const step = W / (values.length - 1);
-  const pts = values.map((v, i) => `${i * step},${H - ((v - min) / range) * H}`).join(" ");
   const last = values[values.length - 1];
   const prev = values[values.length - 2];
   const rising = last >= prev;
   return (
-    <svg
-      width={W}
-      height={H}
-      viewBox={`0 0 ${W} ${H}`}
-      className={cn("shrink-0 overflow-visible", rising ? "text-gain" : "text-loss")}
-      aria-hidden
-    >
-      <polyline
-        points={pts}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-    </svg>
+    <div className="h-6 w-[72px] shrink-0" aria-hidden="true">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={history}>
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke={rising ? "var(--color-gain)" : "var(--color-loss)"}
+            strokeWidth={1.5}
+            dot={false}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -92,128 +153,181 @@ function Sparkline({ history }: { history: Array<{ period: string; value: number
 
 function SeverityDot({ severity }: { severity: string | null }) {
   // Daemon vocabulary: risk > watch > info (high/medium kept as synonyms).
-  const cls =
-    severity === "risk" || severity === "high"
-      ? "bg-loss"
-      : severity === "watch" || severity === "medium"
-        ? "bg-warn"
-        : "bg-faint";
+  const cls = severity === "risk" || severity === "high"
+    ? "bg-loss"
+    : severity === "watch" || severity === "medium"
+    ? "bg-warn"
+    : "bg-faint";
   return <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", cls)} />;
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export function TodayPage({ snapshot, onSymbol, onPage }: Props) {
+export function TodayPage({ snapshot, onSymbol }: Props) {
   const briefingQuery = useDailyBriefing();
   const newsFeedQuery = useNewsFeed({ limit: 40 });
+  const regionQuery = useRegionIntelligence();
+  const [selectedMarket, setSelectedMarket] = useState("");
 
   const briefing = briefingQuery.data;
   const headline = briefing?.headline;
-  const stories = briefing?.top_stories ?? [];
+  const stories = dedupeBriefingStories(briefing?.top_stories ?? []);
   const indicators = briefing?.indicators ?? [];
   const calendar = briefing?.calendar ?? [];
   const earnings = briefing?.earnings ?? [];
   const postureHistory = briefing?.posture_history ?? [];
   const newsFeedItems = newsFeedQuery.data?.items ?? briefing?.news ?? [];
+  const marketScopes = collectScopeKeys(
+    regionQuery.data?.current,
+    regionQuery.data?.families,
+  );
+  const activeMarket = marketScopes.includes(selectedMarket)
+    ? selectedMarket
+    : (marketScopes[0] ?? "");
 
   const todayLabel = format(new Date(), "EEEE, MMMM d");
 
   return (
     <div className="grid gap-6">
       {/* ── Manchette ───────────────────────────────────────────────────── */}
-      <section className="relative overflow-hidden rounded-lg border border-line bg-panel/90 p-5 shadow-[0_1px_2px_rgba(23,43,54,0.04)]">
-        <div className="pointer-events-none absolute -right-8 -top-16 size-52 rounded-full border border-accent/10" />
-        <div className="pointer-events-none absolute -right-0 -top-8 size-32 rounded-full border border-accent/15" />
-        <div className="relative">
-          <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-accent">{todayLabel}</p>
-          {headline?.lead ? (
-            <>
-              <p className="mt-3 font-mono text-[9px] uppercase tracking-[0.22em] text-faint">
-                Agent desk note
-              </p>
-              <p className="mt-1.5 max-w-4xl text-[17px] font-semibold leading-snug tracking-tight text-fg">
-                {headline.lead}
-              </p>
-            </>
-          ) : (
-            <p className="mt-3 text-sm text-faint">
-              No lead yet — the intelligence agent hasn't filed today's briefing.
-            </p>
-          )}
-          <div className="mt-4 flex flex-wrap gap-2">
-            {knownSignal(headline?.regime) ? (
-              <Badge tone="warn">
-                {describeSignal(headline?.regime)}
-              </Badge>
-            ) : null}
-            {knownSignal(headline?.rates_bias) ? (
-              <Badge tone={headline?.rates_bias === "hawkish" ? "loss" : "gain"}>
-                {describeSignal(headline?.rates_bias)}
-              </Badge>
-            ) : null}
-            {knownSignal(headline?.usd_bias) ? (
-              <Badge>{describeSignal(headline?.usd_bias)}</Badge>
-            ) : null}
+      <section className="rounded-lg border border-line bg-panel/90 p-5 shadow-[0_1px_2px_rgba(23,43,54,0.04)]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_250px]">
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.18em] text-faint">
+              <p>{todayLabel}</p>
+              {headline?.digest_as_of
+                ? <p>Updated {formatAgo(headline.digest_as_of)}</p>
+                : null}
+            </div>
+            {briefingQuery.isPending && !briefing
+              ? (
+                <p className="mt-3 text-sm text-faint">
+                  Loading today’s briefing…
+                </p>
+              )
+              : briefingQuery.error && !briefing
+              ? (
+                <p className="mt-3 text-sm text-warn">
+                  Today’s briefing is temporarily unavailable.
+                </p>
+              )
+              : headline?.lead
+              ? (
+                <h1 className="mt-3 max-w-4xl text-[17px] font-semibold leading-snug tracking-tight text-fg">
+                  {plainMarketLanguage(headline.lead)}
+                </h1>
+              )
+              : (
+                <p className="mt-3 text-sm text-faint">
+                  Casys has not recorded today's briefing yet.
+                </p>
+              )}
+            <div className="mt-4 flex flex-wrap gap-2">
+              {knownSignal(headline?.regime)
+                ? (
+                  <Badge tone="warn">
+                    {describeSignal(headline?.regime)}
+                  </Badge>
+                )
+                : null}
+              {knownSignal(headline?.rates_bias)
+                ? (
+                  <Badge
+                    tone={headline?.rates_bias === "hawkish" ? "loss" : "gain"}
+                  >
+                    {describeSignal(headline?.rates_bias)}
+                  </Badge>
+                )
+                : null}
+              {knownSignal(headline?.usd_bias)
+                ? <Badge>{describeSignal(headline?.usd_bias)}</Badge>
+                : null}
+            </div>
           </div>
-          {headline?.digest_as_of ? (
-            <p className="mt-3 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
-              Signals as of {formatAgo(headline.digest_as_of)}
-            </p>
-          ) : null}
+          {headline?.posture
+            ? <BriefingPosture posture={headline.posture} />
+            : null}
         </div>
       </section>
 
+      {regionQuery.data
+        ? (
+          <MarketIntelligenceAtlas
+            current={regionQuery.data.current}
+            families={regionQuery.data.families}
+            comparison={regionQuery.data.comparison}
+            companyMap={snapshot?.company_map ?? {}}
+            activeScope={activeMarket}
+            onSelectScope={setSelectedMarket}
+          />
+        )
+        : regionQuery.isPending
+        ? (
+          <section className="rounded-lg border border-line bg-panel/70 px-5 py-10 text-center text-sm text-faint">
+            Building the current market view…
+          </section>
+        )
+        : (
+          <section className="rounded-lg border border-warn/25 bg-warn/5 px-5 py-4 text-sm text-warn">
+            The market map is temporarily unavailable; today’s briefing remains
+            visible below.
+          </section>
+        )}
+
       {/* ── Body: main + sidebar ────────────────────────────────────────── */}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.6fr)]">
-
         {/* Main column */}
         <div className="space-y-4">
           {/* Top stories */}
           <Card>
             <CardHeader>
-              <CardTitle>Top stories</CardTitle>
-              {briefingQuery.error ? (
-                <span className="font-mono text-[9px] text-loss">unavailable</span>
-              ) : null}
+              <CardTitle>What matters today</CardTitle>
+              {briefingQuery.error
+                ? (
+                  <span className="font-mono text-[9px] text-loss">
+                    unavailable
+                  </span>
+                )
+                : null}
             </CardHeader>
             <CardBody className="p-0">
-              {stories.length > 0 ? (
-                <div className="px-4 pt-3 pb-1">
-                  <RiskPulse stories={stories} />
-                </div>
-              ) : null}
-              {stories.length === 0 ? (
-                <p className="px-4 py-6 text-sm text-faint">
-                  Top stories come from the agent's daily global digest. Run the
-                  intelligence cycle to populate them.
-                </p>
-              ) : (
-                stories.map((story, idx) => (
-                  <StoryRow key={`${story.point}-${idx}`} story={story} onSymbol={onSymbol} />
-                ))
-              )}
-            </CardBody>
-          </Card>
-
-          {/* News wire */}
-          <Card>
-            <CardHeader>
-              <CardTitle>News wire</CardTitle>
-              {newsFeedQuery.isPending ? (
-                <span className="font-mono text-[9px] text-faint">loading…</span>
-              ) : null}
-            </CardHeader>
-            <CardBody className="p-0">
-              {newsFeedItems.length === 0 ? (
-                <p className="px-4 py-6 text-sm text-faint">
-                  The news wire aggregates articles gathered by the agent per symbol and region.
-                  It fills up as the agent analyses companies in your universe.
-                </p>
-              ) : (
-                newsFeedItems.map((item) => (
-                  <NewsRow key={item.id} item={item} onSymbol={onSymbol} />
-                ))
-              )}
+              {stories.length > 0
+                ? (
+                  <div className="px-4 pt-3 pb-1">
+                    <RiskPulse stories={stories} />
+                  </div>
+                )
+                : null}
+              {briefingQuery.isPending && !briefing
+                ? (
+                  <p className="px-4 py-6 text-sm text-faint">
+                    Loading today’s briefing…
+                  </p>
+                )
+                : briefingQuery.error && !briefing
+                ? (
+                  <QueryUnavailable
+                    label="Today’s market briefing is unavailable."
+                    error={briefingQuery.error}
+                    className="px-4 py-6"
+                  />
+                )
+                : stories.length === 0
+                ? (
+                  <p className="px-4 py-6 text-sm text-faint">
+                    No material story is recorded in today’s briefing.
+                  </p>
+                )
+                : (
+                  stories.map((story, idx) => (
+                    <StoryRow
+                      key={`${story.point}-${idx}`}
+                      story={story}
+                      companyMap={snapshot?.company_map ?? {}}
+                      onSymbol={onSymbol}
+                    />
+                  ))
+                )}
             </CardBody>
           </Card>
         </div>
@@ -226,15 +340,30 @@ export function TodayPage({ snapshot, onSymbol, onPage }: Props) {
               <CardTitle>The world in numbers</CardTitle>
             </CardHeader>
             <CardBody className="space-y-4">
-              {indicators.length === 0 ? (
-                <p className="text-sm text-faint">
-                  Macro indicators appear here once the agent has collected economic series data.
-                </p>
-              ) : (
-                indicators.map((ind) => (
-                  <IndicatorRow key={ind.series_id} indicator={ind} />
-                ))
-              )}
+              {briefingQuery.isPending && !briefing
+                ? (
+                  <p className="text-sm text-faint">
+                    Loading economic indicators…
+                  </p>
+                )
+                : briefingQuery.error && !briefing
+                ? (
+                  <p className="text-sm text-warn">
+                    Economic indicators are temporarily unavailable.
+                  </p>
+                )
+                : indicators.length === 0
+                ? (
+                  <p className="text-sm text-faint">
+                    Economic indicators will appear here once Casys has
+                    collected them.
+                  </p>
+                )
+                : (
+                  indicators.map((ind) => (
+                    <IndicatorRow key={ind.series_id} indicator={ind} />
+                  ))
+                )}
             </CardBody>
           </Card>
 
@@ -244,40 +373,110 @@ export function TodayPage({ snapshot, onSymbol, onPage }: Props) {
               <CardTitle>Coming up</CardTitle>
             </CardHeader>
             <CardBody className="space-y-3">
-              <ComingUp calendar={calendar} earnings={earnings} onSymbol={onSymbol} />
+              {briefingQuery.isPending && !briefing
+                ? <p className="text-sm text-faint">Loading upcoming events…</p>
+                : briefingQuery.error && !briefing
+                ? (
+                  <p className="text-sm text-warn">
+                    Upcoming events are temporarily unavailable.
+                  </p>
+                )
+                : (
+                  <ComingUp
+                    calendar={calendar}
+                    earnings={earnings}
+                    onSymbol={onSymbol}
+                  />
+                )}
             </CardBody>
           </Card>
 
-          {/* Stance history */}
-          {postureHistory.length >= 2 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>Stance history</CardTitle>
-              </CardHeader>
-              <CardBody>
-                <StanceHistory points={postureHistory} />
-              </CardBody>
-            </Card>
-          ) : null}
-
-          {/* Your money */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Your money</CardTitle>
-            </CardHeader>
-            <CardBody>
-              <PortfolioSnapshot snapshot={snapshot} onPage={onPage} />
-            </CardBody>
-          </Card>
+          {/* Outlook history */}
+          {postureHistory.length >= 2
+            ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>How the outlook changed</CardTitle>
+                </CardHeader>
+                <CardBody>
+                  <StanceHistory points={postureHistory} />
+                </CardBody>
+              </Card>
+            )
+            : null}
         </aside>
       </div>
+
+      {/* Adjacent research material, not an evidence join to each story. */}
+      <details className="group overflow-hidden rounded-lg border border-line bg-panel/80">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-faint">
+            Recent source material
+          </span>
+          <span className="flex items-center gap-2 font-mono text-[9px] text-faint">
+            {newsFeedQuery.isPending
+              ? "refreshing"
+              : `${newsFeedItems.length} reports`}
+            <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+          </span>
+        </summary>
+        <div
+          className="border-t border-line"
+          aria-label="Recent source reports"
+        >
+          {newsFeedItems.length
+            ? (
+              <>
+                {(newsFeedQuery.isPending || newsFeedQuery.error) &&
+                    !newsFeedQuery.data
+                  ? (
+                    <p className="border-b border-hairline px-4 py-2 text-xs text-warn">
+                      Showing recorded source material while the live feed
+                      refreshes.
+                    </p>
+                  )
+                  : null}
+                {newsFeedItems.map((item) => (
+                  <NewsRow key={item.id} item={item} onSymbol={onSymbol} />
+                ))}
+              </>
+            )
+            : newsFeedQuery.isPending && !newsFeedQuery.data
+            ? (
+              <p className="px-4 py-6 text-sm text-faint">
+                Loading source material…
+              </p>
+            )
+            : newsFeedQuery.error
+            ? (
+              <QueryUnavailable
+                label="Source material is temporarily unavailable."
+                error={newsFeedQuery.error}
+                className="px-4 py-6"
+              />
+            )
+            : (
+              <p className="px-4 py-6 text-sm text-faint">
+                No source material is available for the current briefing.
+              </p>
+            )}
+        </div>
+      </details>
     </div>
   );
 }
 
 // ── Story row ────────────────────────────────────────────────────────────────
 
-function StoryRow({ story, onSymbol }: { story: BriefingStory; onSymbol: (s: string) => void }) {
+function StoryRow({
+  story,
+  companyMap,
+  onSymbol,
+}: {
+  story: BriefingStory;
+  companyMap: Record<string, string>;
+  onSymbol: (s: string) => void;
+}) {
   const bullish = story.direction === "bullish" || story.direction === "up";
   const bearish = story.direction === "bearish" || story.direction === "down";
   return (
@@ -285,31 +484,38 @@ function StoryRow({ story, onSymbol }: { story: BriefingStory; onSymbol: (s: str
       <SeverityDot severity={story.severity} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
-          {bullish ? <span className="text-xs font-semibold text-gain">▲</span> : null}
-          {bearish ? <span className="text-xs font-semibold text-loss">▼</span> : null}
-          <p className="text-sm leading-relaxed text-muted">{story.point}</p>
+          {bullish
+            ? <span className="text-xs font-semibold text-gain">▲</span>
+            : null}
+          {bearish
+            ? <span className="text-xs font-semibold text-loss">▼</span>
+            : null}
+          <p className="text-sm leading-relaxed text-muted">
+            {plainMarketLanguage(story.point)}
+          </p>
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {story.venue ? (
-            <Badge>{story.venue}</Badge>
-          ) : null}
+          {story.venue ? <Badge>{venueLabel(story.venue)}</Badge> : null}
           {story.symbols.map((sym) => (
             <button
               key={sym}
               type="button"
               onClick={() => onSymbol(sym)}
-              className="rounded-sm bg-accent/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-accent transition-colors hover:bg-accent/20"
+              className="rounded-sm bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
-              {sym}
+              {companyDisplayName(companyMap, sym)}{" "}
+              <span className="font-mono text-[9px] text-accent/70">{sym}</span>
             </button>
           ))}
         </div>
-        {story.sources.length > 0 ? (
-          <p className="mt-1 font-mono text-[9px] text-faint">
-            {story.sources.slice(0, 3).join(" · ")}
-            {story.sources.length > 3 ? ` +${story.sources.length - 3}` : ""}
-          </p>
-        ) : null}
+        {story.sources.length > 0
+          ? (
+            <p className="mt-1 font-mono text-[9px] text-faint">
+              {story.sources.slice(0, 3).map(sourceLabel).join(" · ")}
+              {story.sources.length > 3 ? ` +${story.sources.length - 3}` : ""}
+            </p>
+          )
+          : null}
       </div>
     </div>
   );
@@ -317,48 +523,87 @@ function StoryRow({ story, onSymbol }: { story: BriefingStory; onSymbol: (s: str
 
 // ── News row ─────────────────────────────────────────────────────────────────
 
-function NewsRow({ item, onSymbol }: { item: NewsFeedItem; onSymbol: (s: string) => void }) {
+function NewsRow(
+  { item, onSymbol }: { item: NewsFeedItem; onSymbol: (s: string) => void },
+) {
   const timeLabel = item.published_at ? formatAgo(item.published_at) : null;
   return (
     <div className="flex gap-3 border-b border-hairline px-4 py-3 last:border-0">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-2">
-          {item.url ? (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noreferrer"
-              className="group flex min-w-0 items-start gap-1 text-sm leading-relaxed text-muted hover:text-fg"
-            >
-              <span className="flex-1">{item.title}</span>
-              <ExternalLink className="mt-0.5 size-3 shrink-0 text-faint group-hover:text-dim" />
-            </a>
-          ) : (
-            <p className="flex-1 text-sm leading-relaxed text-muted">{item.title}</p>
-          )}
+          {item.url
+            ? (
+              <a
+                href={item.url}
+                target="_blank"
+                rel="noreferrer"
+                className="group flex min-w-0 items-start gap-1 text-sm leading-relaxed text-muted hover:text-fg"
+              >
+                <span className="flex-1" title={item.title}>
+                  {plainMarketLanguage(item.title)}
+                </span>
+                <ExternalLink className="mt-0.5 size-3 shrink-0 text-faint group-hover:text-dim" />
+              </a>
+            )
+            : (
+              <p
+                className="flex-1 text-sm leading-relaxed text-muted"
+                title={item.title}
+              >
+                {plainMarketLanguage(item.title)}
+              </p>
+            )}
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {timeLabel ? (
-            <span className="font-mono text-[9px] text-faint">{timeLabel}</span>
-          ) : null}
+          {timeLabel
+            ? (
+              <span className="font-mono text-[9px] text-faint">
+                {timeLabel}
+              </span>
+            )
+            : null}
           <span className="font-mono text-[9px] text-faint">{item.source}</span>
-          {item.kind === "company" && (item.name || item.symbol) ? (
-            <button
-              type="button"
-              onClick={() => item.symbol && onSymbol(item.symbol)}
-              disabled={!item.symbol}
-              className="rounded-sm bg-hairline px-1.5 py-0.5 font-mono text-[9px] text-muted transition-colors hover:bg-line disabled:pointer-events-none"
-            >
-              {item.name || item.symbol}
-            </button>
-          ) : null}
-          {item.kind === "geo" && item.country ? (
-            <span className="rounded-sm bg-hairline px-1.5 py-0.5 font-mono text-[9px] text-muted">
-              {item.country}
-            </span>
-          ) : null}
+          {item.kind === "company" && (item.name || item.symbol)
+            ? (
+              <button
+                type="button"
+                onClick={() => item.symbol && onSymbol(item.symbol)}
+                disabled={!item.symbol}
+                className="rounded-sm bg-hairline px-1.5 py-0.5 font-mono text-[9px] text-muted transition-colors hover:bg-line disabled:pointer-events-none"
+              >
+                {item.name || item.symbol}
+              </button>
+            )
+            : null}
+          {item.kind === "geo" && item.country
+            ? (
+              <span className="rounded-sm bg-hairline px-1.5 py-0.5 font-mono text-[9px] text-muted">
+                {item.country}
+              </span>
+            )
+            : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function QueryUnavailable(
+  { label, error, className }: {
+    label: string;
+    error: unknown;
+    className?: string;
+  },
+) {
+  return (
+    <div className={cn("text-sm text-warn", className)}>
+      <p>{label}</p>
+      <details className="mt-2 text-xs text-dim">
+        <summary className="cursor-pointer">Technical details</summary>
+        <p className="mt-1 break-words font-mono text-[10px] text-faint">
+          {error instanceof Error ? error.message : String(error)}
+        </p>
+      </details>
     </div>
   );
 }
@@ -367,38 +612,85 @@ function NewsRow({ item, onSymbol }: { item: NewsFeedItem; onSymbol: (s: string)
 
 function IndicatorRow({ indicator }: { indicator: MacroIndicator }) {
   const { label, value, unit, delta, history } = indicator;
-  const formatted =
-    unit === "%"
-      ? `${value.toFixed(2)}%`
-      : value.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  const deltaFormatted =
-    delta == null
-      ? null
-      : unit === "%"
-        ? `${delta > 0 ? "+" : ""}${delta.toFixed(2)}pp`
-        : `${delta > 0 ? "+" : ""}${delta.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  const displayUnit = indicatorUnitLabel(unit);
+  const formatted = unit === "%"
+    ? `${value.toFixed(2)}%`
+    : value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const deltaFormatted = delta == null
+    ? null
+    : unit === "%"
+    ? `${delta > 0 ? "+" : ""}${delta.toFixed(2)} pts`
+    : `${delta > 0 ? "+" : ""}${
+      delta.toLocaleString("en-US", { maximumFractionDigits: 2 })
+    }`;
   return (
     <div className="flex items-end justify-between gap-4">
       <div className="min-w-0 flex-1">
-        <p className="truncate font-mono text-[9px] uppercase tracking-[0.14em] text-faint">{label}</p>
+        <p className="truncate font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+          {indicatorLabel(label)}
+        </p>
         <div className="mt-1 flex items-baseline gap-1.5">
-          <span className="text-sm font-semibold text-muted tabular">{formatted}</span>
-          {unit && unit !== "%" ? (
-            <span className="font-mono text-[9px] text-faint">{unit}</span>
-          ) : null}
-          {deltaFormatted ? (
-            <span className={cn("font-mono text-[10px] tabular", signedClass(delta))}>
-              {deltaFormatted}
-            </span>
-          ) : null}
+          <span className="text-sm font-semibold text-muted tabular">
+            {formatted}
+          </span>
+          {displayUnit && unit !== "%"
+            ? (
+              <span className="font-mono text-[9px] text-faint">
+                {displayUnit}
+              </span>
+            )
+            : null}
+          {deltaFormatted
+            ? (
+              <span
+                className={cn(
+                  "font-mono text-[10px] tabular",
+                  signedClass(delta),
+                )}
+              >
+                {deltaFormatted}
+              </span>
+            )
+            : null}
         </div>
-        {indicator.period ? (
-          <p className="mt-0.5 font-mono text-[9px] text-faint">as of {indicator.period}</p>
-        ) : null}
+        {indicator.period
+          ? (
+            <p className="mt-0.5 font-mono text-[9px] text-faint">
+              as of {indicator.period}
+            </p>
+          )
+          : null}
       </div>
       {history.length >= 2 ? <Sparkline history={history} /> : null}
     </div>
   );
+}
+
+function sourceLabel(value: string): string {
+  return value
+    .replace(/\bbrent crude usd\b/gi, "Brent oil price")
+    .replace(/\bgold usd\b/gi, "Gold price")
+    .replace(/\bfed funds effective\b/gi, "US central bank rate")
+    .replace(/\bFOMC\b/g, "Federal Reserve meeting");
+}
+
+function indicatorLabel(value: string): string {
+  const key = value.trim().toLowerCase();
+  if (key === "brent crude") return "Oil price · Brent";
+  if (key === "us cpi") return "US consumer prices";
+  if (key === "ecb deposit rate") return "European Central Bank rate";
+  if (key === "fed funds rate") return "US central bank rate";
+  if (key === "gold") return "Gold price";
+  if (key === "euro area hicp") return "Euro area consumer prices";
+  if (key === "us unemployment rate") return "US unemployment";
+  return value;
+}
+
+function indicatorUnitLabel(value?: string | null): string {
+  const key = String(value ?? "").toLowerCase();
+  if (key === "usd/bbl") return "USD per barrel";
+  if (key === "usd/oz") return "USD per ounce";
+  return value ?? "";
 }
 
 // ── Calendar row ──────────────────────────────────────────────────────────────
@@ -424,29 +716,48 @@ function CalendarRow({ event }: { event: MacroCalendarEvent }) {
 // ── Risk pulse ────────────────────────────────────────────────────────────────
 
 function RiskPulse({ stories }: { stories: BriefingStory[] }) {
-  const risk = stories.filter((s) => s.severity === "risk" || s.severity === "high").length;
-  const watch = stories.filter((s) => s.severity === "watch" || s.severity === "medium").length;
+  const risk =
+    stories.filter((s) => s.severity === "risk" || s.severity === "high")
+      .length;
+  const watch =
+    stories.filter((s) => s.severity === "watch" || s.severity === "medium")
+      .length;
   const info = stories.length - risk - watch;
   const total = stories.length;
   if (total === 0) return null;
 
   const legend: string[] = [];
-  if (risk > 0) legend.push(`${risk} risk`);
-  if (watch > 0) legend.push(`${watch} watch`);
-  if (info > 0) legend.push(`${info} info`);
+  if (risk > 0) legend.push(`${risk} urgent`);
+  if (watch > 0) legend.push(`${watch} to watch`);
+  if (info > 0) legend.push(`${info} context`);
 
   return (
     <div className="space-y-1.5">
       <div className="flex h-1.5 overflow-hidden rounded-full bg-hairline">
-        {risk > 0 ? (
-          <div className="bg-loss transition-all" style={{ width: `${(risk / total) * 100}%` }} />
-        ) : null}
-        {watch > 0 ? (
-          <div className="bg-warn transition-all" style={{ width: `${(watch / total) * 100}%` }} />
-        ) : null}
-        {info > 0 ? (
-          <div className="bg-faint transition-all" style={{ width: `${(info / total) * 100}%` }} />
-        ) : null}
+        {risk > 0
+          ? (
+            <div
+              className="bg-loss transition-all"
+              style={{ width: `${(risk / total) * 100}%` }}
+            />
+          )
+          : null}
+        {watch > 0
+          ? (
+            <div
+              className="bg-warn transition-all"
+              style={{ width: `${(watch / total) * 100}%` }}
+            />
+          )
+          : null}
+        {info > 0
+          ? (
+            <div
+              className="bg-faint transition-all"
+              style={{ width: `${(info / total) * 100}%` }}
+            />
+          )
+          : null}
       </div>
       <p className="font-mono text-[9px] text-faint">{legend.join(" · ")}</p>
     </div>
@@ -500,15 +811,20 @@ function ComingUp({
   return (
     <div className="space-y-3">
       {combined.map((item, idx) =>
-        item.kind === "macro" ? (
-          <CalendarRow key={`macro-${item.event.event}-${idx}`} event={item.event} />
-        ) : (
-          <EarningsRow
-            key={`earnings-${item.earning.symbol}-${idx}`}
-            earning={item.earning}
-            onSymbol={onSymbol}
-          />
-        ),
+        item.kind === "macro"
+          ? (
+            <CalendarRow
+              key={`macro-${item.event.event}-${idx}`}
+              event={item.event}
+            />
+          )
+          : (
+            <EarningsRow
+              key={`earnings-${item.earning.symbol}-${idx}`}
+              earning={item.earning}
+              onSymbol={onSymbol}
+            />
+          )
       )}
     </div>
   );
@@ -526,8 +842,7 @@ function EarningsRow({
     try {
       const parts = earning.earnings_date.split("-").map(Number);
       const now = new Date();
-      const isToday =
-        parts[0] === now.getUTCFullYear() &&
+      const isToday = parts[0] === now.getUTCFullYear() &&
         parts[1] - 1 === now.getUTCMonth() &&
         parts[2] === now.getUTCDate();
       if (isToday) return "today";
@@ -549,12 +864,14 @@ function EarningsRow({
         </button>
         <p className="font-mono text-[9px] text-faint">
           results
-          {earning.stale ? (
-            <span className="ml-1.5 text-faint">· date to confirm</span>
-          ) : null}
+          {earning.stale
+            ? <span className="ml-1.5 text-faint">· date to confirm</span>
+            : null}
         </p>
       </div>
-      <span className="shrink-0 font-mono text-[10px] text-dim">{dateLabel}</span>
+      <span className="shrink-0 font-mono text-[10px] text-dim">
+        {dateLabel}
+      </span>
     </div>
   );
 }
@@ -569,173 +886,85 @@ const STANCE_NET = ["short", "neutral", "long"];
 
 function StanceHistory({ points }: { points: PostureHistoryPoint[] }) {
   if (points.length < 2) return null;
-
-  const W = 72;
-  const H = 28;
-
-  const tss = points
-    .map((p) => new Date(p.as_of).getTime())
-    .filter((t) => !Number.isNaN(t));
-  if (tss.length < 2) return null;
-
-  const tMin = Math.min(...tss);
-  const tMax = Math.max(...tss);
-  const tRange = tMax - tMin || 1;
-
-  function toX(asOf: string): number {
-    const t = new Date(asOf).getTime();
-    return Number.isNaN(t) ? -1 : ((t - tMin) / tRange) * W;
-  }
-
-  function stepLine(scale: string[], key: "gross_mode" | "net_bias"): string {
-    const pts: Array<{ x: number; y: number }> = [];
-    for (const p of points) {
-      const val = p[key];
-      const idx = val ? scale.indexOf(val) : -1;
-      if (idx < 0) continue;
-      const x = toX(p.as_of);
-      if (x < 0) continue;
-      const y = H - (idx / (scale.length - 1)) * H;
-      pts.push({ x, y });
-    }
-    if (pts.length < 2) return "";
-    const result: string[] = [];
-    for (let i = 0; i < pts.length; i++) {
-      if (i === 0) {
-        result.push(`${pts[i].x.toFixed(1)},${pts[i].y.toFixed(1)}`);
-      } else {
-        result.push(`${pts[i].x.toFixed(1)},${pts[i - 1].y.toFixed(1)}`);
-        result.push(`${pts[i].x.toFixed(1)},${pts[i].y.toFixed(1)}`);
-      }
-    }
-    result.push(`${W},${pts[pts.length - 1].y.toFixed(1)}`);
-    return result.join(" ");
-  }
-
-  const grossPts = stepLine(STANCE_GROSS, "gross_mode");
-  const netPts = stepLine(STANCE_NET, "net_bias");
-
-  if (!grossPts && !netPts) return null;
+  const data = points
+    .map((point) => ({
+      timestamp: Date.parse(point.as_of),
+      gross: point.gross_mode ? STANCE_GROSS.indexOf(point.gross_mode) : -1,
+      net: point.net_bias ? STANCE_NET.indexOf(point.net_bias) : -1,
+    }))
+    .filter((point) => Number.isFinite(point.timestamp))
+    .map((point) => ({
+      ...point,
+      gross: point.gross >= 0 ? point.gross : undefined,
+      net: point.net >= 0 ? point.net : undefined,
+    }));
+  const hasGross = data.filter((point) => point.gross != null).length > 1;
+  const hasNet = data.filter((point) => point.net != null).length > 1;
+  if (!hasGross && !hasNet) return null;
 
   return (
     <div className="space-y-3">
-      {grossPts ? (
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">Gross mode</p>
-          <svg
-            width={W}
-            height={H}
-            viewBox={`0 0 ${W} ${H}`}
-            aria-hidden
-            className="mt-1 overflow-visible text-accent"
-          >
-            <polyline
-              points={grossPts}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinejoin="round"
-              strokeLinecap="round"
+      {hasGross
+        ? (
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              Risk appetite
+            </p>
+            <StanceLine
+              data={data}
+              dataKey="gross"
+              color="var(--color-accent)"
+              label="Recorded risk-appetite history"
             />
-          </svg>
-        </div>
-      ) : null}
-      {netPts ? (
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">Net bias</p>
-          <svg
-            width={W}
-            height={H}
-            viewBox={`0 0 ${W} ${H}`}
-            aria-hidden
-            className="mt-1 overflow-visible text-dim"
-          >
-            <polyline
-              points={netPts}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinejoin="round"
-              strokeLinecap="round"
+          </div>
+        )
+        : null}
+      {hasNet
+        ? (
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              Portfolio direction
+            </p>
+            <StanceLine
+              data={data}
+              dataKey="net"
+              color="var(--color-dim)"
+              label="Recorded portfolio-direction history"
             />
-          </svg>
-        </div>
-      ) : null}
+          </div>
+        )
+        : null}
     </div>
   );
 }
 
-// ── Portfolio snapshot ────────────────────────────────────────────────────────
-
-function PortfolioSnapshot({
-  snapshot,
-  onPage,
+function StanceLine({
+  data,
+  dataKey,
+  color,
+  label,
 }: {
-  snapshot?: Snapshot | null;
-  onPage: (page: PageKey) => void;
+  data: Array<{ timestamp: number; gross?: number; net?: number }>;
+  dataKey: "gross" | "net";
+  color: string;
+  label: string;
 }) {
-  if (!snapshot) {
-    return (
-      <div className="space-y-2">
-        <p className="text-sm text-faint">Portfolio data is loading…</p>
-      </div>
-    );
-  }
-
-  const { portfolio } = snapshot;
-  const equity = portfolio.equity;
-  const returnPct = portfolio.total_return_pct;
-  const holdings = (portfolio.holdings ?? []).filter((h) => Math.abs(h.quantity) > 1e-9);
-
   return (
-    <div className="space-y-4">
-      <div>
-        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">Portfolio value</p>
-        <div className="mt-1 flex items-baseline gap-2">
-          <span className="text-xl font-semibold tracking-tight">{formatUsd(equity, 0)}</span>
-          {returnPct != null ? (
-            <span className={cn("font-mono text-[11px] tabular", signedClass(returnPct))}>
-              {formatPct(returnPct)}
-            </span>
-          ) : null}
-        </div>
-      </div>
-      {holdings.length > 0 ? (
-        <div>
-          <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
-            {holdings.length} open position{holdings.length !== 1 ? "s" : ""}
-          </p>
-          <div className="space-y-1">
-            {holdings.slice(0, 4).map((h) => {
-              const pnl = h.unrealized_pnl_net ?? h.unrealized_pnl;
-              return (
-                <div key={h.symbol} className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 flex-1 truncate text-sm text-muted">
-                    {snapshot.company_map?.[h.symbol] || h.symbol}
-                  </span>
-                  <span className={cn("shrink-0 font-mono text-[11px] tabular", signedClass(pnl))}>
-                    {formatUsd(pnl, 0)}
-                  </span>
-                </div>
-              );
-            })}
-            {holdings.length > 4 ? (
-              <p className="font-mono text-[9px] text-faint">+{holdings.length - 4} more</p>
-            ) : null}
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-faint">No open positions right now.</p>
-      )}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onPage("portfolio")}
-        className="w-full justify-between"
-      >
-        See portfolio
-        <ArrowRight className="size-3.5" />
-      </Button>
+    <div className="mt-1 h-7 w-[72px]" role="img" aria-label={label}>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data}>
+          <YAxis hide domain={[0, 2]} reversed />
+          <Line
+            type="stepAfter"
+            dataKey={dataKey}
+            stroke={color}
+            strokeWidth={1.5}
+            dot={false}
+            connectNulls={false}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }

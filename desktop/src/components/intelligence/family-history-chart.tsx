@@ -1,3 +1,4 @@
+import { Circle } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -7,6 +8,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { familyLabel } from "@/lib/humanize";
 import type { FamilyIntelligence } from "@/lib/types";
 
 const COLORS = [
@@ -49,8 +51,8 @@ export function FamilyPositioningChart({ rows }: { rows: FamilyIntelligence[] })
       <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 px-1">
         {series.map((row, index) => (
           <div key={row.family} className="flex items-center gap-1.5">
-            <span className="size-1.5 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-            <span className="font-mono text-[9px] text-dim">{label(row.family)}</span>
+            <Circle className="size-2 fill-current" style={{ color: COLORS[index % COLORS.length] }} aria-hidden="true" />
+            <span className="font-mono text-[9px] text-dim">{familyLabel(row.family)}</span>
           </div>
         ))}
       </div>
@@ -84,7 +86,7 @@ export function FamilyPositioningChart({ rows }: { rows: FamilyIntelligence[] })
                 hour: "2-digit",
                 minute: "2-digit",
               })}
-              formatter={(value, name) => [`rank ${String(value)}`, label(String(name))]}
+              formatter={(value, name) => [`priority ${String(value)}`, familyLabel(String(name))]}
               contentStyle={{
                 background: "var(--color-panel)",
                 border: "1px solid var(--color-line)",
@@ -109,7 +111,7 @@ export function FamilyPositioningChart({ rows }: { rows: FamilyIntelligence[] })
         </ResponsiveContainer>
       </div>
       <p className="mt-1 px-1 font-mono text-[9px] text-faint">
-        Rank 1 is highest. Lines use only observed family-board ranks; gaps are not inferred.
+        Priority 1 is highest. Lines use only recorded theme priorities; gaps are not inferred.
       </p>
     </div>
   );
@@ -126,41 +128,33 @@ export function FamilySparkline({ row }: { row: FamilyIntelligence }) {
   const values = observed.map((point) => point.rank);
   const low = Math.min(...values);
   const high = Math.max(...values);
-  const span = Math.max(1, high - low);
-  const segments: Array<Array<{ x: number; y: number }>> = [];
-  for (const [index, point] of history.entries()) {
-    if (typeof point.rank !== "number") continue;
-    const x = (index / Math.max(1, history.length - 1)) * 104;
-    const y = 4 + ((point.rank - low) / span) * 24;
-    const previous = history[index - 1];
-    if (!previous || typeof previous.rank !== "number") segments.push([]);
-    segments.at(-1)?.push({ x, y });
-  }
-  const last = segments.flat().at(-1);
   const color = row.rank_delta && row.rank_delta > 0 ? "var(--color-gain)" : row.rank_delta && row.rank_delta < 0 ? "var(--color-loss)" : "var(--color-accent)";
 
   return (
     <div
-      title={`${label(row.family)} rank history: ${history
+      title={`${familyLabel(row.family)} priority history: ${history
         .map((point) => (typeof point.rank === "number" ? point.rank : "gap"))
         .join(", ")}`}
     >
-      <svg viewBox="0 0 104 32" className="h-8 w-[104px]" role="img" aria-label={`${label(row.family)} rank trajectory`}>
-        <line x1="0" y1="28" x2="104" y2="28" stroke="var(--color-hairline)" strokeWidth="1" />
-        {segments.map((segment, index) => (
-          <polyline
-            key={`${segment[0]?.x ?? 0}-${index}`}
-            points={segment.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
-            fill="none"
-            stroke={color}
-            strokeWidth="1.7"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {last ? <circle cx={last.x} cy={last.y} r="2.2" fill={color} /> : null}
-      </svg>
+      <div className="h-8 w-[104px]" role="img" aria-label={`${familyLabel(row.family)} priority movement`}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={history}>
+            <YAxis hide reversed domain={[Math.max(1, low - 1), high + 1]} />
+            <Line
+              type="stepAfter"
+              dataKey="rank"
+              stroke={color}
+              strokeWidth={1.7}
+              dot={false}
+              activeDot={{ r: 2.2, strokeWidth: 0 }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
       <p className="font-mono text-[9px] text-faint">
-        rank {values[0]} → {values.at(-1)} · {observed.length} obs
+        priority {values[0]} → {values.at(-1)} · {observed.length} reviews
       </p>
     </div>
   );
@@ -168,8 +162,4 @@ export function FamilySparkline({ row }: { row: FamilyIntelligence }) {
 
 function shortDate(value: number): string {
   return new Date(value).toLocaleDateString(undefined, { day: "2-digit", month: "short" });
-}
-
-function label(value: string): string {
-  return value.replaceAll("_", " ");
 }

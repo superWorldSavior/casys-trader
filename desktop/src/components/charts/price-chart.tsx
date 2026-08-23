@@ -36,9 +36,15 @@ export function PriceChart({ bars }: Props) {
   const min = Math.min(...closes);
   const max = Math.max(...closes);
   const pad = Math.max((max - min) * 0.1, 0.01);
+  const first = closes[0];
+  const last = closes.at(-1) ?? first;
 
   return (
-    <div style={{ height: 180, width: "100%" }}>
+    <div
+      style={{ height: 180, width: "100%" }}
+      role="img"
+      aria-label={`${bars.length} recorded sessions. Closing price moved from ${fmtPrice(first)} to ${fmtPrice(last)} in the market's native currency.`}
+    >
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={bars} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
           <defs>

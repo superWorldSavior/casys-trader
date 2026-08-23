@@ -35,7 +35,7 @@ export function venueLabel(value?: string | null): string {
   if (key === "TW") return "Taiwan";
   if (key === "EU") return "Europe";
   if (key === "US") return "United States";
-  if (key === "ALL") return "All regions";
+  if (key === "ALL") return "All markets";
   return humanToken(value);
 }
 
@@ -78,12 +78,20 @@ export function familyLabel(value?: string | null): string {
     tw_memory: "Taiwan memory chips",
     tw_pcb: "Taiwan circuit boards",
     tw_semis: "Taiwan semiconductors",
+    tw_osat: "Taiwan chip packaging and testing",
+    tw_ems_odm: "Taiwan electronics manufacturing",
     eu_consumer_luxury: "European luxury goods",
     eu_luxury_consumer: "European luxury goods",
+    eu_industrials_nordic: "Nordic industrial companies",
+    eu_materials_nordic: "Nordic materials companies",
+    eu_financials_nordic: "Nordic financial companies",
+    eu_healthcare_ext: "Extended European healthcare",
     us_consumer_discretionary: "US discretionary consumer businesses",
     us_discretionary_consumer: "US discretionary consumer businesses",
     us_comm: "US communications",
     us_communication: "US communications",
+    nasdaq_single_names: "Selected Nasdaq companies",
+    defense: "Defense companies",
   };
   if (productLabels[normalizedKey]) return productLabels[normalizedKey];
   const words = String(value ?? "").trim().split(/[_\s]+/).filter(Boolean);
@@ -280,6 +288,7 @@ const MARKET_LANGUAGE_REPLACEMENTS: Array<readonly [RegExp, string]> = [
   [/\bcleaner cash\b/gi, "stronger cash generation"],
   [/\blong watch\b/gi, "potential Long position under review"],
   [/\bdeterministic fallback\b/gi, "default company list"],
+  [/\bdeterministic list\b/gi, "broader comparison"],
   [/\b(?:broader )?rules[\s_-]*based list\b/gi, "default company list"],
   [/\brisk assets\b/gi, "riskier investments"],
   [/\bglobal risk[\s_-]?off mood\b/gi, "global move away from risk"],
@@ -292,10 +301,12 @@ const MARKET_LANGUAGE_REPLACEMENTS: Array<readonly [RegExp, string]> = [
   [/\boil-linked names\b/gi, "oil and gas companies"],
   [/\bgold-linked materials\b/gi, "gold-related materials companies"],
   [/\bgold-linked tape\b/gi, "gold-related companies"],
+  [/\bdiplomacy-versus-escalation tape\b/gi, "tension between diplomacy and escalation"],
   [/\bthe tape\b/gi, "the market"],
   [/\bthe other tape\b/gi, "another supported group"],
   [/\bsleeves\b/gi, "groups"],
   [/\bagent picks\b/gi, "previous selections"],
+  [/\bcandidate books\b/gi, "candidate lists"],
   [/\bradar bias\b/gi, "research emphasis"],
   [/\bthe book\b/gi, "the portfolio"],
   [/\bboard tape\b/gi, "circuit-board market"],

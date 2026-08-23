@@ -1,7 +1,8 @@
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Circle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatAgo } from "@/lib/format";
+import { decisionActionLabel, humanToken, plainMarketLanguage, venueLabel } from "@/lib/humanize";
 import type { CompanyBrief, CompanyEvidencePoint, CompanyIntelligence } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -27,23 +28,22 @@ export function CompanyRadarRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-sm font-semibold">{company.symbol}</span>
-            <span className="truncate text-xs text-dim">{company.name}</span>
-            {company.thesis_changed ? <span className="size-1.5 rounded-full bg-accent" title="Thesis changed" /> : null}
+            <span className="truncate text-sm font-semibold">{company.name || company.symbol}</span>
+            <span className="font-mono text-[10px] text-faint">{company.symbol}</span>
+            {company.thesis_changed ? <Badge tone="accent">View changed</Badge> : null}
           </div>
-          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">{company.summary || "No thesis summary."}</p>
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">
+            {plainMarketLanguage(company.summary) || "No company view has been recorded."}
+          </p>
         </div>
         <div className="shrink-0 text-right">
           <Badge tone={thesisTone(company.thesis_status)}>{label(company.thesis_status)}</Badge>
-          <p className="mt-1 font-mono text-[9px] text-faint">{company.venue}</p>
+          <p className="mt-1 font-mono text-[9px] text-faint">{venueLabel(company.venue)}</p>
         </div>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[9px] text-faint">
-        <span>{formatAgo(company.as_of)}</span>
-        <span>{company.depth || "unknown depth"}</span>
-        <span>{company.source_count} sources</span>
-        {company.on_book ? <span className="text-accent">on book {company.side}</span> : null}
-        {company.stale_market ? <span className="text-warn">stale marks</span> : null}
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] text-faint">
+        <span>{company.on_book ? `In portfolio · ${positionSideLabel(company.side)}` : `Updated ${formatAgo(company.as_of)}`}</span>
+        {company.stale_market ? <span className="text-warn">Price needs refreshing</span> : null}
       </div>
     </button>
   );
@@ -62,25 +62,25 @@ export function CompanyIntelligenceDetail({
     <article className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-5">
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-accent">{company.venue}</p>
-            <Badge>{company.depth || "unknown"}</Badge>
+          <h3 className="text-3xl font-semibold tracking-[-0.04em]">{company.name || company.symbol}</h3>
+          <p className="mt-1 font-mono text-[11px] text-dim">{company.symbol}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-accent">{venueLabel(company.venue)}</p>
+            <Badge>{analysisDepthLabel(company.depth)}</Badge>
             <Badge tone={company.coverage && ["complete", "full"].includes(company.coverage) ? "gain" : "warn"}>
-              {company.coverage || "coverage unknown"}
+              {coverageLabel(company.coverage)}
             </Badge>
           </div>
-          <h3 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">{company.symbol}</h3>
-          <p className="mt-1 text-sm text-dim">{company.name || "Issuer name unavailable"}</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => onSymbol(company.symbol)}>
-          Symbol sheet
+          Open company
           <ArrowUpRight className="size-3.5" />
         </Button>
       </header>
 
       <section>
         <div className="flex flex-wrap items-center gap-2">
-          <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Company thesis</p>
+          <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Company view</p>
           <Badge tone={thesisTone(company.thesis_status)}>{label(company.thesis_status)}</Badge>
           {company.thesis_changed ? (
             <Badge tone="warn">
@@ -88,10 +88,34 @@ export function CompanyIntelligenceDetail({
             </Badge>
           ) : null}
         </div>
-        <p className="mt-3 max-w-4xl text-lg leading-relaxed text-fg">{company.summary || "No current thesis summary."}</p>
+        <p className="mt-3 max-w-4xl text-lg leading-relaxed text-fg">
+          {plainMarketLanguage(company.summary) || "No current company view has been recorded."}
+        </p>
         {company.business_summary ? (
-          <p className="mt-3 max-w-4xl text-sm leading-relaxed text-dim">{company.business_summary}</p>
+          <p className="mt-3 max-w-4xl text-sm leading-relaxed text-dim">{plainMarketLanguage(company.business_summary)}</p>
         ) : null}
+      </section>
+
+      <section className="rounded-lg border border-line bg-panel/55 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Recorded activity</p>
+          <div className="flex flex-wrap gap-1.5">
+            <Badge tone={company.on_book ? "accent" : "muted"}>
+              {company.on_book ? `In portfolio · ${positionSideLabel(company.side)}` : "Not in portfolio"}
+            </Badge>
+            {company.latest_action ? <Badge>{decisionActionLabel(company.latest_action)}</Badge> : null}
+          </div>
+        </div>
+        {company.latest_action ? (
+          <p className="mt-3 text-xs leading-relaxed text-dim">
+            This record does not confirm who produced the action, so it is not shown as an AI decision.
+          </p>
+        ) : null}
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <EvidenceStat label="Decisions" value={company.decision_count} />
+          <EvidenceStat label="With evidence" value={company.linked_decision_count} />
+          <EvidenceStat label="Prior reviews" value={company.history_count} />
+        </div>
       </section>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -111,40 +135,23 @@ export function CompanyIntelligenceDetail({
       <section className="rounded-lg border border-line bg-panel/55 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Selection view</p>
-            <p className="mt-1 text-sm text-muted">{label(selection?.posture) || "No selection posture."}</p>
+            <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Portfolio view</p>
+            <p className="mt-1 text-sm text-muted">{label(selection?.posture) || "No portfolio view recorded."}</p>
           </div>
           {typeof selection?.confidence === "number" ? (
             <Badge tone="accent">confidence {Math.round(selection.confidence * 100)}%</Badge>
           ) : company.selection_confidence_label ? (
-            <Badge tone="accent">confidence {company.selection_confidence_label}</Badge>
+            <Badge tone="accent">confidence {plainMarketLanguage(company.selection_confidence_label)}</Badge>
           ) : null}
         </div>
-        {selection?.summary ? <p className="mt-3 text-sm leading-relaxed text-dim">{selection.summary}</p> : null}
+        {selection?.summary ? (
+          <p className="mt-3 text-sm leading-relaxed text-dim">{plainMarketLanguage(selection.summary)}</p>
+        ) : null}
         {(selection?.reasons ?? []).length ? (
           <ul className="mt-3 list-disc space-y-1 pl-5 text-xs leading-relaxed text-dim">
-            {selection?.reasons?.map((reason) => <li key={reason}>{reason}</li>)}
+            {selection?.reasons?.map((reason) => <li key={reason}>{plainMarketLanguage(reason)}</li>)}
           </ul>
         ) : null}
-      </section>
-
-      <section className="border-t border-line pt-5">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Agent expression</p>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <Badge tone={company.on_book ? "accent" : "muted"}>
-              {company.on_book ? `on book ${company.side}` : "not on book"}
-            </Badge>
-            {company.latest_action ? <Badge>{company.latest_action}</Badge> : null}
-          </div>
-        </div>
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          <EvidenceStat label="Decisions" value={company.decision_count} />
-          <EvidenceStat label="Linked" value={company.linked_decision_count} />
-          <EvidenceStat label="History" value={company.history_count} />
-        </div>
       </section>
 
       <FinancialSnapshotSection brief={brief} />
@@ -196,7 +203,7 @@ function FinancialSnapshotSection({ brief }: { brief: CompanyBrief }) {
   return (
     <section>
       <p className="mb-3 font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Financials</p>
-      {summary ? <p className="mb-3 text-sm leading-relaxed text-dim">{summary}</p> : null}
+      {summary ? <p className="mb-3 text-sm leading-relaxed text-dim">{plainMarketLanguage(summary)}</p> : null}
       {points.length > 0 ? (
         <div className="space-y-2">
           {points.map((item, index) => (
@@ -228,8 +235,8 @@ function EarningsSection({ brief }: { brief: CompanyBrief }) {
 
   return (
     <section>
-      <p className="mb-3 font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Earnings &amp; guidance</p>
-      {summary ? <p className="mb-3 text-sm leading-relaxed text-dim">{summary}</p> : null}
+      <p className="mb-3 font-mono text-[9px] uppercase tracking-[0.2em] text-faint">Earnings</p>
+      {summary ? <p className="mb-3 text-sm leading-relaxed text-dim">{plainMarketLanguage(summary)}</p> : null}
       {points.length > 0 ? (
         <div className="space-y-2">
           {points.map((item, index) => (
@@ -244,11 +251,14 @@ function EarningsSection({ brief }: { brief: CompanyBrief }) {
 }
 
 function EvidencePointRow({ item }: { item: EvidencePointRaw }) {
-  const meta = [item.period, item.horizon, item.confidence].filter(Boolean).join(" · ");
+  const meta = [item.period, item.horizon, item.confidence]
+    .filter(Boolean)
+    .map((value) => plainMarketLanguage(String(value)))
+    .join(" · ");
   const refs = item.source_refs?.length ? `${item.source_refs.length} source${item.source_refs.length > 1 ? "s" : ""}` : null;
   return (
     <div className="rounded-md border border-hairline bg-panel/35 px-3 py-2.5">
-      <p className="text-sm leading-relaxed text-muted">{item.point || "—"}</p>
+      <p className="text-sm leading-relaxed text-muted">{plainMarketLanguage(item.point) || "—"}</p>
       {(meta || refs) ? (
         <p className="mt-1 font-mono text-[9px] text-faint">
           {[meta, refs].filter(Boolean).join(" · ")}
@@ -325,16 +335,21 @@ function EvidenceSection({
   return (
     <section>
       <div className="mb-2 flex items-center gap-2">
-        <span className={cn("size-1.5 rounded-full", tone === "gain" ? "bg-gain" : tone === "loss" ? "bg-loss" : "bg-warn")} />
+        <Circle
+          aria-hidden="true"
+          className={cn("size-2.5 fill-current", tone === "gain" ? "text-gain" : tone === "loss" ? "text-loss" : "text-warn")}
+        />
         <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-faint">{title}</p>
       </div>
       <div className="space-y-2">
         {items.map((item, index) => (
           <div key={`${evidenceText(item)}-${index}`} className="rounded-md border border-hairline bg-panel/35 px-3 py-2.5">
-            <p className="text-sm leading-relaxed text-muted">{evidenceText(item)}</p>
+            <p className="text-sm leading-relaxed text-muted">{plainMarketLanguage(evidenceText(item))}</p>
             <p className="mt-1 font-mono text-[9px] text-faint">
-              {[item.direction, item.signal, item.severity].filter(Boolean).join(" · ")}
-              {item.source_refs?.length ? ` · ${item.source_refs.length} sources` : ""}
+              {[item.direction, item.signal, item.severity].filter(Boolean).map((value) => plainMarketLanguage(humanToken(value))).join(" · ")}
+              {item.source_refs?.length
+                ? ` · ${item.source_refs.length} source${item.source_refs.length === 1 ? "" : "s"}`
+                : ""}
             </p>
           </div>
         ))}
@@ -355,6 +370,8 @@ function EvidenceStat({ label: name, value }: { label: string; value: number }) 
 
 function thesisTone(status: string): "gain" | "loss" | "warn" | "accent" | "muted" {
   const value = status.toLowerCase();
+  if (value === "intact") return "gain";
+  if (value === "untested" || value === "insufficient_evidence") return "warn";
   if (value.includes("construct") || value.includes("positive") || value.includes("bull")) return "gain";
   if (value.includes("caution") || value.includes("negative") || value.includes("bear")) return "loss";
   if (value.includes("watch") || value.includes("mixed")) return "warn";
@@ -362,7 +379,40 @@ function thesisTone(status: string): "gain" | "loss" | "warn" | "accent" | "mute
 }
 
 function label(value: string | null | undefined): string {
-  return (value ?? "").replaceAll("_", " ");
+  if (!value) return "";
+  const key = String(value ?? "").toLowerCase();
+  if (key === "intact") return "Outlook intact";
+  if (key === "untested" || key === "insufficient_evidence") return "Evidence incomplete";
+  if (key === "constructive" || key === "positive" || key === "bullish") return "Positive outlook";
+  if (key === "cautious" || key === "negative" || key === "bearish") return "Cautious outlook";
+  if (key === "mixed" || key === "neutral") return "Mixed outlook";
+  if (key === "watch") return "Watch closely";
+  if (key === "unknown") return "Not yet assessed";
+  if (key === "supports_selection") return "Supports inclusion";
+  if (key === "argues_against") return "Argues against inclusion";
+  return plainMarketLanguage(humanToken(value));
+}
+
+function positionSideLabel(side: string | null | undefined): string {
+  const key = String(side ?? "").toUpperCase();
+  if (key === "L" || key === "LONG") return "Long position";
+  if (key === "S" || key === "SHORT") return "Short position";
+  return humanToken(side);
+}
+
+function analysisDepthLabel(value?: string | null): string {
+  const key = String(value ?? "").toLowerCase();
+  if (key === "deep") return "In-depth review";
+  if (key === "screen") return "Quick review";
+  return value ? plainMarketLanguage(humanToken(value)) : "Review type unknown";
+}
+
+function coverageLabel(value?: string | null): string {
+  const key = String(value ?? "").toLowerCase();
+  if (["complete", "full"].includes(key)) return "Complete sources";
+  if (["partial", "incomplete"].includes(key)) return "Partial sources";
+  if (["missing", "none"].includes(key)) return "Sources missing";
+  return value ? plainMarketLanguage(humanToken(value)) : "Source coverage unknown";
 }
 
 function evidenceText(item: CompanyEvidencePoint): string {

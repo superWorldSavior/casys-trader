@@ -2,6 +2,7 @@ import { Activity } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ActionChip } from "@/components/action-chip";
 import { ActivityChart } from "@/components/charts/activity-chart";
+import { LiveWorkStatus } from "@/components/live-work-status";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -95,6 +96,7 @@ export function DecisionsPage({ snapshot, onSymbol }: Props) {
 
   return (
     <div className="grid gap-5 pb-8">
+      <LiveWorkStatus activity={snapshot?.intelligence_activity} />
       <section className="grid items-start gap-4 min-[1180px]:grid-cols-[minmax(320px,0.72fr)_minmax(0,1.28fr)]">
         <Card className="min-w-0 overflow-hidden">
           <CardHeader className="items-start">
