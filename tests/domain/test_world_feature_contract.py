@@ -307,6 +307,33 @@ def test_windows_and_decay_are_frozen_and_hashed_on_v1_v2_even_when_null() -> No
         assert with_path.fingerprint != with_windows.fingerprint
 
 
+def test_nested_windows_and_decay_cannot_corrupt_fingerprint_after_construction() -> None:
+    contract = _contract(windows_and_decay={"nested": {"items": ["a"]}})
+    fingerprint = contract.fingerprint
+    exported = contract.to_dict()
+    assert exported["windows_and_decay"] == {"nested": {"items": ["a"]}}
+    assert isinstance(exported["windows_and_decay"]["nested"]["items"], list)
+
+    nested_items = contract.windows_and_decay["nested"]["items"]
+    with pytest.raises((TypeError, AttributeError)):
+        nested_items.append("b")  # type: ignore[union-attr]
+    with pytest.raises(TypeError):
+        nested_items[0] = "z"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        contract.windows_and_decay["nested"]["items"] = ["b"]  # type: ignore[index]
+    with pytest.raises(TypeError):
+        contract.windows_and_decay["nested"]["other"] = 1  # type: ignore[index]
+
+    exported["windows_and_decay"]["nested"]["items"].append("b")
+    assert contract.fingerprint == fingerprint
+    assert contract.to_dict()["windows_and_decay"] == {"nested": {"items": ["a"]}}
+    replayed = WorldFeatureContract.from_mapping(contract.to_dict())
+    assert replayed == contract
+    assert replayed.fingerprint == fingerprint
+    assert replayed.to_dict() == contract.to_dict()
+    assert replayed.to_dict()["windows_and_decay"] == {"nested": {"items": ["a"]}}
+
+
 def test_scope_mapping_types_remain_macro0_owners_not_a_cohort_contract() -> None:
     source = MODULE_PATH.read_text(encoding="utf-8")
     assert "class WorldScopeMapping" not in source

@@ -84,15 +84,30 @@ def _optional_text(value: Any, field_name: str) -> str | None:
     return _required_text(value, field_name)
 
 
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(nested) for key, nested in value.items()})
+    if isinstance(value, list):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
+
+
+def _windows_and_decay_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    payload = canonical_payload(value)
+    if not isinstance(payload, dict):
+        raise TypeError("windows_and_decay must be a mapping")
+    return payload
+
+
 def _freeze_windows_and_decay(value: Any) -> Mapping[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise TypeError("windows_and_decay must be a mapping")
-    payload = canonical_payload(value)
-    if not isinstance(payload, dict):
+    frozen = _deep_freeze(_windows_and_decay_payload(value))
+    if not isinstance(frozen, Mapping):
         raise TypeError("windows_and_decay must be a mapping")
-    return MappingProxyType(payload)
+    return frozen
 
 
 @dataclass(frozen=True)
@@ -201,22 +216,6 @@ class WorldFeatureContract:
             self.vocabulary_fingerprint, "vocabulary_fingerprint"
         ) != vocabulary_fingerprint:
             raise ValueError("vocabulary_fingerprint does not match the canonical WorldFeatureContract")
-        content_payload = {
-            "schema_version": schema_version,
-            "contract_id": contract_id,
-            "accepted_episode_contract": accepted_episode_contract,
-            "projection_version": projection_version,
-            "encoder_identity": encoder_identity,
-            "groups": [group.to_dict() for group in groups],
-            "ontology_revision": ontology_revision,
-            "vocabulary_version": vocabulary_version,
-            "vocabulary_fingerprint": vocabulary_fingerprint,
-            "path_rule_version": path_rule_version,
-            "windows_and_decay": None if windows_and_decay is None else dict(windows_and_decay),
-        }
-        digest = canonical_sha256(content_payload)
-        if self.fingerprint is not None and _required_text(self.fingerprint, "fingerprint") != digest:
-            raise ValueError("fingerprint does not match the canonical WorldFeatureContract")
         object.__setattr__(self, "contract_id", contract_id)
         object.__setattr__(self, "accepted_episode_contract", accepted_episode_contract)
         object.__setattr__(self, "projection_version", projection_version)
@@ -228,6 +227,9 @@ class WorldFeatureContract:
         object.__setattr__(self, "windows_and_decay", windows_and_decay)
         object.__setattr__(self, "schema_version", schema_version)
         object.__setattr__(self, "vocabulary_fingerprint", vocabulary_fingerprint)
+        digest = canonical_sha256(self.content_payload())
+        if self.fingerprint is not None and _required_text(self.fingerprint, "fingerprint") != digest:
+            raise ValueError("fingerprint does not match the canonical WorldFeatureContract")
         object.__setattr__(self, "fingerprint", digest)
 
     @property
@@ -266,7 +268,9 @@ class WorldFeatureContract:
             "vocabulary_version": self.vocabulary_version,
             "vocabulary_fingerprint": self.vocabulary_fingerprint,
             "path_rule_version": self.path_rule_version,
-            "windows_and_decay": None if self.windows_and_decay is None else dict(self.windows_and_decay),
+            "windows_and_decay": None
+            if self.windows_and_decay is None
+            else _windows_and_decay_payload(self.windows_and_decay),
         }
 
     def to_dict(self) -> dict[str, Any]:
