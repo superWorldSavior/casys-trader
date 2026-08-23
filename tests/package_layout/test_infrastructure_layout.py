@@ -299,3 +299,52 @@ def test_ledger_rotation_filesystem_adapter_lives_in_infrastructure() -> None:
                         violations.append(f"{relative_path}:{node.lineno}: legacy runtime import")
 
     assert violations == []
+
+
+def test_world_temporal_networkx_is_infrastructure_owned_without_persistence_or_authority() -> None:
+    repo_root = REPO_ROOT
+    module_path = repo_root / "trader" / "infrastructure" / "graph" / "world_temporal_networkx.py"
+    v2_path = repo_root / "trader" / "infrastructure" / "graph" / "world_context_networkx.py"
+    init_path = repo_root / "trader" / "infrastructure" / "graph" / "__init__.py"
+    assert module_path.exists()
+    assert v2_path.exists()
+
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+    forbidden_prefixes = (
+        "trader.application",
+        "trader.runtime",
+        "trader.reporting",
+        "trader.infrastructure.state_db",
+        "trader.infrastructure.files",
+        "trader.infrastructure.graph.world_context_networkx",
+        "pickle",
+        "sqlite3",
+        "pathlib",
+    )
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if any(node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in forbidden_prefixes):
+                violations.append(f"from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if any(alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in forbidden_prefixes):
+                    violations.append(f"import {alias.name}")
+
+    assert violations == []
+    assert "import networkx" in source or "import networkx as nx" in source
+    assert "from trader.domain.world_graph import" in source
+    assert "import pickle" not in source
+    assert "pickle.dumps" not in source
+    assert "pickle.dump" not in source
+    assert "sqlite3" not in source
+    assert "nx.write_" not in source
+    assert "gpickle" not in source
+
+    from trader.infrastructure.graph.world_context_networkx import WorldContextGraph
+    from trader.infrastructure.graph import WorldContextGraph as exported
+
+    assert exported is WorldContextGraph
+    assert WorldContextGraph.__module__ == "trader.infrastructure.graph.world_context_networkx"
+    assert "WorldTemporalGraph" not in init_path.read_text(encoding="utf-8")
