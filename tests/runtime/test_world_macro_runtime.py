@@ -339,3 +339,80 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     status = bundle.runner.status()
     assert status["status"] in {"ok", "partial"}
     assert status.get("lane_identity") == "context.v2.macro_source.v1"
+
+
+def test_graph_v3_flag_defaults_off_and_collect_does_not_create_graph_relations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.runtime.world_macro_runtime import collect_world_macro, wire_world_macro_runtime
+
+    monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", raising=False)
+    collect_source = inspect.getsource(collect_world_macro)
+    assert "RegisterMacroObservationKnowledge" not in collect_source
+    assert "OBSERVES" not in collect_source
+    runtime_source = (REPO_ROOT / "trader" / "runtime" / "world_macro_runtime.py").read_text(encoding="utf-8")
+    assert "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED" in runtime_source
+    assert 'env.get(GRAPH_V3_FLAG, "0")' in runtime_source
+    from trader.runtime.world_macro_runtime import graph_v3_enabled
+
+    assert graph_v3_enabled({}) is False
+    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "0"}) is False
+    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "1"}) is True
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=FakeClock(NOW),
+        sleeper=lambda _seconds: None,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="first")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=60.0)
+    bundle.runner.stop()
+    world_model_db = tmp_path / "world_model.db"
+    if world_model_db.exists():
+        from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
+
+        graph = WorldGraphStore(world_model_db, clock=lambda: NOW)
+        try:
+            assert graph.list_knowledge_relation_events_available_through(NOW) == ()
+            assert graph.load("macro_graph_bridge.v1").events == ()
+        finally:
+            graph.close()
+
+
+def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.runtime.world_macro_runtime import collect_world_macro, wire_world_macro_runtime
+
+    monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", "1")
+    calls: list[str] = []
+
+    class _Bridge:
+        def activate(self, request_id: str) -> object:
+            calls.append(f"activate:{request_id}")
+            return SimpleNamespace(events=(), active_run=None)
+
+        def reconcile(self, *, limit: int) -> object:
+            calls.append(f"reconcile:{limit}")
+            return SimpleNamespace(events=())
+
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
+        lambda **_kwargs: _Bridge(),
+    )
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=FakeClock(NOW),
+        sleeper=lambda _seconds: None,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="first")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=60.0)
+    bundle.runner.stop()
+    assert any(item.startswith("activate:") for item in calls)
+    assert any(item.startswith("reconcile:") for item in calls)
+    assert "RegisterMacroObservationKnowledge" not in inspect.getsource(collect_world_macro)

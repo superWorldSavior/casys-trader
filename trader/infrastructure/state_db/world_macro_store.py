@@ -24,6 +24,7 @@ from trader.domain.world_availability import (
     world_subject_content_sha256,
 )
 from trader.domain.world_episode import parse_utc_timestamp
+from trader.domain.world_graph import MacroObservationCursor, MacroObservationCursorReservation
 from trader.domain.world_macro import (
     MACRO_WORLD_OBSERVATION_SUBJECT_KIND,
     MacroCollectionCompleted,
@@ -49,6 +50,7 @@ from trader.infrastructure.state_db._jsonl_store import read_jsonl_objects
 from trader.infrastructure.state_db.availability_receipt import (
     UtcClock,
     WorldAvailabilityJsonlReceiptStore,
+    append_jsonl_and_fsync,
     default_utc_clock,
     load_receipts,
     parse_world_availability_receipt,
@@ -60,6 +62,9 @@ WORLD_MACRO_STORE_ID = "world-macro-jsonl.v1"
 MACRO_SOURCE_FACT_SUBJECT_KIND = "macro_source_fact"
 MACRO_COLLECTION_EVENT_SUBJECT_KIND = "macro_collection_event"
 _STATUS_SCHEMA = "world_macro_status.v1"
+_CURSOR_LOG_GENERATION = 1
+_CURSOR_LOG_PATH = "observations/cursor_log.jsonl"
+_RESERVATION_PATH = "observations/cursor_reservations/reservations.jsonl"
 
 _EVENT_CLASSES = (
     MacroCollectionRegistered,
@@ -176,6 +181,7 @@ class WorldMacroStore:
                 history_path=f"observations/{day}.jsonl",
                 receipt_path=f"observations/availability_receipts/{day}.jsonl",
             )
+            self._assign_observation_cursor_locked(observation.observation_id, receipt)
             first_seen = self._remember_receipt(receipt, seen_at=receipt.ready_at)
             self._write_status()
             return self._observation_envelope(observation, receipt, first_seen_at=first_seen)
@@ -219,6 +225,54 @@ class WorldMacroStore:
             self._write_status()
             return PersistedWorldRef(identity=MacroCollectionEventId(event.event_id), receipt=receipt)
 
+    def reserve_activation_cursor(self, bridge_key: str, request_id: str) -> MacroObservationCursorReservation:
+        with self._exclusive_lock():
+            self._ensure_observation_cursors_locked()
+            for existing in self._iter_reservations():
+                if existing.bridge_key == str(bridge_key) and existing.request_id == str(request_id):
+                    return existing
+            cursor = self._head_cursor_locked()
+            reservation = MacroObservationCursorReservation(
+                bridge_key=str(bridge_key),
+                request_id=str(request_id),
+                cursor=cursor,
+            )
+            append_jsonl_and_fsync(self._root / _RESERVATION_PATH, reservation.to_dict())
+            return reservation
+
+    def list_available_after(self, cursor: MacroObservationCursor, limit: int) -> tuple[MacroObservationEnvelope, ...]:
+        if not isinstance(cursor, MacroObservationCursor):
+            raise TypeError("cursor must be MacroObservationCursor")
+        limit = int(limit)
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        envelopes: list[MacroObservationEnvelope] = []
+        with self._exclusive_lock():
+            self._ensure_observation_cursors_locked()
+            by_id = {observation.observation_id: (observation, receipt) for observation, receipt in self._iter_proven_observations()}
+            for item in self._iter_cursor_rows():
+                if item.receipt_log_generation != cursor.receipt_log_generation:
+                    continue
+                if item.ordinal <= cursor.ordinal:
+                    continue
+                pair = by_id.get(str(item.observation_id))
+                if pair is None:
+                    continue
+                observation, receipt = pair
+                first_seen = self._remember_receipt(receipt)
+                envelopes.append(self._observation_envelope(observation, receipt, first_seen_at=first_seen))
+                if len(envelopes) >= limit:
+                    break
+        return tuple(envelopes)
+
+    def cursor_for(self, observation_id: str) -> MacroObservationCursor:
+        with self._exclusive_lock():
+            self._ensure_observation_cursors_locked()
+            for item in self._iter_cursor_rows():
+                if item.observation_id == observation_id:
+                    return item
+        raise KeyError(observation_id)
+
     def load(self, run_id: MacroCollectionRunId) -> tuple[MacroCollectionEvent, ...]:
         if not isinstance(run_id, MacroCollectionRunId):
             raise TypeError("run_id must be MacroCollectionRunId")
@@ -232,6 +286,70 @@ class WorldMacroStore:
             events.append(event)
         events.sort(key=lambda item: (_EVENT_ORDER.get(item.event_type, 99), item.event_id))
         return tuple(events)
+
+    def _iter_cursor_rows(self) -> Iterator[MacroObservationCursor]:
+        path = self._root / _CURSOR_LOG_PATH
+        if not path.is_file():
+            return
+        for row in read_jsonl_objects(path):
+            try:
+                yield MacroObservationCursor.from_mapping(row)
+            except (TypeError, ValueError):
+                continue
+
+    def _iter_reservations(self) -> Iterator[MacroObservationCursorReservation]:
+        path = self._root / _RESERVATION_PATH
+        if not path.is_file():
+            return
+        for row in read_jsonl_objects(path):
+            try:
+                yield MacroObservationCursorReservation.from_mapping(row)
+            except (TypeError, ValueError):
+                continue
+
+    def _head_cursor_locked(self) -> MacroObservationCursor:
+        head = MacroObservationCursor(receipt_log_generation=_CURSOR_LOG_GENERATION, ordinal=0)
+        for item in self._iter_cursor_rows():
+            if item.ordinal >= head.ordinal:
+                head = item
+        return head
+
+    def _assign_observation_cursor_locked(
+        self, observation_id: str, receipt: WorldAvailabilityReceipt
+    ) -> MacroObservationCursor:
+        for item in self._iter_cursor_rows():
+            if item.observation_id == observation_id:
+                return item
+        head = self._head_cursor_locked()
+        cursor = MacroObservationCursor(
+            receipt_log_generation=_CURSOR_LOG_GENERATION,
+            ordinal=head.ordinal + 1,
+            receipt_id=receipt.receipt_id,
+            observation_id=observation_id,
+        )
+        append_jsonl_and_fsync(self._root / _CURSOR_LOG_PATH, cursor.to_dict())
+        return cursor
+
+    def _ensure_observation_cursors_locked(self) -> None:
+        assigned = {item.observation_id for item in self._iter_cursor_rows()}
+        for receipt in self._iter_observation_receipts_in_log_order():
+            if receipt.subject.subject_id in assigned:
+                continue
+            self._assign_observation_cursor_locked(receipt.subject.subject_id, receipt)
+            assigned.add(receipt.subject.subject_id)
+
+    def _iter_observation_receipts_in_log_order(self) -> Iterator[WorldAvailabilityReceipt]:
+        base = self._root / "observations" / "availability_receipts"
+        if not base.exists():
+            return
+        for path in sorted(base.glob("????-??-??.jsonl")):
+            if not path.is_file():
+                continue
+            for row in load_receipts(path):
+                parsed = parse_world_availability_receipt(row)
+                if parsed is None or parsed.subject.kind != MACRO_WORLD_OBSERVATION_SUBJECT_KIND:
+                    continue
+                yield parsed
 
     def _persist_subject(
         self,

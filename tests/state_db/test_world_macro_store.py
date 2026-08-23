@@ -47,6 +47,7 @@ from trader.infrastructure.state_db.availability_receipt import (
     load_receipts,
     parse_world_availability_receipt,
 )
+from trader.domain.world_graph import MacroObservationCursor
 from trader.infrastructure.state_db.world_macro_store import WORLD_MACRO_STORE_ID, WorldMacroStore
 
 
@@ -675,3 +676,54 @@ def test_store_does_not_import_runtime_frontend_or_news_brief() -> None:
     assert "NewsMacroBrief" not in source
     assert "desktop" not in source
     assert "ready_at" not in inspect.signature(WorldAvailabilityJsonlReceiptStore.append).parameters
+
+
+BRIDGE_KEY = "macro_graph_bridge.v1"
+REQUEST_ID = "macro_graph_bridge_request:v1:" + "c" * 64
+
+
+def test_reserve_activation_cursor_is_idempotent_and_ordered_with_observation_receipts(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    first = store.append_observation(_observation())
+    second = store.append_observation(_observation(scope=_scope(kind="country", entity_id="iso-3166:TW")))
+    reservation = store.reserve_activation_cursor(BRIDGE_KEY, REQUEST_ID)
+    assert reservation.bridge_key == BRIDGE_KEY
+    assert reservation.request_id == REQUEST_ID
+    assert reservation.cursor.ordinal == 2
+    assert reservation.cursor.observation_id == second.observation.observation_id
+    assert reservation.cursor.receipt_id == second.persisted.receipt.receipt_id
+    third = store.append_observation(_observation(scope=_scope(kind="world", entity_id="market")))
+    retried = store.reserve_activation_cursor(BRIDGE_KEY, REQUEST_ID)
+    assert retried.reservation_id == reservation.reservation_id
+    assert retried.cursor == reservation.cursor
+    assert retried.cursor.observation_id != third.observation.observation_id
+    after = store.list_available_after(reservation.cursor, 8)
+    assert [item.observation.observation_id for item in after] == [third.observation.observation_id]
+    before = store.list_available_after(MacroObservationCursor(receipt_log_generation=1, ordinal=0), 8)
+    assert [item.observation.observation_id for item in before] == [
+        first.observation.observation_id,
+        second.observation.observation_id,
+        third.observation.observation_id,
+    ]
+    root = tmp_path / "observations" / "cursor_reservations"
+    assert root.is_dir()
+    assert list(root.rglob("*.jsonl"))
+    assert not (tmp_path / "observations" / "cursor_checkpoint.json").exists()
+    assert store.cursor_for(first.observation.observation_id).ordinal == 1
+    assert store.cursor_for(third.observation.observation_id).ordinal == 3
+
+
+def test_cursor_ordinal_is_store_assigned_and_first_seen_cannot_move_it(tmp_path: Path) -> None:
+    writer = WorldMacroStore(tmp_path, clock=lambda: READY)
+    envelope = writer.append_observation(_observation())
+    cursor = writer.cursor_for(envelope.observation.observation_id)
+    assert cursor.ordinal == 1
+    assert envelope.evidence.first_seen_at == READY
+    restarted = WorldMacroStore(tmp_path, clock=lambda: BOOT)
+    listed = restarted.list_available_after(MacroObservationCursor(receipt_log_generation=1, ordinal=0), 8)
+    assert listed[0].evidence.first_seen_at == BOOT
+    assert restarted.cursor_for(envelope.observation.observation_id) == cursor
+    replay = restarted.append_observation(_observation())
+    assert restarted.cursor_for(replay.observation.observation_id) == cursor
+    assert "first_seen_at" not in cursor.to_dict()
+    assert "ready_at" not in cursor.to_dict()

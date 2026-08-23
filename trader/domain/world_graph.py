@@ -21,8 +21,8 @@ from trader.domain.world_availability import (
 )
 from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import canonical_payload, canonical_sha256, parse_utc_timestamp
-from trader.domain.world_macro import MacroSourceFactVersionId
-from trader.domain.world_scope import SCOPE_KINDS, WorldCanonicalScopeRef
+from trader.domain.world_macro import MacroObservationEnvelope, MacroSourceFactVersionId
+from trader.domain.world_scope import SCOPE_KINDS, WorldCanonicalScopeRef, WorldScopeMapping
 
 
 WORLD_ENTITY_KINDS = frozenset(
@@ -103,6 +103,19 @@ _ARTIFACT_REF_PREFIX = "knowledge_artifact:v1"
 _HYPOTHESIS_REF_PREFIX = "pattern_hypothesis:v1"
 _EPISODE_ID_PREFIX = "world-episode:v1"
 _RECEIPT_ID_PREFIX = "world-availability-receipt:v1"
+_MACRO_OBSERVATION_ID_PREFIX = "macro_world_observation:v1"
+_BRIDGE_EVENT_PREFIX = "macro_graph_bridge_event:v1"
+_BRIDGE_RUN_PREFIX = "macro_graph_bridge_run:v1"
+_RESERVATION_PREFIX = "macro_observation_cursor_reservation:v1"
+_REQUEST_ID_PREFIX = "macro_graph_bridge_request:v1"
+MACRO_GRAPH_BRIDGE_EVENT_SCHEMA = "macro_graph_bridge_event.v1"
+MACRO_OBSERVATION_CURSOR_SCHEMA = "macro_observation_cursor.v1"
+MACRO_OBSERVATION_CURSOR_RESERVATION_SCHEMA = "macro_observation_cursor_reservation.v1"
+MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA = "macro_graph_bridge_run_spec.v1"
+MACRO_GRAPH_SKIP_REASONS = frozenset({"scope_not_registered", "invalid_envelope"})
+MACRO_GRAPH_BLOCK_REASONS = frozenset({"config_drift"})
+MACRO_GRAPH_RUN_STATUSES = frozenset({"active", "blocked", "superseded"})
+MACRO_GRAPH_LINK_STATUSES = frozenset({"linked", "skipped"})
 
 
 def _required_text(value: Any, field_name: str) -> str:
@@ -120,6 +133,21 @@ def _optional_utc(value: datetime | str | None, field_name: str) -> datetime | N
 
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(timezone.utc).isoformat()
+
+
+def _non_negative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return value
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    number = _non_negative_int(value, field_name)
+    if number < 1:
+        raise ValueError(f"{field_name} must be >= 1")
+    return number
 
 
 def _sha256_hex(value: Any, field_name: str) -> str:
@@ -2443,10 +2471,1295 @@ def reconcile_world_graph_snapshot(existing: WorldGraphSnapshot, incoming: World
     return existing
 
 
+class StaleBridgeEpoch(ValueError):
+    """Fence no longer matches the active unblocked registry generation."""
+
+
+def world_observation_ref_for_observation_id(observation_id: str) -> WorldObservationRef:
+    identity = _validate_prefixed_id(observation_id, _MACRO_OBSERVATION_ID_PREFIX, "observation_id")
+    return WorldObservationRef(observation_id=_prefixed_id(_OBSERVATION_REF_PREFIX, {"observation_id": identity}))
+
+
+@dataclass(frozen=True)
+class MacroObservationCursor:
+    """Opaque store-assigned position in the observation receipt journal."""
+
+    receipt_log_generation: int
+    ordinal: int
+    receipt_id: str | None = None
+    observation_id: str | None = None
+    schema_version: str = MACRO_OBSERVATION_CURSOR_SCHEMA
+
+    def __post_init__(self) -> None:
+        schema_version = _required_text(self.schema_version, "schema_version")
+        if schema_version != MACRO_OBSERVATION_CURSOR_SCHEMA:
+            raise ValueError(f"schema_version must be {MACRO_OBSERVATION_CURSOR_SCHEMA}")
+        generation = _positive_int(self.receipt_log_generation, "receipt_log_generation")
+        ordinal = _non_negative_int(self.ordinal, "ordinal")
+        if ordinal == 0:
+            if self.receipt_id is not None or self.observation_id is not None:
+                raise ValueError("origin cursor has no receipt")
+            receipt_id = None
+            observation_id = None
+        else:
+            receipt_id = _validate_prefixed_id(self.receipt_id, _RECEIPT_ID_PREFIX, "receipt_id")
+            observation_id = _validate_prefixed_id(
+                self.observation_id, _MACRO_OBSERVATION_ID_PREFIX, "observation_id"
+            )
+        object.__setattr__(self, "schema_version", schema_version)
+        object.__setattr__(self, "receipt_log_generation", generation)
+        object.__setattr__(self, "ordinal", ordinal)
+        object.__setattr__(self, "receipt_id", receipt_id)
+        object.__setattr__(self, "observation_id", observation_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "receipt_log_generation": self.receipt_log_generation,
+            "ordinal": self.ordinal,
+            "receipt_id": self.receipt_id,
+            "observation_id": self.observation_id,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroObservationCursor) -> MacroObservationCursor:
+        if isinstance(value, MacroObservationCursor):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("cursor must be MacroObservationCursor or a mapping")
+        return cls(
+            receipt_log_generation=value.get("receipt_log_generation"),
+            ordinal=value.get("ordinal"),
+            receipt_id=value.get("receipt_id"),
+            observation_id=value.get("observation_id"),
+            schema_version=value.get("schema_version", MACRO_OBSERVATION_CURSOR_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroObservationCursorReservation:
+    bridge_key: str
+    request_id: str
+    cursor: MacroObservationCursor | Mapping[str, Any]
+    schema_version: str = MACRO_OBSERVATION_CURSOR_RESERVATION_SCHEMA
+    reservation_id: str | None = None
+    content_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        schema_version = _required_text(self.schema_version, "schema_version")
+        if schema_version != MACRO_OBSERVATION_CURSOR_RESERVATION_SCHEMA:
+            raise ValueError(f"schema_version must be {MACRO_OBSERVATION_CURSOR_RESERVATION_SCHEMA}")
+        bridge_key = _required_text(self.bridge_key, "bridge_key")
+        request_id = _validate_prefixed_id(self.request_id, _REQUEST_ID_PREFIX, "request_id")
+        cursor = MacroObservationCursor.from_mapping(self.cursor)
+        identity = {
+            "schema_version": schema_version,
+            "bridge_key": bridge_key,
+            "request_id": request_id,
+            "cursor": cursor.to_dict(),
+        }
+        reservation_id = _prefixed_id(_RESERVATION_PREFIX, identity)
+        if self.reservation_id is not None and _required_text(self.reservation_id, "reservation_id") != reservation_id:
+            raise ValueError("reservation_id does not match the canonical cursor reservation")
+        digest = canonical_sha256({**identity, "reservation_id": reservation_id})
+        if self.content_sha256 is not None and _required_text(self.content_sha256, "content_sha256") != digest:
+            raise ValueError("content_sha256 does not match the canonical cursor reservation")
+        object.__setattr__(self, "schema_version", schema_version)
+        object.__setattr__(self, "bridge_key", bridge_key)
+        object.__setattr__(self, "request_id", request_id)
+        object.__setattr__(self, "cursor", cursor)
+        object.__setattr__(self, "reservation_id", reservation_id)
+        object.__setattr__(self, "content_sha256", digest)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "reservation_id": self.reservation_id,
+            "bridge_key": self.bridge_key,
+            "request_id": self.request_id,
+            "cursor": self.cursor.to_dict(),
+            "content_sha256": self.content_sha256,
+        }
+
+    @classmethod
+    def from_mapping(
+        cls, value: Mapping[str, Any] | MacroObservationCursorReservation
+    ) -> MacroObservationCursorReservation:
+        if isinstance(value, MacroObservationCursorReservation):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("cursor reservation must be MacroObservationCursorReservation or a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            request_id=value.get("request_id"),
+            cursor=value.get("cursor"),
+            schema_version=value.get("schema_version", MACRO_OBSERVATION_CURSOR_RESERVATION_SCHEMA),
+            reservation_id=value.get("reservation_id"),
+            content_sha256=value.get("content_sha256"),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeFence:
+    bridge_key: str
+    run_id: str
+    epoch: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "bridge_key", _required_text(self.bridge_key, "bridge_key"))
+        object.__setattr__(self, "run_id", _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id"))
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"bridge_key": self.bridge_key, "run_id": self.run_id, "epoch": self.epoch}
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeFence) -> MacroGraphBridgeFence:
+        if isinstance(value, MacroGraphBridgeFence):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("fence must be MacroGraphBridgeFence or a mapping")
+        return cls(bridge_key=value.get("bridge_key"), run_id=value.get("run_id"), epoch=value.get("epoch"))
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeRunSpec:
+    scope_mapping_id: str
+    scope_mapping_hash: str
+    ontology_revision_id: str
+    ontology_revision_hash: str
+    schema_version: str = MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
+
+    def __post_init__(self) -> None:
+        schema_version = _required_text(self.schema_version, "schema_version")
+        if schema_version != MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA:
+            raise ValueError(f"schema_version must be {MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA}")
+        object.__setattr__(self, "schema_version", schema_version)
+        object.__setattr__(self, "scope_mapping_id", _required_text(self.scope_mapping_id, "scope_mapping_id"))
+        object.__setattr__(self, "scope_mapping_hash", _sha256_hex(self.scope_mapping_hash, "scope_mapping_hash"))
+        object.__setattr__(
+            self, "ontology_revision_id", _required_text(self.ontology_revision_id, "ontology_revision_id")
+        )
+        object.__setattr__(
+            self, "ontology_revision_hash", _sha256_hex(self.ontology_revision_hash, "ontology_revision_hash")
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "scope_mapping_id": self.scope_mapping_id,
+            "scope_mapping_hash": self.scope_mapping_hash,
+            "ontology_revision_id": self.ontology_revision_id,
+            "ontology_revision_hash": self.ontology_revision_hash,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeRunSpec) -> MacroGraphBridgeRunSpec:
+        if isinstance(value, MacroGraphBridgeRunSpec):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("run spec must be MacroGraphBridgeRunSpec or a mapping")
+        return cls(
+            scope_mapping_id=value.get("scope_mapping_id"),
+            scope_mapping_hash=value.get("scope_mapping_hash"),
+            ontology_revision_id=value.get("ontology_revision_id"),
+            ontology_revision_hash=value.get("ontology_revision_hash"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeRun:
+    run_id: str
+    epoch: int
+    status: str
+    spec: MacroGraphBridgeRunSpec | Mapping[str, Any]
+    activation_cursor: MacroObservationCursor | Mapping[str, Any]
+    cursor: MacroObservationCursor | Mapping[str, Any]
+    block_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        status = _required_text(self.status, "status")
+        if status not in MACRO_GRAPH_RUN_STATUSES:
+            allowed = ", ".join(sorted(MACRO_GRAPH_RUN_STATUSES))
+            raise ValueError(f"run status must be one of: {allowed}")
+        reason = None if self.block_reason is None else _required_text(self.block_reason, "block_reason")
+        if status == "blocked":
+            if reason not in MACRO_GRAPH_BLOCK_REASONS:
+                raise ValueError("blocked run requires reason=config_drift")
+        elif reason is not None:
+            raise ValueError("block_reason is only valid on a blocked run")
+        object.__setattr__(self, "run_id", _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id"))
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "spec", MacroGraphBridgeRunSpec.from_mapping(self.spec))
+        object.__setattr__(self, "activation_cursor", MacroObservationCursor.from_mapping(self.activation_cursor))
+        object.__setattr__(self, "cursor", MacroObservationCursor.from_mapping(self.cursor))
+        object.__setattr__(self, "block_reason", reason)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "epoch": self.epoch,
+            "status": self.status,
+            "spec": self.spec.to_dict(),
+            "activation_cursor": self.activation_cursor.to_dict(),
+            "cursor": self.cursor.to_dict(),
+            "block_reason": self.block_reason,
+        }
+
+
+def _canonical_scope_outputs(mapping: WorldScopeMapping) -> frozenset[tuple[str, str]]:
+    outputs = {("world", "market")}
+    for entry in mapping.entries:
+        outputs.add((entry.venue.kind, entry.venue.entity_id))
+        outputs.add((entry.country.kind, entry.country.entity_id))
+        outputs.add((entry.region.kind, entry.region.entity_id))
+        outputs.add((entry.world.kind, entry.world.entity_id))
+    return frozenset(outputs)
+
+
+@dataclass(frozen=True)
+class MacroObservationKnowledgeLink:
+    """Pure OBSERVES factory. Never invents a relation for an unknown scope."""
+
+    status: str
+    relation: KnowledgeWorldRelation | None = None
+    skip_reason: str | None = None
+    observation_ref: WorldObservationRef | None = None
+
+    def __post_init__(self) -> None:
+        status = _required_text(self.status, "status")
+        if status not in MACRO_GRAPH_LINK_STATUSES:
+            allowed = ", ".join(sorted(MACRO_GRAPH_LINK_STATUSES))
+            raise ValueError(f"link status must be one of: {allowed}")
+        if status == "linked":
+            if not isinstance(self.relation, KnowledgeWorldRelation):
+                raise TypeError("linked result requires KnowledgeWorldRelation")
+            if self.skip_reason is not None:
+                raise ValueError("linked result must not carry a skip_reason")
+            if not isinstance(self.observation_ref, WorldObservationRef):
+                raise TypeError("linked result requires WorldObservationRef")
+        else:
+            if self.relation is not None:
+                raise ValueError("skipped result must not carry a relation")
+            reason = _required_text(self.skip_reason, "skip_reason")
+            if reason not in MACRO_GRAPH_SKIP_REASONS:
+                allowed = ", ".join(sorted(MACRO_GRAPH_SKIP_REASONS))
+                raise ValueError(f"skip_reason must be one of: {allowed}")
+            object.__setattr__(self, "skip_reason", reason)
+        object.__setattr__(self, "status", status)
+
+    @classmethod
+    def from_envelope(
+        cls,
+        envelope: Any,
+        scope_mapping: WorldScopeMapping,
+        structural_revision: WorldOntologyRevision,
+    ) -> MacroObservationKnowledgeLink:
+        if not isinstance(scope_mapping, WorldScopeMapping):
+            raise TypeError("scope_mapping must be WorldScopeMapping")
+        if not isinstance(structural_revision, WorldOntologyRevision):
+            raise TypeError("structural_revision must be WorldOntologyRevision")
+        if (
+            structural_revision.scope_mapping_id != scope_mapping.mapping_id
+            or structural_revision.scope_mapping_hash != scope_mapping.content_sha256
+        ):
+            raise ValueError("scope mapping hash does not match structural revision")
+        try:
+            if not isinstance(envelope, MacroObservationEnvelope):
+                raise TypeError("envelope must be MacroObservationEnvelope")
+            observation = envelope.observation
+            WorldCanonicalScopeRef(kind=observation.scope.kind, entity_id=observation.scope.entity_id)
+            key = (observation.scope.kind, observation.scope.entity_id)
+            if key not in _canonical_scope_outputs(scope_mapping):
+                return cls(status="skipped", skip_reason="scope_not_registered")
+            observation_ref = world_observation_ref_for_observation_id(observation.observation_id)
+            receipt = envelope.persisted.receipt
+            relation = KnowledgeWorldRelation(
+                kind="OBSERVES",
+                source=observation_ref,
+                target=WorldEntityRef(kind=observation.scope.kind, entity_id=observation.scope.entity_id),
+                effective_from=observation.cutoff_at,
+                effective_until=observation.valid_until,
+                ontology_revision=structural_revision.revision_id,
+                source_refs=(
+                    f"{observation.observation_id}/{observation.content_sha256}",
+                    f"{receipt.receipt_id}/{receipt.receipt_sha256}",
+                    f"{scope_mapping.mapping_id}/{scope_mapping.content_sha256}",
+                ),
+            )
+            return cls(status="linked", relation=relation, observation_ref=observation_ref)
+        except (TypeError, ValueError):
+            return cls(status="skipped", skip_reason="invalid_envelope")
+
+
+def _set_bridge_event_id(event: Any, payload: Mapping[str, Any]) -> None:
+    provided_schema = _required_text(getattr(event, "schema_version"), "schema_version")
+    if provided_schema != MACRO_GRAPH_BRIDGE_EVENT_SCHEMA:
+        raise ValueError(f"schema_version must be {MACRO_GRAPH_BRIDGE_EVENT_SCHEMA}")
+    computed = _prefixed_id(_BRIDGE_EVENT_PREFIX, payload)
+    provided = getattr(event, "event_id")
+    if provided is not None and _required_text(provided, "event_id") != computed:
+        raise ValueError("event_id does not match the canonical event identity")
+    object.__setattr__(event, "schema_version", provided_schema)
+    object.__setattr__(event, "event_id", computed)
+
+
+def _bridge_run_id(payload: Mapping[str, Any]) -> str:
+    return _prefixed_id(_BRIDGE_RUN_PREFIX, payload)
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeActivated:
+    bridge_key: str
+    run_id: str
+    epoch: int
+    spec: MacroGraphBridgeRunSpec | Mapping[str, Any]
+    activation_cursor: MacroObservationCursor | Mapping[str, Any]
+    reservation_id: str
+    event_id: str | None = None
+    schema_version: str = MACRO_GRAPH_BRIDGE_EVENT_SCHEMA
+    event_type: str = "macro_graph_bridge_activated"
+
+    def __post_init__(self) -> None:
+        spec = MacroGraphBridgeRunSpec.from_mapping(self.spec)
+        cursor = MacroObservationCursor.from_mapping(self.activation_cursor)
+        bridge_key = _required_text(self.bridge_key, "bridge_key")
+        reservation_id = _validate_prefixed_id(self.reservation_id, _RESERVATION_PREFIX, "reservation_id")
+        epoch = _positive_int(self.epoch, "epoch")
+        run_id = _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id")
+        object.__setattr__(self, "bridge_key", bridge_key)
+        object.__setattr__(self, "run_id", run_id)
+        object.__setattr__(self, "epoch", epoch)
+        object.__setattr__(self, "spec", spec)
+        object.__setattr__(self, "activation_cursor", cursor)
+        object.__setattr__(self, "reservation_id", reservation_id)
+        object.__setattr__(self, "event_type", "macro_graph_bridge_activated")
+        _set_bridge_event_id(
+            self,
+            {
+                "event_type": "macro_graph_bridge_activated",
+                "schema_version": MACRO_GRAPH_BRIDGE_EVENT_SCHEMA,
+                "bridge_key": bridge_key,
+                "run_id": run_id,
+                "epoch": epoch,
+                "spec": spec.to_dict(),
+                "activation_cursor": cursor.to_dict(),
+                "reservation_id": reservation_id,
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "bridge_key": self.bridge_key,
+            "run_id": self.run_id,
+            "epoch": self.epoch,
+            "spec": self.spec.to_dict(),
+            "activation_cursor": self.activation_cursor.to_dict(),
+            "reservation_id": self.reservation_id,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeActivated) -> MacroGraphBridgeActivated:
+        if isinstance(value, MacroGraphBridgeActivated):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("activated event must be a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            run_id=value.get("run_id"),
+            epoch=value.get("epoch"),
+            spec=value.get("spec"),
+            activation_cursor=value.get("activation_cursor"),
+            reservation_id=value.get("reservation_id"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_EVENT_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphObservationLinked:
+    bridge_key: str
+    run_id: str
+    epoch: int
+    observation_id: str
+    relation_id: str
+    relation_event_id: str
+    cursor: MacroObservationCursor | Mapping[str, Any]
+    event_id: str | None = None
+    schema_version: str = MACRO_GRAPH_BRIDGE_EVENT_SCHEMA
+    event_type: str = "macro_graph_observation_linked"
+
+    def __post_init__(self) -> None:
+        cursor = MacroObservationCursor.from_mapping(self.cursor)
+        if cursor.ordinal < 1:
+            raise ValueError("linked observation cursor must be after the origin")
+        object.__setattr__(self, "bridge_key", _required_text(self.bridge_key, "bridge_key"))
+        object.__setattr__(self, "run_id", _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id"))
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+        object.__setattr__(
+            self,
+            "observation_id",
+            _validate_prefixed_id(self.observation_id, _MACRO_OBSERVATION_ID_PREFIX, "observation_id"),
+        )
+        object.__setattr__(self, "relation_id", _validate_prefixed_id(self.relation_id, _RELATION_ID_PREFIX, "relation_id"))
+        object.__setattr__(
+            self,
+            "relation_event_id",
+            _validate_prefixed_id(self.relation_event_id, _RELATION_EVENT_PREFIX, "relation_event_id"),
+        )
+        object.__setattr__(self, "cursor", cursor)
+        object.__setattr__(self, "event_type", "macro_graph_observation_linked")
+        _set_bridge_event_id(
+            self,
+            {
+                "event_type": "macro_graph_observation_linked",
+                "schema_version": MACRO_GRAPH_BRIDGE_EVENT_SCHEMA,
+                "bridge_key": self.bridge_key,
+                "run_id": self.run_id,
+                "epoch": self.epoch,
+                "observation_id": self.observation_id,
+                "relation_id": self.relation_id,
+                "relation_event_id": self.relation_event_id,
+                "cursor": cursor.to_dict(),
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "bridge_key": self.bridge_key,
+            "run_id": self.run_id,
+            "epoch": self.epoch,
+            "observation_id": self.observation_id,
+            "relation_id": self.relation_id,
+            "relation_event_id": self.relation_event_id,
+            "cursor": self.cursor.to_dict(),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphObservationLinked) -> MacroGraphObservationLinked:
+        if isinstance(value, MacroGraphObservationLinked):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("linked event must be a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            run_id=value.get("run_id"),
+            epoch=value.get("epoch"),
+            observation_id=value.get("observation_id"),
+            relation_id=value.get("relation_id"),
+            relation_event_id=value.get("relation_event_id"),
+            cursor=value.get("cursor"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_EVENT_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphObservationSkipped:
+    bridge_key: str
+    run_id: str
+    epoch: int
+    observation_id: str
+    reason: str
+    cursor: MacroObservationCursor | Mapping[str, Any]
+    event_id: str | None = None
+    schema_version: str = MACRO_GRAPH_BRIDGE_EVENT_SCHEMA
+    event_type: str = "macro_graph_observation_skipped"
+
+    def __post_init__(self) -> None:
+        reason = _required_text(self.reason, "reason")
+        if reason not in MACRO_GRAPH_SKIP_REASONS:
+            allowed = ", ".join(sorted(MACRO_GRAPH_SKIP_REASONS))
+            raise ValueError(f"skip reason must be one of: {allowed}")
+        cursor = MacroObservationCursor.from_mapping(self.cursor)
+        if cursor.ordinal < 1:
+            raise ValueError("skipped observation cursor must be after the origin")
+        object.__setattr__(self, "bridge_key", _required_text(self.bridge_key, "bridge_key"))
+        object.__setattr__(self, "run_id", _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id"))
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+        object.__setattr__(
+            self,
+            "observation_id",
+            _validate_prefixed_id(self.observation_id, _MACRO_OBSERVATION_ID_PREFIX, "observation_id"),
+        )
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "cursor", cursor)
+        object.__setattr__(self, "event_type", "macro_graph_observation_skipped")
+        _set_bridge_event_id(
+            self,
+            {
+                "event_type": "macro_graph_observation_skipped",
+                "schema_version": MACRO_GRAPH_BRIDGE_EVENT_SCHEMA,
+                "bridge_key": self.bridge_key,
+                "run_id": self.run_id,
+                "epoch": self.epoch,
+                "observation_id": self.observation_id,
+                "reason": reason,
+                "cursor": cursor.to_dict(),
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "bridge_key": self.bridge_key,
+            "run_id": self.run_id,
+            "epoch": self.epoch,
+            "observation_id": self.observation_id,
+            "reason": self.reason,
+            "cursor": self.cursor.to_dict(),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphObservationSkipped) -> MacroGraphObservationSkipped:
+        if isinstance(value, MacroGraphObservationSkipped):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("skipped event must be a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            run_id=value.get("run_id"),
+            epoch=value.get("epoch"),
+            observation_id=value.get("observation_id"),
+            reason=value.get("reason"),
+            cursor=value.get("cursor"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_EVENT_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeCursorAdvanced:
+    bridge_key: str
+    run_id: str
+    epoch: int
+    cursor: MacroObservationCursor | Mapping[str, Any]
+    event_id: str | None = None
+    schema_version: str = MACRO_GRAPH_BRIDGE_EVENT_SCHEMA
+    event_type: str = "macro_graph_bridge_cursor_advanced"
+
+    def __post_init__(self) -> None:
+        cursor = MacroObservationCursor.from_mapping(self.cursor)
+        object.__setattr__(self, "bridge_key", _required_text(self.bridge_key, "bridge_key"))
+        object.__setattr__(self, "run_id", _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id"))
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+        object.__setattr__(self, "cursor", cursor)
+        object.__setattr__(self, "event_type", "macro_graph_bridge_cursor_advanced")
+        _set_bridge_event_id(
+            self,
+            {
+                "event_type": "macro_graph_bridge_cursor_advanced",
+                "schema_version": MACRO_GRAPH_BRIDGE_EVENT_SCHEMA,
+                "bridge_key": self.bridge_key,
+                "run_id": self.run_id,
+                "epoch": self.epoch,
+                "cursor": cursor.to_dict(),
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "bridge_key": self.bridge_key,
+            "run_id": self.run_id,
+            "epoch": self.epoch,
+            "cursor": self.cursor.to_dict(),
+        }
+
+    @classmethod
+    def from_mapping(
+        cls, value: Mapping[str, Any] | MacroGraphBridgeCursorAdvanced
+    ) -> MacroGraphBridgeCursorAdvanced:
+        if isinstance(value, MacroGraphBridgeCursorAdvanced):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("cursor advanced event must be a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            run_id=value.get("run_id"),
+            epoch=value.get("epoch"),
+            cursor=value.get("cursor"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_EVENT_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeBlocked:
+    bridge_key: str
+    run_id: str
+    epoch: int
+    reason: str
+    event_id: str | None = None
+    schema_version: str = MACRO_GRAPH_BRIDGE_EVENT_SCHEMA
+    event_type: str = "macro_graph_bridge_blocked"
+
+    def __post_init__(self) -> None:
+        reason = _required_text(self.reason, "reason")
+        if reason not in MACRO_GRAPH_BLOCK_REASONS:
+            raise ValueError("block reason must be config_drift")
+        object.__setattr__(self, "bridge_key", _required_text(self.bridge_key, "bridge_key"))
+        object.__setattr__(self, "run_id", _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id"))
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "event_type", "macro_graph_bridge_blocked")
+        _set_bridge_event_id(
+            self,
+            {
+                "event_type": "macro_graph_bridge_blocked",
+                "schema_version": MACRO_GRAPH_BRIDGE_EVENT_SCHEMA,
+                "bridge_key": self.bridge_key,
+                "run_id": self.run_id,
+                "epoch": self.epoch,
+                "reason": reason,
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "bridge_key": self.bridge_key,
+            "run_id": self.run_id,
+            "epoch": self.epoch,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeBlocked) -> MacroGraphBridgeBlocked:
+        if isinstance(value, MacroGraphBridgeBlocked):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("blocked event must be a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            run_id=value.get("run_id"),
+            epoch=value.get("epoch"),
+            reason=value.get("reason"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_EVENT_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeResumed:
+    bridge_key: str
+    run_id: str
+    epoch: int
+    spec: MacroGraphBridgeRunSpec | Mapping[str, Any]
+    event_id: str | None = None
+    schema_version: str = MACRO_GRAPH_BRIDGE_EVENT_SCHEMA
+    event_type: str = "macro_graph_bridge_resumed"
+
+    def __post_init__(self) -> None:
+        spec = MacroGraphBridgeRunSpec.from_mapping(self.spec)
+        object.__setattr__(self, "bridge_key", _required_text(self.bridge_key, "bridge_key"))
+        object.__setattr__(self, "run_id", _validate_prefixed_id(self.run_id, _BRIDGE_RUN_PREFIX, "run_id"))
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+        object.__setattr__(self, "spec", spec)
+        object.__setattr__(self, "event_type", "macro_graph_bridge_resumed")
+        _set_bridge_event_id(
+            self,
+            {
+                "event_type": "macro_graph_bridge_resumed",
+                "schema_version": MACRO_GRAPH_BRIDGE_EVENT_SCHEMA,
+                "bridge_key": self.bridge_key,
+                "run_id": self.run_id,
+                "epoch": self.epoch,
+                "spec": spec.to_dict(),
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "bridge_key": self.bridge_key,
+            "run_id": self.run_id,
+            "epoch": self.epoch,
+            "spec": self.spec.to_dict(),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeResumed) -> MacroGraphBridgeResumed:
+        if isinstance(value, MacroGraphBridgeResumed):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("resumed event must be a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            run_id=value.get("run_id"),
+            epoch=value.get("epoch"),
+            spec=value.get("spec"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_EVENT_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeRunHandedOff:
+    bridge_key: str
+    predecessor_run_id: str
+    successor_run_id: str
+    epoch: int
+    predecessor_epoch: int
+    spec: MacroGraphBridgeRunSpec | Mapping[str, Any]
+    cursor: MacroObservationCursor | Mapping[str, Any]
+    event_id: str | None = None
+    schema_version: str = MACRO_GRAPH_BRIDGE_EVENT_SCHEMA
+    event_type: str = "macro_graph_bridge_run_handed_off"
+
+    def __post_init__(self) -> None:
+        spec = MacroGraphBridgeRunSpec.from_mapping(self.spec)
+        cursor = MacroObservationCursor.from_mapping(self.cursor)
+        predecessor_run_id = _validate_prefixed_id(self.predecessor_run_id, _BRIDGE_RUN_PREFIX, "predecessor_run_id")
+        successor_run_id = _validate_prefixed_id(self.successor_run_id, _BRIDGE_RUN_PREFIX, "successor_run_id")
+        if predecessor_run_id == successor_run_id:
+            raise ValueError("successor_run_id must differ from predecessor_run_id")
+        object.__setattr__(self, "bridge_key", _required_text(self.bridge_key, "bridge_key"))
+        object.__setattr__(self, "predecessor_run_id", predecessor_run_id)
+        object.__setattr__(self, "successor_run_id", successor_run_id)
+        object.__setattr__(self, "epoch", _positive_int(self.epoch, "epoch"))
+        object.__setattr__(self, "predecessor_epoch", _positive_int(self.predecessor_epoch, "predecessor_epoch"))
+        object.__setattr__(self, "spec", spec)
+        object.__setattr__(self, "cursor", cursor)
+        object.__setattr__(self, "event_type", "macro_graph_bridge_run_handed_off")
+        _set_bridge_event_id(
+            self,
+            {
+                "event_type": "macro_graph_bridge_run_handed_off",
+                "schema_version": MACRO_GRAPH_BRIDGE_EVENT_SCHEMA,
+                "bridge_key": self.bridge_key,
+                "predecessor_run_id": predecessor_run_id,
+                "successor_run_id": successor_run_id,
+                "epoch": self.epoch,
+                "predecessor_epoch": self.predecessor_epoch,
+                "spec": spec.to_dict(),
+                "cursor": cursor.to_dict(),
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "bridge_key": self.bridge_key,
+            "predecessor_run_id": self.predecessor_run_id,
+            "successor_run_id": self.successor_run_id,
+            "epoch": self.epoch,
+            "predecessor_epoch": self.predecessor_epoch,
+            "spec": self.spec.to_dict(),
+            "cursor": self.cursor.to_dict(),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeRunHandedOff) -> MacroGraphBridgeRunHandedOff:
+        if isinstance(value, MacroGraphBridgeRunHandedOff):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("handoff event must be a mapping")
+        return cls(
+            bridge_key=value.get("bridge_key"),
+            predecessor_run_id=value.get("predecessor_run_id"),
+            successor_run_id=value.get("successor_run_id"),
+            epoch=value.get("epoch"),
+            predecessor_epoch=value.get("predecessor_epoch"),
+            spec=value.get("spec"),
+            cursor=value.get("cursor"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_EVENT_SCHEMA),
+        )
+
+
+MacroGraphBridgeEvent = (
+    MacroGraphBridgeActivated
+    | MacroGraphObservationLinked
+    | MacroGraphObservationSkipped
+    | MacroGraphBridgeCursorAdvanced
+    | MacroGraphBridgeBlocked
+    | MacroGraphBridgeResumed
+    | MacroGraphBridgeRunHandedOff
+)
+_BRIDGE_EVENT_CLASSES = (
+    MacroGraphBridgeActivated,
+    MacroGraphObservationLinked,
+    MacroGraphObservationSkipped,
+    MacroGraphBridgeCursorAdvanced,
+    MacroGraphBridgeBlocked,
+    MacroGraphBridgeResumed,
+    MacroGraphBridgeRunHandedOff,
+)
+_BRIDGE_EVENT_PARSERS = {
+    "macro_graph_bridge_activated": MacroGraphBridgeActivated.from_mapping,
+    "macro_graph_observation_linked": MacroGraphObservationLinked.from_mapping,
+    "macro_graph_observation_skipped": MacroGraphObservationSkipped.from_mapping,
+    "macro_graph_bridge_cursor_advanced": MacroGraphBridgeCursorAdvanced.from_mapping,
+    "macro_graph_bridge_blocked": MacroGraphBridgeBlocked.from_mapping,
+    "macro_graph_bridge_resumed": MacroGraphBridgeResumed.from_mapping,
+    "macro_graph_bridge_run_handed_off": MacroGraphBridgeRunHandedOff.from_mapping,
+}
+
+
+def parse_macro_graph_bridge_event(
+    value: Mapping[str, Any] | MacroGraphBridgeEvent,
+) -> MacroGraphBridgeEvent:
+    if isinstance(value, _BRIDGE_EVENT_CLASSES):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("bridge event must be a mapping or typed event")
+    event_type = _required_text(value.get("event_type"), "event_type")
+    try:
+        parser = _BRIDGE_EVENT_PARSERS[event_type]
+    except KeyError as exc:
+        raise ValueError(f"unknown macro graph bridge event_type: {event_type}") from exc
+    return parser(value)
+
+
+@dataclass(frozen=True)
+class _BridgeTerminal:
+    kind: str
+    observation_id: str
+    ordinal: int
+    reason: str | None = None
+    relation_id: str | None = None
+    relation_event_id: str | None = None
+
+
+def _fold_bridge_events(
+    bridge_key: str,
+    events: Sequence[MacroGraphBridgeEvent],
+) -> tuple[tuple[MacroGraphBridgeRun, ...], MacroGraphBridgeRun | None, dict[str, _BridgeTerminal]]:
+    runs: dict[str, MacroGraphBridgeRun] = {}
+    active: MacroGraphBridgeRun | None = None
+    terminals: dict[str, _BridgeTerminal] = {}
+    for event in events:
+        if event.bridge_key != bridge_key:
+            raise ValueError("event bridge_key mismatch")
+        if isinstance(event, MacroGraphBridgeActivated):
+            if active is not None and active.status == "active":
+                raise ValueError("active generation already exists")
+            run = MacroGraphBridgeRun(
+                run_id=event.run_id,
+                epoch=event.epoch,
+                status="active",
+                spec=event.spec,
+                activation_cursor=event.activation_cursor,
+                cursor=event.activation_cursor,
+            )
+            runs[run.run_id] = run
+            active = run
+            continue
+        if active is None:
+            raise ValueError("bridge event requires an active generation")
+        if isinstance(event, MacroGraphBridgeRunHandedOff):
+            if active.run_id != event.predecessor_run_id:
+                raise ValueError("handoff predecessor is not the active run")
+            if active.status != "blocked":
+                raise ValueError("handoff requires a blocked active run")
+            runs[active.run_id] = MacroGraphBridgeRun(
+                run_id=active.run_id,
+                epoch=active.epoch,
+                status="superseded",
+                spec=active.spec,
+                activation_cursor=active.activation_cursor,
+                cursor=active.cursor,
+            )
+            successor = MacroGraphBridgeRun(
+                run_id=event.successor_run_id,
+                epoch=event.epoch,
+                status="active",
+                spec=event.spec,
+                activation_cursor=event.cursor,
+                cursor=event.cursor,
+            )
+            runs[successor.run_id] = successor
+            active = successor
+            continue
+        if event.run_id != active.run_id or event.epoch != active.epoch:
+            raise ValueError("event does not target the active generation")
+        if isinstance(event, MacroGraphObservationSkipped):
+            terminal = _BridgeTerminal(
+                kind="skipped",
+                observation_id=event.observation_id,
+                ordinal=event.cursor.ordinal,
+                reason=event.reason,
+            )
+            existing = terminals.get(event.observation_id)
+            if existing is not None and existing != terminal:
+                raise ValueError("conflict: same observation with different terminal content")
+            terminals[event.observation_id] = terminal
+            continue
+        if isinstance(event, MacroGraphObservationLinked):
+            terminal = _BridgeTerminal(
+                kind="linked",
+                observation_id=event.observation_id,
+                ordinal=event.cursor.ordinal,
+                relation_id=event.relation_id,
+                relation_event_id=event.relation_event_id,
+            )
+            existing = terminals.get(event.observation_id)
+            if existing is not None and existing != terminal:
+                raise ValueError("conflict: same observation with different terminal content")
+            terminals[event.observation_id] = terminal
+            continue
+        if isinstance(event, MacroGraphBridgeCursorAdvanced):
+            if event.cursor.receipt_log_generation != active.cursor.receipt_log_generation:
+                raise ValueError("cursor generation mismatch")
+            if event.cursor.ordinal < active.cursor.ordinal:
+                raise ValueError("cursor cannot move backwards")
+            by_ordinal = {item.ordinal: item for item in terminals.values()}
+            for ordinal in range(active.cursor.ordinal + 1, event.cursor.ordinal + 1):
+                if ordinal not in by_ordinal:
+                    raise ValueError("cursor cannot skip a non-terminal observation")
+            active = MacroGraphBridgeRun(
+                run_id=active.run_id,
+                epoch=active.epoch,
+                status=active.status,
+                spec=active.spec,
+                activation_cursor=active.activation_cursor,
+                cursor=event.cursor,
+                block_reason=active.block_reason,
+            )
+            runs[active.run_id] = active
+            continue
+        if isinstance(event, MacroGraphBridgeBlocked):
+            if active.status == "blocked":
+                continue
+            active = MacroGraphBridgeRun(
+                run_id=active.run_id,
+                epoch=active.epoch,
+                status="blocked",
+                spec=active.spec,
+                activation_cursor=active.activation_cursor,
+                cursor=active.cursor,
+                block_reason=event.reason,
+            )
+            runs[active.run_id] = active
+            continue
+        if isinstance(event, MacroGraphBridgeResumed):
+            if active.status != "blocked":
+                raise ValueError("resume requires a blocked run")
+            if event.spec != active.spec:
+                raise ValueError("resume requires the same frozen spec hashes")
+            active = MacroGraphBridgeRun(
+                run_id=active.run_id,
+                epoch=active.epoch,
+                status="active",
+                spec=active.spec,
+                activation_cursor=active.activation_cursor,
+                cursor=active.cursor,
+            )
+            runs[active.run_id] = active
+            continue
+        raise TypeError(f"unsupported bridge event: {type(event).__name__}")
+    ordered = tuple(sorted(runs.values(), key=lambda item: (item.epoch, item.run_id)))
+    return ordered, active, terminals
+
+
+@dataclass(frozen=True)
+class MacroGraphBridgeRegistry:
+    """Append-only single-active coordinator for the macro→graph bridge."""
+
+    bridge_key: str
+    events: Sequence[MacroGraphBridgeEvent | Mapping[str, Any]] = ()
+
+    def __post_init__(self) -> None:
+        bridge_key = _required_text(self.bridge_key, "bridge_key")
+        events = tuple(parse_macro_graph_bridge_event(item) for item in self.events)
+        _fold_bridge_events(bridge_key, events)
+        object.__setattr__(self, "bridge_key", bridge_key)
+        object.__setattr__(self, "events", events)
+
+    @classmethod
+    def empty(cls, bridge_key: str) -> MacroGraphBridgeRegistry:
+        return cls(bridge_key=bridge_key, events=())
+
+    @property
+    def version(self) -> int:
+        return len(self.events)
+
+    def _state(
+        self,
+    ) -> tuple[tuple[MacroGraphBridgeRun, ...], MacroGraphBridgeRun | None, dict[str, _BridgeTerminal]]:
+        return _fold_bridge_events(self.bridge_key, self.events)
+
+    @property
+    def runs(self) -> tuple[MacroGraphBridgeRun, ...]:
+        return self._state()[0]
+
+    @property
+    def active_run(self) -> MacroGraphBridgeRun | None:
+        return self._state()[1]
+
+    @property
+    def fence(self) -> MacroGraphBridgeFence | None:
+        run = self.active_run
+        if run is None:
+            return None
+        return MacroGraphBridgeFence(bridge_key=self.bridge_key, run_id=run.run_id, epoch=run.epoch)
+
+    def _require_version(self, expected_version: int) -> None:
+        expected = _non_negative_int(expected_version, "expected_version")
+        if expected != self.version:
+            raise ValueError("expected_version does not match the registry version")
+
+    def _append(self, event: MacroGraphBridgeEvent) -> MacroGraphBridgeRegistry:
+        return MacroGraphBridgeRegistry(bridge_key=self.bridge_key, events=(*self.events, event))
+
+    def _require_active(self) -> MacroGraphBridgeRun:
+        run = self.active_run
+        if run is None:
+            raise ValueError("bridge has no active generation")
+        return run
+
+    def _require_active_unblocked(self) -> MacroGraphBridgeRun:
+        run = self._require_active()
+        if run.status == "blocked":
+            raise ValueError("active generation is blocked")
+        if run.status != "active":
+            raise ValueError("bridge has no active generation")
+        return run
+
+    def activate(
+        self,
+        *,
+        reservation: MacroObservationCursorReservation,
+        spec: MacroGraphBridgeRunSpec,
+        expected_version: int,
+    ) -> MacroGraphBridgeRegistry:
+        self._require_version(expected_version)
+        if not isinstance(reservation, MacroObservationCursorReservation):
+            raise TypeError("reservation must be MacroObservationCursorReservation")
+        if not isinstance(spec, MacroGraphBridgeRunSpec):
+            raise TypeError("spec must be MacroGraphBridgeRunSpec")
+        if reservation.bridge_key != self.bridge_key:
+            raise ValueError("reservation bridge_key mismatch")
+        run = self.active_run
+        if run is not None:
+            activated = self.events[0] if self.events else None
+            if (
+                isinstance(activated, MacroGraphBridgeActivated)
+                and activated.reservation_id == reservation.reservation_id
+                and run.spec == spec
+                and run.activation_cursor == reservation.cursor
+            ):
+                return self
+            raise ValueError("active generation already exists")
+        run_id = _bridge_run_id(
+            {
+                "bridge_key": self.bridge_key,
+                "epoch": 1,
+                "spec": spec.to_dict(),
+                "activation_cursor": reservation.cursor.to_dict(),
+                "reservation_id": reservation.reservation_id,
+            }
+        )
+        event = MacroGraphBridgeActivated(
+            bridge_key=self.bridge_key,
+            run_id=run_id,
+            epoch=1,
+            spec=spec,
+            activation_cursor=reservation.cursor,
+            reservation_id=reservation.reservation_id,
+        )
+        return self._append(event)
+
+    def skip_observation(
+        self,
+        *,
+        observation_id: str,
+        reason: str,
+        cursor: MacroObservationCursor,
+        expected_version: int,
+    ) -> MacroGraphBridgeRegistry:
+        self._require_version(expected_version)
+        run = self._require_active()
+        terminals = self._state()[2]
+        existing = terminals.get(observation_id)
+        event = MacroGraphObservationSkipped(
+            bridge_key=self.bridge_key,
+            run_id=run.run_id,
+            epoch=run.epoch,
+            observation_id=observation_id,
+            reason=reason,
+            cursor=cursor,
+        )
+        if existing is not None:
+            candidate = _BridgeTerminal(
+                kind="skipped",
+                observation_id=event.observation_id,
+                ordinal=event.cursor.ordinal,
+                reason=event.reason,
+            )
+            if existing != candidate:
+                raise ValueError("conflict: same observation with different terminal content")
+            return self
+        if run.status == "blocked":
+            raise ValueError("active generation is blocked")
+        self._assert_observation_cursor(run, cursor, observation_id)
+        return self._append(event)
+
+    def link_observation(
+        self,
+        *,
+        observation_id: str,
+        relation: KnowledgeWorldRelation,
+        relation_event_id: str,
+        cursor: MacroObservationCursor,
+        expected_version: int,
+    ) -> MacroGraphBridgeRegistry:
+        self._require_version(expected_version)
+        if not isinstance(relation, KnowledgeWorldRelation):
+            raise TypeError("relation must be KnowledgeWorldRelation")
+        run = self._require_active()
+        terminals = self._state()[2]
+        existing = terminals.get(observation_id)
+        event = MacroGraphObservationLinked(
+            bridge_key=self.bridge_key,
+            run_id=run.run_id,
+            epoch=run.epoch,
+            observation_id=observation_id,
+            relation_id=relation.relation_id,
+            relation_event_id=relation_event_id,
+            cursor=cursor,
+        )
+        if existing is not None:
+            candidate = _BridgeTerminal(
+                kind="linked",
+                observation_id=event.observation_id,
+                ordinal=event.cursor.ordinal,
+                relation_id=event.relation_id,
+                relation_event_id=event.relation_event_id,
+            )
+            if existing != candidate:
+                raise ValueError("conflict: same observation with different terminal content")
+            return self
+        if run.status == "blocked":
+            raise ValueError("active generation is blocked")
+        self._assert_observation_cursor(run, cursor, observation_id)
+        return self._append(event)
+
+    def advance_cursor(self, cursor: MacroObservationCursor, expected_version: int) -> MacroGraphBridgeRegistry:
+        self._require_version(expected_version)
+        run = self._require_active_unblocked()
+        if not isinstance(cursor, MacroObservationCursor):
+            raise TypeError("cursor must be MacroObservationCursor")
+        if cursor == run.cursor:
+            return self
+        event = MacroGraphBridgeCursorAdvanced(
+            bridge_key=self.bridge_key,
+            run_id=run.run_id,
+            epoch=run.epoch,
+            cursor=cursor,
+        )
+        return self._append(event)
+
+    def block(self, *, reason: str, expected_version: int) -> MacroGraphBridgeRegistry:
+        self._require_version(expected_version)
+        run = self._require_active()
+        if run.status == "blocked" and run.block_reason == reason:
+            return self
+        if run.status != "active":
+            raise ValueError("only an active generation can be blocked")
+        event = MacroGraphBridgeBlocked(
+            bridge_key=self.bridge_key,
+            run_id=run.run_id,
+            epoch=run.epoch,
+            reason=reason,
+        )
+        return self._append(event)
+
+    def resume(self, *, spec: MacroGraphBridgeRunSpec, expected_version: int) -> MacroGraphBridgeRegistry:
+        self._require_version(expected_version)
+        if not isinstance(spec, MacroGraphBridgeRunSpec):
+            raise TypeError("spec must be MacroGraphBridgeRunSpec")
+        run = self._require_active()
+        if run.status == "active" and run.spec == spec:
+            return self
+        if run.status != "blocked":
+            raise ValueError("resume requires a blocked run")
+        if spec != run.spec:
+            raise ValueError("resume requires the same frozen spec hashes")
+        event = MacroGraphBridgeResumed(
+            bridge_key=self.bridge_key,
+            run_id=run.run_id,
+            epoch=run.epoch,
+            spec=spec,
+        )
+        return self._append(event)
+
+    def handoff(
+        self,
+        *,
+        active_run_id: str,
+        next_run_spec: MacroGraphBridgeRunSpec,
+        expected_version: int,
+    ) -> MacroGraphBridgeRegistry:
+        self._require_version(expected_version)
+        if not isinstance(next_run_spec, MacroGraphBridgeRunSpec):
+            raise TypeError("next_run_spec must be MacroGraphBridgeRunSpec")
+        run = self._require_active()
+        if run.status != "blocked":
+            raise ValueError("handoff requires a blocked active run")
+        if run.run_id != _validate_prefixed_id(active_run_id, _BRIDGE_RUN_PREFIX, "active_run_id"):
+            raise ValueError("handoff active_run_id does not match the blocked run")
+        successor_run_id = _bridge_run_id(
+            {
+                "bridge_key": self.bridge_key,
+                "epoch": run.epoch + 1,
+                "spec": next_run_spec.to_dict(),
+                "activation_cursor": run.cursor.to_dict(),
+                "predecessor_run_id": run.run_id,
+            }
+        )
+        event = MacroGraphBridgeRunHandedOff(
+            bridge_key=self.bridge_key,
+            predecessor_run_id=run.run_id,
+            successor_run_id=successor_run_id,
+            epoch=run.epoch + 1,
+            predecessor_epoch=run.epoch,
+            spec=next_run_spec,
+            cursor=run.cursor,
+        )
+        return self._append(event)
+
+    def _assert_observation_cursor(
+        self,
+        run: MacroGraphBridgeRun,
+        cursor: MacroObservationCursor,
+        observation_id: str,
+    ) -> None:
+        if not isinstance(cursor, MacroObservationCursor):
+            raise TypeError("cursor must be MacroObservationCursor")
+        if cursor.receipt_log_generation != run.activation_cursor.receipt_log_generation:
+            raise ValueError("cursor generation mismatch")
+        if cursor.ordinal <= run.activation_cursor.ordinal:
+            raise ValueError("observation cursor is before the activation cursor")
+        if cursor.observation_id != observation_id:
+            raise ValueError("cursor observation_id mismatch")
+
+
 __all__ = [
     "FORBIDDEN_RELATION_KINDS",
     "GRAPH_TRAVERSAL_POLICY_VERSION",
     "KNOWLEDGE_RELATION_KINDS",
+    "MACRO_GRAPH_BLOCK_REASONS",
+    "MACRO_GRAPH_SKIP_REASONS",
     "STRUCTURAL_RELATION_KINDS",
     "WORLD_ENTITY_KINDS",
     "WORLD_GRAPH_SNAPSHOT_SCHEMA",
@@ -2455,9 +3768,25 @@ __all__ = [
     "KnowledgeWorldRelationAsserted",
     "KnowledgeWorldRelationEvent",
     "KnowledgeWorldRelationRetired",
+    "MacroGraphBridgeActivated",
+    "MacroGraphBridgeBlocked",
+    "MacroGraphBridgeCursorAdvanced",
+    "MacroGraphBridgeEvent",
+    "MacroGraphBridgeFence",
+    "MacroGraphBridgeRegistry",
+    "MacroGraphBridgeResumed",
+    "MacroGraphBridgeRun",
+    "MacroGraphBridgeRunHandedOff",
+    "MacroGraphBridgeRunSpec",
+    "MacroGraphObservationLinked",
+    "MacroGraphObservationSkipped",
+    "MacroObservationCursor",
+    "MacroObservationCursorReservation",
+    "MacroObservationKnowledgeLink",
     "MacroSourceFactVersionRef",
     "PatternHypothesisRef",
     "SensorRef",
+    "StaleBridgeEpoch",
     "StructuralWorldRelation",
     "StructuralWorldRelationAsserted",
     "StructuralWorldRelationEvent",
@@ -2491,6 +3820,7 @@ __all__ = [
     "fold_knowledge_relation_events_at_cutoff",
     "fold_structural_relation_events_at_cutoff",
     "parse_knowledge_relation_kind",
+    "parse_macro_graph_bridge_event",
     "parse_structural_relation_kind",
     "parse_world_entity_event",
     "parse_world_entity_identity_event",
@@ -2499,4 +3829,5 @@ __all__ = [
     "parse_world_relation_event",
     "reconcile_world_graph_snapshot",
     "reconcile_world_ontology_revision",
+    "world_observation_ref_for_observation_id",
 ]

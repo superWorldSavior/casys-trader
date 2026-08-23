@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import logging
+import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ from trader.domain.world_macro import MacroScope, MacroSourceRegistry
 
 MACRO_LANE_IDENTITY = "context.v2.macro_source.v1"
 MACRO_THREAD_NAME = "world-macro-source-only"
+GRAPH_V3_FLAG = "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
+_BRIDGE_KEY = "macro_graph_bridge.v1"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -194,6 +197,11 @@ class WorldMacroBackgroundRunner:
             pass
 
 
+def graph_v3_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    return str(env.get(GRAPH_V3_FLAG, "0")).strip() == "1"
+
+
 def collection_scopes(bundle: object) -> tuple[MacroScope, ...]:
     """Unique canonical scopes from the registry and operator mapping."""
 
@@ -313,9 +321,15 @@ def wire_world_macro_runtime(
         policy=operator.policy,
     )
     scopes = collection_scopes(operator)
+    graph_enabled = graph_v3_enabled()
+    graph_store = None
+    if graph_enabled:
+        from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
+
+        graph_store = WorldGraphStore(Path(state_dir) / "world_model.db", clock=resolved_clock)
 
     def collect_fn(*, now: datetime, reason: str) -> dict[str, object]:
-        return collect_world_macro(
+        report = collect_world_macro(
             now=now,
             reason=reason,
             pipeline=pipeline,
@@ -324,6 +338,22 @@ def wire_world_macro_runtime(
             scopes=scopes,
             budgets=operator.budgets,
         )
+        if graph_store is None:
+            return report
+        try:
+            _reconcile_macro_graph_bridge(
+                now=now,
+                macro_store=store,
+                graph_store=graph_store,
+                mapping=operator.scope_mapping,
+                report=report,
+            )
+        except Exception as exc:  # noqa: BLE001 - graph bridge stays fail-open
+            errors = report.get("errors")
+            if isinstance(errors, list):
+                errors.append({"stage": "graph_bridge", "error": f"{type(exc).__name__}:{exc}"})
+            report["status"] = "partial"
+        return report
 
     runner = WorldMacroBackgroundRunner(
         collect_fn=collect_fn,
@@ -339,12 +369,64 @@ def wire_world_macro_runtime(
     )
 
 
+def _reconcile_macro_graph_bridge(
+    *,
+    now: datetime,
+    macro_store: object,
+    graph_store: object,
+    mapping: object,
+    report: dict[str, object],
+) -> None:
+    from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
+    from trader.domain.world_episode import canonical_sha256
+    from trader.domain.world_graph import WorldOntologyRevision, WorldOntologyRevisionPublished
+    from trader.domain.world_scope import WorldScopeMapping
+
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("graph bridge requires WorldScopeMapping")
+    revision = None
+    list_revisions = getattr(graph_store, "list_revision_events_available_through", None)
+    if callable(list_revisions):
+        for envelope in list_revisions(now):
+            event = getattr(envelope, "event", None)
+            if isinstance(event, WorldOntologyRevisionPublished):
+                revision = event.revision
+    if revision is None:
+        revision = WorldOntologyRevision(
+            revision_id="market_ontology.v1",
+            entities=(),
+            structural_relation_refs=(),
+            identity_link_refs=(),
+            scope_mapping_id=mapping.mapping_id,
+            scope_mapping_hash=mapping.content_sha256,
+        )
+    use_case = RegisterMacroObservationKnowledge(
+        scan=macro_store,
+        graph=graph_store,
+        bridge=graph_store,
+        scope_mapping=mapping,
+        structural_revision=revision,
+        bridge_key=_BRIDGE_KEY,
+    )
+    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256(
+        {"bridge_key": _BRIDGE_KEY, "intent": "activate"}
+    )
+    use_case.activate(request_id)
+    registry = use_case.reconcile(limit=32)
+    report["graph_bridge"] = {
+        "status": None if registry.active_run is None else registry.active_run.status,
+        "version": registry.version,
+    }
+
+
 __all__ = [
+    "GRAPH_V3_FLAG",
     "MACRO_LANE_IDENTITY",
     "MACRO_THREAD_NAME",
     "WorldMacroBackgroundRunner",
     "WorldMacroRuntimeBundle",
     "collect_world_macro",
     "collection_scopes",
+    "graph_v3_enabled",
     "wire_world_macro_runtime",
 ]

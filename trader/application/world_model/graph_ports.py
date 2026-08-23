@@ -13,6 +13,11 @@ from typing import NewType, Protocol
 from trader.domain.world_availability import AvailabilityEvidence, PersistedWorldRef
 from trader.domain.world_graph import (
     KnowledgeWorldRelationEvent,
+    MacroGraphBridgeEvent,
+    MacroGraphBridgeFence,
+    MacroGraphBridgeRegistry,
+    MacroObservationCursor,
+    MacroObservationCursorReservation,
     StructuralWorldRelationEvent,
     WorldEntityEvent,
     WorldEntityIdentityEvent,
@@ -20,6 +25,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevisionEvent,
     WorldRelationEvent,
 )
+from trader.domain.world_macro import MacroObservationEnvelope
 
 
 WorldEntityEventId = NewType("WorldEntityEventId", str)
@@ -27,6 +33,9 @@ WorldEntityIdentityEventId = NewType("WorldEntityIdentityEventId", str)
 WorldRelationEventId = NewType("WorldRelationEventId", str)
 WorldOntologyRevisionEventId = NewType("WorldOntologyRevisionEventId", str)
 WorldGraphSnapshotId = NewType("WorldGraphSnapshotId", str)
+MacroGraphBridgeKey = NewType("MacroGraphBridgeKey", str)
+BridgeRequestId = NewType("BridgeRequestId", str)
+MacroGraphBridgeEventId = NewType("MacroGraphBridgeEventId", str)
 
 
 @dataclass(frozen=True)
@@ -65,6 +74,8 @@ class WorldGraphLedger(Protocol):
     def append_knowledge_relation_event(
         self,
         event: KnowledgeWorldRelationEvent,
+        fence: MacroGraphBridgeFence | None = None,
+        expected_registry_version: int | None = None,
     ) -> PersistedWorldRef[WorldRelationEventId]: ...
 
     def append_identity_event(
@@ -104,7 +115,35 @@ class WorldGraphSnapshotLedger(Protocol):
     def get(self, snapshot_id: WorldGraphSnapshotId) -> WorldGraphSnapshot | None: ...
 
 
+class MacroObservationScanPort(Protocol):
+    def reserve_activation_cursor(
+        self, bridge_key: MacroGraphBridgeKey, request_id: BridgeRequestId
+    ) -> MacroObservationCursorReservation: ...
+
+    def list_available_after(
+        self, cursor: MacroObservationCursor, limit: int
+    ) -> tuple[MacroObservationEnvelope, ...]: ...
+
+    def cursor_for(self, observation_id: str) -> MacroObservationCursor: ...
+
+
+class MacroGraphBridgeLedger(Protocol):
+    def append_event(
+        self,
+        event: MacroGraphBridgeEvent,
+        expected_registry_version: int,
+        fence: MacroGraphBridgeFence | None,
+    ) -> PersistedWorldRef[MacroGraphBridgeEventId]: ...
+
+    def load(self, bridge_key: MacroGraphBridgeKey) -> MacroGraphBridgeRegistry: ...
+
+
 __all__ = [
+    "BridgeRequestId",
+    "MacroGraphBridgeEventId",
+    "MacroGraphBridgeKey",
+    "MacroGraphBridgeLedger",
+    "MacroObservationScanPort",
     "WorldEntityEventEnvelope",
     "WorldEntityEventId",
     "WorldEntityIdentityEventEnvelope",

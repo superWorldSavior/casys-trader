@@ -28,6 +28,11 @@ from trader.domain.world_graph import (
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
     KnowledgeWorldRelationRetired,
+    MacroGraphBridgeRegistry,
+    MacroGraphBridgeRunSpec,
+    MacroObservationCursor,
+    MacroObservationCursorReservation,
+    StaleBridgeEpoch,
     StructuralWorldRelation,
     StructuralWorldRelationAsserted,
     StructuralWorldRelationRetired,
@@ -709,3 +714,130 @@ def test_shared_receipt_table_does_not_mix_cohort_and_graph_subjects(tmp_path: P
     receipt = graph._db.query_one("SELECT subject_kind FROM world_availability_receipts")
     assert receipt["subject_kind"] == "world_entity_event"
     assert graph._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 0
+
+
+BRIDGE_KEY = "macro_graph_bridge.v1"
+REQUEST_ID = "macro_graph_bridge_request:v1:" + "c" * 64
+
+
+def _reservation() -> MacroObservationCursorReservation:
+    return MacroObservationCursorReservation(
+        bridge_key=BRIDGE_KEY,
+        request_id=REQUEST_ID,
+        cursor=MacroObservationCursor(receipt_log_generation=1, ordinal=0),
+    )
+
+
+def _bridge_spec(revision: WorldOntologyRevision | None = None) -> MacroGraphBridgeRunSpec:
+    resolved = revision if revision is not None else _revision()
+    return MacroGraphBridgeRunSpec(
+        scope_mapping_id=resolved.scope_mapping_id,
+        scope_mapping_hash=resolved.scope_mapping_hash,
+        ontology_revision_id=resolved.revision_id,
+        ontology_revision_hash=resolved.content_sha256,
+    )
+
+
+def _activate(store: WorldGraphStore, spec: MacroGraphBridgeRunSpec | None = None) -> MacroGraphBridgeRegistry:
+    registry = store.load(BRIDGE_KEY)
+    updated = registry.activate(reservation=_reservation(), spec=spec or _bridge_spec(), expected_version=registry.version)
+    if updated.version != registry.version:
+        store.append_event(updated.events[-1], expected_registry_version=registry.version, fence=None)
+        return store.load(BRIDGE_KEY)
+    return updated
+
+
+def test_bridge_migration_is_version_7_and_does_not_rewrite_graph_v6(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    versions = {row["version"] for row in store._db.query_all("SELECT version FROM schema_migrations")}
+    assert 6 in versions
+    assert 7 in versions
+    names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "world_macro_graph_bridge_events" in names
+    v6_sql = "\n".join(WORLD_MODEL_MIGRATIONS[5][1])
+    v7_sql = "\n".join(WORLD_MODEL_MIGRATIONS[6][1])
+    assert "world_macro_graph_bridge_events" not in v6_sql
+    assert "CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events" in v7_sql
+    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v7_sql
+    assert "world_macro_graph_bridge_events_no_update" in v7_sql
+    _activate(store)
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        with store._db.transaction() as cur:
+            cur.execute("UPDATE world_macro_graph_bridge_events SET event_type='tampered'")
+
+
+def test_bridge_event_cas_and_identical_retry_repairs_receipt_after_head_advances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "world_model.db"
+    store = WorldGraphStore(path, clock=lambda: READY)
+    spec = _bridge_spec()
+    empty = MacroGraphBridgeRegistry.empty(BRIDGE_KEY)
+    activated = empty.activate(reservation=_reservation(), spec=spec, expected_version=0)
+    event = activated.events[-1]
+
+    def boom(*_args: object, **_kwargs: object):
+        raise OSError("bridge receipt failed")
+
+    monkeypatch.setattr(store, "_commit_availability_receipt", boom)
+    with pytest.raises(OSError, match="bridge receipt failed"):
+        store.append_event(event, expected_registry_version=0, fence=None)
+    assert store._db.query_one("SELECT COUNT(*) FROM world_macro_graph_bridge_events")[0] == 1
+    assert store.load(BRIDGE_KEY).events == ()
+    monkeypatch.undo()
+    blocked = activated.block(reason="config_drift", expected_version=1)
+    store.append_event(blocked.events[-1], expected_registry_version=0, fence=None)
+    repaired = store.append_event(event, expected_registry_version=0, fence=None)
+    assert repaired.receipt.ready_at == READY
+    loaded = store.load(BRIDGE_KEY)
+    assert loaded.version == 2
+    assert loaded.events[0].event_id == event.event_id
+    with pytest.raises(WorldModelConflictError):
+        other = MacroGraphBridgeRegistry.empty(BRIDGE_KEY).activate(
+            reservation=MacroObservationCursorReservation(
+                bridge_key=BRIDGE_KEY,
+                request_id="macro_graph_bridge_request:v1:" + "d" * 64,
+                cursor=MacroObservationCursor(receipt_log_generation=1, ordinal=0),
+            ),
+            spec=spec,
+            expected_version=0,
+        )
+        store.append_event(other.events[-1], expected_registry_version=0, fence=None)
+
+
+def test_fenced_knowledge_append_and_old_worker_is_rejected_after_handoff(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    registry = _activate(store)
+    fence = registry.fence
+    knowledge = KnowledgeWorldRelationAsserted(relation=_knowledge())
+    persisted = store.append_knowledge_relation_event(
+        knowledge,
+        fence=fence,
+        expected_registry_version=registry.version,
+    )
+    assert persisted.receipt.storage_locator.table == "world_relation_events"
+    visible = store.list_knowledge_relation_events_available_through(LATER)
+    assert len(visible) == 1
+    blocked = registry.block(reason="config_drift", expected_version=registry.version)
+    store.append_event(blocked.events[-1], expected_registry_version=registry.version, fence=fence)
+    next_spec = MacroGraphBridgeRunSpec(
+        scope_mapping_id="world_scope_mapping.v2",
+        scope_mapping_hash="b" * 64,
+        ontology_revision_id="market_ontology.v2",
+        ontology_revision_hash="c" * 64,
+    )
+    handed = store.load(BRIDGE_KEY).handoff(
+        active_run_id=blocked.active_run.run_id,
+        next_run_spec=next_spec,
+        expected_version=2,
+    )
+    store.append_event(handed.events[-1], expected_registry_version=2, fence=None)
+    other = _knowledge(source=WorldObservationRef(observation_id=f"world_observation:v1:{'b' * 64}"))
+    with pytest.raises(StaleBridgeEpoch, match="stale_bridge_epoch"):
+        store.append_knowledge_relation_event(
+            KnowledgeWorldRelationAsserted(relation=other),
+            fence=fence,
+            expected_registry_version=1,
+        )
+    unproven = store.list_knowledge_relation_events_available_through(CUTOFF)
+    assert unproven == ()

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.application.world_model.graph_ports import (
+    MacroGraphBridgeEventId,
     WorldEntityEventEnvelope,
     WorldEntityEventId,
     WorldEntityIdentityEventEnvelope,
@@ -41,6 +42,10 @@ from trader.domain.world_graph import (
     KnowledgeWorldRelationAsserted,
     KnowledgeWorldRelationEvent,
     KnowledgeWorldRelationRetired,
+    MacroGraphBridgeEvent,
+    MacroGraphBridgeFence,
+    MacroGraphBridgeRegistry,
+    StaleBridgeEpoch,
     StructuralWorldRelationAsserted,
     StructuralWorldRelationEvent,
     StructuralWorldRelationRetired,
@@ -57,6 +62,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevisionPublished,
     WorldOntologyRevisionSuperseded,
     WorldRelationEvent,
+    parse_macro_graph_bridge_event,
     parse_world_entity_event,
     parse_world_entity_identity_event,
     parse_world_ontology_revision_event,
@@ -84,6 +90,7 @@ WORLD_GRAPH_TABLES = (
     "world_ontology_revisions",
     "world_graph_snapshots",
     "world_graph_snapshot_members",
+    "world_macro_graph_bridge_events",
 )
 
 _ENTITY_SUBJECT_KIND = "world_entity_event"
@@ -91,6 +98,8 @@ _IDENTITY_SUBJECT_KIND = "world_entity_identity_event"
 _RELATION_SUBJECT_KIND = "world_relation_event"
 _REVISION_SUBJECT_KIND = "world_ontology_revision_event"
 _SNAPSHOT_SUBJECT_KIND = "world_graph_snapshot"
+_BRIDGE_SUBJECT_KIND = "macro_graph_bridge_event"
+_BRIDGE_TABLE = "world_macro_graph_bridge_events"
 _GRAPH_SUBJECT_KINDS = frozenset(
     {
         _ENTITY_SUBJECT_KIND,
@@ -98,6 +107,7 @@ _GRAPH_SUBJECT_KINDS = frozenset(
         _RELATION_SUBJECT_KIND,
         _REVISION_SUBJECT_KIND,
         _SNAPSHOT_SUBJECT_KIND,
+        _BRIDGE_SUBJECT_KIND,
     }
 )
 
@@ -312,9 +322,27 @@ class WorldGraphStore:
         return self._append_event(event, _STRUCTURAL_LOG)
 
     def append_knowledge_relation_event(
-        self, event: KnowledgeWorldRelationEvent
+        self,
+        event: KnowledgeWorldRelationEvent,
+        fence: MacroGraphBridgeFence | None = None,
+        expected_registry_version: int | None = None,
     ) -> PersistedWorldRef[WorldRelationEventId]:
-        return self._append_event(event, _KNOWLEDGE_LOG)
+        parsed = _KNOWLEDGE_LOG.parse(event)
+        if not isinstance(parsed, _KNOWLEDGE_LOG.allowed):
+            raise TypeError("event must be a knowledge relation event")
+        existing = self._event_row(_KNOWLEDGE_LOG.table, parsed.event_id)
+        if fence is not None:
+            self._assert_fence(fence, expected_registry_version, for_new_insert=existing is None)
+        self._persist_graph_event(parsed, log=_KNOWLEDGE_LOG)
+        if fence is not None:
+            self._assert_fence(fence, expected_registry_version, for_new_insert=False)
+        receipt = self._commit_availability_receipt(
+            subject_kind=_KNOWLEDGE_LOG.subject_kind,
+            subject_id=parsed.event_id,
+            payload=parsed.to_dict(),
+            table=_KNOWLEDGE_LOG.table,
+        )
+        return PersistedWorldRef(identity=_KNOWLEDGE_LOG.id_type(parsed.event_id), receipt=receipt)
 
     def append_revision_event(
         self, event: WorldOntologyRevisionEvent
@@ -343,6 +371,39 @@ class WorldGraphStore:
         self, cutoff_at: datetime
     ) -> tuple[WorldOntologyRevisionEventEnvelope, ...]:
         return self._list_available(_REVISION_LOG, cutoff_at)
+
+    def append_event(
+        self,
+        event: MacroGraphBridgeEvent,
+        expected_registry_version: int,
+        fence: MacroGraphBridgeFence | None,
+    ) -> PersistedWorldRef[MacroGraphBridgeEventId]:
+        parsed = parse_macro_graph_bridge_event(event)
+        existing = self._event_row(_BRIDGE_TABLE, parsed.event_id)
+        status_change = parsed.event_type in {
+            "macro_graph_bridge_blocked",
+            "macro_graph_bridge_run_handed_off",
+            "macro_graph_bridge_activated",
+        }
+        if existing is None:
+            if fence is not None:
+                self._assert_fence(fence, expected_registry_version, for_new_insert=True)
+            self._persist_bridge_event(parsed, expected_registry_version=expected_registry_version)
+        else:
+            if existing["payload_sha256"] != canonical_sha256(parsed.to_dict()):
+                raise _conflict("event_id", parsed.event_id)
+        if fence is not None and not status_change:
+            self._assert_fence(fence, expected_registry_version, for_new_insert=False)
+        receipt = self._commit_availability_receipt(
+            subject_kind=_BRIDGE_SUBJECT_KIND,
+            subject_id=parsed.event_id,
+            payload=parsed.to_dict(),
+            table=_BRIDGE_TABLE,
+        )
+        return PersistedWorldRef(identity=MacroGraphBridgeEventId(parsed.event_id), receipt=receipt)
+
+    def load(self, bridge_key: str) -> MacroGraphBridgeRegistry:
+        return self._registry_from_rows(str(bridge_key), proven_only=True)
 
     def append(self, snapshot: WorldGraphSnapshot) -> PersistedWorldRef[WorldGraphSnapshotId]:
         if not isinstance(snapshot, WorldGraphSnapshot):
@@ -373,6 +434,138 @@ class WorldGraphStore:
         if snapshot.snapshot_id != row["snapshot_id"]:
             raise ValueError("tamper: graph snapshot id mismatch")
         return snapshot
+
+    def _bridge_event_columns(self, event: MacroGraphBridgeEvent) -> tuple[str | None, int | None]:
+        run_id = getattr(event, "run_id", None) or getattr(event, "successor_run_id", None)
+        epoch = getattr(event, "epoch", None)
+        return (None if run_id is None else str(run_id), None if epoch is None else int(epoch))
+
+    def _proven_bridge_version(self, bridge_key: str) -> int:
+        rows = self._db.query_all(
+            f"SELECT event_id, payload_sha256 FROM {_BRIDGE_TABLE} WHERE bridge_key=? ORDER BY sequence ASC",  # noqa: S608
+            (bridge_key,),
+        )
+        proven = 0
+        for row in rows:
+            receipt = self._lookup_receipt(
+                subject_kind=_BRIDGE_SUBJECT_KIND,
+                subject_id=row["event_id"],
+                content_sha256=row["payload_sha256"],
+                table=_BRIDGE_TABLE,
+            )
+            if receipt is not None:
+                proven += 1
+        return proven
+
+    def _registry_from_rows(self, bridge_key: str, *, proven_only: bool) -> MacroGraphBridgeRegistry:
+        rows = self._db.query_all(
+            f"SELECT * FROM {_BRIDGE_TABLE} WHERE bridge_key=? ORDER BY sequence ASC, event_id ASC",  # noqa: S608
+            (bridge_key,),
+        )
+        events: list[Any] = []
+        for row in rows:
+            event = parse_macro_graph_bridge_event(_json_load(row["payload_json"]))
+            if proven_only:
+                receipt = self._lookup_receipt(
+                    subject_kind=_BRIDGE_SUBJECT_KIND,
+                    subject_id=event.event_id,
+                    content_sha256=canonical_sha256(event.to_dict()),
+                    table=_BRIDGE_TABLE,
+                )
+                if receipt is None:
+                    continue
+            events.append(event)
+        return MacroGraphBridgeRegistry(bridge_key=bridge_key, events=events)
+
+    def _assert_fence(
+        self,
+        fence: MacroGraphBridgeFence,
+        expected_registry_version: int | None,
+        *,
+        for_new_insert: bool,
+    ) -> None:
+        if not isinstance(fence, MacroGraphBridgeFence):
+            raise TypeError("fence must be MacroGraphBridgeFence")
+        registry = self._registry_from_rows(fence.bridge_key, proven_only=False)
+        run = registry.active_run
+        if run is None or run.run_id != fence.run_id or run.epoch != fence.epoch or run.status != "active":
+            raise StaleBridgeEpoch("stale_bridge_epoch")
+        if for_new_insert:
+            proven = self._proven_bridge_version(fence.bridge_key)
+            if expected_registry_version is None or int(expected_registry_version) != proven:
+                raise StaleBridgeEpoch("stale_bridge_epoch")
+
+    def _persist_bridge_event(self, event: MacroGraphBridgeEvent, *, expected_registry_version: int) -> int:
+        payload = event.to_dict()
+        _assert_persistable_payload(payload)
+        payload_json = canonical_json(payload)
+        payload_sha256 = canonical_sha256(payload)
+        run_id, epoch = self._bridge_event_columns(event)
+        recorded_at = _utc_now()
+        last_error: sqlite3.IntegrityError | None = None
+        for _attempt in range(8):
+            try:
+                with self._db.transaction() as cur:
+                    existing = cur.execute(
+                        f"SELECT payload_sha256, sequence FROM {_BRIDGE_TABLE} WHERE event_id=?",  # noqa: S608
+                        (event.event_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        if existing["payload_sha256"] != payload_sha256:
+                            raise _conflict("event_id", event.event_id)
+                        return int(existing["sequence"])
+                    proven = 0
+                    rows = cur.execute(
+                        f"SELECT event_id, payload_sha256 FROM {_BRIDGE_TABLE} WHERE bridge_key=?",  # noqa: S608
+                        (event.bridge_key,),
+                    ).fetchall()
+                    for row in rows:
+                        receipt = cur.execute(
+                            """
+                            SELECT receipt_id FROM world_availability_receipts
+                            WHERE subject_kind=? AND subject_id=? AND content_sha256=?
+                            """,
+                            (_BRIDGE_SUBJECT_KIND, row["event_id"], row["payload_sha256"]),
+                        ).fetchone()
+                        if receipt is not None:
+                            proven += 1
+                    if int(expected_registry_version) != proven:
+                        raise _conflict("expected_registry_version", event.event_id)
+                    count = int(
+                        cur.execute(
+                            f"SELECT COUNT(*) FROM {_BRIDGE_TABLE} WHERE bridge_key=?",  # noqa: S608
+                            (event.bridge_key,),
+                        ).fetchone()[0]
+                    )
+                    sequence = count + 1
+                    cur.execute(
+                        f"""
+                        INSERT INTO {_BRIDGE_TABLE}(
+                            event_id, event_type, bridge_key, run_id, epoch, sequence,
+                            payload_json, payload_sha256, recorded_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            event.event_id,
+                            event.event_type,
+                            event.bridge_key,
+                            run_id,
+                            epoch,
+                            sequence,
+                            payload_json,
+                            payload_sha256,
+                            recorded_at,
+                        ),
+                    )
+                    return sequence
+            except sqlite3.IntegrityError as exc:
+                last_error = exc
+                existing = self._event_row(_BRIDGE_TABLE, event.event_id)
+                if existing is not None:
+                    if existing["payload_sha256"] != payload_sha256:
+                        raise _conflict("event_id", event.event_id) from None
+                    return int(existing["sequence"])
+        raise WorldModelConflictError("conflicting sequence") from last_error
 
     def _append_event(self, event: Any, log: _GraphEventLog) -> PersistedWorldRef[Any]:
         parsed = log.parse(event)

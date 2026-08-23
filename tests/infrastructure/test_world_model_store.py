@@ -918,7 +918,7 @@ def test_migration_upgrades_old_unixepoch_trigger_and_keeps_legacy_plus0000(tmp_
 
 def test_cohort_migration_is_version_5_and_preserves_v1_v4_statements() -> None:
     versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions == [1, 2, 3, 4, 5, 6]
+    assert versions[:6] == [1, 2, 3, 4, 5, 6]
     v1_sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
     assert "CREATE TABLE IF NOT EXISTS world_episodes" in v1_sql
     assert "CREATE TABLE IF NOT EXISTS world_outcome_events" in v1_sql
@@ -941,9 +941,21 @@ def test_cohort_migration_is_version_5_and_preserves_v1_v4_statements() -> None:
     assert "world_graph_snapshots" not in v5_sql
 
 
+def test_graph_bridge_migration_is_version_7_reuses_receipts_and_does_not_rewrite_v1_v6() -> None:
+    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    assert versions[-1] == 7
+    v7_sql = "\n".join(WORLD_MODEL_MIGRATIONS[6][1])
+    assert "CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events" in v7_sql
+    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v7_sql
+    assert "world_macro_graph_bridge_events_no_update" in v7_sql
+    assert "world_macro_graph_bridge_events_no_delete" in v7_sql
+    for _version, statements in WORLD_MODEL_MIGRATIONS[:6]:
+        assert "world_macro_graph_bridge_events" not in "\n".join(statements)
+
+
 def test_graph_migration_is_version_6_reuses_receipts_and_does_not_rewrite_v1_v5() -> None:
     versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions[-1] == 6
+    assert 6 in versions
     for version, statements in WORLD_MODEL_MIGRATIONS[:5]:
         blob = "\n".join(statements)
         assert "world_entity_events" not in blob

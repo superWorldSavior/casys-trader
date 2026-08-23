@@ -12,6 +12,7 @@ import pytest
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_availability import (
     AvailabilityEvidence,
+    PersistedWorldRef,
     PointInTimeEligibilityPolicy,
     WorldAvailabilityReceipt,
     WorldAvailabilitySubjectRef,
@@ -33,6 +34,19 @@ from trader.domain.world_graph import (
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
     KnowledgeWorldRelationRetired,
+    MacroGraphBridgeActivated,
+    MacroGraphBridgeBlocked,
+    MacroGraphBridgeCursorAdvanced,
+    MacroGraphBridgeFence,
+    MacroGraphBridgeRegistry,
+    MacroGraphBridgeResumed,
+    MacroGraphBridgeRunHandedOff,
+    MacroGraphBridgeRunSpec,
+    MacroGraphObservationLinked,
+    MacroGraphObservationSkipped,
+    MacroObservationCursor,
+    MacroObservationCursorReservation,
+    MacroObservationKnowledgeLink,
     MacroSourceFactVersionRef,
     PatternHypothesisRef,
     SensorRef,
@@ -61,6 +75,7 @@ from trader.domain.world_graph import (
     evaluate_world_graph_point_in_time,
     fold_knowledge_relation_events_at_cutoff,
     fold_structural_relation_events_at_cutoff,
+    parse_macro_graph_bridge_event,
     parse_world_entity_event,
     parse_world_entity_identity_event,
     parse_world_graph_node_ref,
@@ -69,7 +84,23 @@ from trader.domain.world_graph import (
     reconcile_world_graph_snapshot,
     reconcile_world_ontology_revision,
 )
-from trader.domain.world_macro import MacroSourceFactVersionId
+from trader.domain.world_macro import (
+    MACRO_PRODUCER_VERSION,
+    MACRO_SOURCE_REGISTRY_VERSION,
+    MACRO_TRANSFORM_VERSION,
+    MACRO_WORLD_OBSERVATION_SUBJECT_KIND,
+    MacroCoverage,
+    MacroDimensionState,
+    MacroFactSource,
+    MacroNumericValue,
+    MacroObservationEnvelope,
+    MacroObservationId,
+    MacroScope,
+    MacroSourceFact,
+    MacroSourceFactVersionId,
+    MacroWorldObservation,
+)
+from trader.domain.world_scope import WorldCanonicalScopeRef, WorldMarketAnchorRef, WorldScopeMapping, WorldScopeMappingEntry
 
 
 UTC = timezone.utc
@@ -920,3 +951,454 @@ def test_snapshot_nested_missingness_cannot_corrupt_identity_hash() -> None:
     assert json_roundtrip.content_sha256 == digest
     mutated = _snapshot(missingness={"nested": {"items": ["late", "mutated"]}})
     assert mutated.content_sha256 != digest
+
+
+VALID_UNTIL = datetime(2026, 8, 23, 17, 0, tzinfo=UTC)
+BRIDGE_KEY = "macro_graph_bridge.v1"
+REQUEST_ID = "macro_graph_bridge_request:v1:" + "c" * 64
+
+
+def _macro_scope(*, kind: str = "venue", entity_id: str = "mic:XTAI") -> MacroScope:
+    return MacroScope(kind=kind, entity_id=entity_id)
+
+
+def _macro_source() -> MacroFactSource:
+    return MacroFactSource(
+        provider_id="official_provider",
+        adapter_version="official_provider.v1",
+        source_record_id="stable-provider-id",
+        source_ref="https://source.example/record",
+    )
+
+
+def _macro_fact(**overrides: object) -> MacroSourceFact:
+    values: dict[str, object] = {
+        "fact_kind": "series_point",
+        "metric_key": "policy_rate",
+        "scope": _macro_scope(kind="country", entity_id="iso-3166:US"),
+        "value": MacroNumericValue(number=4.25, unit="percent"),
+        "period": "2026-08",
+        "occurred_at": "2026-08-23T00:00:00Z",
+        "published_at": "2026-08-23T12:30:00Z",
+        "ingested_at": "2026-08-23T12:31:10Z",
+        "source": _macro_source(),
+    }
+    values.update(overrides)
+    return MacroSourceFact(**values)  # type: ignore[arg-type]
+
+
+def _macro_dimension(
+    *,
+    dimension: str,
+    value: str,
+    coverage_status: str = "complete",
+    fact_refs: tuple[str, ...] = (),
+) -> MacroDimensionState:
+    return MacroDimensionState(
+        dimension=dimension,
+        value=value,
+        coverage_status=coverage_status,
+        method=MACRO_TRANSFORM_VERSION,
+        fact_refs=fact_refs,
+    )
+
+
+def _macro_observation(*, scope: MacroScope | None = None, **overrides: object) -> MacroWorldObservation:
+    fact = _macro_fact()
+    fact_ref = fact.fact_version_id.value
+    values: dict[str, object] = {
+        "scope": scope if scope is not None else _macro_scope(),
+        "cutoff_at": CUTOFF,
+        "producer_version": MACRO_PRODUCER_VERSION,
+        "transform_version": MACRO_TRANSFORM_VERSION,
+        "source_registry_version": MACRO_SOURCE_REGISTRY_VERSION,
+        "fact_refs": (fact_ref,),
+        "features": {"macro_regime": "mixed", "rates_regime": "stable", "usd_regime": "unknown"},
+        "dimensions": (
+            _macro_dimension(dimension="macro_regime", value="mixed", fact_refs=(fact_ref,)),
+            _macro_dimension(dimension="rates_regime", value="stable", fact_refs=(fact_ref,)),
+            _macro_dimension(dimension="usd_regime", value="unknown", coverage_status="unknown"),
+        ),
+        "coverage": MacroCoverage(
+            status="partial",
+            required_sources=3,
+            fresh_sources=2,
+            missing_source_ids=("broad_usd_index",),
+        ),
+        "valid_until": VALID_UNTIL,
+    }
+    values.update(overrides)
+    return MacroWorldObservation(**values)  # type: ignore[arg-type]
+
+
+def _observation_envelope(observation: MacroWorldObservation | None = None) -> MacroObservationEnvelope:
+    resolved = observation if observation is not None else _macro_observation()
+    subject = WorldAvailabilitySubjectRef(
+        kind=MACRO_WORLD_OBSERVATION_SUBJECT_KIND,
+        subject_id=resolved.observation_id,
+        content_sha256=resolved.content_sha256,
+    )
+    locator = WorldStorageLocator(kind="jsonl", store_id="world-macro-jsonl.v1", path="observations/2026-08-23.jsonl")
+    identity = _receipt_identity_payload(
+        schema_version="availability_receipt.v2",
+        subject=subject,
+        scope=f"{resolved.scope.kind}:{resolved.scope.entity_id}",
+        storage_locator=locator,
+    )
+    receipt_id = _receipt_id_for(identity)
+    digest = canonical_sha256(_receipt_hash_payload(identity, receipt_id=receipt_id, ready_at=READY))
+    receipt = WorldAvailabilityReceipt.from_mapping(
+        {
+            **identity,
+            "receipt_id": receipt_id,
+            "ready_at": _iso(READY),
+            "receipt_sha256": digest,
+        }
+    )
+    attested = _attest_verified_store_receipt(
+        receipt,
+        expected_subject=receipt.subject,
+        expected_scope=receipt.scope,
+        expected_locator=receipt.storage_locator,
+    )
+    return MacroObservationEnvelope(
+        observation=resolved,
+        persisted=PersistedWorldRef(identity=MacroObservationId(resolved.observation_id), receipt=attested),
+        evidence=AvailabilityEvidence(receipt=attested, first_seen_at=FIRST_SEEN),
+    )
+
+
+def _scope_mapping() -> WorldScopeMapping:
+    return WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(
+            WorldScopeMappingEntry(
+                anchor=WorldMarketAnchorRef(market_venue="TW", instrument="2330"),
+                venue=WorldCanonicalScopeRef(kind="venue", entity_id="mic:XTAI"),
+                country=WorldCanonicalScopeRef(kind="country", entity_id="iso-3166:TW"),
+                region=WorldCanonicalScopeRef(kind="region", entity_id="iso-un-m49:030"),
+                world=WorldCanonicalScopeRef(kind="world", entity_id="market"),
+                provider_proofs=("provider:listing",),
+                taxonomy_version="geo.v1",
+            ),
+        ),
+    )
+
+
+def _revision_for_mapping(mapping: WorldScopeMapping) -> WorldOntologyRevision:
+    return _revision(scope_mapping_id=mapping.mapping_id, scope_mapping_hash=mapping.content_sha256)
+
+
+def _origin_cursor() -> MacroObservationCursor:
+    return MacroObservationCursor(receipt_log_generation=1, ordinal=0)
+
+
+def _cursor(*, ordinal: int, receipt_id: str, observation_id: str) -> MacroObservationCursor:
+    return MacroObservationCursor(
+        receipt_log_generation=1,
+        ordinal=ordinal,
+        receipt_id=receipt_id,
+        observation_id=observation_id,
+    )
+
+
+def _reservation(
+    *,
+    cursor: MacroObservationCursor | None = None,
+    request_id: str = REQUEST_ID,
+) -> MacroObservationCursorReservation:
+    return MacroObservationCursorReservation(
+        bridge_key=BRIDGE_KEY,
+        request_id=request_id,
+        cursor=cursor if cursor is not None else _origin_cursor(),
+    )
+
+
+def _run_spec(mapping: WorldScopeMapping | None = None, revision: WorldOntologyRevision | None = None) -> MacroGraphBridgeRunSpec:
+    resolved_mapping = mapping if mapping is not None else _scope_mapping()
+    resolved_revision = revision if revision is not None else _revision_for_mapping(resolved_mapping)
+    return MacroGraphBridgeRunSpec(
+        scope_mapping_id=resolved_mapping.mapping_id,
+        scope_mapping_hash=resolved_mapping.content_sha256,
+        ontology_revision_id=resolved_revision.revision_id,
+        ontology_revision_hash=resolved_revision.content_sha256,
+    )
+
+
+def test_macro_observation_knowledge_link_is_deterministic_for_mapping_outputs() -> None:
+    mapping = _scope_mapping()
+    revision = _revision_for_mapping(mapping)
+    envelope = _observation_envelope(_macro_observation(scope=_macro_scope(kind="venue", entity_id="mic:XTAI")))
+    first = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, revision)
+    second = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, revision)
+    assert first.status == "linked"
+    assert first.skip_reason is None
+    assert first.relation is not None
+    assert first.relation.kind == "OBSERVES"
+    assert first.relation == second.relation
+    assert first.relation.relation_id == second.relation.relation_id
+    assert first.relation.effective_from == envelope.observation.cutoff_at
+    assert first.relation.effective_until == envelope.observation.valid_until
+    assert first.relation.ontology_revision == revision.revision_id
+    assert isinstance(first.relation.source, WorldObservationRef)
+    assert first.relation.source.observation_id.startswith("world_observation:v1:")
+    assert first.relation.target == WorldEntityRef(kind="venue", entity_id="mic:XTAI")
+    observation = envelope.observation
+    receipt = envelope.persisted.receipt
+    assert first.relation.source_refs == (
+        f"{observation.observation_id}/{observation.content_sha256}",
+        f"{receipt.receipt_id}/{receipt.receipt_sha256}",
+        f"{mapping.mapping_id}/{mapping.content_sha256}",
+    )
+    world = MacroObservationKnowledgeLink.from_envelope(
+        _observation_envelope(_macro_observation(scope=_macro_scope(kind="world", entity_id="market"))),
+        mapping,
+        revision,
+    )
+    assert world.status == "linked"
+    assert world.relation is not None
+    assert world.relation.target == WorldEntityRef(kind="world", entity_id="market")
+
+
+def test_macro_observation_knowledge_link_does_not_resolve_market_anchors() -> None:
+    mapping = _scope_mapping()
+    revision = _revision_for_mapping(mapping)
+    envelope = _observation_envelope(_macro_observation(scope=_macro_scope(kind="country", entity_id="iso-3166:TW")))
+    link = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, revision)
+    assert link.status == "linked"
+    assert link.relation is not None
+    assert link.relation.target.kind == "country"
+    assert link.relation.target.entity_id == "iso-3166:TW"
+    assert mapping.resolve(WorldMarketAnchorRef(market_venue="TW", instrument="2330")).status == "resolved"
+
+
+def test_unregistered_or_invalid_scope_is_terminal_skip_never_an_invented_relation() -> None:
+    mapping = _scope_mapping()
+    revision = _revision_for_mapping(mapping)
+    unknown = MacroObservationKnowledgeLink.from_envelope(
+        _observation_envelope(_macro_observation(scope=_macro_scope(kind="country", entity_id="iso-3166:FR"))),
+        mapping,
+        revision,
+    )
+    assert unknown.status == "skipped"
+    assert unknown.skip_reason == "scope_not_registered"
+    assert unknown.relation is None
+    with pytest.raises(ValueError, match="mic:"):
+        _macro_scope(kind="venue", entity_id="XTAI")
+    invalid = MacroObservationKnowledgeLink.from_envelope(object(), mapping, revision)
+    assert invalid.status == "skipped"
+    assert invalid.skip_reason == "invalid_envelope"
+    assert invalid.relation is None
+
+
+def test_knowledge_link_rejects_mapping_hash_mismatch_without_sealing_a_relation() -> None:
+    mapping = _scope_mapping()
+    other = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v2",
+        entries=mapping.entries,
+    )
+    revision = _revision(scope_mapping_id=other.mapping_id, scope_mapping_hash=other.content_sha256)
+    with pytest.raises(ValueError, match="hash|mapping"):
+        MacroObservationKnowledgeLink.from_envelope(_observation_envelope(), mapping, revision)
+
+
+def test_registry_activate_is_idempotent_and_refuses_a_second_active_generation() -> None:
+    reservation = _reservation()
+    spec = _run_spec()
+    empty = MacroGraphBridgeRegistry.empty(BRIDGE_KEY)
+    activated = empty.activate(reservation=reservation, spec=spec, expected_version=0)
+    assert activated.version == 1
+    assert activated.active_run is not None
+    assert activated.active_run.status == "active"
+    assert activated.active_run.epoch == 1
+    assert activated.active_run.activation_cursor == reservation.cursor
+    assert activated.active_run.cursor == reservation.cursor
+    assert activated.fence == MacroGraphBridgeFence(
+        bridge_key=BRIDGE_KEY,
+        run_id=activated.active_run.run_id,
+        epoch=1,
+    )
+    replayed = activated.activate(reservation=reservation, spec=spec, expected_version=1)
+    assert replayed.events == activated.events
+    other = MacroObservationCursorReservation(
+        bridge_key=BRIDGE_KEY,
+        request_id="macro_graph_bridge_request:v1:" + "d" * 64,
+        cursor=_origin_cursor(),
+    )
+    with pytest.raises(ValueError, match="active"):
+        activated.activate(reservation=other, spec=spec, expected_version=1)
+    event = activated.events[0]
+    assert isinstance(event, MacroGraphBridgeActivated)
+    assert parse_macro_graph_bridge_event(event.to_dict()) == event
+
+
+def test_registry_skip_and_link_are_terminal_and_cursor_advances_only_over_contiguous_prefix() -> None:
+    mapping = _scope_mapping()
+    revision = _revision_for_mapping(mapping)
+    spec = _run_spec(mapping, revision)
+    registry = MacroGraphBridgeRegistry.empty(BRIDGE_KEY).activate(
+        reservation=_reservation(),
+        spec=spec,
+        expected_version=0,
+    )
+    envelope = _observation_envelope(_macro_observation(scope=_macro_scope(kind="country", entity_id="iso-3166:FR")))
+    unknown_cursor = _cursor(
+        ordinal=1,
+        receipt_id=envelope.persisted.receipt.receipt_id,
+        observation_id=envelope.observation.observation_id,
+    )
+    skipped = registry.skip_observation(
+        observation_id=envelope.observation.observation_id,
+        reason="scope_not_registered",
+        cursor=unknown_cursor,
+        expected_version=1,
+    )
+    assert isinstance(skipped.events[-1], MacroGraphObservationSkipped)
+    assert skipped.events[-1].reason == "scope_not_registered"
+    linked_env = _observation_envelope(_macro_observation(scope=_macro_scope()))
+    link = MacroObservationKnowledgeLink.from_envelope(linked_env, mapping, revision)
+    assert link.relation is not None
+    linked_cursor = _cursor(
+        ordinal=2,
+        receipt_id=linked_env.persisted.receipt.receipt_id,
+        observation_id=linked_env.observation.observation_id,
+    )
+    linked = skipped.link_observation(
+        observation_id=linked_env.observation.observation_id,
+        relation=link.relation,
+        relation_event_id="world_relation_event:v1:" + "e" * 64,
+        cursor=linked_cursor,
+        expected_version=2,
+    )
+    assert isinstance(linked.events[-1], MacroGraphObservationLinked)
+    advanced = linked.advance_cursor(linked_cursor, expected_version=3)
+    assert isinstance(advanced.events[-1], MacroGraphBridgeCursorAdvanced)
+    assert advanced.active_run is not None
+    assert advanced.active_run.cursor == linked_cursor
+    replay_skip = skipped.skip_observation(
+        observation_id=envelope.observation.observation_id,
+        reason="scope_not_registered",
+        cursor=unknown_cursor,
+        expected_version=2,
+    )
+    assert replay_skip.events == skipped.events
+    with pytest.raises(ValueError, match="conflict|content"):
+        skipped.skip_observation(
+            observation_id=envelope.observation.observation_id,
+            reason="invalid_envelope",
+            cursor=unknown_cursor,
+            expected_version=2,
+        )
+
+
+def test_config_drift_blocks_without_skipping_or_advancing_and_resume_requires_same_hashes() -> None:
+    spec = _run_spec()
+    registry = MacroGraphBridgeRegistry.empty(BRIDGE_KEY).activate(
+        reservation=_reservation(),
+        spec=spec,
+        expected_version=0,
+    )
+    blocked = registry.block(reason="config_drift", expected_version=1)
+    assert isinstance(blocked.events[-1], MacroGraphBridgeBlocked)
+    assert blocked.active_run is not None
+    assert blocked.active_run.status == "blocked"
+    assert blocked.active_run.cursor == registry.active_run.cursor
+    envelope = _observation_envelope()
+    cursor = _cursor(
+        ordinal=1,
+        receipt_id=envelope.persisted.receipt.receipt_id,
+        observation_id=envelope.observation.observation_id,
+    )
+    with pytest.raises(ValueError, match="blocked"):
+        blocked.skip_observation(
+            observation_id=envelope.observation.observation_id,
+            reason="scope_not_registered",
+            cursor=cursor,
+            expected_version=2,
+        )
+    with pytest.raises(ValueError, match="blocked"):
+        blocked.advance_cursor(cursor, expected_version=2)
+    resumed = blocked.resume(spec=spec, expected_version=2)
+    assert isinstance(resumed.events[-1], MacroGraphBridgeResumed)
+    assert resumed.active_run is not None
+    assert resumed.active_run.status == "active"
+    other = MacroGraphBridgeRunSpec(
+        scope_mapping_id=spec.scope_mapping_id,
+        scope_mapping_hash="f" * 64,
+        ontology_revision_id=spec.ontology_revision_id,
+        ontology_revision_hash=spec.ontology_revision_hash,
+    )
+    with pytest.raises(ValueError, match="hash|spec"):
+        blocked.resume(spec=other, expected_version=2)
+
+
+def test_handoff_is_a_single_event_with_incremented_epoch_and_exactly_one_active_run() -> None:
+    mapping = _scope_mapping()
+    revision = _revision_for_mapping(mapping)
+    spec = _run_spec(mapping, revision)
+    blocked = (
+        MacroGraphBridgeRegistry.empty(BRIDGE_KEY)
+        .activate(reservation=_reservation(), spec=spec, expected_version=0)
+        .block(reason="config_drift", expected_version=1)
+    )
+    next_mapping = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v2",
+        entries=mapping.entries,
+    )
+    next_revision = _revision(
+        revision_id="market_ontology.v2",
+        scope_mapping_id=next_mapping.mapping_id,
+        scope_mapping_hash=next_mapping.content_sha256,
+    )
+    next_spec = _run_spec(next_mapping, next_revision)
+    handed = blocked.handoff(
+        active_run_id=blocked.active_run.run_id,
+        next_run_spec=next_spec,
+        expected_version=2,
+    )
+    assert handed.version == 3
+    assert isinstance(handed.events[-1], MacroGraphBridgeRunHandedOff)
+    event = handed.events[-1]
+    assert event.epoch == 2
+    assert event.predecessor_run_id == blocked.active_run.run_id
+    assert event.successor_run_id == handed.active_run.run_id
+    assert handed.active_run is not None
+    assert handed.active_run.epoch == 2
+    assert handed.active_run.status == "active"
+    assert handed.active_run.cursor == blocked.active_run.cursor
+    assert handed.active_run.spec == next_spec
+    assert len([run for run in handed.runs if run.status == "active"]) == 1
+    assert handed.fence.epoch == 2
+    replay = parse_macro_graph_bridge_event(event.to_dict())
+    assert replay == event
+    with pytest.raises(ValueError, match="active|blocked"):
+        handed.handoff(
+            active_run_id=handed.active_run.run_id,
+            next_run_spec=spec,
+            expected_version=3,
+        )
+
+
+def test_cursor_is_ordinal_not_datetime_and_first_seen_cannot_move_it() -> None:
+    cursor = _origin_cursor()
+    assert cursor.ordinal == 0
+    assert cursor.receipt_id is None
+    assert cursor.observation_id is None
+    payload = cursor.to_dict()
+    assert "ready_at" not in payload
+    assert "first_seen_at" not in payload
+    assert "effective_ready_at" not in payload
+    later = _cursor(
+        ordinal=3,
+        receipt_id="world-availability-receipt:v1:" + "a" * 64,
+        observation_id="macro_world_observation:v1:" + "b" * 64,
+    )
+    assert later.ordinal > cursor.ordinal
+    assert MacroObservationCursor.from_mapping(later.to_dict()) == later
+    reservation = _reservation(cursor=later)
+    assert reservation.cursor.ordinal == 3
+    assert "first_seen_at" not in reservation.to_dict()
+    replayed = MacroObservationCursorReservation.from_mapping(reservation.to_dict())
+    assert replayed == reservation
+    with pytest.raises(FrozenInstanceError):
+        later.ordinal = 9  # type: ignore[misc]

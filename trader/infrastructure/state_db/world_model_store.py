@@ -537,6 +537,30 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             *_append_only_trigger_sql("world_graph_snapshot_members"),
         ],
     ),
+    (
+        7,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                bridge_key        TEXT NOT NULL,
+                run_id            TEXT,
+                epoch             INTEGER,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(bridge_key, sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_macro_graph_bridge_events_key
+            ON world_macro_graph_bridge_events(bridge_key, sequence, event_id)
+            """,
+            *_append_only_trigger_sql("world_macro_graph_bridge_events"),
+        ],
+    ),
 ]
 
 
