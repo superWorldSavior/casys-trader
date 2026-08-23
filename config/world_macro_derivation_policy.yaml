@@ -1,0 +1,36 @@
+schema_version: world_macro_derivation_policy.v1
+producer_version: macro_source_only.v1
+transform_version: macro_regimes.v1
+authority: shadow_only
+decision_effect: none
+content_sha256: "d30dc3eed3ebe0a5c2d184cbbd4ab5fb41dd501c873d7ea78bee8080f67035bb"
+
+vocabularies:
+  macro_regime: [unknown, mixed, quiet, tightening, easing]
+  rates_regime: [unknown, stable, rising, falling]
+  usd_regime: [unknown, strong, weak, stable]
+
+dimensions:
+  rates_regime:
+    method: last_two_admissible_points_delta_pp
+    metric_keys: [policy_rate]
+    rising_if_delta_pp_ge: 0.125
+    falling_if_delta_pp_le: -0.125
+    stable_if_abs_delta_pp_lt: 0.125
+    min_fresh_sources: 1
+    on_conflict: unknown
+    on_single_point: unknown
+  usd_regime:
+    method: always_unknown
+    value: unknown
+    missing_source_ids: [broad_usd_index]
+  macro_regime:
+    method: always_unknown_until_inflation_yoy_proven
+    value: unknown
+    do_not_infer_yoy_from_single_index_level: true
+    do_not_use_front_month_futures: true
+
+coverage:
+  complete_requires_all_required_fresh: true
+  insufficient: unknown
+  never_optimistic_fill: true
