@@ -28,8 +28,13 @@ produit ni PnL de portefeuille ni recommandation. Une ablation V2−V1 ne mesure
 qu'un delta prédictif apparié (log-loss, Brier, accuracy/ECE), sans claim
 économique ni claim causal.
 
-La place (`venue`) est le scope régional actuel. Il n'existe pas de taxonomie
-`region` indépendante dans les sources.
+La `venue` V1/V2 est aujourd'hui un scope marché logique (`EU`, `TW`, `US`) ;
+ce n'est pas une MIC et il n'existe pas encore de taxonomie `region`
+indépendante dans les sources. La RFC macro introduit donc un
+`WorldScopeMapping` versionné/hashé qui résout `(market_venue, instrument)` vers
+les scopes V3 canoniques (`mic`, pays, région). Aucun fallback `TW -> XTAI` ou
+`US/EU -> une place arbitraire` n'est permis. Tant que ce mapping n'est pas
+livré et gelé dans le manifeste, le raccord macro→graphe reste `NO_GO`.
 
 ## Cap produit : des cas sémantiques aux chaînes évaluées
 
@@ -40,7 +45,10 @@ sémantiquement proche, mais puisse référencer une chaîne structurée, par
 exemple :
 
 ```text
-choc macro → place/région → famille → entreprise → instrument → outcome à horizon fixe
+observation macro → région/pays ← place ← instrument cible
+                                      ├→ famille
+                                      └→ entreprise
+instrument cible → outcome à horizon fixe
 ```
 
 À terme, une telle chaîne doit être un objet versionné : entités et relations,
@@ -73,6 +81,11 @@ chaîne reste une **hypothèse causale / prédictive**, jamais une causalité
 La prochaine phase utile est un producteur macro *source-only* vraiment
 exogène, plus éventuellement un agrégat familial source-only. Ni l'un ni
 l'autre n'existe aujourd'hui. Ne pas relâcher la deny-list de contamination.
+Les contrats proposés et leur ordre d'exécution sont détaillés dans les RFCs :
+
+- [flux macro source-only](../../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md) ;
+- [cohorte prospective appariée](../../superpowers/specs/2026-08-23-world-model-prospective-cohort-design.md) ;
+- [graphe temporel et hypothèses de patterns](../../superpowers/specs/2026-08-23-world-model-graph-pattern-hypotheses-design.md).
 
 ## Histoire brute + reçus d'availability
 
@@ -132,9 +145,11 @@ métadonnée descriptive déjà gelée dans l'observation V1
 catalogue était connue au cutoff. Si cette clé est absente, il n'y a pas
 d'arête `MEMBER_OF_FAMILY`. La place (`venue`) vient de la capture. Une arête
 `ISSUED_BY` n'existe que pour une identité émetteur `verified` munie d'un
-identifiant externe namespacé (`lei`, puis `cik`, puis `isin`, puis le
-premier id externe trié). Un `issuer_name` n'est jamais un identifiant : les
-homonymes se fusionneraient.
+identifiant externe namespacé. Le V2 livré peut encore rejouer son fallback
+historique (`lei`, `cik`, puis `isin`), mais la RFC V3 interdit de promouvoir
+un ISIN en identité d'entreprise : l'ISIN identifie l'instrument ; l'entreprise
+utilise LEI, CIK ou un provider issuer ID approuvé. Un `issuer_name` n'est
+jamais un identifiant : les homonymes se fusionneraient.
 
 ## V1 gelée, V2 opt-in, quatre voies isolées
 
@@ -207,7 +222,9 @@ CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED=0   # défaut
 ```
 
 Cette page **n'active rien** et ne redémarre pas le daemon live.
-Le code V2 reste opt-in et doit démarrer une **cohorte prospective propre**.
+Le code V2 reste opt-in et doit démarrer une **cohorte prospective propre**,
+pilotée par un manifeste et des événements de domaine, conformément à la
+[RFC cohorte](../../superpowers/specs/2026-08-23-world-model-prospective-cohort-design.md).
 Activation et interprétation restent `NO_GO` tant que les gates causales
 ci-dessus ne passent pas **et** qu'un capteur macro source-only n'existe pas.
 
