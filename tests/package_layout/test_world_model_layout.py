@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import ast
+import inspect
 
-from tests.package_layout._helpers import REPO_ROOT, _module_imports
+from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations, _module_imports
 
 
 _FORBIDDEN_APPLICATION_PREFIXES = (
@@ -153,3 +154,69 @@ def test_world_evaluation_and_impact_are_reporting_read_model_canonical() -> Non
     query_path = REPO_ROOT / "trader" / "infrastructure" / "state_db" / "world_model_query.py"
     assert _import_violations(query_path, ("trader.reporting", "trader.application", "trader.runtime")) == []
     assert _module_imports(query_path, "sqlite3")
+
+
+def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
+    availability_path = REPO_ROOT / "trader" / "domain" / "world_availability.py"
+    scope_path = REPO_ROOT / "trader" / "domain" / "world_scope.py"
+    assert availability_path.exists()
+    assert scope_path.exists()
+    assert _domain_import_violations([availability_path, scope_path], REPO_ROOT) == []
+
+    from trader.domain.world_availability import (
+        AvailabilityEvidence,
+        PersistedWorldRef,
+        PointInTimeEligibilityPolicy,
+        WorldAvailabilityReceipt,
+        WorldAvailabilitySubjectRef,
+        world_subject_content_sha256,
+    )
+    from trader.domain.world_scope import (
+        WorldMarketAnchorRef,
+        WorldScopeMapping,
+        WorldScopeResolution,
+    )
+
+    assert WorldAvailabilityReceipt.__module__ == "trader.domain.world_availability"
+    assert WorldAvailabilitySubjectRef.__module__ == "trader.domain.world_availability"
+    assert AvailabilityEvidence.__module__ == "trader.domain.world_availability"
+    assert PersistedWorldRef.__module__ == "trader.domain.world_availability"
+    assert PointInTimeEligibilityPolicy.__module__ == "trader.domain.world_availability"
+    assert world_subject_content_sha256.__module__ == "trader.domain.world_availability"
+    assert WorldMarketAnchorRef.__module__ == "trader.domain.world_scope"
+    assert WorldScopeMapping.__module__ == "trader.domain.world_scope"
+    assert WorldScopeResolution.__module__ == "trader.domain.world_scope"
+    assert "trader.infrastructure" not in availability_path.read_text(encoding="utf-8")
+    assert "trader.infrastructure" not in scope_path.read_text(encoding="utf-8")
+    assert "xtai" not in scope_path.read_text(encoding="utf-8").lower()
+    assert "xnys" not in scope_path.read_text(encoding="utf-8").lower()
+
+
+def test_world_availability_receipt_public_surface_does_not_mint_ready_at() -> None:
+    import trader.infrastructure.state_db.availability_receipt as receipt_mod
+    from trader.infrastructure.state_db.availability_receipt import WorldAvailabilityJsonlReceiptStore
+
+    source = (REPO_ROOT / "trader" / "infrastructure" / "state_db" / "availability_receipt.py").read_text(
+        encoding="utf-8"
+    )
+    assert "stamp_world_availability_receipt" not in receipt_mod.__all__
+    assert "DurableWorldAvailabilityReceiptAdapter" not in receipt_mod.__all__
+    assert not hasattr(receipt_mod, "stamp_world_availability_receipt")
+    assert not hasattr(receipt_mod, "DurableWorldAvailabilityReceiptAdapter")
+    assert "stamp_world_availability_receipt" not in source
+    assert "DurableWorldAvailabilityReceiptAdapter" not in source
+    append = inspect.signature(WorldAvailabilityJsonlReceiptStore.append)
+    init = inspect.signature(WorldAvailabilityJsonlReceiptStore.__init__)
+    assert "ready_at" not in append.parameters
+    assert "clock" not in append.parameters
+    assert "storage_locator" not in append.parameters
+    assert "store_id" in init.parameters
+    assert "_seal_world_availability_receipt" not in receipt_mod.__all__
+    assert "_attest_verified_store_receipt" not in receipt_mod.__all__
+
+    import trader.domain.world_availability as availability_mod
+    import trader.domain.world_scope as scope_mod
+
+    assert "_attest_verified_store_receipt" not in availability_mod.__all__
+    assert "resolve_world_market_anchor" not in scope_mod.__all__
+    assert not hasattr(scope_mod, "resolve_world_market_anchor")
