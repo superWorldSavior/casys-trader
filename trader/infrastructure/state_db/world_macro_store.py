@@ -176,9 +176,9 @@ class WorldMacroStore:
                 history_path=f"observations/{day}.jsonl",
                 receipt_path=f"observations/availability_receipts/{day}.jsonl",
             )
-            self._remember_receipt(receipt, seen_at=receipt.ready_at)
+            first_seen = self._remember_receipt(receipt, seen_at=receipt.ready_at)
             self._write_status()
-            return self._observation_envelope(observation, receipt, first_seen_at=receipt.ready_at)
+            return self._observation_envelope(observation, receipt, first_seen_at=first_seen)
 
     def list_candidates_available_through(
         self, scope: MacroScope, cutoff_at: datetime

@@ -464,6 +464,34 @@ def test_receipt_discovered_after_cutoff_keeps_conservative_first_seen(tmp_path:
     assert decision.status == "availability_unproven"
 
 
+def test_restart_idempotent_append_keeps_unproven_first_seen(tmp_path: Path) -> None:
+    observation = _observation()
+    WorldMacroStore(tmp_path, clock=lambda: READY).append_observation(observation)
+    restarted = WorldMacroStore(tmp_path, clock=lambda: BOOT)
+    listed = restarted.list_candidates_available_through(_scope(), CUTOFF)
+    assert len(listed) == 1
+    assert listed[0].evidence.first_seen_at == BOOT
+    assert listed[0].evidence.effective_ready_at == BOOT
+    policy = PointInTimeEligibilityPolicy()
+    listed_decision = policy.evaluate(
+        evidence=listed[0].evidence,
+        cutoff_at=CUTOFF,
+        valid_until=observation.valid_until,
+        version=observation.transform_version,
+    )
+    assert listed_decision.status == "availability_unproven"
+    retried = restarted.append_observation(observation)
+    assert retried.evidence.first_seen_at == listed[0].evidence.first_seen_at == BOOT
+    assert retried.evidence.effective_ready_at == BOOT
+    retried_decision = policy.evaluate(
+        evidence=retried.evidence,
+        cutoff_at=CUTOFF,
+        valid_until=observation.valid_until,
+        version=observation.transform_version,
+    )
+    assert retried_decision.status == "availability_unproven"
+
+
 def test_restart_first_seen_ignores_mtime_and_does_not_mutate_history(tmp_path: Path) -> None:
     observation = _observation()
     writer = WorldMacroStore(tmp_path, clock=lambda: READY)
