@@ -409,6 +409,134 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             """,
         ],
     ),
+    (
+        6,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS world_entity_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                entity_kind       TEXT NOT NULL,
+                entity_id         TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_entity_events_entity
+            ON world_entity_events(entity_kind, entity_id, sequence, event_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_entity_identity_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                link_id           TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_entity_identity_events_link
+            ON world_entity_identity_events(link_id, sequence, event_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_relation_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                family            TEXT NOT NULL
+                    CHECK (family IN ('structural', 'knowledge')),
+                relation_id       TEXT NOT NULL,
+                relation_kind     TEXT,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_relation_events_family
+            ON world_relation_events(family, sequence, relation_id, event_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_ontology_revisions (
+                event_id                TEXT PRIMARY KEY,
+                event_type              TEXT NOT NULL,
+                revision_id             TEXT NOT NULL,
+                successor_revision_id   TEXT,
+                sequence                INTEGER NOT NULL,
+                payload_json            TEXT NOT NULL,
+                payload_sha256          TEXT NOT NULL,
+                recorded_at             TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_ontology_revisions_revision
+            ON world_ontology_revisions(revision_id, sequence, event_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_graph_snapshots (
+                snapshot_id         TEXT PRIMARY KEY,
+                root_episode_id     TEXT NOT NULL,
+                root_entity_kind    TEXT NOT NULL,
+                root_entity_id      TEXT NOT NULL,
+                cutoff_at           TEXT NOT NULL,
+                ontology_revision   TEXT NOT NULL,
+                ontology_hash       TEXT NOT NULL,
+                identity_map_hash   TEXT NOT NULL,
+                scope_mapping_id    TEXT NOT NULL,
+                scope_mapping_hash  TEXT NOT NULL,
+                status              TEXT NOT NULL
+                    CHECK (status IN ('complete', 'partial', 'missing', 'stale')),
+                payload_json        TEXT NOT NULL,
+                payload_sha256      TEXT NOT NULL,
+                recorded_at         TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_graph_snapshots_cutoff
+            ON world_graph_snapshots(cutoff_at, root_episode_id, snapshot_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_graph_snapshot_members (
+                snapshot_id       TEXT NOT NULL
+                    REFERENCES world_graph_snapshots(snapshot_id),
+                member_kind       TEXT NOT NULL
+                    CHECK (member_kind IN (
+                        'entity_revision',
+                        'identity_link',
+                        'structural_relation',
+                        'knowledge_relation',
+                        'artifact'
+                    )),
+                member_id         TEXT NOT NULL,
+                content_sha256    TEXT,
+                ordinal           INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, member_kind, member_id, ordinal)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_graph_snapshot_members_snapshot
+            ON world_graph_snapshot_members(snapshot_id, member_kind, member_id)
+            """,
+            *_append_only_trigger_sql("world_entity_events"),
+            *_append_only_trigger_sql("world_entity_identity_events"),
+            *_append_only_trigger_sql("world_relation_events"),
+            *_append_only_trigger_sql("world_ontology_revisions"),
+            *_append_only_trigger_sql("world_graph_snapshots"),
+            *_append_only_trigger_sql("world_graph_snapshot_members"),
+        ],
+    ),
 ]
 
 

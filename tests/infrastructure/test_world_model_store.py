@@ -918,7 +918,7 @@ def test_migration_upgrades_old_unixepoch_trigger_and_keeps_legacy_plus0000(tmp_
 
 def test_cohort_migration_is_version_5_and_preserves_v1_v4_statements() -> None:
     versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions == [1, 2, 3, 4, 5]
+    assert versions == [1, 2, 3, 4, 5, 6]
     v1_sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
     assert "CREATE TABLE IF NOT EXISTS world_episodes" in v1_sql
     assert "CREATE TABLE IF NOT EXISTS world_outcome_events" in v1_sql
@@ -937,6 +937,41 @@ def test_cohort_migration_is_version_5_and_preserves_v1_v4_statements() -> None:
     assert "world_availability_receipts" in v5_sql
     assert "study_cohort_id" in v5_sql
     assert "feature_mask_fingerprint" in v5_sql
+    assert "world_entity_events" not in v5_sql
+    assert "world_graph_snapshots" not in v5_sql
+
+
+def test_graph_migration_is_version_6_reuses_receipts_and_does_not_rewrite_v1_v5() -> None:
+    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    assert versions[-1] == 6
+    for version, statements in WORLD_MODEL_MIGRATIONS[:5]:
+        blob = "\n".join(statements)
+        assert "world_entity_events" not in blob
+        assert "world_entity_identity_events" not in blob
+        assert "world_relation_events" not in blob
+        assert "world_ontology_revisions" not in blob
+        assert "world_graph_snapshots" not in blob
+        assert "world_graph_snapshot_members" not in blob
+        assert version < 6
+    v6_sql = "\n".join(WORLD_MODEL_MIGRATIONS[5][1])
+    assert "CREATE TABLE IF NOT EXISTS world_entity_events" in v6_sql
+    assert "CREATE TABLE IF NOT EXISTS world_entity_identity_events" in v6_sql
+    assert "CREATE TABLE IF NOT EXISTS world_relation_events" in v6_sql
+    assert "CREATE TABLE IF NOT EXISTS world_ontology_revisions" in v6_sql
+    assert "CREATE TABLE IF NOT EXISTS world_graph_snapshots" in v6_sql
+    assert "CREATE TABLE IF NOT EXISTS world_graph_snapshot_members" in v6_sql
+    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v6_sql
+    assert "sequence" in v6_sql
+    for table in (
+        "world_entity_events",
+        "world_entity_identity_events",
+        "world_relation_events",
+        "world_ontology_revisions",
+        "world_graph_snapshots",
+        "world_graph_snapshot_members",
+    ):
+        assert f"{table}_no_update" in v6_sql
+        assert f"{table}_no_delete" in v6_sql
 
 
 def test_v5_does_not_rewrite_existing_episode_outcome_or_prediction_bytes(tmp_path: Path) -> None:
@@ -1025,6 +1060,10 @@ def test_v5_does_not_rewrite_existing_episode_outcome_or_prediction_bytes(tmp_pa
         listed = store.list_predictions(run_id="run-1")
         assert listed[0]["prediction_id"] == "legacy-pred"
         assert listed[0]["prediction_record"]["keep"] is True
+        names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "world_entity_events" in names
+        assert "world_graph_snapshots" in names
+        assert "world_availability_receipts" in names
     finally:
         store.close()
 
