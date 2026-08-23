@@ -25,12 +25,15 @@ from trader.domain.world_episode import (
     OUTCOME_STATUSES,
     PREDICTION_CLASSES,
     PREDICTION_STATUSES,
+    WorldEpisode,
     WorldOutcome,
     WorldPrediction,
+    parse_utc_timestamp,
 )
 from trader.infrastructure.state_db.connection import StateDb
 
 _LEGACY_MOVE_CLASS = {"up": "UP", "down": "DOWN", "flat": "FLAT"}
+_V2_FEATURE_CONTRACT = "market_ohlcv_context.v2"
 
 __all__ = [
     "WORLD_MODEL_MIGRATIONS",
@@ -41,6 +44,56 @@ __all__ = [
 
 class WorldModelConflictError(ValueError):
     """A deterministic world-model identifier was reused with new content."""
+
+
+_V2_CANONICAL_FIRST_WRITE_TRIGGER = """
+            CREATE TRIGGER IF NOT EXISTS world_episodes_v2_canonical_first_write
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version = 'market_ohlcv_context.v2'
+            BEGIN
+                SELECT RAISE(ABORT, 'V2 market slot already exists')
+                WHERE EXISTS (
+                    SELECT 1 FROM world_episodes AS existing
+                    WHERE existing.symbol = NEW.symbol
+                      AND existing.venue IS NEW.venue
+                      AND existing.bar_interval IS NEW.bar_interval
+                      AND existing.feature_contract_version = 'market_ohlcv_context.v2'
+                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
+                      AND existing.episode_id != NEW.episode_id
+                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
+                );
+            END
+            """
+
+_V2_SLOT_CANDIDATE_INDEX = """
+            CREATE INDEX IF NOT EXISTS idx_world_episodes_v2_market_slot_candidates
+            ON world_episodes(
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+                recorded_at,
+                episode_id
+            )
+            WHERE feature_contract_version = 'market_ohlcv_context.v2'
+            """
+
+
+def _canonical_v2_episode(payload: Mapping[str, Any], observation: Mapping[str, Any]) -> WorldEpisode | None:
+    """Rebuild a V2 episode from its canonical projection, or return None for non-V2."""
+
+    top = _text(payload.get("feature_contract_version"))
+    nested = _text(observation.get("feature_contract_version"))
+    has_context = observation.get("context") is not None
+    is_v2 = top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context
+    if top and nested and top != nested:
+        if is_v2:
+            raise ValueError("feature_contract_version envelope contradicts nested observation")
+        return None
+    if not is_v2:
+        return None
+    return WorldEpisode.from_dict(payload)
 
 
 # This migration namespace belongs only to ``world_model.db``.  It must never
@@ -173,7 +226,34 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             END
             """,
         ],
-    )
+    ),
+    (
+        2,
+        [
+            "DROP INDEX IF EXISTS idx_world_episodes_v2_market_slot",
+            "DROP TRIGGER IF EXISTS world_episodes_v2_canonical_first_write",
+            _V2_CANONICAL_FIRST_WRITE_TRIGGER,
+            _V2_SLOT_CANDIDATE_INDEX,
+        ],
+    ),
+    (
+        3,
+        [
+            "DROP INDEX IF EXISTS idx_world_episodes_v2_market_slot",
+            "DROP TRIGGER IF EXISTS world_episodes_v2_canonical_first_write",
+            _V2_CANONICAL_FIRST_WRITE_TRIGGER,
+            _V2_SLOT_CANDIDATE_INDEX,
+        ],
+    ),
+    (
+        4,
+        [
+            "DROP INDEX IF EXISTS idx_world_episodes_v2_market_slot",
+            "DROP TRIGGER IF EXISTS world_episodes_v2_canonical_first_write",
+            _V2_CANONICAL_FIRST_WRITE_TRIGGER,
+            _V2_SLOT_CANDIDATE_INDEX,
+        ],
+    ),
 ]
 
 
@@ -433,16 +513,8 @@ def _horizon_filter(
 
     if horizon_code is None and horizon_id is None:
         return None
-    code = (
-        _required_text(horizon_code, field="horizon_code")
-        if horizon_code is not None
-        else None
-    )
-    identifier = (
-        _required_text(horizon_id, field="horizon_id")
-        if horizon_id is not None
-        else None
-    )
+    code = _required_text(horizon_code, field="horizon_code") if horizon_code is not None else None
+    identifier = _required_text(horizon_id, field="horizon_id") if horizon_id is not None else None
     if code is not None and identifier is not None and code != identifier:
         raise ValueError("horizon_code and horizon_id must match when both are supplied")
     return code or identifier
@@ -537,6 +609,10 @@ class WorldModelStore:
     def append_episode(self, episode: Any) -> bool:
         payload = _as_mapping(episode, name="episode")
         observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
+        canonical_v2 = _canonical_v2_episode(payload, observation)
+        if canonical_v2 is not None:
+            payload = canonical_v2.to_dict()
+            observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
         source_evidence = _first(
             payload,
             ("source_evidence",),
@@ -552,18 +628,14 @@ class WorldModelStore:
             # inventing a reconstruction from later runtime state.
             source = {
                 key: observation[key]
-                for key in ("anchor", "freshness", "available_at", "captured_at")
+                for key in ("anchor", "freshness", "available_at", "captured_at", "context")
                 if key in observation
             }
         values = {
-            "episode_id": _required_text(
-                _first(payload, ("episode_id",), ("id",)), field="episode_id"
-            ),
+            "episode_id": _required_text(_first(payload, ("episode_id",), ("id",)), field="episode_id"),
             "capture_id": _text(_first(payload, ("capture_id",), ("observation", "capture_id"))),
             "venue": _text(_first(payload, ("venue",), ("observation", "venue"))),
-            "symbol": _required_text(
-                _first(payload, ("symbol",), ("observation", "symbol")), field="symbol"
-            ),
+            "symbol": _required_text(_first(payload, ("symbol",), ("observation", "symbol")), field="symbol"),
             "observed_at": _required_text(
                 _first(
                     payload,
@@ -573,15 +645,9 @@ class WorldModelStore:
                 ),
                 field="observed_at",
             ),
-            "available_at": _text(
-                _first(payload, ("available_at",), ("observation", "available_at"))
-            ),
-            "as_of_bar_ts": _text(
-                _first(payload, ("as_of_bar_ts",), ("observation", "as_of_bar_ts"))
-            ),
-            "bar_interval": _text(
-                _first(payload, ("bar_interval",), ("observation", "bar_interval"), ("interval",))
-            ),
+            "available_at": _text(_first(payload, ("available_at",), ("observation", "available_at"))),
+            "as_of_bar_ts": _text(_first(payload, ("as_of_bar_ts",), ("observation", "as_of_bar_ts"))),
+            "bar_interval": _text(_first(payload, ("bar_interval",), ("observation", "bar_interval"), ("interval",))),
             "feature_contract_version": _text(
                 _first(
                     payload,
@@ -600,20 +666,51 @@ class WorldModelStore:
             # historical/ledger reconstruction from accidentally entering a
             # causal cohort.
             "training_eligible": int(_bool(payload.get("training_eligible"), default=False)),
-            "training_reason": _text(
-                _first(payload, ("training_reason",), ("training_eligibility_reason",))
-            ),
+            "training_reason": _text(_first(payload, ("training_reason",), ("training_eligibility_reason",))),
             "payload_json": _canonical_json(payload),
             "payload_sha256": _canonical_sha256(payload),
             "source_evidence_json": _canonical_json(source),
             "source_evidence_sha256": _canonical_sha256(source),
         }
-        return self._append(
-            table="world_episodes",
-            id_column="episode_id",
-            columns=_EPISODE_COLUMNS,
-            values=values,
-        )
+        if values["feature_contract_version"] == _V2_FEATURE_CONTRACT:
+            slot_fields = (
+                values["venue"],
+                values["symbol"],
+                values["bar_interval"],
+                values["as_of_bar_ts"],
+                values["sampling_policy_version"],
+            )
+            if any(item is None or item == "" for item in slot_fields):
+                raise ValueError("V2 episode requires a complete market slot identity")
+            existing = self.get_episode_by_v2_slot(
+                venue=values["venue"],
+                symbol=values["symbol"],
+                bar_interval=values["bar_interval"],
+                as_of_bar_ts=values["as_of_bar_ts"],
+                feature_contract_version=values["feature_contract_version"],
+                sampling_policy_version=values["sampling_policy_version"],
+            )
+            if existing is not None:
+                if (
+                    existing["episode_id"] == values["episode_id"]
+                    and existing["payload_sha256"] == values["payload_sha256"]
+                ):
+                    return False
+                raise WorldModelConflictError("V2 market slot already exists with different canonical content")
+        try:
+            return self._append(
+                table="world_episodes",
+                id_column="episode_id",
+                columns=_EPISODE_COLUMNS,
+                values=values,
+            )
+        except sqlite3.IntegrityError as exc:
+            message = str(exc)
+            if values["feature_contract_version"] == _V2_FEATURE_CONTRACT and (
+                "UNIQUE constraint failed" in message or "V2 market slot already exists" in message
+            ):
+                raise WorldModelConflictError("V2 market slot already exists with different canonical content") from exc
+            raise
 
     def append_outcome_event(self, outcome: Any) -> bool:
         """Append a canonical live outcome.  Mapping payloads must satisfy the live contract."""
@@ -631,9 +728,7 @@ class WorldModelStore:
     def _append_outcome_event(self, outcome: Any, *, live: bool) -> bool:
         payload = _as_mapping(outcome, name="outcome")
         episode_id = _required_text(payload.get("episode_id"), field="episode_id")
-        episode = self._db.query_one(
-            "SELECT training_eligible FROM world_episodes WHERE episode_id=?", (episode_id,)
-        )
+        episode = self._db.query_one("SELECT training_eligible FROM world_episodes WHERE episode_id=?", (episode_id,))
         if episode is None:
             raise ValueError(f"outcome references unknown episode_id {episode_id!r}")
         label_candidate = _first(payload, ("label",), ("outcome",), ("market_transition",))
@@ -700,8 +795,7 @@ class WorldModelStore:
             )
             if predecessor is None:
                 raise ValueError(
-                    "superseding outcome references an unknown outcome_event_id "
-                    f"{supersedes_outcome_event_id!r}"
+                    f"superseding outcome references an unknown outcome_event_id {supersedes_outcome_event_id!r}"
                 )
             if predecessor["episode_id"] != episode_id or predecessor["horizon_code"] != horizon_code:
                 raise ValueError("superseding outcome must keep the same episode_id and horizon_code")
@@ -712,23 +806,17 @@ class WorldModelStore:
             ),
             "episode_id": episode_id,
             "horizon_code": horizon_code,
-            "label_schema_version": _text(
-                _first(payload, ("label_schema_version",), ("schema_version",))
-            )
+            "label_schema_version": _text(_first(payload, ("label_schema_version",), ("schema_version",)))
             or "world-label-v1",
             "status": _text(payload.get("status")) or "observed",
             "move_class": _text(
                 _first(payload, ("move_class",), ("direction",), ("label", "move_class"), ("label", "direction"))
             ),
-            "training_eligible": int(
-                _bool(payload.get("training_eligible"), default=False)
-            ),
+            "training_eligible": int(_bool(payload.get("training_eligible"), default=False)),
             "label_available_at": _text(
                 _first(payload, ("label_available_at",), ("available_at",), ("label", "available_at"))
             ),
-            "sealed_at": _text(
-                _first(payload, ("sealed_at",), ("computed_at",), ("label", "sealed_at"))
-            ),
+            "sealed_at": _text(_first(payload, ("sealed_at",), ("computed_at",), ("label", "sealed_at"))),
             "supersedes_outcome_event_id": supersedes_outcome_event_id,
             "label_json": _canonical_json(label),
             "evidence_json": _canonical_json(evidence),
@@ -768,9 +856,7 @@ class WorldModelStore:
     def _append_prediction(self, prediction: Any, *, live: bool) -> bool:
         payload = _as_mapping(prediction, name="prediction")
         episode_id = _required_text(payload.get("episode_id"), field="episode_id")
-        episode = self._db.query_one(
-            "SELECT 1 FROM world_episodes WHERE episode_id=?", (episode_id,)
-        )
+        episode = self._db.query_one("SELECT 1 FROM world_episodes WHERE episode_id=?", (episode_id,))
         if episode is None:
             raise ValueError(f"prediction references unknown episode_id {episode_id!r}")
         predicted = _mapping_or_empty(
@@ -796,6 +882,8 @@ class WorldModelStore:
                     "feature_hash",
                     "training_cutoff",
                     "model_fingerprint",
+                    "comparison_batch_id",
+                    "comparison_cohort_fingerprint",
                     "recommendation",
                     "authority",
                     "decision_effect",
@@ -808,12 +896,8 @@ class WorldModelStore:
         )
         supplied_input_hash = _stored_sha256(payload.get("input_sha256"))
         values = {
-            "prediction_id": _required_text(
-                _first(payload, ("prediction_id",), ("id",)), field="prediction_id"
-            ),
-            "run_id": _required_text(
-                _first(payload, ("run_id",), ("model_run_id",), ("model_id",)), field="run_id"
-            ),
+            "prediction_id": _required_text(_first(payload, ("prediction_id",), ("id",)), field="prediction_id"),
+            "run_id": _required_text(_first(payload, ("run_id",), ("model_run_id",), ("model_id",)), field="run_id"),
             "episode_id": episode_id,
             "horizon_code": _required_text(
                 _first(
@@ -853,6 +937,48 @@ class WorldModelStore:
     def get_episode(self, episode_id: str) -> dict[str, Any] | None:
         row = self._db.query_one("SELECT * FROM world_episodes WHERE episode_id=?", (episode_id,))
         return None if row is None else self._episode_row(row)
+
+    def get_episode_by_v2_slot(
+        self,
+        *,
+        venue: str,
+        symbol: str,
+        bar_interval: str,
+        as_of_bar_ts: str,
+        feature_contract_version: str,
+        sampling_policy_version: str,
+    ) -> dict[str, Any] | None:
+        """Return the first canonical V2 episode for one market slot, if any."""
+
+        if feature_contract_version != _V2_FEATURE_CONTRACT:
+            return None
+        incoming = parse_utc_timestamp(as_of_bar_ts, "as_of_bar_ts")
+        rows = self._db.query_all(
+            """
+            SELECT * FROM world_episodes
+            WHERE venue IS ? AND symbol=? AND bar_interval IS ?
+              AND feature_contract_version=? AND sampling_policy_version IS ?
+            ORDER BY recorded_at ASC, episode_id ASC
+            """,
+            (
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+            ),
+        )
+        for row in rows:
+            raw = row["as_of_bar_ts"]
+            if raw in (None, ""):
+                continue
+            try:
+                existing = parse_utc_timestamp(raw, "as_of_bar_ts")
+            except (TypeError, ValueError):
+                continue
+            if existing == incoming:
+                return self._episode_row(row)
+        return None
 
     def list_eligible_episodes(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM world_episodes WHERE training_eligible=1 ORDER BY observed_at, episode_id"
@@ -929,7 +1055,9 @@ class WorldModelStore:
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         sql = (
             "SELECT o.*, e.observed_at AS episode_observed_at, "
-            "e.training_eligible AS episode_training_eligible "
+            "e.training_eligible AS episode_training_eligible, "
+            "e.venue AS episode_venue, e.symbol AS episode_symbol, "
+            "e.bar_interval AS episode_bar_interval, e.as_of_bar_ts AS episode_as_of_bar_ts "
             "FROM world_outcome_events o JOIN world_episodes e ON e.episode_id=o.episode_id"
             f"{where} ORDER BY e.observed_at, o.horizon_code, "
             "COALESCE(o.label_available_at, o.sealed_at, ''), o.outcome_event_id"

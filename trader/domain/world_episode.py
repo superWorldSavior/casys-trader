@@ -17,19 +17,21 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any
 
 WORLD_EPISODE_SCHEMA_VERSION = "world_episode.v1"
 WORLD_OUTCOME_SCHEMA_VERSION = "world_outcome.v1"
 WORLD_PREDICTION_SCHEMA_VERSION = "world_prediction.v1"
+MARKET_FEATURE_CONTRACT_VERSION = "market_ohlcv_causal.v1"
+_INTERVAL_PATTERN = re.compile(r"^(?P<count>\d+(?:\.\d+)?)(?P<unit>[mhd])$")
+_BAR_CLOSE_SEMANTICS = frozenset({"bar_close", "bar_end", "close", "end"})
+_BAR_START_SEMANTICS = frozenset({"bar_start", "start"})
 
 FRESHNESS_STATUSES = frozenset({"fresh", "stale", "unknown", "missing"})
 OUTCOME_STATUSES = frozenset({"pending", "observed", "missing", "stale", "unknown"})
-OUTCOME_EVENT_TYPES = frozenset(
-    {"outcome_scheduled", "outcome_observed", "outcome_unavailable", "outcome_corrected"}
-)
+OUTCOME_EVENT_TYPES = frozenset({"outcome_scheduled", "outcome_observed", "outcome_unavailable", "outcome_corrected"})
 PREDICTION_CLASSES = ("DOWN", "FLAT", "UP")
 PREDICTION_STATUSES = frozenset({"warming_up", "shadow_only"})
 PREDICTION_TIERS = frozenset({"uniform", "global", "coarse", "exact"})
@@ -168,6 +170,9 @@ __all__ = [
     "world_episode_id",
     "world_outcome_event_id",
     "world_prediction_id",
+    "completed_bar_cutoff",
+    "parse_bar_interval",
+    "MARKET_FEATURE_CONTRACT_VERSION",
 ]
 
 
@@ -232,6 +237,41 @@ def parse_utc_timestamp(value: datetime | str, field_name: str = "timestamp") ->
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"{field_name} must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def parse_bar_interval(interval: str | None) -> timedelta | None:
+    """Parse a compact bar interval such as ``15m``, ``1h``, or ``1d``."""
+
+    if not isinstance(interval, str) or not interval.strip():
+        return None
+    match = _INTERVAL_PATTERN.fullmatch(interval.strip().lower())
+    if match is None:
+        return None
+    count = float(match.group("count"))
+    if not math.isfinite(count) or count <= 0.0:
+        return None
+    seconds = {"m": 60.0, "h": 3600.0, "d": 86400.0}[match.group("unit")] * count
+    return timedelta(seconds=seconds)
+
+
+def completed_bar_cutoff(
+    *,
+    as_of_bar_ts: datetime | str,
+    timestamp_semantics: str | None,
+    bar_interval: str | None,
+) -> datetime | None:
+    """Return the deterministic completed-bar clock, or None when it cannot be proven."""
+
+    ts = parse_utc_timestamp(as_of_bar_ts, "as_of_bar_ts")
+    semantics = str(timestamp_semantics or "").strip().lower()
+    if semantics in _BAR_CLOSE_SEMANTICS:
+        return ts
+    if semantics in _BAR_START_SEMANTICS:
+        duration = parse_bar_interval(bar_interval)
+        if duration is None:
+            return None
+        return ts + duration
+    return None
 
 
 def _optional_utc_timestamp(value: datetime | str | None, field_name: str) -> datetime | None:
@@ -371,21 +411,26 @@ def world_episode_id(
     as_of_bar_ts: datetime | str,
     feature_contract_version: str,
     sampling_policy_version: str,
+    context_snapshot_id: str | None = None,
 ) -> str:
-    """Return the deterministic identity of one action-independent sampling slot."""
+    """Return the deterministic identity of one action-independent sampling slot.
+
+    ``context_snapshot_id`` is omitted from the V1 slot.  A V2 context episode
+    includes the snapshot digest so two different proven contexts at the same
+    market bar cannot collide, while a market-only observation keeps the
+    historical identity byte-for-byte.
+    """
 
     slot = {
         "venue": _required_text(venue, "venue"),
         "symbol": _required_text(symbol, "symbol"),
         "bar_interval": _required_text(bar_interval, "bar_interval"),
         "as_of_bar_ts": _iso(parse_utc_timestamp(as_of_bar_ts, "as_of_bar_ts")),
-        "feature_contract_version": _required_text(
-            feature_contract_version, "feature_contract_version"
-        ),
-        "sampling_policy_version": _required_text(
-            sampling_policy_version, "sampling_policy_version"
-        ),
+        "feature_contract_version": _required_text(feature_contract_version, "feature_contract_version"),
+        "sampling_policy_version": _required_text(sampling_policy_version, "sampling_policy_version"),
     }
+    if context_snapshot_id is not None:
+        slot["context_snapshot_id"] = _required_text(context_snapshot_id, "context_snapshot_id")
     return f"world-episode:v1:{canonical_sha256(slot)}"
 
 
@@ -512,11 +557,10 @@ class WorldObservation:
     anchor: AnchorBar | Mapping[str, Any]
     available_at: datetime | str | None = None
     captured_at: datetime | str | None = None
-    freshness: Freshness | Mapping[str, Any] | str = field(
-        default_factory=lambda: Freshness(status="unknown")
-    )
+    freshness: Freshness | Mapping[str, Any] | str = field(default_factory=lambda: Freshness(status="unknown"))
     categorical_features: Mapping[str, Any] | None = field(default_factory=dict)
     numeric_features: Mapping[str, Any] | None = field(default_factory=dict)
+    context: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -546,6 +590,34 @@ class WorldObservation:
         object.__setattr__(self, "freshness", _freshness(self.freshness))
         object.__setattr__(self, "categorical_features", _immutable_categorical_features(self.categorical_features))
         object.__setattr__(self, "numeric_features", _immutable_numeric_features(self.numeric_features))
+        from trader.domain.world_context import (
+            CONTEXT_FEATURE_CONTRACT_VERSION,
+            WorldContextSnapshot,
+            freeze_context_mapping,
+        )
+
+        if self.context is None:
+            object.__setattr__(self, "context", None)
+        else:
+            object.__setattr__(self, "context", freeze_context_mapping(self.context))
+        contract = self.feature_contract_version
+        if contract == MARKET_FEATURE_CONTRACT_VERSION:
+            if self.context is not None:
+                raise ValueError("V1 observation must not carry context")
+        elif contract == CONTEXT_FEATURE_CONTRACT_VERSION:
+            if self.context is None:
+                raise ValueError("V2 observation must carry context")
+            snapshot = WorldContextSnapshot.from_mapping(self.context)
+            if snapshot.instrument.entity_id != self.symbol:
+                raise ValueError("context instrument must match observation symbol")
+            if snapshot.feature_contract_version != contract:
+                raise ValueError("context feature contract must match observation")
+            if available_at is None:
+                raise ValueError("V2 observation requires available_at to bound context cutoff")
+            if snapshot.cutoff_at > available_at:
+                raise ValueError("context cutoff must not follow observation available_at")
+        elif self.context is not None:
+            raise ValueError("unknown feature contract must not carry context")
 
     @property
     def observed_at(self) -> datetime:
@@ -555,6 +627,11 @@ class WorldObservation:
 
     @property
     def episode_id(self) -> str:
+        context_snapshot_id = None
+        if isinstance(self.context, Mapping):
+            raw_id = self.context.get("context_id")
+            if isinstance(raw_id, str) and raw_id.strip():
+                context_snapshot_id = raw_id.strip()
         return world_episode_id(
             venue=self.venue,
             symbol=self.symbol,
@@ -562,6 +639,7 @@ class WorldObservation:
             as_of_bar_ts=self.as_of_bar_ts,
             feature_contract_version=self.feature_contract_version,
             sampling_policy_version=self.sampling_policy_version,
+            context_snapshot_id=context_snapshot_id,
         )
 
     @property
@@ -597,7 +675,7 @@ class WorldObservation:
         }
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             **self.slot_dict(),
             "anchor": self.anchor.to_dict(),
             "available_at": _iso(self.available_at),
@@ -606,6 +684,9 @@ class WorldObservation:
             "categorical_features": dict(self.categorical_features),
             "numeric_features": dict(self.numeric_features),
         }
+        if self.context is not None:
+            payload["context"] = canonical_payload(self.context)
+        return payload
 
     def replay_payload(self) -> dict[str, Any]:
         """Return a detached canonical projection suitable for replay/storage."""
@@ -632,6 +713,7 @@ class WorldObservation:
             freshness=value.get("freshness", "unknown"),
             categorical_features=value.get("categorical_features", {}),
             numeric_features=value.get("numeric_features", {}),
+            context=value.get("context"),
         )
 
 
@@ -912,9 +994,7 @@ class WorldOutcome:
 
         derived_direction = None
         if self.anchor_close is not None and self.endpoint_close is not None:
-            derived_direction = move_class_from_simple_return(
-                self.endpoint_close / self.anchor_close - 1.0
-            )
+            derived_direction = move_class_from_simple_return(self.endpoint_close / self.anchor_close - 1.0)
         if self.direction is not None:
             normalized_direction = canonical_prediction_class(self.direction)
             if derived_direction is not None and normalized_direction != derived_direction:
@@ -986,11 +1066,7 @@ class WorldOutcome:
             raise TypeError("world outcome payload must be a mapping")
         label = _mapping_or_none(value.get("label")) or {}
         evidence = _mapping_or_none(value.get("evidence")) or {}
-        nested_horizon = (
-            _mapping_or_none(value.get("horizon"))
-            or _mapping_or_none(label.get("horizon"))
-            or {}
-        )
+        nested_horizon = _mapping_or_none(value.get("horizon")) or _mapping_or_none(label.get("horizon")) or {}
         target_bar = _nested_bar(
             value,
             label,
@@ -1087,8 +1163,7 @@ class WorldOutcome:
             or target_bar.get("bar_end_at")
             or target_bar.get("end_at")
             or target_bar.get("ts"),
-            source=_first_present(value, label, evidence, names=("source",))
-            or target_bar.get("source"),
+            source=_first_present(value, label, evidence, names=("source",)) or target_bar.get("source"),
             source_raw_sha256=_first_present(
                 value,
                 label,
@@ -1122,6 +1197,8 @@ def world_prediction_id(
     feature_hash: str,
     model_fingerprint: str | None = None,
     training_cutoff: datetime | str | None = None,
+    comparison_batch_id: str | None = None,
+    comparison_cohort_fingerprint: str | None = None,
 ) -> str:
     """Return a deterministic ID for a prediction over an immutable feature view."""
 
@@ -1138,6 +1215,12 @@ def world_prediction_id(
         if training_cutoff is None
         else _iso(parse_utc_timestamp(training_cutoff, "training_cutoff")),
     }
+    if comparison_batch_id is not None:
+        identity["comparison_batch_id"] = _required_text(comparison_batch_id, "comparison_batch_id")
+    if comparison_cohort_fingerprint is not None:
+        identity["comparison_cohort_fingerprint"] = _required_text(
+            comparison_cohort_fingerprint, "comparison_cohort_fingerprint"
+        )
     return f"world-prediction:v1:{canonical_sha256(identity)}"
 
 
@@ -1189,6 +1272,8 @@ class WorldPrediction:
     global_support: int = 0
     training_cutoff: datetime | str | None = None
     model_fingerprint: str | None = None
+    comparison_batch_id: str | None = None
+    comparison_cohort_fingerprint: str | None = None
     recommendation: str = "NO_GO"
     authority: str = "shadow_only"
     decision_effect: str = "none"
@@ -1205,6 +1290,18 @@ class WorldPrediction:
                 self,
                 "model_fingerprint",
                 _required_text(self.model_fingerprint, "model_fingerprint"),
+            )
+        if self.comparison_batch_id is not None:
+            object.__setattr__(
+                self,
+                "comparison_batch_id",
+                _required_text(self.comparison_batch_id, "comparison_batch_id"),
+            )
+        if self.comparison_cohort_fingerprint is not None:
+            object.__setattr__(
+                self,
+                "comparison_cohort_fingerprint",
+                _required_text(self.comparison_cohort_fingerprint, "comparison_cohort_fingerprint"),
             )
 
         status = _required_text(self.status, "status").lower()
@@ -1258,6 +1355,8 @@ class WorldPrediction:
             feature_hash=self.feature_hash,
             model_fingerprint=self.model_fingerprint,
             training_cutoff=self.training_cutoff,
+            comparison_batch_id=self.comparison_batch_id,
+            comparison_cohort_fingerprint=self.comparison_cohort_fingerprint,
         )
 
     @property
@@ -1285,6 +1384,8 @@ class WorldPrediction:
             "global_support": self.global_support,
             "training_cutoff": _iso(self.training_cutoff),
             "model_fingerprint": self.model_fingerprint,
+            "comparison_batch_id": self.comparison_batch_id,
+            "comparison_cohort_fingerprint": self.comparison_cohort_fingerprint,
             "recommendation": self.recommendation,
             "authority": self.authority,
             "decision_effect": self.decision_effect,
@@ -1312,6 +1413,8 @@ class WorldPrediction:
             global_support=int(value.get("global_support") or 0),
             training_cutoff=value.get("training_cutoff"),
             model_fingerprint=value.get("model_fingerprint"),
+            comparison_batch_id=value.get("comparison_batch_id"),
+            comparison_cohort_fingerprint=value.get("comparison_cohort_fingerprint"),
             recommendation=value.get("recommendation", "NO_GO"),
             authority=value.get("authority", "shadow_only"),
             decision_effect=value.get("decision_effect", "none"),

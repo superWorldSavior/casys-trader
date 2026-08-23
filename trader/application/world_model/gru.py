@@ -37,15 +37,28 @@ from types import MappingProxyType
 import numpy as np
 
 from trader.application.world_model.encoding import (
+    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_V2_CATEGORICAL_FEATURES,
+    CONTEXT_V2_COARSE_FEATURES,
+    CONTEXT_V2_NUMERIC_FEATURES,
     FEATURE_CONTRACT_FINGERPRINT,
+    FEATURE_CONTRACT_FINGERPRINT_V2,
+    MARKET_FEATURE_CONTRACT_VERSION,
     FeatureBoundaryError,
     FutureLabelLeakageError,
     ModelUpdate,
     OutcomeEventConflictError,
     build_feature_state,
+    canonical_training_label_evidence,
+    common_training_replay_key,
+    comparison_lineage,
+    feature_contract_version_of,
     normalise_horizon_id,
+    observation_market_anchor,
     outcome_horizon_id,
     outcome_move_class,
+    revalidate_context_observation,
+    training_event_signature,
 )
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
@@ -113,6 +126,7 @@ _EPISODE_ENVELOPE_KEYS = frozenset(
         "observation",
         "training_eligible",
         "training_reason",
+        "feature_contract_version",
     }
 )
 _OBSERVATION_KEYS = frozenset(
@@ -129,6 +143,7 @@ _OBSERVATION_KEYS = frozenset(
         "freshness",
         "categorical_features",
         "numeric_features",
+        "context",
     }
 )
 _MISSING = object()
@@ -140,6 +155,7 @@ class _HorizonState:
 
     parameters: dict[str, np.ndarray]
     applied_events: dict[str, str] = field(default_factory=dict)
+    comparison_event_signatures: list[str] = field(default_factory=list)
     support: int = 0
     training_steps: int = 0
     training_cutoff: datetime | None = None
@@ -254,6 +270,8 @@ def _series_key(episode: WorldEpisode) -> tuple[str, str, str, str, str]:
 def _coerce_episode(value: object) -> WorldEpisode:
     """Accept only the domain record or an exact action-free replay envelope."""
 
+    if isinstance(value, Mapping):
+        feature_contract_version_of(value)
     if isinstance(value, WorldEpisode):
         return value
     if isinstance(value, WorldObservation):
@@ -298,6 +316,13 @@ class OnlineGRUWorldChallenger:
         categorical_hash_buckets: int = 16,
         seed: int = 20260822,
         allowed_horizons: Iterable[str] | None = _DEFAULT_HORIZONS,
+        model_id: str | None = None,
+        model_version: str | None = None,
+        encoder_version: str | None = None,
+        accepted_feature_contracts: frozenset[str] | None = None,
+        include_context: bool = False,
+        extra_categorical_keys: frozenset[str] | None = None,
+        feature_contract_fingerprint: str | None = None,
     ) -> None:
         for name, value in (
             ("sequence_len", sequence_len),
@@ -317,9 +342,7 @@ class OnlineGRUWorldChallenger:
 
         normalised_horizons = None
         if allowed_horizons is not None:
-            normalised_horizons = frozenset(
-                _normalise_horizon(item, None) for item in allowed_horizons
-            )
+            normalised_horizons = frozenset(_normalise_horizon(item, None) for item in allowed_horizons)
             if not normalised_horizons:
                 raise ValueError("allowed_horizons must not be empty")
 
@@ -334,6 +357,18 @@ class OnlineGRUWorldChallenger:
         self._states: dict[str, _HorizonState] = {}
         self._episodes: dict[str, WorldEpisode] = {}
         self._series: dict[tuple[str, str, str, str, str], list[str]] = {}
+        self.model_id = model_id or MODEL_ID
+        self.model_version = model_version or MODEL_VERSION
+        self.encoder_version = encoder_version or ENCODER_VERSION
+        self._accepted_feature_contracts = accepted_feature_contracts
+        self._include_context = include_context
+        extra_keys = extra_categorical_keys or frozenset()
+        if include_context:
+            extra_keys = extra_keys | CONTEXT_V2_CATEGORICAL_FEATURES
+        self._categorical_keys = _CATEGORICAL_KEYS | extra_keys
+        self._feature_contract_fingerprint = feature_contract_fingerprint or (
+            FEATURE_CONTRACT_FINGERPRINT_V2 if include_context else FEATURE_CONTRACT_FINGERPRINT
+        )
 
     def reset_for_replay(self) -> None:
         """Clear learned state and sequence caches before ledger reconciliation."""
@@ -341,6 +376,30 @@ class OnlineGRUWorldChallenger:
         self._states.clear()
         self._episodes.clear()
         self._series.clear()
+
+    def accepts_episode(self, episode: object) -> bool:
+        version = feature_contract_version_of(episode)
+        if self._accepted_feature_contracts is not None:
+            return version in self._accepted_feature_contracts
+        expected = CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+        return version == expected
+
+    def _require_accepted(self, episode: object) -> None:
+        if not self.accepts_episode(episode):
+            raise FeatureBoundaryError("World model rejected an episode outside its feature contract")
+
+    def _feature_state(self, observation: object):
+        self._require_accepted(observation)
+        if self._include_context:
+            revalidate_context_observation(observation)
+            return build_feature_state(
+                observation,
+                allowed_categorical=CONTEXT_V2_CATEGORICAL_FEATURES,
+                allowed_numeric=CONTEXT_V2_NUMERIC_FEATURES,
+                include_context=True,
+                coarse_features=CONTEXT_V2_COARSE_FEATURES,
+            )
+        return build_feature_state(observation)
 
     @property
     def input_size(self) -> int:
@@ -358,6 +417,7 @@ class OnlineGRUWorldChallenger:
         """
 
         canonical = _coerce_episode(episode)
+        self._require_accepted(canonical)
         existing = self._episodes.get(canonical.episode_id)
         if existing is not None:
             if existing.payload_hash != canonical.payload_hash:
@@ -366,7 +426,7 @@ class OnlineGRUWorldChallenger:
 
         # Validate the same safe feature boundary used by the baseline before
         # retaining any vector in the sequence registry.
-        build_feature_state(canonical)
+        self._feature_state(canonical)
         self._episodes[canonical.episode_id] = canonical
         key = _series_key(canonical)
         members = self._series.setdefault(key, [])
@@ -394,6 +454,7 @@ class OnlineGRUWorldChallenger:
 
         horizon_key = self._resolve_horizon(horizon_id=horizon_id, horizon=horizon)
         canonical = _coerce_episode(episode)
+        self._require_accepted(canonical)
         self.observe_episode(canonical)
         state = self._state_for(horizon_key)
 
@@ -413,6 +474,12 @@ class OnlineGRUWorldChallenger:
             probabilities = self._probabilities(state.parameters, matrix, mask)
             tier = "global"
         status = "warming_up" if state.support < self.minimum_global_support else "shadow_only"
+        batch_id, cohort = comparison_lineage(
+            canonical,
+            horizon_id=horizon_key,
+            predicted_at=reference_at,
+            event_signatures=state.comparison_event_signatures,
+        )
         return WorldPrediction(
             episode_id=canonical.episode_id,
             horizon_id=horizon_key,
@@ -429,6 +496,8 @@ class OnlineGRUWorldChallenger:
             global_support=state.support,
             training_cutoff=state.training_cutoff,
             model_fingerprint=self.model_fingerprint(horizon_key),
+            comparison_batch_id=batch_id,
+            comparison_cohort_fingerprint=cohort,
         )
 
     def predict_proba(
@@ -495,6 +564,12 @@ class OnlineGRUWorldChallenger:
         if source_episode is _MISSING or source_episode is None:
             raise ValueError("observed World outcome requires its immutable WorldEpisode")
         canonical = _coerce_episode(source_episode)
+        if not self.accepts_episode(canonical):
+            return self._no_update(
+                "feature_contract_rejected",
+                event_id=event_id,
+                horizon_id=horizon_key,
+            )
         outcome_episode_id = _outcome_field(outcome, "episode_id")
         if outcome_episode_id is not _MISSING and str(outcome_episode_id).strip() != canonical.episode_id:
             raise ValueError("outcome episode_id does not match its immutable WorldEpisode")
@@ -527,6 +602,16 @@ class OnlineGRUWorldChallenger:
         target_index = OUTCOME_CLASSES.index(outcome_class)
         self._train_step(state.parameters, matrix, mask, target_index)
         state.applied_events[event_id] = signature
+        market_anchor = observation_market_anchor(canonical)
+        if market_anchor is not None:
+            state.comparison_event_signatures.append(
+                training_event_signature(
+                    market_anchor=market_anchor,
+                    horizon_id=horizon_key,
+                    label_evidence=canonical_training_label_evidence(outcome, horizon_key),
+                    sequence_market_anchors=self._sequence_market_anchors(metadata),
+                )
+            )
         state.support += 1
         state.training_steps += 1
         if state.training_cutoff is None or label_available_at > state.training_cutoff:
@@ -560,24 +645,33 @@ class OnlineGRUWorldChallenger:
         availability order, then by stable identity for ties.
         """
 
-        self.observe_episodes(episodes)
+        accepted: list[WorldEpisode] = []
+        for value in episodes:
+            canonical = _coerce_episode(value)
+            if self.accepts_episode(canonical):
+                accepted.append(canonical)
+        self.observe_episodes(accepted)
+        by_id = {episode.episode_id: episode for episode in accepted}
+
+        def _replay_source(outcome: object) -> WorldEpisode | None:
+            episode_id = _outcome_field(outcome, "episode_id")
+            if episode_id is _MISSING or episode_id is None:
+                return None
+            return by_id.get(str(episode_id).strip())
+
         ordered = sorted(
             list(outcomes),
-            key=lambda outcome: (
-                _optional_timestamp(
-                    _outcome_field(outcome, "available_at", "label_available_at", "sealed_at"),
-                    field_name="outcome available_at",
-                )
-                or datetime.max.replace(tzinfo=timezone.utc),
-                str(_outcome_field(outcome, "episode_id")),
-                str(_outcome_horizon(outcome)),
-                str(_outcome_field(outcome, "outcome_event_id", "event_id", "outcome_id")),
-            ),
+            key=lambda outcome: common_training_replay_key(outcome, _replay_source(outcome)),
         )
         updates: list[ModelUpdate] = []
         for outcome in ordered:
             episode_id = _outcome_field(outcome, "episode_id")
             source = self._episodes.get(str(episode_id).strip()) if episode_id is not _MISSING else None
+            if source is None:
+                event_id_value = _outcome_field(outcome, "outcome_event_id", "event_id", "outcome_id")
+                event_id = None if event_id_value is _MISSING else str(event_id_value).strip() or None
+                updates.append(self._no_update("feature_contract_rejected", event_id=event_id, horizon_id=None))
+                continue
             updates.append(self.apply_outcome(outcome, source, available_through=available_through))
         return tuple(updates)
 
@@ -643,8 +737,8 @@ class OnlineGRUWorldChallenger:
         config = {
             "model_id": self.model_id,
             "model_version": self.model_version,
-            "encoder_version": ENCODER_VERSION,
-            "feature_contract_fingerprint": FEATURE_CONTRACT_FINGERPRINT,
+            "encoder_version": self.encoder_version,
+            "feature_contract_fingerprint": self._feature_contract_fingerprint,
             "horizon_id": horizon_key,
             "sequence_len": self.sequence_len,
             "hidden_size": self.hidden_size,
@@ -712,6 +806,17 @@ class OnlineGRUWorldChallenger:
             "bo": np.zeros(len(OUTCOME_CLASSES), dtype=np.float64),
         }
 
+    def _sequence_market_anchors(self, metadata: SequenceMetadata) -> tuple[tuple[str, str, str, str], ...]:
+        anchors: list[tuple[str, str, str, str]] = []
+        for identifier in metadata.episode_ids:
+            episode = self._episodes.get(identifier)
+            if episode is None:
+                continue
+            anchor = observation_market_anchor(episode)
+            if anchor is not None:
+                anchors.append(anchor)
+        return tuple(anchors)
+
     def _sequence_for(self, target: WorldEpisode) -> tuple[np.ndarray, np.ndarray, SequenceMetadata]:
         """Encode at most ``sequence_len`` causally available episodes for target."""
 
@@ -722,8 +827,7 @@ class OnlineGRUWorldChallenger:
             for identifier in identifiers
             if self._episodes[identifier].training_eligible
             and _episode_time(self._episodes[identifier]) <= target_time
-            and self._episodes[identifier].observation.as_of_bar_ts
-            <= target.observation.as_of_bar_ts
+            and self._episodes[identifier].observation.as_of_bar_ts <= target.observation.as_of_bar_ts
         ]
         # A target can be predictably represented even before it has an
         # outcome, but an explicitly non-trainable target must not enter a
@@ -745,7 +849,7 @@ class OnlineGRUWorldChallenger:
             padded_steps=self.sequence_len - len(selected),
             feature_hash=canonical_sha256(
                 {
-                    "encoder_version": ENCODER_VERSION,
+                    "encoder_version": self.encoder_version,
                     "sequence_len": self.sequence_len,
                     "episode_ids": [episode.episode_id for episode in selected],
                     "episode_hashes": [episode.payload_hash for episode in selected],
@@ -760,7 +864,7 @@ class OnlineGRUWorldChallenger:
         # This call is intentionally redundant with registration: it protects
         # against a future caller mutating a custom mapping before conversion
         # and keeps the encoder aligned with the reviewed baseline boundary.
-        build_feature_state(episode)
+        self._feature_state(episode)
         observation = episode.observation
         vector = np.zeros(self.input_size, dtype=np.float64)
         for index, (name, scale) in enumerate(_NUMERIC_SCALES):
@@ -776,8 +880,14 @@ class OnlineGRUWorldChallenger:
         categorical: dict[str, str] = {
             key: str(value).strip().lower()
             for key, value in observation.categorical_features.items()
-            if key in _CATEGORICAL_KEYS
+            if key in self._categorical_keys
         }
+        if self._include_context and isinstance(observation.context, Mapping):
+            extra = observation.context.get("categorical_features") or {}
+            if isinstance(extra, Mapping):
+                for key, value in extra.items():
+                    if key in self._categorical_keys and value is not None:
+                        categorical.setdefault(str(key), str(value).strip().lower())
         categorical.update(
             {
                 "venue": observation.venue.strip().lower(),
@@ -872,8 +982,7 @@ class OnlineGRUWorldChallenger:
             raise FloatingPointError("non-finite GRU gradient")
         scale = 1.0 if global_norm <= self.gradient_clip else self.gradient_clip / global_norm
         updated = {
-            name: parameters[name] - self.learning_rate * scale * gradient
-            for name, gradient in gradients.items()
+            name: parameters[name] - self.learning_rate * scale * gradient for name, gradient in gradients.items()
         }
         for value in updated.values():
             if not np.all(np.isfinite(value)):
@@ -895,9 +1004,7 @@ class OnlineGRUWorldChallenger:
             previous = hidden
             update = self._sigmoid(x @ parameters["Wz"] + previous @ parameters["Uz"] + parameters["bz"])
             reset = self._sigmoid(x @ parameters["Wr"] + previous @ parameters["Ur"] + parameters["br"])
-            candidate = np.tanh(
-                x @ parameters["Wh"] + (reset * previous) @ parameters["Uh"] + parameters["bh"]
-            )
+            candidate = np.tanh(x @ parameters["Wh"] + (reset * previous) @ parameters["Uh"] + parameters["bh"])
             hidden = (1.0 - update) * candidate + update * previous
             cache.append((x, previous, update, reset, candidate))
         return hidden, cache

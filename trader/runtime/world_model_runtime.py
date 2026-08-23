@@ -13,7 +13,7 @@ import dataclasses
 import inspect
 import logging
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 
 from trader.application.world_model.service import (
@@ -48,10 +48,12 @@ class WorldModelBackgroundRunner:
         runtime: WorldModelService,
         logger: object | None = None,
         thread_name: str = "world-model-shadow",
+        context_enricher: WorldContextEpisodeEnricher | None = None,
     ) -> None:
         self.runtime = runtime
         self.log = logger or logging.getLogger("casys-trader")
         self.thread_name = str(thread_name).strip() or "world-model-shadow"
+        self.context_enricher = context_enricher
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._pending: _BackgroundSnapshot | None = None
@@ -130,9 +132,7 @@ class WorldModelBackgroundRunner:
             try:
                 thread.join(timeout=1.0)
             except Exception as exc:  # noqa: BLE001 - shutdown remains best effort
-                self._record_failure(
-                    {"status": "partial", "stage": "stop", "error": f"{type(exc).__name__}:{exc}"}
-                )
+                self._record_failure({"status": "partial", "stage": "stop", "error": f"{type(exc).__name__}:{exc}"})
 
     def _run_loop(self, snapshot: _BackgroundSnapshot) -> None:
         current = snapshot
@@ -150,8 +150,17 @@ class WorldModelBackgroundRunner:
                 )
             except Exception as exc:  # noqa: BLE001 - runtime is shadow-only even if its contract breaks
                 self._background_error(report, stage="mature", error=exc)
+            capture_snapshot = current
+            if self.context_enricher is not None:
+                try:
+                    enriched = tuple(
+                        self.context_enricher.enrich(tuple(_clone(episode) for episode in current.episodes))
+                    )
+                    capture_snapshot = dataclasses.replace(current, episodes=enriched)
+                except Exception as exc:  # noqa: BLE001 - V2 enrichment is fail-open for V1
+                    self._background_error(report, stage="context_enrich", error=exc)
             try:
-                report["capture"] = self._capture_and_predict(current)
+                report["capture"] = self._capture_and_predict(capture_snapshot)
             except Exception as exc:  # noqa: BLE001 - still attempt capture after a maturity failure
                 self._background_error(report, stage="capture", error=exc)
             if report["errors"]:
@@ -184,7 +193,7 @@ class WorldModelBackgroundRunner:
         """
 
         fn = self.runtime.capture_and_predict
-        episodes = _clone(snapshot.episodes)
+        episodes = tuple(_clone(episode) for episode in snapshot.episodes)
         try:
             signature = inspect.signature(fn)
         except (TypeError, ValueError):
@@ -218,6 +227,36 @@ class WorldModelBackgroundRunner:
                 warning("[world_model_shadow] %s", payload)
         except Exception:
             pass
+
+
+class WorldContextEpisodeEnricher:
+    """Background V2 companion attachment. Local files only; no network or LLM I/O."""
+
+    def __init__(self, source: object) -> None:
+        self.source = source
+
+    def enrich(self, episodes: Sequence[object]) -> tuple[object, ...]:
+        from trader.application.world_model.context_capture import attach_world_context
+        from trader.domain.world_episode import WorldEpisode
+
+        canonical: list[WorldEpisode] = []
+        for episode in episodes:
+            if isinstance(episode, WorldEpisode):
+                canonical.append(episode)
+                continue
+            if isinstance(episode, Mapping):
+                canonical.append(WorldEpisode.from_dict(episode))
+                continue
+            to_dict = getattr(episode, "to_dict", None)
+            if not callable(to_dict):
+                raise TypeError("context enricher requires WorldEpisode records")
+            payload = to_dict()
+            if not isinstance(payload, Mapping):
+                raise TypeError("context enricher requires WorldEpisode records")
+            canonical.append(WorldEpisode.from_dict(payload))
+        v1 = tuple(canonical)
+        v2 = attach_world_context(v1, self.source)
+        return v1 + tuple(v2)
 
 
 class CallableWorldBarProvider:
@@ -315,6 +354,7 @@ __all__ = [
     "DEFAULT_HORIZONS",
     "CallableWorldBarProvider",
     "CallableWorldLabeler",
+    "WorldContextEpisodeEnricher",
     "WorldModelBackgroundRunner",
     "WorldModelRunner",
     "WorldModelRuntime",

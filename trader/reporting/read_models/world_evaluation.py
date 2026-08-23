@@ -33,6 +33,10 @@ DIRECTIONAL_SHADOW_DRAWDOWN_CAVEAT = (
 )
 
 
+MARKET_MODEL_VERSION = "v1"
+CONTEXT_MODEL_VERSION = "context.v2"
+
+
 @dataclass(frozen=True)
 class _ScoredPrediction:
     """One already-validated, prequential prediction/outcome pairing."""
@@ -46,10 +50,23 @@ class _ScoredPrediction:
     predicted_at: datetime
     ready_at: datetime
     simple_return: float | None
+    market_anchor: tuple[str, str, str, str] | None = None
+    context_status: str | None = None
+    feature_contract_version: str | None = None
+    label_evidence: tuple[Any, ...] = ()
+    comparison_batch_id: str | None = None
+    comparison_cohort_fingerprint: str | None = None
+    training_cutoff: datetime | None = None
 
     @property
     def slot(self) -> tuple[str, str]:
         return (self.episode_id, self.horizon_id)
+
+    @property
+    def ablation_slot(self) -> tuple[str, str, str, str, str] | None:
+        if self.market_anchor is None:
+            return None
+        return (*self.market_anchor, self.horizon_id)
 
 
 def evaluate_shadow(
@@ -137,6 +154,13 @@ def evaluate_shadow(
                 predicted_at=predicted_at,
                 ready_at=ready_at,
                 simple_return=_simple_return(outcome),
+                market_anchor=_market_anchor(prediction),
+                context_status=_context_status(prediction),
+                feature_contract_version=_feature_contract_version(prediction),
+                label_evidence=_label_evidence(outcome, horizon_id),
+                comparison_batch_id=_comparison_batch_id(prediction),
+                comparison_cohort_fingerprint=_comparison_cohort_fingerprint(prediction),
+                training_cutoff=_training_cutoff(prediction),
             )
         )
 
@@ -167,7 +191,289 @@ def evaluate_shadow(
         "comparisons": comparisons,
         "excluded": dict(sorted(excluded.items())),
         "status": "ready" if groups else "warming_up",
+        "context_ablation": evaluate_context_ablation_from_scores(
+            grouped_scores,
+            minimum_paired_support=minimum_paired_support,
+            baseline_model_id=baseline_model_id,
+            gru_model_id=gru_model_id,
+        ),
     }
+
+
+def evaluate_context_ablation(
+    predictions: Iterable[object],
+    outcomes: Iterable[object],
+    *,
+    minimum_paired_support: int = DEFAULT_MINIMUM_PAIRED_SUPPORT,
+    baseline_model_id: str = BASELINE_MODEL_ID,
+    gru_model_id: str = GRU_MODEL_ID,
+) -> dict[str, Any]:
+    """Public ablation entry that reuses the same prequential scoring path."""
+
+    result = evaluate_shadow(
+        predictions,
+        outcomes,
+        baseline_model_id=baseline_model_id,
+        gru_model_id=gru_model_id,
+        minimum_paired_support=minimum_paired_support,
+    )
+    ablation = result.get("context_ablation")
+    return ablation if isinstance(ablation, dict) else _empty_ablation(minimum_paired_support)
+
+
+def evaluate_context_ablation_from_scores(
+    grouped_scores: Mapping[tuple[str, str, str], list[_ScoredPrediction]],
+    *,
+    minimum_paired_support: int,
+    baseline_model_id: str = BASELINE_MODEL_ID,
+    gru_model_id: str = GRU_MODEL_ID,
+) -> dict[str, Any]:
+    """Compare context V2 vs market V1 within each model family, not across families."""
+
+    excluded: defaultdict[str, int] = defaultdict(int)
+    coverage: defaultdict[str, int] = defaultdict(int)
+    families: list[dict[str, Any]] = []
+    for model_id, family_name in (
+        (baseline_model_id, "markov"),
+        (gru_model_id, "gru"),
+    ):
+        market_rows = [
+            row
+            for (row_model_id, model_version, _horizon_id), rows in grouped_scores.items()
+            if row_model_id == model_id and model_version == MARKET_MODEL_VERSION
+            for row in rows
+        ]
+        context_rows = [
+            row
+            for (row_model_id, model_version, _horizon_id), rows in grouped_scores.items()
+            if row_model_id == model_id and model_version == CONTEXT_MODEL_VERSION
+            for row in rows
+        ]
+        for row in context_rows:
+            coverage[row.context_status or "unknown"] += 1
+        by_horizon: dict[str, dict[str, list[_ScoredPrediction]]] = defaultdict(lambda: {"market": [], "context": []})
+        for row in market_rows:
+            by_horizon[row.horizon_id]["market"].append(row)
+        for row in context_rows:
+            by_horizon[row.horizon_id]["context"].append(row)
+        for horizon_id in sorted(by_horizon):
+            market_by_anchor, market_ambiguous = _group_ablation_anchors(by_horizon[horizon_id]["market"], excluded)
+            context_by_anchor, context_ambiguous = _group_ablation_anchors(by_horizon[horizon_id]["context"], excluded)
+            ambiguous_slots = market_ambiguous | context_ambiguous
+            paired_market: list[_ScoredPrediction] = []
+            paired_context: list[_ScoredPrediction] = []
+            for slot in sorted(set(market_by_anchor).intersection(context_by_anchor) - ambiguous_slots):
+                market_row = market_by_anchor[slot]
+                context_row = context_by_anchor[slot]
+                if not _market_lane_contract(market_row) or not _context_lane_contract(context_row):
+                    excluded["feature_contract_mismatch"] += 1
+                    continue
+                if (
+                    market_row.predicted_at != context_row.predicted_at
+                    or not market_row.comparison_batch_id
+                    or not context_row.comparison_batch_id
+                    or market_row.comparison_batch_id != context_row.comparison_batch_id
+                ):
+                    excluded["asynchronous_lane_mismatch"] += 1
+                    continue
+                if (
+                    market_row.training_cutoff != context_row.training_cutoff
+                    or not market_row.comparison_cohort_fingerprint
+                    or not context_row.comparison_cohort_fingerprint
+                    or market_row.comparison_cohort_fingerprint != context_row.comparison_cohort_fingerprint
+                ):
+                    excluded["training_cohort_mismatch"] += 1
+                    continue
+                if market_row.target_index != context_row.target_index:
+                    excluded["label_mismatch"] += 1
+                    continue
+                if market_row.label_evidence != context_row.label_evidence:
+                    excluded["label_evidence_mismatch"] += 1
+                    continue
+                paired_market.append(market_row)
+                paired_context.append(context_row)
+            matched_pairs = len(paired_market)
+            comparison: dict[str, Any] = {
+                "model_family": family_name,
+                "market_model_id": model_id,
+                "market_model_version": MARKET_MODEL_VERSION,
+                "context_model_id": model_id,
+                "context_model_version": CONTEXT_MODEL_VERSION,
+                "horizon_id": horizon_id,
+                "matched_pairs": matched_pairs,
+                "minimum_paired_support": minimum_paired_support,
+                "primary_delta": "paired_multiclass_log_loss",
+                "delta_semantics": (
+                    "context_minus_market; lower is better for log_loss, brier, and ece_5_bins, "
+                    "higher is better for accuracy. Not a causal or PnL claim."
+                ),
+                "causal_claim": False,
+                "pnl_claim": False,
+            }
+            if matched_pairs < minimum_paired_support:
+                comparison.update(
+                    {
+                        "status": "insufficient_support",
+                        "market": None,
+                        "context": None,
+                        "context_minus_market": None,
+                        "conclusion": None,
+                    }
+                )
+            else:
+                market_metrics = _comparison_metrics(_metrics(paired_market))
+                context_metrics = _comparison_metrics(_metrics(paired_context))
+                comparison.update(
+                    {
+                        "status": "ready",
+                        "market": market_metrics,
+                        "context": context_metrics,
+                        "context_minus_market": {
+                            name: round(float(context_metrics[name]) - float(market_metrics[name]), 8)
+                            for name in market_metrics
+                        },
+                        "conclusion": None,
+                    }
+                )
+            families.append(comparison)
+    status = "not_applicable"
+    if families:
+        status = "ready" if any(item["status"] == "ready" for item in families) else "insufficient_support"
+    return {
+        "schema_version": "world_context_ablation.v1",
+        "status": status,
+        "minimum_paired_support": minimum_paired_support,
+        "families": families,
+        "coverage": dict(sorted(coverage.items())),
+        "excluded": dict(sorted(excluded.items())),
+        "causal_claim": False,
+        "pnl_claim": False,
+        "conclusion": None,
+    }
+
+
+def _group_ablation_anchors(
+    rows: list[_ScoredPrediction],
+    excluded: defaultdict[str, int],
+) -> tuple[dict[tuple[str, str, str, str, str], _ScoredPrediction], set[tuple[str, str, str, str, str]]]:
+    grouped: dict[tuple[str, str, str, str, str], list[_ScoredPrediction]] = defaultdict(list)
+    for row in rows:
+        slot = row.ablation_slot
+        if slot is None:
+            excluded["missing_market_anchor"] += 1
+            continue
+        grouped[slot].append(row)
+    unique: dict[tuple[str, str, str, str, str], _ScoredPrediction] = {}
+    ambiguous: set[tuple[str, str, str, str, str]] = set()
+    for slot, items in grouped.items():
+        if len(items) != 1:
+            excluded["ambiguous_market_anchor"] += len(items)
+            ambiguous.add(slot)
+            continue
+        unique[slot] = items[0]
+    return unique, ambiguous
+
+
+def _market_lane_contract(row: _ScoredPrediction) -> bool:
+    return row.feature_contract_version == "market_ohlcv_causal.v1" and row.model_version == MARKET_MODEL_VERSION
+
+
+def _context_lane_contract(row: _ScoredPrediction) -> bool:
+    return row.feature_contract_version == "market_ohlcv_context.v2" and row.model_version == CONTEXT_MODEL_VERSION
+
+
+def _label_evidence(outcome: object, horizon_id: str) -> tuple[Any, ...]:
+    direction = (
+        _text(_search_outcome_field(outcome, "direction")) or _text(_search_outcome_field(outcome, "move_class")) or ""
+    ).upper() or None
+    return (
+        _text(_search_outcome_field(outcome, "target_at")),
+        _text(_search_outcome_field(outcome, "source_raw_sha256")) or _text(_search_outcome_field(outcome, "source")),
+        horizon_id,
+        _text(_search_outcome_field(outcome, "status")),
+        _search_outcome_field(outcome, "training_eligible"),
+        direction,
+        _simple_return(outcome),
+    )
+
+
+def _empty_ablation(minimum_paired_support: int) -> dict[str, Any]:
+    return {
+        "schema_version": "world_context_ablation.v1",
+        "status": "not_applicable",
+        "minimum_paired_support": minimum_paired_support,
+        "families": [],
+        "coverage": {},
+        "excluded": {},
+        "causal_claim": False,
+        "pnl_claim": False,
+        "conclusion": None,
+    }
+
+
+def _prediction_envelopes(prediction: object) -> tuple[object, ...]:
+    envelopes: list[object] = [prediction]
+    for name in ("prediction_record", "prediction", "payload"):
+        nested = _field(prediction, name)
+        if nested is not None and nested is not prediction:
+            envelopes.append(nested)
+            if isinstance(nested, Mapping):
+                inner = nested.get("prediction")
+                if isinstance(inner, Mapping) and inner is not nested:
+                    envelopes.append(inner)
+    return tuple(envelopes)
+
+
+def _observation_payload(prediction: object) -> Mapping[str, Any] | None:
+    for envelope in _prediction_envelopes(prediction):
+        for name in ("input", "observation"):
+            raw = _field(envelope, name)
+            if isinstance(raw, Mapping):
+                nested = raw.get("observation")
+                if isinstance(nested, Mapping):
+                    return nested
+                return raw
+    return None
+
+
+def _market_anchor(prediction: object) -> tuple[str, str, str, str] | None:
+    observation = _observation_payload(prediction)
+    venue = _text(_field(observation, "venue") if observation is not None else None) or _text(
+        _field(prediction, "venue")
+    )
+    symbol = _text(_field(observation, "symbol") if observation is not None else None) or _text(
+        _field(prediction, "symbol")
+    )
+    interval = (
+        _text(_field(observation, "bar_interval") if observation is not None else None)
+        or _text(_field(observation, "interval") if observation is not None else None)
+        or _text(_field(prediction, "bar_interval"))
+    )
+    as_of = _text(_field(observation, "as_of_bar_ts") if observation is not None else None) or _text(
+        _field(prediction, "as_of_bar_ts")
+    )
+    if venue is None or symbol is None or interval is None or as_of is None:
+        return None
+    return (venue, symbol, interval, as_of)
+
+
+def _context_status(prediction: object) -> str | None:
+    observation = _observation_payload(prediction)
+    if observation is None:
+        return _text(_field(prediction, "context_status"))
+    context = observation.get("context")
+    if isinstance(context, Mapping):
+        return _text(context.get("status"))
+    return _text(_field(prediction, "context_status"))
+
+
+def _feature_contract_version(prediction: object) -> str | None:
+    observation = _observation_payload(prediction)
+    if observation is not None:
+        version = _text(observation.get("feature_contract_version"))
+        if version is not None:
+            return version
+    return _text(_field(prediction, "feature_contract_version"))
 
 
 def _select_predictions(
@@ -288,10 +594,7 @@ def _paired_comparisons(
 
 
 def _comparison_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
-    return {
-        name: float(metrics[name])
-        for name in ("brier", "log_loss", "accuracy", "ece_5_bins")
-    }
+    return {name: float(metrics[name]) for name in ("brier", "log_loss", "accuracy", "ece_5_bins")}
 
 
 def _select_outcomes(
@@ -368,10 +671,7 @@ def _metrics(rows: list[_ScoredPrediction]) -> dict[str, Any]:
     brier = brier_sum / count
     ece = sum(
         (len(confidences) / count)
-        * abs(
-            sum(confidences) / len(confidences)
-            - sum(calibration_hits[index]) / len(calibration_hits[index])
-        )
+        * abs(sum(confidences) / len(confidences) - sum(calibration_hits[index]) / len(calibration_hits[index]))
         for index, confidences in enumerate(calibration_bins)
         if confidences
     )
@@ -470,17 +770,7 @@ def _probabilities(value: object) -> list[float] | None:
 
 
 def _target_index(outcome: object) -> int | None:
-    raw = _field(outcome, "direction", _field(outcome, "move_class"))
-    if raw is None:
-        for nested_name in ("label", "outcome", "payload"):
-            payload = _field(outcome, nested_name)
-            raw = (
-                _field(payload, "direction", _field(payload, "move_class"))
-                if payload is not None
-                else None
-            )
-            if raw is not None:
-                break
+    raw = _search_outcome_field(outcome, "direction", "move_class")
     label = (_text(getattr(raw, "value", raw)) or "").upper()
     try:
         return CLASSES.index(label)
@@ -517,9 +807,7 @@ def _model_identity(value: object) -> tuple[str, str]:
         or "unknown-model"
     )
     model_version = (
-        _text(_field(value, "model_version"))
-        or _text(_field(payload, "model_version"))
-        or "unknown-version"
+        _text(_field(value, "model_version")) or _text(_field(payload, "model_version")) or "unknown-version"
     )
     return model_id, model_version
 
@@ -571,15 +859,8 @@ def _simple_return(outcome: object) -> float | None:
 
 
 def _outcome_value(outcome: object, name: str) -> object:
-    direct = _field(outcome, name)
-    if direct is not None:
-        return direct
-    for nested_name in ("label", "outcome", "payload"):
-        payload = _field(outcome, nested_name)
-        nested = _field(payload, name) if payload is not None else None
-        if nested is not None:
-            return nested
-    return None
+    found = _search_outcome_field(outcome, name)
+    return None if found is None else found
 
 
 def _finite_float(value: object) -> float | None:
@@ -596,13 +877,75 @@ def _direction_multiplier(predicted_class: str) -> float:
 def _logical_predicted_at(prediction: object) -> datetime | None:
     """Return the frozen market cutoff, never a later persistence timestamp."""
 
-    return _event_time(prediction, "predicted_at", "created_at")
+    for envelope in _prediction_envelopes(prediction):
+        parsed = _event_time(envelope, "predicted_at", "created_at")
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _prediction_ready_at(prediction: object) -> datetime | None:
     """Return evidence of real wall-clock availability for a prediction."""
 
-    return _event_time(prediction, "ready_at", "recorded_at")
+    for envelope in _prediction_envelopes(prediction):
+        parsed = _event_time(envelope, "ready_at", "recorded_at")
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _comparison_batch_id(prediction: object) -> str | None:
+    for envelope in _prediction_envelopes(prediction):
+        text = _text(_field(envelope, "comparison_batch_id"))
+        if text is not None:
+            return text
+    return None
+
+
+def _comparison_cohort_fingerprint(prediction: object) -> str | None:
+    for envelope in _prediction_envelopes(prediction):
+        text = _text(_field(envelope, "comparison_cohort_fingerprint"))
+        if text is not None:
+            return text
+    return None
+
+
+def _training_cutoff(prediction: object) -> datetime | None:
+    for envelope in _prediction_envelopes(prediction):
+        raw = _field(envelope, "training_cutoff")
+        if raw in (None, ""):
+            continue
+        parsed = _event_time({"training_cutoff": raw}, "training_cutoff")
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _search_outcome_field(outcome: object, *names: str) -> Any:
+    nested_names = ("outcome", "label", "evidence", "payload", "target_bar")
+    stack: list[object] = [outcome]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        ident = id(current)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        for name in names:
+            found = _field(current, name)
+            if found is not None and found != "":
+                return found
+        if isinstance(current, Mapping):
+            for nested_name in nested_names:
+                nested = current.get(nested_name)
+                if isinstance(nested, Mapping):
+                    stack.append(nested)
+            continue
+        for nested_name in nested_names:
+            nested = getattr(current, nested_name, None)
+            if nested is not None and nested is not current:
+                stack.append(nested)
+    return None
 
 
 def _event_time(value: object, *names: str) -> datetime | None:
@@ -647,5 +990,8 @@ __all__ = [
     "DIRECTIONAL_SHADOW_DRAWDOWN_CAVEAT",
     "GRU_MODEL_ID",
     "UNIFORM_BRIER",
+    "CONTEXT_MODEL_VERSION",
+    "MARKET_MODEL_VERSION",
+    "evaluate_context_ablation",
     "evaluate_shadow",
 ]

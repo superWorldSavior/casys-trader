@@ -214,9 +214,7 @@ def _experiment_runtime_identity_issues(
 
     captured_profiles = captured.get("model_profiles")
     try:
-        current_router = llm.build_default_router_from_env(
-            spark_model=codex_client.DEFAULT_MODEL
-        )
+        current_router = llm.build_default_router_from_env(spark_model=codex_client.DEFAULT_MODEL)
         current_profiles = experiment_metadata.model_profiles_from_backends(
             current_router.backends,
             repo_root=ROOT,
@@ -262,12 +260,7 @@ class _ClaimedDaemonResources:
         self.release_pid_file = release_pid_file
 
     def shutdown(self, *, data_source: object | None = None) -> None:
-        if (
-            self._shutdown
-            or self.pid_file is None
-            or self.pid is None
-            or self.release_pid_file is None
-        ):
+        if self._shutdown or self.pid_file is None or self.pid is None or self.release_pid_file is None:
             return
         self._shutdown = True
         if self.data_source_handle is not None:
@@ -282,11 +275,7 @@ class _ClaimedDaemonResources:
                 pass
         if self.world_model_store is not None:
             try:
-                runner_status = (
-                    self.world_model_runner.status()
-                    if self.world_model_runner is not None
-                    else {}
-                )
+                runner_status = self.world_model_runner.status() if self.world_model_runner is not None else {}
                 if not isinstance(runner_status, Mapping) or not runner_status.get("running"):
                     self.world_model_store.close()
             except Exception:  # noqa: BLE001 - process exit will release SQLite
@@ -514,13 +503,9 @@ def _resolve_decision_for_execution_routing(
     return decision
 
 
-def _attribution_min_entry_confidence(
-    risk_cfg: dict, *, confidence_gate_enabled: bool
-) -> float | None:
+def _attribution_min_entry_confidence(risk_cfg: dict, *, confidence_gate_enabled: bool) -> float | None:
     """Seuil de censure de l'attribution — même règle que TUI et consolidation."""
-    return attribution_min_entry_confidence(
-        risk_cfg, confidence_gate_enabled=confidence_gate_enabled
-    )
+    return attribution_min_entry_confidence(risk_cfg, confidence_gate_enabled=confidence_gate_enabled)
 
 
 def _build_recall_provider(
@@ -720,11 +705,7 @@ def _world_model_snapshot_cutoff(
         else cycle_started_at.astimezone(timezone.utc)
     )
     observed = completed_at or datetime.now(timezone.utc)
-    observed = (
-        observed.replace(tzinfo=timezone.utc)
-        if observed.tzinfo is None
-        else observed.astimezone(timezone.utc)
-    )
+    observed = observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
     return max(started, observed)
 
 
@@ -767,6 +748,7 @@ def _trigger_world_model_shadow(
     data_source: object,
     runtime_interval: str,
     now: datetime,
+    context_v2_enabled: bool = False,
 ) -> dict[str, object]:
     """Freeze an action-free market cohort and enqueue it without blocking trade."""
 
@@ -817,6 +799,8 @@ def _trigger_world_model_shadow(
             timestamp_semantics="bar_start",
             captured_at=now,
         )
+        # V2 context attachment is a background enricher.  The cycle only freezes V1.
+        _ = context_v2_enabled
         result = runner.trigger(
             episodes=episodes,
             bars_by_symbol=evidence_by_symbol,
@@ -873,13 +857,11 @@ def run_cycle(
     process_pilot: ProcessPilot | None = None,
     experiment_runtime_identity: Mapping[str, object] | None = None,
     world_model_runner: object | None = None,
+    world_model_context_v2: bool = False,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     process_state = process_state or _DEFAULT_CYCLE_PROCESS_STATE
-    worker_cycle_context = (
-        worker_cycle_context
-        or worker_cycle_context_runtime.WorkerCycleContextHandle()
-    )
+    worker_cycle_context = worker_cycle_context or worker_cycle_context_runtime.WorkerCycleContextHandle()
     now = now or datetime.now(timezone.utc)
     cycle_id = now.isoformat()
     universe_cfg = _load_yaml(ROOT / "config" / "universe.yaml")
@@ -889,9 +871,7 @@ def run_cycle(
     # universe.yaml. Une position ouverte bannie reste gérée.
     universe_cfg = {
         **(universe_cfg or {}),
-        "symbols": market_rotation_runtime.load_effective_universe(
-            ROOT / "config" / "universe.yaml", ROOT / "state"
-        ),
+        "symbols": market_rotation_runtime.load_effective_universe(ROOT / "config" / "universe.yaml", ROOT / "state"),
     }
     regime_path = ROOT / "config" / "regime.yaml"
     regime_cfg = _load_yaml(regime_path) if regime_path.exists() else {}
@@ -971,37 +951,22 @@ def run_cycle(
     captured_model_profiles = captured_runtime_identity.get("model_profiles")
     runtime_experiment_context = experiment_metadata.build_experiment_context(
         code_version=runtime_code_version,
-        model_preset=(
-            str(captured_runtime_identity.get("model_preset") or "").strip()
-            or None
-        ),
+        model_preset=(str(captured_runtime_identity.get("model_preset") or "").strip() or None),
         risk_policy={
             **asdict(gate.limits),
             "require_hard_stop": require_hard_stop,
         },
-        commission_model=experiment_metadata.commission_model_identity(
-            commission_model
-        ),
-        model_profiles=(
-            captured_model_profiles
-            if isinstance(captured_model_profiles, Mapping)
-            else {}
-        ),
-        runtime_issues=_experiment_runtime_identity_issues(
-            captured_runtime_identity
-        ),
+        commission_model=experiment_metadata.commission_model_identity(commission_model),
+        model_profiles=(captured_model_profiles if isinstance(captured_model_profiles, Mapping) else {}),
+        runtime_issues=_experiment_runtime_identity_issues(captured_runtime_identity),
     )
     mem = agent_memory.Memory(ROOT / "mandate" / "mandate.md", ROOT / "mandate" / "memory.md")
     learnings_store = raw_learnings.RawLearningsStore(
         STATE_DIR / "learnings.jsonl",
         max_entries=consolidator.DEFAULT_RAW_MAX_ENTRIES,
     )
-    consolidated_learnings_store = consolidator.ConsolidatedLearningsStore(
-        STATE_DIR / "learnings_consolidated.json"
-    )
-    decision_ledger_store = decision_ledger.DecisionLedgerStore(
-        STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME
-    )
+    consolidated_learnings_store = consolidator.ConsolidatedLearningsStore(STATE_DIR / "learnings_consolidated.json")
+    decision_ledger_store = decision_ledger.DecisionLedgerStore(STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
 
     # Store SQLite dérivé, toujours ouvrable/créable. Le worker de maintenance
     # l'alimente en arrière-plan ; les readers voient les commits via WAL.
@@ -1085,6 +1050,7 @@ def run_cycle(
         data_source=data_source,
         runtime_interval=runtime_interval,
         now=world_model_snapshot_at,
+        context_v2_enabled=world_model_context_v2,
     )
     if worker_cycle_context is not None:
         worker_cycle_context.publish(
@@ -1172,13 +1138,9 @@ def run_cycle(
     snap = portfolio.snapshot(broker, lambda s: prices.get(s, 0.0), starting_equity, fx_rate_of=_rate)
     # Folds must not crash on MissingFxRate; a live position without FX
     # fail-closes to +inf so new opens cannot understate gross.
-    gross = risk_capacity.gross_exposure(
-        broker, prices, rate_of=snapshot.try_rate_for_symbol
-    )
+    gross = risk_capacity.gross_exposure(broker, prices, rate_of=snapshot.try_rate_for_symbol)
     portfolio_fee_estimator = _build_portfolio_fee_estimator(commission_model)
-    portfolio_fee_cost_scope, portfolio_fee_is_all_in = cost_scope_for(
-        commission_model
-    )
+    portfolio_fee_cost_scope, portfolio_fee_is_all_in = cost_scope_for(commission_model)
 
     active_families = family_regime.families_for_universe(tradable_symbols)
     # Coût de transaction injecté dans le cockpit : break-even (bps) + coût
@@ -1231,15 +1193,8 @@ def run_cycle(
             cycle_id=cycle_id,
             inputs=worker_cycle_context_runtime.TradeEvaluationInputs(
                 prices_by_symbol=dict(tradable_prices),
-                fx_rates_by_symbol={
-                    symbol: _rate(symbol)
-                    for symbol in tradable_symbols
-                    if symbol in tradable_prices
-                },
-                bars_by_symbol={
-                    symbol: list(tradable_bars_by_symbol.get(symbol, []))
-                    for symbol in tradable_symbols
-                },
+                fx_rates_by_symbol={symbol: _rate(symbol) for symbol in tradable_symbols if symbol in tradable_prices},
+                bars_by_symbol={symbol: list(tradable_bars_by_symbol.get(symbol, [])) for symbol in tradable_symbols},
                 reference_volatility_by_symbol=reference_volatility_by_symbol,
                 positions_by_symbol={
                     symbol: (position.quantity, position.avg_price)
@@ -1256,12 +1211,10 @@ def run_cycle(
 
     def trade_plan_evaluator_for_symbol(symbol: str):
         if symbol not in trade_plan_evaluator_cache:
-            trade_plan_evaluator_cache[symbol] = (
-                queue_runtime.trade_plan_evaluator_from_worker_context(
-                    worker_cycle_context,
-                    cycle_id=cycle_id,
-                    symbol=symbol,
-                )
+            trade_plan_evaluator_cache[symbol] = queue_runtime.trade_plan_evaluator_from_worker_context(
+                worker_cycle_context,
+                cycle_id=cycle_id,
+                symbol=symbol,
             )
         return trade_plan_evaluator_cache[symbol]
 
@@ -1290,9 +1243,7 @@ def run_cycle(
             risk_cfg, confidence_gate_enabled=gate.limits.confidence_gate_enabled
         ),
     )
-    confidence_calibration_payload = (
-        confidence_calibration.build_confidence_calibration(STATE_DIR)
-    )
+    confidence_calibration_payload = confidence_calibration.build_confidence_calibration(STATE_DIR)
     if worker_cycle_context is not None:
         worker_cycle_context.publish_attribution(
             cycle_id=cycle_id,
@@ -1345,10 +1296,8 @@ def run_cycle(
         requestable_indicator_ids=DEFAULT_INDICATORS,
         recall_store=_recall_store,
     )
-    base_context["confidence_calibration"] = (
-        confidence_calibration.compact_confidence_calibration(
-            confidence_calibration_payload
-        )
+    base_context["confidence_calibration"] = confidence_calibration.compact_confidence_calibration(
+        confidence_calibration_payload
     )
     try:
         regime_families = base_context["regime_families"]
@@ -1414,14 +1363,12 @@ def run_cycle(
     mandate_txt, memory_txt = mem.read_mandate(), mem.read_memory()
     model_call_counter = decision_dispatch_runtime.ModelCallCounter()
     held_symbols = {holding.symbol for holding in snap.holdings if holding.quantity}
-    company_context_by_symbol, mandate_context_by_symbol = (
-        trader_research_context.load_trader_research_context(
-            config_dir=ROOT / "config",
-            state_dir=STATE_DIR,
-            symbols=symbols_to_decide,
-            active_at=now,
-            held_symbols=held_symbols,
-        )
+    company_context_by_symbol, mandate_context_by_symbol = trader_research_context.load_trader_research_context(
+        config_dir=ROOT / "config",
+        state_dir=STATE_DIR,
+        symbols=symbols_to_decide,
+        active_at=now,
+        held_symbols=held_symbols,
     )
 
     # Calendrier macro : calculé UNE fois par cycle (pas par symbole) — best-effort.
@@ -1451,17 +1398,11 @@ def run_cycle(
         recall_store=_recall_store,
         merge_gate_feedback=confidence_feedback.merge_gate_feedback,
         model_calls_used_getter=lambda: model_call_counter.used,
-        agent_trace_appender=agent_trace_runtime.build_agent_trace_appender(
-            STATE_DIR / "agent_trace.log"
-        ),
+        agent_trace_appender=agent_trace_runtime.build_agent_trace_appender(STATE_DIR / "agent_trace.log"),
         company_context_provider=lambda symbol: company_context_by_symbol.get(symbol),
         mandate_context_provider=lambda symbol: mandate_context_by_symbol.get(symbol),
         learning_ingester=(
-            (
-                lambda: _recall_store.ingest_jsonl(
-                    STATE_DIR / "learnings.jsonl", source="runtime"
-                )
-            )
+            (lambda: _recall_store.ingest_jsonl(STATE_DIR / "learnings.jsonl", source="runtime"))
             if _recall_store is not None
             else None
         ),
@@ -1479,8 +1420,7 @@ def run_cycle(
         cycle_scheduling.ensure_default_wake(sched, now=now, default_wake_minutes=default_wake_minutes)
 
     has_armed_triggers = any(
-        str(trigger.get("on_trigger")) == "EXECUTE_ORDER"
-        and isinstance(trigger.get("order"), dict)
+        str(trigger.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(trigger.get("order"), dict)
         for trigger in indicator_triggers
     )
     prepared_scope = decision_scope.prepare_decision_scope(
@@ -1540,9 +1480,7 @@ def run_cycle(
             record_decision(entry)
 
     decidable = prepared_scope.decidable
-    _log_cycle_progress(
-        "[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide)
-    )
+    _log_cycle_progress("[batch] deciding symbols=%d/%d", len(decidable), len(symbols_to_decide))
     _write_status(
         "deciding_batch",
         current_symbol=None,
@@ -1639,11 +1577,7 @@ def run_cycle(
             now_fn=time.time,
             company_context_by_symbol=company_context_by_symbol,
             mandate_context_by_symbol=mandate_context_by_symbol,
-            learning_feedback_provider=(
-                _recall_store.feedback_by_decision_ids
-                if _recall_store is not None
-                else None
-            ),
+            learning_feedback_provider=(_recall_store.feedback_by_decision_ids if _recall_store is not None else None),
             process_identity_by_symbol=_queue_process_identity_by_symbol(
                 process_pilot=process_pilot,
                 symbols=decidable,
@@ -1668,6 +1602,7 @@ def run_cycle(
 
     mark_end(stage_clock, "decide_ms")
     mark_start(stage_clock, "risk_execute_ms")
+
     # Admission gross équitable sans clamp (spec 2026-06-30) : on réordonne
     # l'exécution — réducteurs d'abord (ils libèrent de la marge), puis ouvertures
     # par conviction décroissante — pour que le RiskGate arbitre au mérite plutôt
@@ -1787,7 +1722,9 @@ def run_cycle(
         if sym in undecided_symbols:
             _log_cycle_progress(
                 "[decision %d/%d] %s queue_decide_deferred — aucun HOLD synthétique",
-                index, len(symbols_to_decide), sym,
+                index,
+                len(symbols_to_decide),
+                sym,
             )
             _append_event("queue_decide_deferred", symbol=sym, cycle_id=cycle_id)
             if process_pilot is not None:
@@ -1906,9 +1843,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true", help="un seul cycle puis sortie")
     parser.add_argument("--poll", type=float, default=30.0, help="secondes entre deux vérifications du scheduler")
     parser.add_argument("--default-wake-minutes", type=float, default=30.0, help="cadence globale par défaut")
-    parser.add_argument("--min-wake-minutes", type=float, default=None, help="borne basse optionnelle du réveil agent (défaut: aucune)")
-    parser.add_argument("--max-wake-minutes", type=float, default=None, help="borne haute optionnelle du réveil agent (défaut: aucune — l'agent est autonome)")
-    parser.add_argument("--max-context-requests-per-symbol", type=int, default=2, help="nombre max de requêtes indicateurs par symbole")
+    parser.add_argument(
+        "--min-wake-minutes", type=float, default=None, help="borne basse optionnelle du réveil agent (défaut: aucune)"
+    )
+    parser.add_argument(
+        "--max-wake-minutes",
+        type=float,
+        default=None,
+        help="borne haute optionnelle du réveil agent (défaut: aucune — l'agent est autonome)",
+    )
+    parser.add_argument(
+        "--max-context-requests-per-symbol", type=int, default=2, help="nombre max de requêtes indicateurs par symbole"
+    )
     parser.add_argument(
         "--max-indicators-per-request",
         type=int,
@@ -1972,7 +1918,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=_env_int("TRADER_CONSOLIDATOR_TIMEOUT_S", consolidator.DEFAULT_CONSOLIDATOR_TIMEOUT_S),
         help="timeout LLM du consolidateur",
     )
-    parser.add_argument("--bootstrap-all", action="store_true", help="ignore les timers au démarrage et force tous les symboles")
+    parser.add_argument(
+        "--bootstrap-all", action="store_true", help="ignore les timers au démarrage et force tous les symboles"
+    )
     parser.add_argument("--ib-host", default=os.getenv("CASYS_IB_HOST", DEFAULT_IB_HOST), help="host IB Gateway/TWS")
     parser.add_argument("--ib-port", type=int, default=_env_int("CASYS_IB_PORT", DEFAULT_IB_PORT), help="port API IB")
     parser.add_argument(
@@ -2037,11 +1985,10 @@ def main(
     sleep = sleep_fn or time.sleep
 
     from trader.runtime.logging_setup import setup_logging
+
     # Niveau console pilotable via CASYS_LOG_LEVEL (.env/CLI), défaut INFO.
     # DEBUG ressort le détail fetch par-symbole (source_skipped/stale) sinon muet.
-    _log_level = logging.getLevelNamesMapping().get(
-        os.getenv("CASYS_LOG_LEVEL", "INFO").upper(), logging.INFO
-    )
+    _log_level = logging.getLevelNamesMapping().get(os.getenv("CASYS_LOG_LEVEL", "INFO").upper(), logging.INFO)
     setup_logging(level=_log_level)
     dry_run = not args.live
     commission_model = commission_model_from_name(args.commission_model)
@@ -2107,6 +2054,7 @@ def main(
     cycle_run = run_cycle
     experiment_runtime_identity = _capture_experiment_runtime_identity()
     _world_model_runner: object | None = None
+    _world_model_context_v2 = _env_int("CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED", 0) == 1
 
     def _run_cycle_with_process_state(**kwargs):
         return cycle_run(
@@ -2114,6 +2062,7 @@ def main(
             process_state=process_state,
             process_pilot=process_pilot,
             world_model_runner=_world_model_runner,
+            world_model_context_v2=_world_model_context_v2,
         )
 
     # Ref partagée vers le data_source courant : les workers de file la lisent via
@@ -2128,18 +2077,54 @@ def main(
                 HierarchicalDirichletWorldBaseline,
             )
             from trader.application.world_model.gru import OnlineGRUWorldChallenger
+            from trader.domain.world_context import (
+                ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
+                CONTEXT_FEATURE_CONTRACT_VERSION,
+            )
             from trader.infrastructure.state_db.world_model_store import WorldModelStore
             from trader.runtime.world_model_runtime import (
                 CallableWorldBarProvider,
+                WorldContextEpisodeEnricher,
                 WorldModelBackgroundRunner,
                 WorldModelRuntime,
             )
 
             _world_model_store = WorldModelStore(STATE_DIR / "world_model.db")
+            extra_predictors: list[object] = [OnlineGRUWorldChallenger()]
+            context_enricher = None
+            if _world_model_context_v2:
+                extra_predictors.extend(
+                    [
+                        HierarchicalDirichletWorldBaseline(
+                            model_version="context.v2",
+                            include_context=True,
+                            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                        ),
+                        OnlineGRUWorldChallenger(
+                            model_version="context.v2",
+                            encoder_version="world_gru_encoder.v2",
+                            include_context=True,
+                            extra_categorical_keys=ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
+                            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                        ),
+                    ]
+                )
+                from trader.infrastructure.state_db.company_intelligence_store import (
+                    CompanyIntelligenceStore,
+                )
+                from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
+                from trader.infrastructure.state_db.world_context_reader import WorldContextReader
+
+                context_enricher = WorldContextEpisodeEnricher(
+                    WorldContextReader(
+                        news_store=NewsMacroBriefStore(STATE_DIR / "news_briefs"),
+                        company_store=CompanyIntelligenceStore(STATE_DIR / "company_intelligence"),
+                    )
+                )
             _world_model_runtime = WorldModelRuntime(
                 store=_world_model_store,
                 predictor=HierarchicalDirichletWorldBaseline(),
-                predictors=(OnlineGRUWorldChallenger(),),
+                predictors=tuple(extra_predictors),
                 labeler=world_model_labeler,
                 bar_provider=CallableWorldBarProvider(make_indirect_get_bars(_ds_handle.get)),
                 logger=log,
@@ -2148,12 +2133,15 @@ def main(
             _world_model_runner = WorldModelBackgroundRunner(
                 runtime=_world_model_runtime,
                 logger=log,
+                context_enricher=context_enricher,
             )
             claimed_resources.world_model_store = _world_model_store
             claimed_resources.world_model_runner = _world_model_runner
             log.info(
-                "[world_model_shadow] enabled db=%s authority=shadow_only",
+                "[world_model_shadow] enabled db=%s authority=shadow_only context_v2=%s lanes=%s",
                 STATE_DIR / "world_model.db",
+                int(_world_model_context_v2),
+                4 if _world_model_context_v2 else 2,
             )
         except Exception as exc:  # noqa: BLE001 - shadow boot cannot block trading
             log.warning(
@@ -2206,12 +2194,8 @@ def main(
     claimed_resources.execute_pool = _execute_pool
     _news_macro_runner = news_macro_runtime.NewsMacroAnalysisRunner()
     claimed_resources.news_macro_runner = _news_macro_runner
-    _universe_intelligence_runner = (
-        universe_intelligence_runtime.UniverseIntelligenceRunner()
-    )
-    claimed_resources.universe_intelligence_runner = (
-        _universe_intelligence_runner
-    )
+    _universe_intelligence_runner = universe_intelligence_runtime.UniverseIntelligenceRunner()
+    claimed_resources.universe_intelligence_runner = _universe_intelligence_runner
 
     def _on_macro_briefs_written(events: tuple[dict, ...]) -> None:
         universe_intelligence_runtime.trigger_regional_brief_refresh(
@@ -2241,9 +2225,7 @@ def main(
         logger=log,
         on_brief_written=_on_company_brief_written,
     )
-    claimed_resources.company_intelligence_runner = (
-        _company_intelligence_runner
-    )
+    claimed_resources.company_intelligence_runner = _company_intelligence_runner
     _company_intelligence_runner.trigger(
         scope="current",
         depth="screen",
@@ -2294,38 +2276,42 @@ def main(
             stop_after_iteration = False
             try:
                 if data_source is None:
-                    _adopt_data_source_state(data_source_runtime.build_data_source(
+                    _adopt_data_source_state(
+                        data_source_runtime.build_data_source(
+                            _data_source_config,
+                            host=args.ib_host,
+                            port=args.ib_port,
+                            client_id=args.ib_client_id,
+                            attach_retry_seconds=args.ib_attach_retry_seconds,
+                            now=now(),
+                            connect_ib_fn=connect_ib,
+                            logger=log,
+                            composite_cls=CompositeDataSource,
+                            yfinance_cls=YFinanceDataSource,
+                            ib_data_source_cls=IBDataSource,
+                            backoff_cls=IBAttachBackoff,
+                            disconnect_quietly=_disconnect_quietly,
+                            # Anti-429 : borne les fetchs yahoo concurrents (workers de file).
+                            # Sans effet sur le cycle (fetchs séquentiels ≤ 1 concurrent).
+                            throttle_by_source={"yfinance": _yf_fetch_concurrency},
+                        )
+                    )
+                loop_now = now()
+                _adopt_data_source_state(
+                    data_source_runtime.maybe_attach_ib(
+                        _data_source_state,
                         _data_source_config,
                         host=args.ib_host,
                         port=args.ib_port,
                         client_id=args.ib_client_id,
-                        attach_retry_seconds=args.ib_attach_retry_seconds,
-                        now=now(),
+                        now=loop_now,
                         connect_ib_fn=connect_ib,
                         logger=log,
                         composite_cls=CompositeDataSource,
-                        yfinance_cls=YFinanceDataSource,
                         ib_data_source_cls=IBDataSource,
-                        backoff_cls=IBAttachBackoff,
                         disconnect_quietly=_disconnect_quietly,
-                        # Anti-429 : borne les fetchs yahoo concurrents (workers de file).
-                        # Sans effet sur le cycle (fetchs séquentiels ≤ 1 concurrent).
-                        throttle_by_source={"yfinance": _yf_fetch_concurrency},
-                    ))
-                loop_now = now()
-                _adopt_data_source_state(data_source_runtime.maybe_attach_ib(
-                    _data_source_state,
-                    _data_source_config,
-                    host=args.ib_host,
-                    port=args.ib_port,
-                    client_id=args.ib_client_id,
-                    now=loop_now,
-                    connect_ib_fn=connect_ib,
-                    logger=log,
-                    composite_cls=CompositeDataSource,
-                    ib_data_source_cls=IBDataSource,
-                    disconnect_quietly=_disconnect_quietly,
-                ))
+                    )
+                )
                 market_rotation_runtime.tick_market_rotation(
                     config_dir=ROOT / "config",
                     state_dir=STATE_DIR,
@@ -2334,9 +2320,7 @@ def main(
                 )
                 # Pin/ban cockpit appliqués à la lecture (parité run_cycle) :
                 # un ban retire les réveils du scheduler dès la prochaine boucle.
-                symbols = market_rotation_runtime.load_effective_universe(
-                    ROOT / "config" / "universe.yaml", STATE_DIR
-                )
+                symbols = market_rotation_runtime.load_effective_universe(ROOT / "config" / "universe.yaml", STATE_DIR)
                 sched.reconcile_universe(symbols)
                 expired_watches = cycle_scheduling.expire_indicator_watches(
                     sched,
@@ -2467,25 +2451,29 @@ def main(
                         venues=universe_intelligence_runtime.VENUES,
                     )
                     _learning_sync_runner.trigger(reason="post_cycle")
-                _adopt_data_source_state(data_source_runtime.detach_failed_ib(
-                    _data_source_state,
-                    _data_source_config,
-                    now=loop_now,
-                    is_connection_market_error=_is_connection_market_error,
-                    disconnect_quietly=_disconnect_quietly,
-                    attach_retry_seconds=args.ib_attach_retry_seconds,
-                    logger=log,
-                    composite_cls=CompositeDataSource,
-                    backoff_cls=IBAttachBackoff,
-                ))
+                _adopt_data_source_state(
+                    data_source_runtime.detach_failed_ib(
+                        _data_source_state,
+                        _data_source_config,
+                        now=loop_now,
+                        is_connection_market_error=_is_connection_market_error,
+                        disconnect_quietly=_disconnect_quietly,
+                        attach_retry_seconds=args.ib_attach_retry_seconds,
+                        logger=log,
+                        composite_cls=CompositeDataSource,
+                        backoff_cls=IBAttachBackoff,
+                    )
+                )
             except market.MarketError as exc:
                 if data_source is not None:
                     _disconnect_quietly(data_source)
-                    _adopt_data_source_state(data_source_runtime.DataSourceState(
-                        data_source=None,
-                        composite_available=_data_source_state.composite_available,
-                        ib_attach_backoff=_data_source_state.ib_attach_backoff,
-                    ))
+                    _adopt_data_source_state(
+                        data_source_runtime.DataSourceState(
+                            data_source=None,
+                            composite_available=_data_source_state.composite_available,
+                            ib_attach_backoff=_data_source_state.ib_attach_backoff,
+                        )
+                    )
                 if _data_source_config.use_composite:
                     # En mode composite la source est déjà construite — une MarketError
                     # ici vient du cycle lui-même (ex: all_sources_failed). On reset

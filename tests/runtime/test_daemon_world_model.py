@@ -58,14 +58,20 @@ def test_world_snapshot_cutoff_is_never_before_fetch_completion() -> None:
     started = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
     completed = started + timedelta(minutes=3)
 
-    assert daemon._world_model_snapshot_cutoff(
-        started,
-        completed_at=completed,
-    ) == completed
-    assert daemon._world_model_snapshot_cutoff(
-        completed,
-        completed_at=started,
-    ) == completed
+    assert (
+        daemon._world_model_snapshot_cutoff(
+            started,
+            completed_at=completed,
+        )
+        == completed
+    )
+    assert (
+        daemon._world_model_snapshot_cutoff(
+            completed,
+            completed_at=started,
+        )
+        == completed
+    )
 
 
 def test_world_shadow_freezes_every_active_tradable_symbol_before_dispatch() -> None:
@@ -142,9 +148,7 @@ def test_world_shadow_wiring_persists_predictions_in_the_dedicated_store(tmp_pat
             "outcome_events": 0,
             "predictions": 8,
         }
-        assert {
-            row["horizon_code"] for row in store.list_predictions()
-        } == {"elapsed_4h.v1", "elapsed_1d.v1"}
+        assert {row["horizon_code"] for row in store.list_predictions()} == {"elapsed_4h.v1", "elapsed_1d.v1"}
 
         # A second wake before the next completed 15m bar has the same slot id
         # but a later fetch/capture clock.  The first T0 evidence remains
@@ -295,6 +299,191 @@ def test_world_shadow_disabled_is_a_noop() -> None:
     ) == {"triggered": False, "reason": "disabled"}
 
 
+def test_world_shadow_trigger_never_reads_context_on_the_cycle_thread(monkeypatch) -> None:
+    class Boom:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("WorldContextReader must not be constructed on the daemon thread")
+
+    monkeypatch.setattr(
+        "trader.infrastructure.state_db.world_context_reader.WorldContextReader",
+        Boom,
+    )
+    runner = _Runner()
+    result = daemon._trigger_world_model_shadow(
+        runner=runner,
+        active_symbols=["AAA"],
+        tradable_symbols=["AAA"],
+        bars_by_symbol={"AAA": _bars(base=100.0)},
+        data_age_by_symbol={"AAA": 3.0},
+        runtime_data_source_by_symbol={"AAA": "yfinance"},
+        data_source=object(),
+        runtime_interval="15m",
+        now=NOW,
+        context_v2_enabled=True,
+    )
+    assert result["triggered"] is True
+    episodes = runner.calls[0]["episodes"]
+    assert len(episodes) == 1
+    assert episodes[0].observation.context is None
+
+
+def test_repeated_poll_of_the_same_bar_keeps_one_v2_row(tmp_path) -> None:
+    from trader.application.world_model import labeler
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.gru import OnlineGRUWorldChallenger
+    from trader.domain.world_context import ALLOWED_CONTEXT_CATEGORICAL_FEATURES, CONTEXT_FEATURE_CONTRACT_VERSION
+    from trader.infrastructure.state_db.world_context_reader import WorldContextReader
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import (
+        WorldContextEpisodeEnricher,
+        WorldModelBackgroundRunner,
+        WorldModelRuntime,
+    )
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    enricher = WorldContextEpisodeEnricher(
+        WorldContextReader(news_dir=tmp_path / "news", company_dir=tmp_path / "company")
+    )
+    runner = WorldModelBackgroundRunner(
+        runtime=WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            predictors=(
+                OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4),
+                HierarchicalDirichletWorldBaseline(
+                    model_version="context.v2",
+                    include_context=True,
+                    accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                ),
+                OnlineGRUWorldChallenger(
+                    model_version="context.v2",
+                    encoder_version="world_gru_encoder.v2",
+                    hidden_size=4,
+                    sequence_len=4,
+                    include_context=True,
+                    extra_categorical_keys=ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
+                    accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                ),
+            ),
+            labeler=labeler,
+            bar_provider=None,
+        ),
+        context_enricher=enricher,
+    )
+    try:
+        first = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=100.0)},
+            data_age_by_symbol={"AAA": 3.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW,
+        )
+        first["_thread"].join(timeout=2)
+        replay = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=100.0)},
+            data_age_by_symbol={"AAA": 8.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW + timedelta(minutes=5),
+        )
+        replay["_thread"].join(timeout=2)
+        counts = store.counts()
+        assert counts["episodes"] == 2
+        versions = {
+            (row.get("feature_contract_version") or row["observation"]["feature_contract_version"])
+            for row in store.list_eligible_episodes()
+        }
+        assert "market_ohlcv_causal.v1" in versions
+        assert CONTEXT_FEATURE_CONTRACT_VERSION in versions
+        revised = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=101.0)},
+            data_age_by_symbol={"AAA": 9.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW + timedelta(minutes=6),
+        )
+        revised["_thread"].join(timeout=2)
+        capture = runner.status()["capture"]
+        assert capture["status"] == "partial"
+        assert any("existing_episode_market_evidence_conflict" in item["error"] for item in capture["errors"])
+        assert store.counts()["episodes"] == 2
+    finally:
+        runner.stop()
+        store.close()
+
+
+def test_context_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
+    from trader.application.world_model import labeler
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, WorldModelRuntime
+
+    class BrokenEnricher:
+        def enrich(self, _episodes):
+            raise OSError("context disk unavailable")
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    runner = WorldModelBackgroundRunner(
+        runtime=WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=labeler,
+            bar_provider=None,
+        ),
+        context_enricher=BrokenEnricher(),
+    )
+    try:
+        result = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=100.0)},
+            data_age_by_symbol={"AAA": 3.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW,
+        )
+        result["_thread"].join(timeout=2)
+        status = runner.status()
+        assert status["status"] == "partial"
+        assert status["errors"][0]["stage"] == "context_enrich"
+        assert store.counts()["episodes"] == 1
+        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "market_ohlcv_causal.v1"
+    finally:
+        runner.stop()
+        store.close()
+
+
+def test_flag_off_keeps_two_lanes_without_an_enricher() -> None:
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.gru import OnlineGRUWorldChallenger
+    from trader.runtime.world_model_runtime import WorldModelBackgroundRunner
+
+    runner = WorldModelBackgroundRunner(
+        runtime=object(),  # type: ignore[arg-type]
+        context_enricher=None,
+    )
+    assert runner.context_enricher is None
+    identities = {
+        (HierarchicalDirichletWorldBaseline().model_id, HierarchicalDirichletWorldBaseline().model_version),
+        (OnlineGRUWorldChallenger().model_id, OnlineGRUWorldChallenger().model_version),
+    }
+    assert len(identities) == 2
+
+
 def _contains_control_field(value: object) -> bool:
     forbidden = {
         "action",
@@ -312,10 +501,7 @@ def _contains_control_field(value: object) -> bool:
         "memory",
     }
     if isinstance(value, dict):
-        return any(
-            str(key).lower() in forbidden or _contains_control_field(nested)
-            for key, nested in value.items()
-        )
+        return any(str(key).lower() in forbidden or _contains_control_field(nested) for key, nested in value.items())
     if isinstance(value, (tuple, list)):
         return any(_contains_control_field(item) for item in value)
     return False

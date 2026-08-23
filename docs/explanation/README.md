@@ -14,6 +14,7 @@ formats et commandes, suivre les pages [Reference](../reference/README.md).
 | [Intelligence et apprentissage](architecture/intelligence-learning.md) | Comment l'univers, les briefs et les learnings se distinguent-ils ? |
 | [Trace Brain des décisions Trader](architecture/brain-trade-trace.md) | Quelles identités et provenances sont persistées sans reconstruction ? |
 | [World model shadow](architecture/world-model-shadow.md) | Comment apprend-on une dynamique de marché sans confondre action et état du monde ? |
+| [World context / ontologie temporelle](architecture/world-context-ontology.md) | Qu'est-ce qui était connu, de quelle source, au cutoff — sans claim causal ? |
 | [Opérations et gouvernance](architecture/operations-governance.md) | Comment le LLM, les outils et le pilote de processus restent-ils bornés ? |
 
 La façade historique [architecture.md](../architecture.md) conserve les titres

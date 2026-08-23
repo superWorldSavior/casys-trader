@@ -31,7 +31,7 @@ def _episode(
     macro_regime: str = "quiet",
     return_value: float = 0.006,
     available_after_hours: int = 0,
-    feature_contract_version: str = "world_features.v1",
+    feature_contract_version: str = "market_ohlcv_causal.v1",
     sampling_policy_version: str = "first_fresh_bar.v1",
 ) -> WorldEpisode:
     as_of = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=hour)
@@ -225,7 +225,7 @@ def test_same_availability_cutoff_never_admits_a_later_market_bar() -> None:
 
 
 def test_sequence_never_mixes_feature_or_sampling_contract_versions() -> None:
-    model = _model()
+    model = _model(accepted_feature_contracts=frozenset({"market_ohlcv_causal.v1", "world_features.v2"}))
     first_v1 = _episode(0)
     incompatible = _episode(1, feature_contract_version="world_features.v2")
     target_v1 = _episode(2)

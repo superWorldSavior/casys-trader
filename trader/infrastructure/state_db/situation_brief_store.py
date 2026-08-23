@@ -12,16 +12,32 @@ from trader.infrastructure.state_db._jsonl_store import (
     read_jsonl_objects,
     safe_filename_component,
 )
+from trader.infrastructure.state_db.availability_receipt import (
+    UtcClock,
+    append_jsonl_and_fsync,
+    build_availability_receipt,
+    default_utc_clock,
+    fsync_path,
+    receipt_dir,
+    unwrap_history_payload,
+)
 
 
 class NewsMacroBriefStore:
     """Read/write `state/news_briefs/YYYY-MM-DD.jsonl` plus latest JSONL caches."""
 
-    def __init__(self, base_dir: str | Path, *, history_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: str | Path,
+        *,
+        history_path: str | Path | None = None,
+        clock: UtcClock | None = None,
+    ) -> None:
         self.base_dir = Path(base_dir)
         # Kept for constructor compatibility with the old replacement-history store.
         self.history_path = Path(history_path) if history_path is not None else None
         self._ledger = JsonlDayLedger(self.base_dir, validate_date=False)
+        self._clock = clock or default_utc_clock
 
     def path_for_date(self, date: str) -> Path:
         return self._ledger.path_for_date(date)
@@ -29,8 +45,11 @@ class NewsMacroBriefStore:
     def latest_path_for_venue(self, venue: str) -> Path:
         return self.base_dir / f"latest-{_safe_venue(venue)}.jsonl"
 
+    def receipt_path_for_date(self, date: str) -> Path:
+        return receipt_dir(self.base_dir) / f"{date}.jsonl"
+
     def append(self, brief: NewsMacroBrief, *, date: str | None = None) -> dict[str, str]:
-        """Append one brief line and refresh the latest cache for its venue."""
+        """Append one canonical brief line, then a sidecar availability receipt."""
 
         date_key = date or loose_date_from_as_of(
             brief.as_of,
@@ -38,9 +57,24 @@ class NewsMacroBriefStore:
             strip=False,
         )
         payload = brief.to_dict()
+        history_path = self.path_for_date(date_key)
         with self._ledger.write_session() as session:
             session.append(payload, date=date_key)
             session.project_jsonl(self.latest_path_for_venue(brief.venue), payload)
+        fsync_path(history_path)
+        ready_at = self._clock()
+        receipt = build_availability_receipt(
+            artifact_id=brief.brief_id,
+            artifact_ref=brief.ref(date=date_key),
+            payload=payload,
+            history_ref={
+                "path": str(history_path.relative_to(self.base_dir)),
+                "scope": date_key,
+                "encoding": "jsonl",
+            },
+            ready_at=ready_at,
+        )
+        append_jsonl_and_fsync(self.receipt_path_for_date(date_key), receipt)
         return brief.ref(date=date_key)
 
     def write(self, brief: NewsMacroBrief, *, date: str | None = None) -> None:
@@ -100,11 +134,13 @@ class NewsMacroBriefStore:
         brief = self.read_latest(date_or_venue, at=at)
         if brief is None:
             return None
-        return brief.ref(date=loose_date_from_as_of(
-            brief.as_of,
-            empty_error="brief.as_of must start with YYYY-MM-DD when date is omitted",
-            strip=False,
-        ))
+        return brief.ref(
+            date=loose_date_from_as_of(
+                brief.as_of,
+                empty_error="brief.as_of must start with YYYY-MM-DD when date is omitted",
+                strip=False,
+            )
+        )
 
     def _iter_date(self, date: str) -> list[NewsMacroBrief]:
         return list(self._iter_path(self.path_for_date(date)))
@@ -112,7 +148,7 @@ class NewsMacroBriefStore:
     def _iter_path(self, path: Path) -> list[NewsMacroBrief]:
         briefs: list[NewsMacroBrief] = []
         for payload in read_jsonl_objects(path):
-            brief = NewsMacroBrief.from_mapping(payload)
+            brief = NewsMacroBrief.from_mapping(unwrap_history_payload(payload))
             if brief is not None:
                 briefs.append(brief)
         return briefs

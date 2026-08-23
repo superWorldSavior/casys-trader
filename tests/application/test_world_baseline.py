@@ -22,6 +22,7 @@ def _observation(
 ) -> dict:
     return {
         "available_at": at,
+        "feature_contract_version": "market_ohlcv_causal.v1",
         "categorical_features": {
             "asset_family": "equities",
             "venue": "NYSE",
@@ -110,7 +111,7 @@ def test_accepts_immutable_world_episode_and_emits_runner_safe_payload() -> None
         symbol="SPY",
         bar_interval="1h",
         as_of_bar_ts="2026-01-01T00:00:00+00:00",
-        feature_contract_version="world_features.v1",
+        feature_contract_version="market_ohlcv_causal.v1",
         sampling_policy_version="first_fresh_bar.v1",
         anchor={
             "ts": "2026-01-01T00:00:00+00:00",
@@ -182,9 +183,7 @@ def test_horizons_are_isolated() -> None:
     model = _ready_model(minimum_exact_support=1)
     observation = _observation()
 
-    assert model.apply_outcome(
-        _outcome("four-hour-up", horizon="elapsed_4h.v1", direction="UP"), observation
-    ).applied
+    assert model.apply_outcome(_outcome("four-hour-up", horizon="elapsed_4h.v1", direction="UP"), observation).applied
     one_day_before = model.predict(_observation(at="2026-01-02T00:00:00+00:00"), "elapsed_1d.v1")
     four_hour_before = model.predict(_observation(at="2026-01-02T00:00:00+00:00"), "elapsed_4h.v1")
     assert one_day_before.tier == "uniform"

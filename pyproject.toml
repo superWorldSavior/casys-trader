@@ -17,6 +17,7 @@ dependencies = [
     "duckdb>=1.5.4",
     "matplotlib>=3.11.0",
     "squarify>=0.4.4",
+    "networkx>=3.6.1",
 ]
 
 [project.scripts]

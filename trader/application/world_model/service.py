@@ -17,6 +17,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 
+from trader.application.world_model.encoding import common_training_replay_key
 from trader.application.world_model.protocols import (
     WorldBarProvider,
     WorldLabeler,
@@ -25,10 +26,14 @@ from trader.application.world_model.protocols import (
 )
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
+    WorldEpisode,
     WorldOutcome,
     WorldPrediction,
     canonical_prediction_class,
 )
+
+
+_V2_FEATURE_CONTRACT = "market_ohlcv_context.v2"
 
 
 DEFAULT_HORIZONS: tuple[str, ...] = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
@@ -164,14 +169,39 @@ def _episode_payload(value: object) -> object:
     return value
 
 
-def _episode_market_signature(value: object) -> str:
-    """Fingerprint stable market evidence while ignoring repeat-fetch clocks."""
+def _canonical_v2_episode(value: object) -> WorldEpisode | None:
+    """Rebuild a V2 episode through the domain contract, or return None for non-V2."""
 
     payload = _mapping_copy(value)
+    observation = payload.get("observation")
+    observation_map = dict(observation) if isinstance(observation, Mapping) else {}
+    top = str(payload.get("feature_contract_version") or "").strip()
+    nested = str(observation_map.get("feature_contract_version") or "").strip()
+    has_context = observation_map.get("context") is not None
+    is_v2 = top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context
+    if top and nested and top != nested:
+        if is_v2:
+            raise ValueError("feature_contract_version envelope contradicts nested observation")
+        return None
+    if not is_v2:
+        return None
+    return WorldEpisode.from_dict(payload)
+
+
+def _episode_market_signature(value: object) -> str:
+    """Fingerprint stable market evidence while ignoring context and fetch clocks."""
+
+    canonical_v2 = _canonical_v2_episode(value)
+    payload = _mapping_copy(canonical_v2 if canonical_v2 is not None else value)
+    payload.pop("episode_id", None)
+    payload.pop("context", None)
+    payload.pop("context_id", None)
     containers: list[dict[str, object]] = [payload]
     observation = payload.get("observation")
     if isinstance(observation, Mapping):
         detached_observation = copy.deepcopy(dict(observation))
+        detached_observation.pop("context", None)
+        detached_observation.pop("context_id", None)
         payload["observation"] = detached_observation
         containers.append(detached_observation)
     for container in containers:
@@ -183,6 +213,38 @@ def _episode_market_signature(value: object) -> str:
             stable_freshness.pop("data_age_minutes", None)
             container["freshness"] = stable_freshness
     return _stable_id("world-episode-market", payload)
+
+
+def _iso_slot_text(value: object) -> str | None:
+    parsed = _parse_timestamp(value)
+    if parsed is not None:
+        return parsed.isoformat()
+    text = str(value or "").strip()
+    return text or None
+
+
+def _v2_market_slot(episode: object) -> dict[str, str] | None:
+    payload = _mapping_copy(episode)
+    observation = payload.get("observation")
+    source = dict(observation) if isinstance(observation, Mapping) else payload
+    version = str(source.get("feature_contract_version") or payload.get("feature_contract_version") or "").strip()
+    if version != _V2_FEATURE_CONTRACT:
+        return None
+    venue = str(source.get("venue") or payload.get("venue") or "").strip()
+    symbol = str(source.get("symbol") or payload.get("symbol") or "").strip()
+    interval = str(source.get("bar_interval") or payload.get("bar_interval") or "").strip()
+    as_of = _iso_slot_text(source.get("as_of_bar_ts") or payload.get("as_of_bar_ts"))
+    sampling = str(source.get("sampling_policy_version") or payload.get("sampling_policy_version") or "").strip()
+    if not venue or not symbol or not interval or not as_of or not sampling:
+        return None
+    return {
+        "venue": venue,
+        "symbol": symbol,
+        "bar_interval": interval,
+        "as_of_bar_ts": as_of,
+        "feature_contract_version": version,
+        "sampling_policy_version": sampling,
+    }
 
 
 def _observation_payload(episode: object) -> dict[str, object]:
@@ -220,6 +282,18 @@ def _normalise_horizons(values: Iterable[object]) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+def _predictor_accepts(predictor: object, episode: object) -> bool:
+    """Honor optional accepts_episode(); legacy doubles without it accept all."""
+
+    accepts = getattr(predictor, "accepts_episode", None)
+    if not callable(accepts):
+        return True
+    try:
+        return bool(accepts(episode))
+    except Exception:
+        return False
+
+
 def _predictor_identity(predictor: object) -> tuple[str, str]:
     """Return a stable runtime identity for one shadow predictor.
 
@@ -250,21 +324,11 @@ def _prediction_model_identity(value: object) -> tuple[str | None, str | None]:
     return normalized_id, normalized_version
 
 
-def _outcome_replay_key(value: object) -> tuple[datetime, str, str, str]:
+def _outcome_replay_key(value: object) -> tuple[datetime, str, str, str, str, str, str]:
     """Canonical order shared by live reconciliation and restart replay."""
 
-    available_at = None
-    for name in ("label_available_at", "available_at", "sealed_at"):
-        available_at = _parse_timestamp(_field(value, name))
-        if available_at is not None:
-            break
-    event_id = _field(value, "outcome_event_id", "event_id", "outcome_id")
-    return (
-        available_at or datetime.max.replace(tzinfo=timezone.utc),
-        str(_episode_id(value) or ""),
-        str(_horizon_id(value) or ""),
-        str(event_id or ""),
-    )
+    episode = _field(value, "episode")
+    return common_training_replay_key(value, None if episode is _MISSING else episode)
 
 
 def _episode_replay_key(value: object) -> tuple[datetime, datetime, str]:
@@ -396,15 +460,9 @@ class WorldModelService:
             )
             for episode in canonical_episodes:
                 identifier = _episode_id(episode)
-                already_observed = (
-                    observed_during_hydration.get(identifier, set())
-                    if identifier is not None
-                    else set()
-                )
+                already_observed = observed_during_hydration.get(identifier, set()) if identifier is not None else set()
                 remaining_predictors = tuple(
-                    predictor
-                    for predictor in self.predictors
-                    if id(predictor) not in already_observed
+                    predictor for predictor in self.predictors if id(predictor) not in already_observed
                 )
                 if remaining_predictors:
                     self._observe_predictors(
@@ -582,10 +640,26 @@ class WorldModelService:
 
             canonical_episode = episode
             try:
+                existing = self._lookup_canonical_episode(episode)
+            except Exception as load_exc:  # noqa: BLE001 - shadow conflict never escapes
+                self._error(
+                    report,
+                    stage="get_episode",
+                    error=load_exc,
+                    episode=episode,
+                )
+                continue
+            if existing is not None:
+                report["episodes_existing"] = int(report["episodes_existing"]) + 1
+                canonical_episodes.append(existing)
+                continue
+            try:
                 appended = self.store.append_episode(_clone(episode))
             except Exception as exc:  # noqa: BLE001
                 try:
-                    existing = self._load_existing_episode(identifier, episode)
+                    existing = self._lookup_canonical_episode(episode)
+                    if existing is None:
+                        existing = self._load_existing_episode(identifier, episode)
                 except Exception as load_exc:  # noqa: BLE001 - shadow conflict never escapes
                     self._error(
                         report,
@@ -603,9 +677,30 @@ class WorldModelService:
             else:
                 if appended is False:
                     report["episodes_existing"] = int(report["episodes_existing"]) + 1
+                    reused = self._lookup_canonical_episode(episode)
+                    if reused is not None:
+                        canonical_episode = reused
                 else:
                     report["episodes_appended"] = int(report["episodes_appended"]) + 1
             canonical_episodes.append(canonical_episode)
+
+    def _lookup_canonical_episode(self, incoming_episode: object) -> object | None:
+        """Reuse the first canonical V2 episode for a market slot when the store can."""
+
+        slot = _v2_market_slot(incoming_episode)
+        lookup = getattr(self.store, "get_episode_by_v2_slot", None)
+        if slot is None or not callable(lookup):
+            return None
+        stored = lookup(**slot)
+        if stored is None:
+            return None
+        canonical = _clone(_episode_payload(stored))
+        if _episode_market_signature(canonical) != _episode_market_signature(incoming_episode):
+            raise ValueError(
+                "existing_episode_market_evidence_conflict: same sampling slot has "
+                "different source, OHLCV, feature, or eligibility evidence"
+            )
+        return canonical
 
     def _load_existing_episode(
         self,
@@ -637,9 +732,13 @@ class WorldModelService:
         if identifier is None:
             return
         if not self.predictors:
-            self._error(report, stage="predict", error=RuntimeError("predictor_unavailable"), episode=episode, horizon=horizon)
+            self._error(
+                report, stage="predict", error=RuntimeError("predictor_unavailable"), episode=episode, horizon=horizon
+            )
             return
         for predictor in self.predictors:
+            if not _predictor_accepts(predictor, episode):
+                continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             key = (identifier, horizon, model_id, model_version)
             if key in self._prediction_keys:
@@ -707,13 +806,10 @@ class WorldModelService:
             payload = _mapping_copy(prediction)
         payload_model_id, payload_model_version = _prediction_model_identity(payload)
         if payload_model_id is not None and payload_model_id != model_id:
-            raise ValueError(
-                f"prediction model_id mismatch: expected {model_id!r}, got {payload_model_id!r}"
-            )
+            raise ValueError(f"prediction model_id mismatch: expected {model_id!r}, got {payload_model_id!r}")
         if payload_model_version is not None and payload_model_version != model_version:
             raise ValueError(
-                "prediction model_version mismatch: "
-                f"expected {model_version!r}, got {payload_model_version!r}"
+                f"prediction model_version mismatch: expected {model_version!r}, got {payload_model_version!r}"
             )
         prediction_id = str(payload.get("prediction_id") or "").strip()
         if not prediction_id:
@@ -777,6 +873,8 @@ class WorldModelService:
             observe = getattr(predictor, "observe_episode", None)
             if not callable(observe):
                 continue
+            if not _predictor_accepts(predictor, episode):
+                continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             try:
                 observe(_clone(episode))
@@ -807,9 +905,7 @@ class WorldModelService:
             return observed_predictors
 
         sequence_predictors = [
-            predictor
-            for predictor in self.predictors
-            if callable(getattr(predictor, "observe_episode", None))
+            predictor for predictor in self.predictors if callable(getattr(predictor, "observe_episode", None))
         ]
         stored_episodes: list[object] = []
         eligible_fingerprint: str | None = None
@@ -818,10 +914,7 @@ class WorldModelService:
             try:
                 stored_episodes = list(self.store.list_eligible_episodes() or [])
                 stored_episodes.sort(key=_episode_replay_key)
-                episode_payloads = [
-                    _mapping_copy(_episode_payload(row))
-                    for row in stored_episodes
-                ]
+                episode_payloads = [_mapping_copy(_episode_payload(row)) for row in stored_episodes]
                 eligible_signatures = {
                     str(_episode_id(row) or ""): _stable_id(
                         "world-eligible-episode",
@@ -839,9 +932,7 @@ class WorldModelService:
                 return observed_predictors
 
         all_apply_predictors = [
-            predictor
-            for predictor in self.predictors
-            if callable(getattr(predictor, "apply_outcome", None))
+            predictor for predictor in self.predictors if callable(getattr(predictor, "apply_outcome", None))
         ]
         try:
             rows = (
@@ -859,18 +950,11 @@ class WorldModelService:
             return observed_predictors
 
         causal_cutoff_is_current = (
-            now is None
-            or self._model_hydrated_through is None
-            or now >= self._model_hydrated_through
+            now is None or self._model_hydrated_through is None or now >= self._model_hydrated_through
         )
         active_changed = active_fingerprint != self._active_outcome_fingerprint
         eligible_changed = eligible_fingerprint != self._eligible_episode_fingerprint
-        if (
-            self._baseline_hydrated
-            and not active_changed
-            and not eligible_changed
-            and causal_cutoff_is_current
-        ):
+        if self._baseline_hydrated and not active_changed and not eligible_changed and causal_cutoff_is_current:
             return observed_predictors
 
         episode_change_requires_reset = False
@@ -881,22 +965,13 @@ class WorldModelService:
             previous_ids = set(previous)
             current_ids = set(current)
             if not previous_ids.issubset(current_ids) or any(
-                previous[identifier] != current[identifier]
-                for identifier in previous_ids.intersection(current_ids)
+                previous[identifier] != current[identifier] for identifier in previous_ids.intersection(current_ids)
             ):
                 episode_change_requires_reset = True
             new_ids = current_ids - previous_ids
-            by_id = {
-                identifier: row
-                for row in stored_episodes
-                if (identifier := _episode_id(row)) is not None
-            }
+            by_id = {identifier: row for row in stored_episodes if (identifier := _episode_id(row)) is not None}
             new_episode_rows = [by_id[identifier] for identifier in new_ids]
-            target_rows = [
-                by_id[identifier]
-                for row in ordered
-                if (identifier := _episode_id(row)) in by_id
-            ]
+            target_rows = [by_id[identifier] for row in ordered if (identifier := _episode_id(row)) in by_id]
             if any(
                 _episode_series_identity(new_row) == _episode_series_identity(target_row)
                 and _episode_replay_key(new_row) <= _episode_replay_key(target_row)
@@ -932,8 +1007,7 @@ class WorldModelService:
             return observed_predictors
 
         needs_authoritative_reset = (
-            self._active_outcome_fingerprint is not None
-            or self._eligible_episode_fingerprint is not None
+            self._active_outcome_fingerprint is not None or self._eligible_episode_fingerprint is not None
         )
         replay_predictors = list(self.predictors)
         if needs_authoritative_reset:
@@ -949,9 +1023,7 @@ class WorldModelService:
             ]
             report["model_reconcile_skipped_unresettable"] = len(unresettable)
             replay_predictors = [
-                predictor
-                for predictor in replay_predictors
-                if callable(getattr(predictor, "reset_for_replay", None))
+                predictor for predictor in replay_predictors if callable(getattr(predictor, "reset_for_replay", None))
             ]
 
         completed = True
@@ -989,9 +1061,7 @@ class WorldModelService:
                                 for predictor in replay_predictors
                                 if callable(getattr(predictor, "observe_episode", None))
                             }
-                        report["model_observations_replayed"] = int(
-                            report["model_observations_replayed"]
-                        ) + 1
+                        report["model_observations_replayed"] = int(report["model_observations_replayed"]) + 1
                     else:
                         completed = False
             except Exception as exc:  # noqa: BLE001
@@ -1000,9 +1070,7 @@ class WorldModelService:
                 return observed_predictors
 
         apply_predictors = [
-            predictor
-            for predictor in replay_predictors
-            if callable(getattr(predictor, "apply_outcome", None))
+            predictor for predictor in replay_predictors if callable(getattr(predictor, "apply_outcome", None))
         ]
         for row in ordered:
             label = self._outcome_label(row)
@@ -1036,6 +1104,8 @@ class WorldModelService:
                 )
                 continue
             for predictor in apply_predictors:
+                if not _predictor_accepts(predictor, episode):
+                    continue
                 model_id, model_version = self._predictor_identities[id(predictor)]
                 try:
                     applied = self._call_baseline_apply(predictor.apply_outcome, label, episode, now)
@@ -1239,7 +1309,8 @@ class WorldModelService:
             "episode_id": episode_id,
             "horizon_id": str(label.get("horizon_id") or horizon),
             "horizon_code": str(label.get("horizon_code") or label.get("horizon_id") or horizon),
-            "label_schema_version": label.get("label_schema_version") or label.get("label_semantics_version")
+            "label_schema_version": label.get("label_schema_version")
+            or label.get("label_semantics_version")
             or label.get("schema_version"),
             "status": label.get("status"),
             "move_class": move,
@@ -1249,8 +1320,7 @@ class WorldModelService:
             "source_raw_sha256": label.get("source_raw_sha256"),
             "label_available_at": label.get("label_available_at") or label.get("available_at"),
             "sealed_at": label.get("sealed_at") or label.get("computed_at"),
-            "supersedes_outcome_event_id": label.get("supersedes_event_id")
-            or label.get("supersedes_outcome_event_id"),
+            "supersedes_outcome_event_id": label.get("supersedes_event_id") or label.get("supersedes_outcome_event_id"),
             "label": label,
             "evidence": evidence,
         }
@@ -1269,9 +1339,7 @@ class WorldModelService:
         labeler = self.labeler
         if labeler is None:
             raise RuntimeError("labeler_unavailable")
-        return _canonical_outcome(
-            labeler.label_horizon(_clone(episode), _clone(bars), horizon, now=now)
-        )
+        return _canonical_outcome(labeler.label_horizon(_clone(episode), _clone(bars), horizon, now=now))
 
     def _apply_baseline(
         self,
@@ -1284,6 +1352,8 @@ class WorldModelService:
         for predictor in self.predictors:
             apply_outcome = getattr(predictor, "apply_outcome", None)
             if not callable(apply_outcome):
+                continue
+            if not _predictor_accepts(predictor, episode):
                 continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             try:

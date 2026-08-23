@@ -8,7 +8,13 @@ from trader.application.world_model.baseline import HierarchicalDirichletWorldBa
 from trader.application.world_model.gru import OnlineGRUWorldChallenger
 from trader.application.world_model.labeler import DEFAULT_HORIZONS as LABEL_HORIZONS
 from trader.application.world_model.labeler import label_horizon
-from trader.domain.world_episode import AnchorBar, WorldEpisode, WorldObservation, WorldOutcome
+from trader.domain.world_episode import (
+    MARKET_FEATURE_CONTRACT_VERSION,
+    AnchorBar,
+    WorldEpisode,
+    WorldObservation,
+    WorldOutcome,
+)
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
 from trader.application.world_model.service import WorldModelService
 from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, WorldModelRuntime
@@ -25,7 +31,7 @@ def _domain_episode(at: datetime, *, symbol: str = "SPY", market_return: float =
             symbol=symbol,
             bar_interval="1h",
             as_of_bar_ts=at,
-            feature_contract_version="world-features-v1",
+            feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
             sampling_policy_version="fresh-active-v1",
             anchor=AnchorBar(
                 ts=at,
@@ -202,7 +208,9 @@ class RecordingBars:
 
 
 class RecordingLabeler:
-    def __init__(self, *, fail_horizons: set[tuple[str, str]] | None = None, pending_horizons: set[str] | None = None) -> None:
+    def __init__(
+        self, *, fail_horizons: set[tuple[str, str]] | None = None, pending_horizons: set[str] | None = None
+    ) -> None:
         self.fail_horizons = fail_horizons or set()
         self.pending_horizons = pending_horizons or set()
         self.calls: list[tuple[str, str]] = []
@@ -600,7 +608,7 @@ def test_real_domain_store_labeler_and_restart_rehydrate_all_models(tmp_path) ->
         symbol="MSFT",
         bar_interval="1h",
         as_of_bar_ts=started,
-        feature_contract_version="world-features-v1",
+        feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
         sampling_policy_version="fresh-active-v1",
         anchor=AnchorBar(
             ts=started,
@@ -982,10 +990,13 @@ def test_late_causally_earlier_episode_reconciles_training_sequence_before_predi
         bar_provider=None,
         horizons=(horizon,),
     )
-    assert runtime.capture_and_predict(
-        [trained_target],
-        now=started + timedelta(hours=2),
-    )["errors"] == []
+    assert (
+        runtime.capture_and_predict(
+            [trained_target],
+            now=started + timedelta(hours=2),
+        )["errors"]
+        == []
+    )
     assert store.append_outcome_event({**outcome.to_dict(), "move_class": "UP"})
     assert runtime.capture_and_predict([], now=started + timedelta(hours=6))["errors"] == []
     before = gru.model_fingerprint(horizon)

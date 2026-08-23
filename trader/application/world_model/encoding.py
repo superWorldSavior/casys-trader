@@ -17,7 +17,19 @@ import math
 import re
 from types import MappingProxyType
 
-from trader.domain.world_episode import PREDICTION_CLASSES, WorldOutcome
+from trader.domain.world_context import (
+    ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
+    ALLOWED_CONTEXT_NUMERIC_FEATURES,
+    CONTEXT_FEATURE_CONTRACT_VERSION,
+)
+from trader.domain.world_episode import (
+    MARKET_FEATURE_CONTRACT_VERSION,
+    PREDICTION_CLASSES,
+    WorldEpisode,
+    WorldObservation,
+    WorldOutcome,
+    canonical_sha256,
+)
 
 
 OUTCOME_CLASSES: tuple[str, str, str] = PREDICTION_CLASSES
@@ -250,6 +262,38 @@ def _feature_contract_fingerprint() -> str:
 
 FEATURE_CONTRACT_FINGERPRINT = _feature_contract_fingerprint()
 
+CONTEXT_V2_CATEGORICAL_FEATURES = ALLOWED_CATEGORICAL_FEATURES | ALLOWED_CONTEXT_CATEGORICAL_FEATURES
+CONTEXT_V2_NUMERIC_FEATURES = ALLOWED_NUMERIC_FEATURES | ALLOWED_CONTEXT_NUMERIC_FEATURES
+CONTEXT_V2_COARSE_FEATURES = _COARSE_FEATURES | frozenset(
+    {
+        "context_status",
+        "macro_status",
+        "company_status",
+        "company_thesis_status",
+        "company_coverage_status",
+        "company_freshness_status",
+        "company_source_count_bucket",
+    }
+)
+
+
+def _context_v2_feature_contract_fingerprint() -> str:
+    payload = {
+        "categorical": sorted(CONTEXT_V2_CATEGORICAL_FEATURES),
+        "numeric": sorted(CONTEXT_V2_NUMERIC_FEATURES),
+        "numeric_buckets": {
+            key: {"bucket_key": bucket_key, "thresholds": thresholds}
+            for key, (bucket_key, thresholds) in sorted(_NUMERIC_BUCKETS.items())
+        },
+        "coarse_features": sorted(CONTEXT_V2_COARSE_FEATURES),
+        "feature_contract_version": CONTEXT_FEATURE_CONTRACT_VERSION,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+FEATURE_CONTRACT_FINGERPRINT_V2 = _context_v2_feature_contract_fingerprint()
+
 
 class FeatureBoundaryError(ValueError):
     """A control, critic, target, or non-exogenous feature was supplied."""
@@ -313,32 +357,37 @@ def _normalise_scalar(value: object) -> str:
     raise FeatureBoundaryError("categorical World features must be scalar, not structured prompt/context data")
 
 
-def _is_forbidden_key(key: str) -> bool:
-    known_feature_keys = (
+def _is_forbidden_key(key: str, *, known_feature_keys: frozenset[str] | None = None) -> bool:
+    known = known_feature_keys or (
         ALLOWED_CATEGORICAL_FEATURES
         | ALLOWED_NUMERIC_FEATURES
         | frozenset(_CATEGORICAL_ALIASES)
         | frozenset(_NUMERIC_ALIASES)
         | frozenset(bucket_key for bucket_key, _thresholds in _NUMERIC_BUCKETS.values())
     )
-    if key in known_feature_keys:
+    if key in known:
         return False
     if key in _FORBIDDEN_EXACT:
         return True
     return any(fragment in key for fragment in _FORBIDDEN_FRAGMENTS)
 
 
-def _assert_no_forbidden_keys(values: Mapping[object, object], *, path: str = "features") -> None:
+def _assert_no_forbidden_keys(
+    values: Mapping[object, object],
+    *,
+    path: str = "features",
+    known_feature_keys: frozenset[str] | None = None,
+) -> None:
     for raw_key, value in values.items():
         key = _normalise_key(raw_key)
-        if _is_forbidden_key(key):
+        if _is_forbidden_key(key, known_feature_keys=known_feature_keys):
             raise FeatureBoundaryError(f"forbidden World feature at {path}.{key}")
         if isinstance(value, Mapping):
-            _assert_no_forbidden_keys(value, path=f"{path}.{key}")
+            _assert_no_forbidden_keys(value, path=f"{path}.{key}", known_feature_keys=known_feature_keys)
         elif isinstance(value, (list, tuple, set, frozenset)):
             for item in value:
                 if isinstance(item, Mapping):
-                    _assert_no_forbidden_keys(item, path=f"{path}.{key}")
+                    _assert_no_forbidden_keys(item, path=f"{path}.{key}", known_feature_keys=known_feature_keys)
 
 
 def _read_field(source: object, *names: str) -> object:
@@ -379,7 +428,78 @@ def _observation_context_features(source: object) -> tuple[dict[str, object], di
     return categorical, numeric
 
 
-def _feature_maps(observation: object) -> tuple[Mapping[object, object], Mapping[object, object]]:
+def _context_feature_maps(source: object) -> tuple[dict[str, object], dict[str, object]]:
+    raw = _read_field(source, "context")
+    if raw is _MISSING or raw is None:
+        return {}, {}
+    if not isinstance(raw, Mapping):
+        to_dict = getattr(raw, "to_dict", None)
+        raw = to_dict() if callable(to_dict) else {}
+    if not isinstance(raw, Mapping):
+        return {}, {}
+    categorical = _mapping_or_empty(raw.get("categorical_features"), name="context.categorical_features")
+    numeric = _mapping_or_empty(raw.get("numeric_features"), name="context.numeric_features")
+    return dict(categorical), dict(numeric)
+
+
+def revalidate_context_observation(observation: object) -> None:
+    """Replay V2 mappings through the domain object before encoding/training."""
+
+    if isinstance(observation, WorldEpisode):
+        if observation.observation.context is None:
+            raise FeatureBoundaryError("V2 World model requires a context snapshot")
+        return
+    if isinstance(observation, WorldObservation):
+        if observation.context is None:
+            raise FeatureBoundaryError("V2 World model requires a context snapshot")
+        return
+    if not isinstance(observation, Mapping):
+        return
+    payload = {str(key): item for key, item in observation.items()}
+    if "observation" in payload:
+        WorldEpisode.from_dict(payload)
+        return
+    WorldObservation.from_dict(payload)
+
+
+def _feature_contract_text(source: object) -> str:
+    raw = _read_field(source, "feature_contract_version")
+    if raw is _MISSING or raw is None:
+        return ""
+    text = str(raw).strip()
+    return text
+
+
+def feature_contract_version_of(observation: object) -> str:
+    """Return the canonical observation contract. Envelope/nested must agree."""
+
+    envelope = _feature_contract_text(observation)
+    nested_source = _read_field(observation, "observation")
+    nested = ""
+    if nested_source is not _MISSING and nested_source is not None:
+        nested = _feature_contract_text(nested_source)
+        deeper_source = _read_field(nested_source, "observation")
+        if deeper_source is not _MISSING and deeper_source is not None:
+            deeper = _feature_contract_text(deeper_source)
+            if nested and deeper and nested != deeper:
+                raise FeatureBoundaryError("feature_contract_version envelope contradicts nested observation")
+            nested = nested or deeper
+    if envelope and nested and envelope != nested:
+        raise FeatureBoundaryError("feature_contract_version envelope contradicts nested observation")
+    if nested:
+        return nested
+    if envelope:
+        return envelope
+    if isinstance(observation, WorldObservation):
+        return observation.feature_contract_version
+    return ""
+
+
+def _feature_maps(
+    observation: object,
+    *,
+    include_context: bool = False,
+) -> tuple[Mapping[object, object], Mapping[object, object]]:
     source = observation
     categories = _read_field(source, "categorical_features")
     numerics = _read_field(source, "numeric_features")
@@ -401,14 +521,8 @@ def _feature_maps(observation: object) -> tuple[Mapping[object, object], Mapping
 
     if categories is _MISSING and numerics is _MISSING:
         if not isinstance(source, Mapping):
-            raise FeatureBoundaryError(
-                "World baseline requires a feature mapping or WorldObservation-like record"
-            )
-        categories = {
-            key: value
-            for key, value in source.items()
-            if _normalise_key(key) not in _STRUCTURAL_KEYS
-        }
+            raise FeatureBoundaryError("World baseline requires a feature mapping or WorldObservation-like record")
+        categories = {key: value for key, value in source.items() if _normalise_key(key) not in _STRUCTURAL_KEYS}
 
     categorical_map = dict(_mapping_or_empty(categories, name="categorical_features"))
     numeric_map = dict(_mapping_or_empty(numerics, name="numeric_features"))
@@ -423,6 +537,15 @@ def _feature_maps(observation: object) -> tuple[Mapping[object, object], Mapping
         if existing is not _MISSING and existing != value:
             raise FeatureBoundaryError(f"conflicting structural World feature {key!r}")
         numeric_map.setdefault(key, value)
+    if include_context:
+        extra_categorical, extra_numeric = _context_feature_maps(source)
+        nested_observation = _read_field(observation, "observation")
+        if not extra_categorical and not extra_numeric and nested_observation is not _MISSING:
+            extra_categorical, extra_numeric = _context_feature_maps(nested_observation)
+        for key, value in extra_categorical.items():
+            categorical_map.setdefault(key, value)
+        for key, value in extra_numeric.items():
+            numeric_map.setdefault(key, value)
     return categorical_map, numeric_map
 
 
@@ -433,23 +556,43 @@ def _bucket(value: float, thresholds: Sequence[float]) -> str:
     return f"b{len(thresholds)}"
 
 
-def build_feature_state(observation: object) -> FeatureState:
+def build_feature_state(
+    observation: object,
+    *,
+    allowed_categorical: frozenset[str] | None = None,
+    allowed_numeric: frozenset[str] | None = None,
+    include_context: bool = False,
+    coarse_features: frozenset[str] | None = None,
+) -> FeatureState:
     """Return an immutable allow-listed World-state projection.
 
     Unknown keys are deliberately ignored; forbidden control/critic/target keys
     raise.  This lets a WorldEpisode retain provenance annotations without
-    accidentally growing the model feature surface.
+    accidentally growing the model feature surface.  V1 callers must keep the
+    default allow-lists so ``FEATURE_CONTRACT_FINGERPRINT`` stays frozen.
     """
 
-    categorical, numeric = _feature_maps(observation)
-    _assert_no_forbidden_keys(categorical, path="categorical_features")
-    _assert_no_forbidden_keys(numeric, path="numeric_features")
+    allowed_cats = allowed_categorical or ALLOWED_CATEGORICAL_FEATURES
+    allowed_nums = allowed_numeric or ALLOWED_NUMERIC_FEATURES
+    coarse = coarse_features or _COARSE_FEATURES
+    known_keys = (
+        allowed_cats
+        | allowed_nums
+        | frozenset(_CATEGORICAL_ALIASES)
+        | frozenset(_NUMERIC_ALIASES)
+        | frozenset(bucket_key for bucket_key, _thresholds in _NUMERIC_BUCKETS.values())
+        | ALLOWED_CONTEXT_CATEGORICAL_FEATURES
+        | ALLOWED_CONTEXT_NUMERIC_FEATURES
+    )
+    categorical, numeric = _feature_maps(observation, include_context=include_context)
+    _assert_no_forbidden_keys(categorical, path="categorical_features", known_feature_keys=known_keys)
+    _assert_no_forbidden_keys(numeric, path="numeric_features", known_feature_keys=known_keys)
 
     canonical: dict[str, str] = {}
     for raw_key, raw_value in categorical.items():
         key = _normalise_key(raw_key)
         key = _CATEGORICAL_ALIASES.get(key, key)
-        if key not in ALLOWED_CATEGORICAL_FEATURES:
+        if key not in allowed_cats:
             continue
         value = _normalise_scalar(raw_value)
         existing = canonical.get(key)
@@ -460,9 +603,11 @@ def build_feature_state(observation: object) -> FeatureState:
     for raw_key, raw_value in numeric.items():
         key = _normalise_key(raw_key)
         key = _NUMERIC_ALIASES.get(key, key)
-        if key not in ALLOWED_NUMERIC_FEATURES:
+        if key not in allowed_nums:
             continue
         if raw_value is None:
+            continue
+        if key not in _NUMERIC_BUCKETS:
             continue
         if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
             raise FeatureBoundaryError(f"numeric World feature {key!r} must be a finite number")
@@ -477,7 +622,7 @@ def build_feature_state(observation: object) -> FeatureState:
         canonical[bucket_key] = bucket_value
 
     canonical_items = tuple(sorted(canonical.items()))
-    coarse_items = tuple(item for item in canonical_items if item[0] in _COARSE_FEATURES)
+    coarse_items = tuple(item for item in canonical_items if item[0] in coarse)
     canonical_json = json.dumps(dict(canonical_items), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return FeatureState(
         exact_state=canonical_items,
@@ -596,6 +741,182 @@ def iso_utc(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(timezone.utc).isoformat()
 
 
+def _text_or_none(value: object) -> str | None:
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def observation_market_anchor(observation: object) -> tuple[str, str, str, str] | None:
+    """Return ``(venue, symbol, bar_interval, as_of_bar_ts)`` independent of V2 context."""
+
+    source = observation
+    if isinstance(observation, WorldEpisode):
+        source = observation.observation
+    else:
+        nested = _read_field(source, "observation")
+        if nested is not _MISSING and nested is not None:
+            source = nested
+    venue = _text_or_none(_read_field(source, "venue"))
+    symbol = _text_or_none(_read_field(source, "symbol"))
+    interval = _text_or_none(_read_field(source, "bar_interval")) or _text_or_none(_read_field(source, "interval"))
+    as_of = optional_model_timestamp(_read_field(source, "as_of_bar_ts"), field_name="as_of_bar_ts")
+    as_of_iso = iso_utc(as_of)
+    if venue is None or symbol is None or interval is None or as_of_iso is None:
+        return None
+    return (venue, symbol, interval, as_of_iso)
+
+
+def comparison_batch_id(
+    *,
+    market_anchor: tuple[str, str, str, str],
+    horizon_id: str,
+    predicted_at: datetime,
+) -> str:
+    return "world-comparison-batch:v1:" + canonical_sha256(
+        {
+            "venue": market_anchor[0],
+            "symbol": market_anchor[1],
+            "bar_interval": market_anchor[2],
+            "as_of_bar_ts": market_anchor[3],
+            "horizon_id": horizon_id,
+            "predicted_at": iso_utc(predicted_at),
+        }
+    )
+
+
+def outcome_simple_return(outcome: object) -> float | None:
+    if isinstance(outcome, WorldOutcome):
+        return outcome.simple_return
+    for name in ("simple_return", "forward_return"):
+        raw = _outcome_field(outcome, name)
+        if raw is _MISSING or raw is None or isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue
+        number = float(raw)
+        if math.isfinite(number):
+            return number
+    anchor_close = _outcome_field(outcome, "anchor_close")
+    endpoint_close = _outcome_field(outcome, "endpoint_close")
+    if (
+        isinstance(anchor_close, bool)
+        or isinstance(endpoint_close, bool)
+        or not isinstance(anchor_close, (int, float))
+        or not isinstance(endpoint_close, (int, float))
+    ):
+        return None
+    if not math.isfinite(float(anchor_close)) or not math.isfinite(float(endpoint_close)) or float(anchor_close) <= 0.0:
+        return None
+    return float(endpoint_close) / float(anchor_close) - 1.0
+
+
+def canonical_training_label_evidence(outcome: object, horizon_id: str) -> list[object]:
+    target_at = _text_or_none(_outcome_field(outcome, "target_at"))
+    source = _text_or_none(_outcome_field(outcome, "source_raw_sha256")) or _text_or_none(
+        _outcome_field(outcome, "source")
+    )
+    status = _text_or_none(_outcome_field(outcome, "status"))
+    eligible = _outcome_field(outcome, "training_eligible")
+    if eligible is _MISSING:
+        eligible = None
+    direction: str | None
+    try:
+        direction = outcome_move_class(outcome)
+    except (TypeError, ValueError):
+        direction = None
+    return [
+        target_at,
+        source,
+        horizon_id,
+        status,
+        eligible,
+        direction,
+        outcome_simple_return(outcome),
+    ]
+
+
+def training_event_signature(
+    *,
+    market_anchor: tuple[str, str, str, str],
+    horizon_id: str,
+    label_evidence: Sequence[object],
+    sequence_market_anchors: Sequence[tuple[str, str, str, str]] | None = None,
+) -> str:
+    payload: dict[str, object] = {
+        "market_anchor": list(market_anchor),
+        "horizon_id": horizon_id,
+        "label_evidence": list(label_evidence),
+    }
+    if sequence_market_anchors is not None:
+        payload["sequence_market_anchors"] = [list(item) for item in sequence_market_anchors]
+    return canonical_sha256(payload)
+
+
+def comparison_cohort_fingerprint(event_signatures: Sequence[str]) -> str:
+    # Online updates do not commute: keep the supplied training order.
+    return "world-comparison-cohort:v1:" + canonical_sha256({"training_events": list(event_signatures)})
+
+
+def comparison_lineage(
+    observation: object,
+    *,
+    horizon_id: str,
+    predicted_at: datetime,
+    event_signatures: Sequence[str],
+) -> tuple[str | None, str | None]:
+    anchor = observation_market_anchor(observation)
+    cohort = comparison_cohort_fingerprint(event_signatures)
+    if anchor is None:
+        return None, cohort
+    return (
+        comparison_batch_id(market_anchor=anchor, horizon_id=horizon_id, predicted_at=predicted_at),
+        cohort,
+    )
+
+
+def common_training_replay_key(
+    outcome: object,
+    episode: object | None = None,
+) -> tuple[datetime, str, str, str, str, str, str]:
+    """Lane-independent replay order for V1/V2 training updates."""
+
+    available_at: datetime | None = None
+    for name in ("label_available_at", "available_at", "sealed_at"):
+        raw = _outcome_field(outcome, name)
+        if raw is _MISSING or raw is None or raw == "":
+            continue
+        available_at = optional_model_timestamp(raw, field_name=name)
+        if available_at is not None:
+            break
+    if available_at is None:
+        available_at = datetime.max.replace(tzinfo=timezone.utc)
+
+    anchor = None
+    for source in (episode, outcome):
+        if source is None:
+            continue
+        anchor = observation_market_anchor(source)
+        if anchor is not None:
+            break
+    if anchor is None:
+        venue = _text_or_none(_read_field(outcome, "episode_venue", "venue")) or ""
+        symbol = _text_or_none(_read_field(outcome, "episode_symbol", "symbol")) or ""
+        interval = _text_or_none(_read_field(outcome, "episode_bar_interval", "bar_interval")) or ""
+        as_of_raw = _read_field(outcome, "episode_as_of_bar_ts", "as_of_bar_ts")
+        as_of = ""
+        if as_of_raw is not _MISSING and as_of_raw not in (None, ""):
+            parsed = optional_model_timestamp(as_of_raw, field_name="as_of_bar_ts")
+            as_of = iso_utc(parsed) or ""
+        anchor = (venue, symbol, interval, as_of)
+
+    horizon_raw = outcome_horizon_id(outcome)
+    horizon_id = "" if horizon_raw is _MISSING or horizon_raw is None else str(horizon_raw).strip()
+    digest = canonical_sha256(canonical_training_label_evidence(outcome, horizon_id))
+    return (available_at, anchor[0], anchor[1], anchor[2], anchor[3], horizon_id, digest)
+
+
 def normalise_horizon_id(value: object, allowed_horizons: frozenset[str] | None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("horizon_id must be a non-empty fixed-horizon string")
@@ -608,8 +929,14 @@ def normalise_horizon_id(value: object, allowed_horizons: frozenset[str] | None)
 __all__ = [
     "ALLOWED_CATEGORICAL_FEATURES",
     "ALLOWED_NUMERIC_FEATURES",
+    "CONTEXT_FEATURE_CONTRACT_VERSION",
+    "CONTEXT_V2_CATEGORICAL_FEATURES",
+    "CONTEXT_V2_COARSE_FEATURES",
+    "CONTEXT_V2_NUMERIC_FEATURES",
     "DIRECTION_BAND",
     "FEATURE_CONTRACT_FINGERPRINT",
+    "FEATURE_CONTRACT_FINGERPRINT_V2",
+    "MARKET_FEATURE_CONTRACT_VERSION",
     "OUTCOME_CLASSES",
     "FeatureBoundaryError",
     "FeatureState",
@@ -618,11 +945,21 @@ __all__ = [
     "OutcomeEventConflictError",
     "build_feature_state",
     "canonical_move_class",
+    "canonical_training_label_evidence",
+    "common_training_replay_key",
+    "comparison_batch_id",
+    "comparison_cohort_fingerprint",
+    "comparison_lineage",
+    "feature_contract_version_of",
     "iso_utc",
     "move_class_from_simple_return",
     "normalise_horizon_id",
+    "observation_market_anchor",
     "optional_model_timestamp",
     "outcome_horizon_id",
     "outcome_move_class",
+    "outcome_simple_return",
     "parse_model_timestamp",
+    "revalidate_context_observation",
+    "training_event_signature",
 ]

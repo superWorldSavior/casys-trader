@@ -23,15 +23,17 @@ def test_operator_surfaces_are_nested_under_interfaces() -> None:
         assert not _has_python_sources(trader_dir / old_top_level_name)
 
 
-
 def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
     trader_dir = REPO_ROOT / "trader"
     infrastructure_dir = trader_dir / "infrastructure"
 
     assert infrastructure_dir.exists()
-    assert sorted(path.name for path in infrastructure_dir.iterdir() if path.is_dir() and path.name != "__pycache__") == [
+    assert sorted(
+        path.name for path in infrastructure_dir.iterdir() if path.is_dir() and path.name != "__pycache__"
+    ) == [
         "brokers",
         "files",
+        "graph",
         "llm",
         "market_sources",
         "queue",
@@ -40,7 +42,6 @@ def test_infrastructure_backends_are_nested_under_infrastructure() -> None:
 
     for old_top_level_name in ("files", "llm", "market_sources", "queue", "state_db"):
         assert not _has_python_sources(trader_dir / old_top_level_name)
-
 
 
 def test_llm_infrastructure_does_not_import_agent_port_facade() -> None:
@@ -66,7 +67,6 @@ def test_llm_infrastructure_does_not_import_agent_port_facade() -> None:
                         violations.append(f"{rel_path}: import {alias.name}")
 
     assert violations == []
-
 
 
 def test_execution_commission_module_is_a_compatibility_facade() -> None:
@@ -95,7 +95,6 @@ def test_execution_commission_module_is_a_compatibility_facade() -> None:
     assert facade.round_trip_cost is round_trip_cost
 
 
-
 def test_scheduler_json_backend_is_nested_under_state_db_with_planning_facade() -> None:
     trader_dir = REPO_ROOT / "trader"
     facade_path = trader_dir / "planning" / "scheduler.py"
@@ -116,7 +115,6 @@ def test_scheduler_json_backend_is_nested_under_state_db_with_planning_facade() 
     assert "from trader.infrastructure.state_db.scheduler_json import Scheduler" in facade_path.read_text(
         encoding="utf-8"
     )
-
 
 
 def test_universe_filesystem_adapters_are_canonical_with_rotation_facades() -> None:
@@ -177,7 +175,6 @@ def test_universe_filesystem_adapters_are_canonical_with_rotation_facades() -> N
     assert legacy_write_universe_if_changed is write_universe_if_changed
 
 
-
 def test_state_db_trade_plan_store_imports_domain_not_planning() -> None:
     repo_root = REPO_ROOT
     module_path = repo_root / "trader" / "infrastructure" / "state_db" / "trade_plan_store.py"
@@ -197,7 +194,6 @@ def test_state_db_trade_plan_store_imports_domain_not_planning() -> None:
     assert violations == []
 
 
-
 def test_state_db_infrastructure_does_not_import_planning_trade_plan() -> None:
     repo_root = REPO_ROOT
     state_db_dir = repo_root / "trader" / "infrastructure" / "state_db"
@@ -211,13 +207,10 @@ def test_state_db_infrastructure_does_not_import_planning_trade_plan() -> None:
                 violations.append(f"{module_path.name}: from {forbidden} import ...")
             elif isinstance(node, ast.Import):
                 violations.extend(
-                    f"{module_path.name}: import {alias.name}"
-                    for alias in node.names
-                    if alias.name == forbidden
+                    f"{module_path.name}: import {alias.name}" for alias in node.names if alias.name == forbidden
                 )
 
     assert violations == []
-
 
 
 def test_infrastructure_imports_stale_backoff_policy_from_domain_not_scheduler_facade() -> None:
@@ -231,18 +224,11 @@ def test_infrastructure_imports_stale_backoff_policy_from_domain_not_scheduler_f
         rel_path = module_path.relative_to(repo_root)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == forbidden:
-                stale_imports = [
-                    alias.name
-                    for alias in node.names
-                    if alias.name.startswith("STALE_BACKOFF_")
-                ]
+                stale_imports = [alias.name for alias in node.names if alias.name.startswith("STALE_BACKOFF_")]
                 if stale_imports:
-                    violations.append(
-                        f"{rel_path}: from {forbidden} import {', '.join(stale_imports)}"
-                    )
+                    violations.append(f"{rel_path}: from {forbidden} import {', '.join(stale_imports)}")
 
     assert violations == []
-
 
 
 def test_execute_order_handler_lives_only_in_infrastructure() -> None:
@@ -268,7 +254,6 @@ def test_execute_order_handler_lives_only_in_infrastructure() -> None:
     assert violations == []
 
 
-
 def test_migrations_own_legacy_trade_plan_decoder() -> None:
     repo_root = REPO_ROOT
     module_path = repo_root / "trader" / "infrastructure" / "state_db" / "migrations.py"
@@ -284,7 +269,6 @@ def test_migrations_own_legacy_trade_plan_decoder() -> None:
     assert "def _tp_from_legacy_dict" in source
     assert "trade_plan_from_dict" not in source
     assert forbidden_imports == []
-
 
 
 def test_ledger_rotation_filesystem_adapter_lives_in_infrastructure() -> None:
@@ -315,4 +299,3 @@ def test_ledger_rotation_filesystem_adapter_lives_in_infrastructure() -> None:
                         violations.append(f"{relative_path}:{node.lineno}: legacy runtime import")
 
     assert violations == []
-

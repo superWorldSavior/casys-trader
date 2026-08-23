@@ -45,6 +45,36 @@ Le flag n'est lu qu'au démarrage. Pour l'activer ou le couper : arrêter le
 daemon proprement, puis le relancer. Voir
 [`run-the-daemon.md`](run-the-daemon.md).
 
+## Activer le challenger contexte V2 (opt-in, défaut off)
+
+`CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED` vaut `0` par défaut. Ce how-to ne
+redémarre pas le daemon live et n'écrit pas dans `state/`.
+
+1. Vérifier que le process **déjà lancé** n'a pas le flag (un export local
+   ne le change pas).
+2. Poser `CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED=1` dans l'environnement du
+   prochain boot.
+3. Seulement lors d'un arrêt/relance **volontaire** ultérieur : le boot
+   construit le reader local et l'enricher background. Le cycle trading
+   continue de n'enqueue que la V1 marché.
+4. Relire `casys-trader world status --json` : `authority` reste
+   `shadow_only`. Une ablation V2−V1 n'est pas un PnL Trader, pas un
+   claim causal, et pas un impact de graphe : NetworkX est une projection
+   de provenance/traversée ; la topologie n'est pas encore encodée dans
+   le baseline/GRU.
+
+Le code V2 doit démarrer une **cohorte prospective propre**. Interpréter
+une ablation comme prête est `NO_GO` tant que les gates causales
+(cutoff, reçus, ablation appariée) ne passent pas **et** qu'un producteur
+macro *source-only* n'existe pas. Les briefs macro actuels sont contaminés
+politique/candidat et restent exclus : un rapport régénéré demain recevra
+un reçu d'availability valide mais restera exclu jusqu'à ce producteur.
+L'incrément mesurable aujourd'hui est uniquement les métadonnées company /
+status compactes causalement prouvées plus la missingness et la topologie
+familiale déjà partagées avec la V1.
+
+Détail d'ontologie : [`world-context-ontology.md`](../explanation/architecture/world-context-ontology.md).
+
 ## Activer / couper
 
 | Objectif | Action |

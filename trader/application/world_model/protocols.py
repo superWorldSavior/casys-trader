@@ -74,6 +74,8 @@ class WorldPredictor(Protocol):
         available_through: datetime | None = None,
     ) -> ModelUpdate: ...
 
+    def accepts_episode(self, episode: object) -> bool: ...
+
 
 class WorldSequencePredictor(WorldPredictor, Protocol):
     """Predictor that reconstructs a causal sequence from eligible episodes."""

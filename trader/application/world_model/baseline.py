@@ -22,7 +22,14 @@ from trader.application.world_model import encoding as world_encoding
 from trader.application.world_model.encoding import (
     ALLOWED_CATEGORICAL_FEATURES,
     ALLOWED_NUMERIC_FEATURES,
+    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_V2_CATEGORICAL_FEATURES,
+    CONTEXT_V2_COARSE_FEATURES,
+    CONTEXT_V2_NUMERIC_FEATURES,
     FEATURE_CONTRACT_FINGERPRINT,
+    FEATURE_CONTRACT_FINGERPRINT_V2,
+    MARKET_FEATURE_CONTRACT_VERSION,
+    feature_contract_version_of,
     OUTCOME_CLASSES,
     FeatureBoundaryError,
     FeatureState,
@@ -30,11 +37,16 @@ from trader.application.world_model.encoding import (
     ModelUpdate,
     OutcomeEventConflictError,
     build_feature_state,
+    canonical_training_label_evidence,
+    comparison_lineage,
     iso_utc,
     normalise_horizon_id,
+    observation_market_anchor,
     optional_model_timestamp,
     outcome_horizon_id,
     outcome_move_class,
+    revalidate_context_observation,
+    training_event_signature,
 )
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
@@ -62,6 +74,7 @@ class BaselinePrediction:
     run_id: str
     state_key: _StateKey
     coarse_state_key: _StateKey
+    feature_contract_fingerprint: str = FEATURE_CONTRACT_FINGERPRINT
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.world_prediction, name)
@@ -74,7 +87,7 @@ class BaselinePrediction:
         payload = self.world_prediction.to_dict()
         payload.update(
             {
-                "feature_contract_fingerprint": FEATURE_CONTRACT_FINGERPRINT,
+                "feature_contract_fingerprint": self.feature_contract_fingerprint,
                 "predicted_at": payload["created_at"],
                 "run_id": self.run_id,
                 "state_key": list(self.state_key),
@@ -95,6 +108,7 @@ class _HorizonCounts:
     global_counts: Counter[str] = field(default_factory=Counter)
     training_cutoff: datetime | None = None
     applied_events: dict[str, str] = field(default_factory=dict)
+    comparison_event_signatures: list[str] = field(default_factory=list)
 
 
 def _as_status(value: object) -> str:
@@ -105,9 +119,7 @@ def _as_status(value: object) -> str:
 def _extract_observation_timestamp(observation: object) -> datetime | None:
     source = observation
     for _ in range(2):
-        value = world_encoding._read_field(
-            source, "available_at", "as_of_bar_ts", "captured_at", "observed_at"
-        )
+        value = world_encoding._read_field(source, "available_at", "as_of_bar_ts", "captured_at", "observed_at")
         parsed = optional_model_timestamp(value, field_name="observation timestamp")
         if parsed is not None:
             return parsed
@@ -163,6 +175,10 @@ class HierarchicalDirichletWorldBaseline:
         minimum_coarse_support: int = 8,
         minimum_exact_support: int = 5,
         allowed_horizons: Iterable[str] | None = _DEFAULT_HORIZONS,
+        model_id: str | None = None,
+        model_version: str | None = None,
+        accepted_feature_contracts: frozenset[str] | None = None,
+        include_context: bool = False,
     ) -> None:
         if not math.isfinite(alpha) or alpha <= 0:
             raise ValueError("alpha must be finite and strictly positive")
@@ -175,9 +191,7 @@ class HierarchicalDirichletWorldBaseline:
                 raise ValueError(f"{name} must be a positive integer")
         normalised_horizons = None
         if allowed_horizons is not None:
-            normalised_horizons = frozenset(
-                normalise_horizon_id(item, None) for item in allowed_horizons
-            )
+            normalised_horizons = frozenset(normalise_horizon_id(item, None) for item in allowed_horizons)
             if not normalised_horizons:
                 raise ValueError("allowed_horizons must not be empty")
         self.alpha = float(alpha)
@@ -186,6 +200,37 @@ class HierarchicalDirichletWorldBaseline:
         self.minimum_exact_support = minimum_exact_support
         self._allowed_horizons = normalised_horizons
         self._horizons: dict[str, _HorizonCounts] = {}
+        self.model_id = model_id or MODEL_ID
+        self.model_version = model_version or MODEL_VERSION
+        self._accepted_feature_contracts = accepted_feature_contracts
+        self._include_context = include_context
+        self._feature_contract_fingerprint = (
+            FEATURE_CONTRACT_FINGERPRINT_V2 if include_context else FEATURE_CONTRACT_FINGERPRINT
+        )
+
+    def accepts_episode(self, episode: object) -> bool:
+        version = feature_contract_version_of(episode)
+        if self._accepted_feature_contracts is not None:
+            return version in self._accepted_feature_contracts
+        expected = CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+        return version == expected
+
+    def _require_accepted(self, episode: object) -> None:
+        if not self.accepts_episode(episode):
+            raise FeatureBoundaryError("World model rejected an episode outside its feature contract")
+
+    def _feature_state(self, observation: object):
+        self._require_accepted(observation)
+        if self._include_context:
+            revalidate_context_observation(observation)
+            return build_feature_state(
+                observation,
+                allowed_categorical=CONTEXT_V2_CATEGORICAL_FEATURES,
+                allowed_numeric=CONTEXT_V2_NUMERIC_FEATURES,
+                include_context=True,
+                coarse_features=CONTEXT_V2_COARSE_FEATURES,
+            )
+        return build_feature_state(observation)
 
     def reset_for_replay(self) -> None:
         """Clear learned counts before an authoritative active-leaf replay."""
@@ -203,7 +248,7 @@ class HierarchicalDirichletWorldBaseline:
         """Predict from the current state without modifying any counts."""
 
         horizon_key = self._resolve_horizon(horizon_id=horizon_id, horizon=horizon)
-        state = build_feature_state(observation)
+        state = self._feature_state(observation)
         counts = self._horizons.get(horizon_key, _HorizonCounts())
         reference_at = optional_model_timestamp(prediction_at, field_name="prediction_at")
         if reference_at is None:
@@ -215,10 +260,16 @@ class HierarchicalDirichletWorldBaseline:
                 "training cutoff is after prediction_at; rebuild a causally earlier model state"
             )
 
-        probabilities, tier, support, exact_support, coarse_support, global_support = (
-            self._predict_from_counts(counts, state)
+        probabilities, tier, support, exact_support, coarse_support, global_support = self._predict_from_counts(
+            counts, state
         )
         status = "warming_up" if global_support < self.minimum_global_support else "shadow_only"
+        batch_id, cohort = comparison_lineage(
+            observation,
+            horizon_id=horizon_key,
+            predicted_at=reference_at,
+            event_signatures=counts.comparison_event_signatures,
+        )
         return WorldPrediction(
             episode_id=_extract_episode_id(observation),
             horizon_id=horizon_key,
@@ -236,6 +287,8 @@ class HierarchicalDirichletWorldBaseline:
             global_support=global_support,
             training_cutoff=counts.training_cutoff,
             model_fingerprint=self.model_fingerprint(horizon_key),
+            comparison_batch_id=batch_id,
+            comparison_cohort_fingerprint=cohort,
         )
 
     def predict_audit(
@@ -254,12 +307,13 @@ class HierarchicalDirichletWorldBaseline:
             horizon=horizon,
             prediction_at=prediction_at,
         )
-        state = build_feature_state(observation)
+        state = self._feature_state(observation)
         return BaselinePrediction(
             world_prediction=prediction,
             run_id="world_shadow.v1",
             state_key=state.exact_state,
             coarse_state_key=state.coarse_state,
+            feature_contract_fingerprint=self._feature_contract_fingerprint,
         )
 
     def predict_proba(
@@ -289,9 +343,7 @@ class HierarchicalDirichletWorldBaseline:
     ) -> ModelUpdate:
         """Apply one causally available, observed, eligible label exactly once."""
 
-        event_id_value = world_encoding._outcome_field(
-            outcome, "outcome_event_id", "event_id", "outcome_id"
-        )
+        event_id_value = world_encoding._outcome_field(outcome, "outcome_event_id", "event_id", "outcome_id")
         event_id = None if event_id_value is _MISSING else str(event_id_value).strip() or None
         status = _as_status(world_encoding._outcome_field(outcome, "status"))
         if status != "observed":
@@ -303,11 +355,7 @@ class HierarchicalDirichletWorldBaseline:
         eligible = world_encoding._outcome_field(outcome, "training_eligible")
         if eligible is _MISSING:
             episode = world_encoding._read_field(outcome, "episode")
-            eligible = (
-                world_encoding._read_field(episode, "training_eligible")
-                if episode is not _MISSING
-                else _MISSING
-            )
+            eligible = world_encoding._read_field(episode, "training_eligible") if episode is not _MISSING else _MISSING
         if eligible is not True:
             return self._no_update("outcome_not_training_eligible", event_id=event_id, horizon_id=None)
         if event_id is None:
@@ -334,10 +382,16 @@ class HierarchicalDirichletWorldBaseline:
             source_observation = world_encoding._read_field(outcome, "observation", "episode")
         if source_observation is _MISSING or source_observation is None:
             raise ValueError("observed World outcome requires its immutable WorldObservation")
+        if not self.accepts_episode(source_observation):
+            return self._no_update(
+                "feature_contract_rejected",
+                event_id=event_id,
+                horizon_id=horizon_key,
+            )
         observation_at = _extract_observation_timestamp(source_observation)
         if observation_at is not None and label_available_at <= observation_at:
             return self._no_update("label_not_after_observation", event_id=event_id, horizon_id=horizon_key)
-        state = build_feature_state(source_observation)
+        state = self._feature_state(source_observation)
         signature = self._event_signature(
             horizon_id=horizon_key,
             outcome_class=outcome_class,
@@ -361,6 +415,15 @@ class HierarchicalDirichletWorldBaseline:
         if state.coarse_state:
             counts.coarse.setdefault(state.coarse_state, Counter())[outcome_class] += 1
         counts.applied_events[event_id] = signature
+        market_anchor = observation_market_anchor(source_observation)
+        if market_anchor is not None:
+            counts.comparison_event_signatures.append(
+                training_event_signature(
+                    market_anchor=market_anchor,
+                    horizon_id=horizon_key,
+                    label_evidence=canonical_training_label_evidence(outcome, horizon_key),
+                )
+            )
         if counts.training_cutoff is None or label_available_at > counts.training_cutoff:
             counts.training_cutoff = label_available_at
         return ModelUpdate(
@@ -388,7 +451,7 @@ class HierarchicalDirichletWorldBaseline:
         payload = {
             "model_id": self.model_id,
             "model_version": self.model_version,
-            "feature_contract_fingerprint": FEATURE_CONTRACT_FINGERPRINT,
+            "feature_contract_fingerprint": self._feature_contract_fingerprint,
             "horizon_id": horizon_key,
             "alpha": self.alpha,
             "minimum_global_support": self.minimum_global_support,
@@ -510,9 +573,7 @@ class HierarchicalDirichletWorldBaseline:
     def _counter_payload(counts: Mapping[str, int]) -> dict[str, int]:
         return {label: int(counts.get(label, 0)) for label in OUTCOME_CLASSES}
 
-    def _state_counts_payload(
-        self, counts: Mapping[_StateKey, Mapping[str, int]]
-    ) -> list[dict[str, object]]:
+    def _state_counts_payload(self, counts: Mapping[_StateKey, Mapping[str, int]]) -> list[dict[str, object]]:
         return [
             {
                 "state": list(state),
