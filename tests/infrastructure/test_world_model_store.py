@@ -914,3 +914,146 @@ def test_migration_upgrades_old_unixepoch_trigger_and_keeps_legacy_plus0000(tmp_
         assert store.counts()["episodes"] == 3
     finally:
         store.close()
+
+
+def test_cohort_migration_is_version_5_and_preserves_v1_v4_statements() -> None:
+    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    assert versions == [1, 2, 3, 4, 5]
+    v1_sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
+    assert "CREATE TABLE IF NOT EXISTS world_episodes" in v1_sql
+    assert "CREATE TABLE IF NOT EXISTS world_outcome_events" in v1_sql
+    assert "CREATE TABLE IF NOT EXISTS world_shadow_predictions" in v1_sql
+    for version, statements in WORLD_MODEL_MIGRATIONS[:4]:
+        blob = "\n".join(statements)
+        assert "world_cohort_manifests" not in blob
+        assert "world_cohort_events" not in blob
+        assert "world_availability_receipts" not in blob
+        assert "study_cohort_id" not in blob
+        assert version < 5
+    v5_sql = "\n".join(WORLD_MODEL_MIGRATIONS[4][1])
+    assert "world_cohort_manifests" in v5_sql
+    assert "world_cohort_events" in v5_sql
+    assert "world_cohort_slots" in v5_sql
+    assert "world_availability_receipts" in v5_sql
+    assert "study_cohort_id" in v5_sql
+    assert "feature_mask_fingerprint" in v5_sql
+
+
+def test_v5_does_not_rewrite_existing_episode_outcome_or_prediction_bytes(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    db = StateDb(db_path)
+    db.apply_migrations(WORLD_MODEL_MIGRATIONS[:4])
+    episode_payload = json.dumps({"episode_id": "legacy-1", "keep": True}, separators=(",", ":"), sort_keys=True)
+    outcome_payload = json.dumps({"outcome_event_id": "legacy-out", "keep": True}, separators=(",", ":"), sort_keys=True)
+    prediction_payload = json.dumps(
+        {"prediction_id": "legacy-pred", "keep": True},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    episode_digest = "sha256:" + hashlib.sha256(episode_payload.encode("utf-8")).hexdigest()
+    outcome_digest = "sha256:" + hashlib.sha256(outcome_payload.encode("utf-8")).hexdigest()
+    prediction_digest = "sha256:" + hashlib.sha256(prediction_payload.encode("utf-8")).hexdigest()
+    recorded = "2026-08-22T11:00:00+00:00"
+    with db.transaction() as cur:
+        cur.execute(
+            """
+            INSERT INTO world_episodes(
+                episode_id, capture_id, venue, symbol, observed_at, available_at,
+                as_of_bar_ts, bar_interval, feature_contract_version, sampling_policy_version,
+                training_eligible, training_reason, payload_json, payload_sha256,
+                source_evidence_json, source_evidence_sha256, recorded_at
+            ) VALUES ('legacy-1', NULL, 'US', 'AAPL', ?, ?, ?, '1h', 'world-features-v1', 'fresh-active-v1',
+                      1, NULL, ?, ?, '{}', ?, ?)
+            """,
+            (recorded, recorded, recorded, episode_payload, episode_digest, episode_digest, recorded),
+        )
+        cur.execute(
+            """
+            INSERT INTO world_outcome_events(
+                outcome_event_id, episode_id, horizon_code, label_schema_version, status, move_class,
+                training_eligible, label_available_at, sealed_at, supersedes_outcome_event_id,
+                label_json, evidence_json, evidence_sha256, payload_json, payload_sha256, recorded_at
+            ) VALUES ('legacy-out', 'legacy-1', '4h', 'world-label-v1', 'observed', 'UP',
+                      1, ?, ?, NULL, '{}', '{}', ?, ?, ?, ?)
+            """,
+            (recorded, recorded, outcome_digest, outcome_payload, outcome_digest, recorded),
+        )
+        cur.execute(
+            """
+            INSERT INTO world_shadow_predictions(
+                prediction_id, run_id, episode_id, horizon_code, model_kind, model_version,
+                predicted_at, input_sha256, prediction_json, prediction_sha256,
+                payload_json, payload_sha256, recorded_at
+            ) VALUES ('legacy-pred', 'run-1', 'legacy-1', 'elapsed_4h.v1', 'markov', 'v1',
+                      ?, ?, '{}', ?, ?, ?, ?)
+            """,
+            (recorded, prediction_digest, prediction_digest, prediction_payload, prediction_digest, recorded),
+        )
+    before = db.query_one(
+        "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
+        "o.payload_json AS outcome_json, o.payload_sha256 AS outcome_sha, "
+        "p.payload_json AS prediction_json, p.payload_sha256 AS prediction_sha "
+        "FROM world_episodes e "
+        "JOIN world_outcome_events o ON o.episode_id=e.episode_id "
+        "JOIN world_shadow_predictions p ON p.episode_id=e.episode_id"
+    )
+    db.close()
+
+    store = WorldModelStore(db_path)
+    try:
+        after = store._db.query_one(
+            "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
+            "o.payload_json AS outcome_json, o.payload_sha256 AS outcome_sha, "
+            "p.payload_json AS prediction_json, p.payload_sha256 AS prediction_sha, "
+            "p.study_cohort_id, p.lane_id, p.manifest_sha256, "
+            "p.feature_contract_fingerprint, p.feature_mask_fingerprint "
+            "FROM world_episodes e "
+            "JOIN world_outcome_events o ON o.episode_id=e.episode_id "
+            "JOIN world_shadow_predictions p ON p.episode_id=e.episode_id"
+        )
+        assert after["episode_json"] == before["episode_json"]
+        assert after["episode_sha"] == before["episode_sha"]
+        assert after["outcome_json"] == before["outcome_json"]
+        assert after["outcome_sha"] == before["outcome_sha"]
+        assert after["prediction_json"] == before["prediction_json"]
+        assert after["prediction_sha"] == before["prediction_sha"]
+        assert after["study_cohort_id"] is None
+        assert after["lane_id"] is None
+        assert after["manifest_sha256"] is None
+        assert after["feature_contract_fingerprint"] is None
+        assert after["feature_mask_fingerprint"] is None
+        listed = store.list_predictions(run_id="run-1")
+        assert listed[0]["prediction_id"] == "legacy-pred"
+        assert listed[0]["prediction_record"]["keep"] is True
+    finally:
+        store.close()
+
+
+def test_prediction_cohort_columns_are_indexed_and_override_json(store: WorldModelStore) -> None:
+    assert store.append_episode(_episode())
+    payload = _prediction("prediction-cohort")
+    payload["study_cohort_id"] = "world_cohort:v1:" + "c" * 64
+    payload["lane_id"] = "markov.market"
+    payload["manifest_sha256"] = "a" * 64
+    payload["feature_contract_fingerprint"] = "b" * 64
+    payload["feature_mask_fingerprint"] = "c" * 64
+    payload["prediction"]["study_cohort_id"] = "json-should-lose"
+    payload["prediction"]["lane_id"] = "json-lane"
+    assert store.append_legacy_prediction(payload) is True
+    row = store.list_predictions(run_id="markov-run-1")[0]
+    assert row["study_cohort_id"] == "world_cohort:v1:" + "c" * 64
+    assert row["lane_id"] == "markov.market"
+    assert row["manifest_sha256"] == "a" * 64
+    assert row["feature_contract_fingerprint"] == "b" * 64
+    assert row["feature_mask_fingerprint"] == "c" * 64
+    assert row["prediction_record"]["study_cohort_id"] == "world_cohort:v1:" + "c" * 64
+    indexes = {
+        row["name"]
+        for row in store._db.query_all(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='world_shadow_predictions'"
+        )
+    }
+    assert "idx_world_predictions_study_cohort" in indexes
+    assert "idx_world_predictions_lane" in indexes or "idx_world_predictions_study_cohort" in indexes
+    assert any("manifest" in name for name in indexes)
+    assert any("feature" in name for name in indexes)

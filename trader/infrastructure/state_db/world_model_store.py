@@ -21,6 +21,26 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from trader.domain.world_availability import (
+    AvailabilityEvidence,
+    WorldAvailabilityReceipt,
+    WorldAvailabilitySubjectRef,
+    WorldStorageLocator,
+    _attest_verified_store_receipt,
+)
+from trader.domain.world_cohort import (
+    WORLD_COHORT_EVENTS,
+    WorldCohort,
+    WorldCohortEvent,
+    WorldCohortEventEnvelope,
+    WorldCohortId,
+    WorldCohortManifest,
+    WorldCohortRegistered,
+    WorldCohortSlot,
+    WorldCohortSlotAdmitted,
+    parse_world_cohort_event,
+    world_cohort_event_payload_hash,
+)
 from trader.domain.world_episode import (
     OUTCOME_STATUSES,
     PREDICTION_CLASSES,
@@ -28,7 +48,14 @@ from trader.domain.world_episode import (
     WorldEpisode,
     WorldOutcome,
     WorldPrediction,
+    canonical_json,
+    canonical_sha256,
     parse_utc_timestamp,
+)
+from trader.infrastructure.state_db.availability_receipt import (
+    UtcClock,
+    _seal_world_availability_receipt,
+    default_utc_clock,
 )
 from trader.infrastructure.state_db.connection import StateDb
 
@@ -37,6 +64,7 @@ _V2_FEATURE_CONTRACT = "market_ohlcv_context.v2"
 
 __all__ = [
     "WORLD_MODEL_MIGRATIONS",
+    "WORLD_MODEL_STORE_ID",
     "WorldModelConflictError",
     "WorldModelStore",
 ]
@@ -44,6 +72,36 @@ __all__ = [
 
 class WorldModelConflictError(ValueError):
     """A deterministic world-model identifier was reused with new content."""
+
+
+WORLD_MODEL_STORE_ID = "world-model.db.v1"
+_EVENT_SUBJECT_KIND = "world_cohort_event"
+_PREDICTION_COHORT_FIELDS = (
+    "study_cohort_id",
+    "lane_id",
+    "manifest_sha256",
+    "feature_contract_fingerprint",
+    "feature_mask_fingerprint",
+)
+
+
+def _append_only_trigger_sql(table: str) -> list[str]:
+    return [
+        f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_no_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, '{table} are append-only');
+            END
+            """,
+        f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_no_delete
+            BEFORE DELETE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, '{table} are append-only');
+            END
+            """,
+    ]
 
 
 _V2_CANONICAL_FIRST_WRITE_TRIGGER = """
@@ -254,6 +312,102 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             _V2_SLOT_CANDIDATE_INDEX,
         ],
     ),
+    (
+        5,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS world_cohort_manifests (
+                cohort_id         TEXT PRIMARY KEY,
+                manifest_sha256   TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_cohort_events (
+                event_id          TEXT PRIMARY KEY,
+                cohort_id         TEXT NOT NULL
+                    REFERENCES world_cohort_manifests(cohort_id),
+                event_type        TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                manifest_sha256   TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(cohort_id, sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_cohort_events_cohort_sequence
+            ON world_cohort_events(cohort_id, sequence, event_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_cohort_slots (
+                slot_id              TEXT PRIMARY KEY,
+                cohort_id            TEXT NOT NULL
+                    REFERENCES world_cohort_manifests(cohort_id),
+                event_id             TEXT NOT NULL
+                    REFERENCES world_cohort_events(event_id),
+                manifest_sha256      TEXT NOT NULL,
+                venue                TEXT NOT NULL,
+                symbol               TEXT NOT NULL,
+                bar_interval         TEXT NOT NULL,
+                as_of_bar_ts         TEXT NOT NULL,
+                anchor_end_at        TEXT NOT NULL,
+                comparison_batch_id  TEXT NOT NULL,
+                started_event_id     TEXT NOT NULL,
+                payload_json         TEXT NOT NULL,
+                payload_sha256       TEXT NOT NULL,
+                recorded_at          TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_cohort_slots_cohort_anchor
+            ON world_cohort_slots(cohort_id, as_of_bar_ts, slot_id)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_availability_receipts (
+                receipt_id             TEXT PRIMARY KEY,
+                subject_kind           TEXT NOT NULL,
+                subject_id             TEXT NOT NULL,
+                content_sha256         TEXT NOT NULL,
+                scope                  TEXT NOT NULL,
+                storage_locator_json   TEXT NOT NULL,
+                ready_at               TEXT NOT NULL,
+                receipt_sha256         TEXT NOT NULL,
+                payload_json           TEXT NOT NULL,
+                recorded_at            TEXT NOT NULL,
+                UNIQUE(subject_kind, subject_id, content_sha256)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_availability_receipts_subject
+            ON world_availability_receipts(subject_kind, subject_id, content_sha256)
+            """,
+            *_append_only_trigger_sql("world_cohort_manifests"),
+            *_append_only_trigger_sql("world_cohort_events"),
+            *_append_only_trigger_sql("world_cohort_slots"),
+            *_append_only_trigger_sql("world_availability_receipts"),
+            "ALTER TABLE world_shadow_predictions ADD COLUMN study_cohort_id TEXT",
+            "ALTER TABLE world_shadow_predictions ADD COLUMN lane_id TEXT",
+            "ALTER TABLE world_shadow_predictions ADD COLUMN manifest_sha256 TEXT",
+            "ALTER TABLE world_shadow_predictions ADD COLUMN feature_contract_fingerprint TEXT",
+            "ALTER TABLE world_shadow_predictions ADD COLUMN feature_mask_fingerprint TEXT",
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_predictions_study_cohort
+            ON world_shadow_predictions(study_cohort_id, lane_id, prediction_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_predictions_manifest
+            ON world_shadow_predictions(manifest_sha256, prediction_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_predictions_feature_fps
+            ON world_shadow_predictions(feature_contract_fingerprint, feature_mask_fingerprint, prediction_id)
+            """,
+        ],
+    ),
 ]
 
 
@@ -307,11 +461,28 @@ _PREDICTION_COLUMNS = (
     "prediction_sha256",
     "payload_json",
     "payload_sha256",
+    "study_cohort_id",
+    "lane_id",
+    "manifest_sha256",
+    "feature_contract_fingerprint",
+    "feature_mask_fingerprint",
 )
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _aware_utc(value: datetime, *, field_name: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise TypeError(f"{field_name} must return a timezone-aware datetime")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _cohort_scope(cohort_id: str) -> str:
+    return f"world_cohort:{cohort_id}"
 
 
 def _as_mapping(value: Any, *, name: str) -> dict[str, Any]:
@@ -580,7 +751,7 @@ class WorldModelStore:
     broker and execution state.
     """
 
-    def __init__(self, db_or_path: StateDb | str | Path) -> None:
+    def __init__(self, db_or_path: StateDb | str | Path, *, clock: UtcClock | None = None) -> None:
         if isinstance(db_or_path, StateDb):
             self._db = db_or_path
             self._owns_db = False
@@ -592,10 +763,13 @@ class WorldModelStore:
         self.path = self._db.path
         if self.path.name.casefold() == "casys.db":
             raise ValueError("WorldModelStore requires a dedicated world_model.db, never casys.db")
+        self._clock = clock or default_utc_clock
+        self._first_seen_at: dict[str, datetime] = {}
         # ``foreign_keys`` is connection-local and StateDb intentionally stays
         # generic, so set it before the world schema is used.
         self._db.query_one("PRAGMA foreign_keys=ON")
         self._db.apply_migrations(WORLD_MODEL_MIGRATIONS)
+        self._prime_existing_receipts()
 
     def close(self) -> None:
         """Close only a connection this store created itself."""
@@ -919,6 +1093,23 @@ class WorldModelStore:
             "prediction_sha256": _canonical_sha256(predicted),
             "payload_json": _canonical_json(payload),
             "payload_sha256": _canonical_sha256(payload),
+            "study_cohort_id": _text(_first(payload, ("study_cohort_id",), ("prediction", "study_cohort_id"))),
+            "lane_id": _text(_first(payload, ("lane_id",), ("prediction", "lane_id"))),
+            "manifest_sha256": _text(_first(payload, ("manifest_sha256",), ("prediction", "manifest_sha256"))),
+            "feature_contract_fingerprint": _text(
+                _first(
+                    payload,
+                    ("feature_contract_fingerprint",),
+                    ("prediction", "feature_contract_fingerprint"),
+                )
+            ),
+            "feature_mask_fingerprint": _text(
+                _first(
+                    payload,
+                    ("feature_mask_fingerprint",),
+                    ("prediction", "feature_mask_fingerprint"),
+                )
+            ),
         }
         if live and not isinstance(prediction, WorldPrediction):
             existing = self._db.query_one(
@@ -1130,6 +1321,391 @@ class WorldModelStore:
             "predictions": int(self._db.query_one("SELECT COUNT(*) FROM world_shadow_predictions")[0]),
         }
 
+    def register(self, manifest: WorldCohortManifest, event: WorldCohortRegistered) -> WorldCohortEventEnvelope:
+        if not isinstance(manifest, WorldCohortManifest):
+            raise TypeError("manifest must be WorldCohortManifest")
+        if not isinstance(event, WorldCohortRegistered):
+            raise TypeError("event must be WorldCohortRegistered")
+        if event.cohort_id != manifest.cohort_id or event.manifest_sha256 != manifest.manifest_sha256:
+            raise ValueError("registered event does not match the durable manifest")
+        sequence = self._persist_cohort_subject(manifest, event)
+        receipt = self._commit_availability_receipt(event)
+        return self._bind_envelope(event, sequence=sequence, receipt=receipt)
+
+    def append_event(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
+        parsed = self._require_cohort_event(event)
+        sequence = self._persist_cohort_event(parsed)
+        receipt = self._commit_availability_receipt(parsed)
+        return self._bind_envelope(parsed, sequence=sequence, receipt=receipt)
+
+    def load(self, cohort_id: WorldCohortId) -> WorldCohort:
+        if not isinstance(cohort_id, WorldCohortId):
+            raise TypeError("cohort_id must be WorldCohortId")
+        manifest = self._load_manifest(cohort_id.value)
+        if manifest is None:
+            raise LookupError(cohort_id.value)
+        events = self._load_events(cohort_id.value)
+        if not events:
+            raise ValueError("tamper: manifest without registered event")
+        return WorldCohort.reconstruct(manifest, events)
+
+    def list_slots(self, cohort_id: WorldCohortId) -> tuple[WorldCohortSlot, ...]:
+        return self.load(cohort_id).admitted_slots
+
+    def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
+        parsed = self._require_cohort_event(event)
+        row = self._event_row(parsed.event_id)
+        if row is None:
+            raise LookupError(parsed.event_id)
+        stored = self._rehydrate_event_row(row)
+        incoming_hash = world_cohort_event_payload_hash(parsed)
+        if incoming_hash != row["payload_sha256"]:
+            raise WorldModelConflictError(
+                f"event_id {parsed.event_id!r} already exists with different canonical content"
+            )
+        return self._bind_envelope(stored, sequence=int(row["sequence"]), receipt=self._lookup_receipt(stored))
+
+    def _require_cohort_event(self, event: WorldCohortEvent | Mapping[str, Any]) -> WorldCohortEvent:
+        if isinstance(event, WORLD_COHORT_EVENTS):
+            return event
+        if isinstance(event, Mapping):
+            return parse_world_cohort_event(event)
+        raise TypeError("event must be a world cohort event")
+
+    def _persist_cohort_subject(self, manifest: WorldCohortManifest, event: WorldCohortRegistered) -> int:
+        payload_json = canonical_json(event.to_dict())
+        payload_sha256 = world_cohort_event_payload_hash(event)
+        manifest_json = canonical_json(manifest.to_dict())
+        manifest_payload_sha256 = canonical_sha256(manifest.to_dict())
+        recorded_at = _utc_now()
+        with self._db.transaction() as cur:
+            existing = cur.execute(
+                "SELECT manifest_sha256, payload_sha256 FROM world_cohort_manifests WHERE cohort_id=?",
+                (manifest.cohort_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["manifest_sha256"] != manifest.manifest_sha256:
+                    raise WorldModelConflictError("cohort_id reused with a different hash")
+                event_row = cur.execute(
+                    "SELECT event_id, payload_sha256, sequence FROM world_cohort_events WHERE event_id=?",
+                    (event.event_id,),
+                ).fetchone()
+                if event_row is None:
+                    raise ValueError("tamper: manifest without registered event")
+                if event_row["payload_sha256"] != payload_sha256:
+                    raise WorldModelConflictError(
+                        f"event_id {event.event_id!r} already exists with different canonical content"
+                    )
+                return int(event_row["sequence"])
+            cur.execute(
+                """
+                INSERT INTO world_cohort_manifests(
+                    cohort_id, manifest_sha256, payload_json, payload_sha256, recorded_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    manifest.cohort_id,
+                    manifest.manifest_sha256,
+                    manifest_json,
+                    manifest_payload_sha256,
+                    recorded_at,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO world_cohort_events(
+                    event_id, cohort_id, event_type, sequence, manifest_sha256,
+                    payload_json, payload_sha256, recorded_at
+                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.cohort_id,
+                    event.event_type,
+                    event.manifest_sha256,
+                    payload_json,
+                    payload_sha256,
+                    recorded_at,
+                ),
+            )
+            return 1
+
+    def _persist_cohort_event(self, event: WorldCohortEvent) -> int:
+        payload_json = canonical_json(event.to_dict())
+        payload_sha256 = world_cohort_event_payload_hash(event)
+        recorded_at = _utc_now()
+        with self._db.transaction() as cur:
+            existing = cur.execute(
+                "SELECT payload_sha256, sequence FROM world_cohort_events WHERE event_id=?",
+                (event.event_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["payload_sha256"] != payload_sha256:
+                    raise WorldModelConflictError(
+                        f"event_id {event.event_id!r} already exists with different canonical content"
+                    )
+                return int(existing["sequence"])
+            manifest = cur.execute(
+                "SELECT manifest_sha256 FROM world_cohort_manifests WHERE cohort_id=?",
+                (event.cohort_id,),
+            ).fetchone()
+            if manifest is None:
+                raise LookupError(event.cohort_id)
+            if manifest["manifest_sha256"] != event.manifest_sha256:
+                raise WorldModelConflictError("event manifest hash does not match the durable manifest")
+            maximum = cur.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM world_cohort_events WHERE cohort_id=?",
+                (event.cohort_id,),
+            ).fetchone()
+            sequence = int(maximum[0]) + 1
+            cur.execute(
+                """
+                INSERT INTO world_cohort_events(
+                    event_id, cohort_id, event_type, sequence, manifest_sha256,
+                    payload_json, payload_sha256, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.cohort_id,
+                    event.event_type,
+                    sequence,
+                    event.manifest_sha256,
+                    payload_json,
+                    payload_sha256,
+                    recorded_at,
+                ),
+            )
+            if isinstance(event, WorldCohortSlotAdmitted):
+                self._insert_slot_projection(cur, event, recorded_at=recorded_at)
+            return sequence
+
+    def _insert_slot_projection(
+        self,
+        cur: sqlite3.Cursor,
+        event: WorldCohortSlotAdmitted,
+        *,
+        recorded_at: str,
+    ) -> None:
+        slot = event.slot
+        slot_payload = slot.to_dict()
+        payload_json = canonical_json(slot_payload)
+        payload_sha256 = canonical_sha256(slot_payload)
+        existing = cur.execute(
+            "SELECT payload_sha256 FROM world_cohort_slots WHERE slot_id=?",
+            (slot.slot_id,),
+        ).fetchone()
+        if existing is not None:
+            if existing["payload_sha256"] != payload_sha256:
+                raise WorldModelConflictError(
+                    f"slot_id {slot.slot_id!r} already exists with different canonical content"
+                )
+            return
+        cur.execute(
+            """
+            INSERT INTO world_cohort_slots(
+                slot_id, cohort_id, event_id, manifest_sha256, venue, symbol, bar_interval,
+                as_of_bar_ts, anchor_end_at, comparison_batch_id, started_event_id,
+                payload_json, payload_sha256, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                slot.slot_id,
+                slot.cohort_id,
+                event.event_id,
+                slot.manifest_sha256,
+                slot.venue,
+                slot.symbol,
+                slot.bar_interval,
+                slot_payload["as_of_bar_ts"],
+                slot_payload["anchor_end_at"],
+                slot.comparison_batch_id,
+                slot.started_event_id,
+                payload_json,
+                payload_sha256,
+                recorded_at,
+            ),
+        )
+
+    def _commit_availability_receipt(self, event: WorldCohortEvent) -> WorldAvailabilityReceipt:
+        existing = self._lookup_receipt(event)
+        if existing is not None:
+            return existing
+        subject = WorldAvailabilitySubjectRef(
+            kind=_EVENT_SUBJECT_KIND,
+            subject_id=event.event_id,
+            content_sha256=world_cohort_event_payload_hash(event),
+        )
+        locator = WorldStorageLocator(
+            kind="sqlite",
+            store_id=WORLD_MODEL_STORE_ID,
+            table="world_cohort_events",
+            row_id=event.event_id,
+        )
+        ready_at = _aware_utc(self._clock(), field_name="clock")
+        receipt = _seal_world_availability_receipt(
+            subject,
+            scope=_cohort_scope(event.cohort_id),
+            storage_locator=locator,
+            ready_at=ready_at,
+        )
+        payload = receipt.to_dict()
+        recorded_at = _utc_now()
+        try:
+            with self._db.transaction() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_availability_receipts(
+                        receipt_id, subject_kind, subject_id, content_sha256, scope,
+                        storage_locator_json, ready_at, receipt_sha256, payload_json, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        receipt.receipt_id,
+                        subject.kind,
+                        subject.subject_id,
+                        subject.content_sha256,
+                        receipt.scope,
+                        canonical_json(locator.to_dict()),
+                        payload["ready_at"],
+                        receipt.receipt_sha256,
+                        canonical_json(payload),
+                        recorded_at,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            recovered = self._lookup_receipt(event)
+            if recovered is None:
+                raise WorldModelConflictError("conflicting availability receipt for the same subject") from None
+            return recovered
+        written = self._lookup_receipt(event)
+        if written is None:
+            raise ValueError("availability receipt readback failed")
+        self._remember_receipt(written, seen_at=ready_at)
+        return written
+
+    def _bind_envelope(
+        self,
+        event: WorldCohortEvent,
+        *,
+        sequence: int,
+        receipt: WorldAvailabilityReceipt | None,
+    ) -> WorldCohortEventEnvelope:
+        evidence = None
+        if receipt is not None:
+            first_seen = self._remember_receipt(receipt)
+            evidence = AvailabilityEvidence(receipt=receipt, first_seen_at=first_seen)
+        return WorldCohortEventEnvelope.bind(event, sequence=sequence, evidence=evidence)
+
+    def _load_manifest(self, cohort_id: str) -> WorldCohortManifest | None:
+        row = self._db.query_one(
+            "SELECT payload_json, payload_sha256, manifest_sha256 FROM world_cohort_manifests WHERE cohort_id=?",
+            (cohort_id,),
+        )
+        if row is None:
+            return None
+        try:
+            payload = _json_load(row["payload_json"])
+            manifest = WorldCohortManifest.from_mapping(payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("tamper: existing manifest cannot be rehydrated") from exc
+        if canonical_sha256(manifest.to_dict()) != row["payload_sha256"]:
+            raise ValueError("tamper: cohort manifest payload hash mismatch")
+        if manifest.manifest_sha256 != row["manifest_sha256"]:
+            raise ValueError("tamper: cohort manifest hash mismatch")
+        return manifest
+
+    def _load_events(self, cohort_id: str) -> tuple[WorldCohortEvent, ...]:
+        rows = self._db.query_all(
+            "SELECT * FROM world_cohort_events WHERE cohort_id=? ORDER BY sequence ASC, event_id ASC",
+            (cohort_id,),
+        )
+        return tuple(self._rehydrate_event_row(row) for row in rows)
+
+    def _event_row(self, event_id: str) -> Any:
+        return self._db.query_one("SELECT * FROM world_cohort_events WHERE event_id=?", (event_id,))
+
+    def _rehydrate_event_row(self, row: Any) -> WorldCohortEvent:
+        try:
+            payload = _json_load(row["payload_json"])
+            event = parse_world_cohort_event(payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("tamper: existing event cannot be rehydrated") from exc
+        digest = world_cohort_event_payload_hash(event)
+        if digest != row["payload_sha256"]:
+            raise ValueError("tamper: cohort event payload hash mismatch")
+        if event.event_id != row["event_id"]:
+            raise ValueError("tamper: cohort event id mismatch")
+        return event
+
+    def _lookup_receipt(self, event: WorldCohortEvent) -> WorldAvailabilityReceipt | None:
+        digest = world_cohort_event_payload_hash(event)
+        row = self._db.query_one(
+            """
+            SELECT * FROM world_availability_receipts
+            WHERE subject_kind=? AND subject_id=? AND content_sha256=?
+            """,
+            (_EVENT_SUBJECT_KIND, event.event_id, digest),
+        )
+        if row is None:
+            return None
+        return self._parse_receipt_row(row)
+
+    def _parse_receipt_row(self, row: Any) -> WorldAvailabilityReceipt | None:
+        try:
+            payload = _json_load(row["payload_json"])
+            receipt = WorldAvailabilityReceipt.from_mapping(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            receipt.receipt_id != row["receipt_id"]
+            or receipt.receipt_sha256 != row["receipt_sha256"]
+            or receipt.subject.kind != row["subject_kind"]
+            or receipt.subject.subject_id != row["subject_id"]
+            or receipt.subject.content_sha256 != row["content_sha256"]
+        ):
+            return None
+        locator = receipt.storage_locator
+        if (
+            locator.kind != "sqlite"
+            or locator.store_id != WORLD_MODEL_STORE_ID
+            or locator.table != "world_cohort_events"
+        ):
+            return None
+        try:
+            return _attest_verified_store_receipt(
+                receipt,
+                expected_subject=receipt.subject,
+                expected_scope=receipt.scope,
+                expected_locator=locator,
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def _prime_existing_receipts(self) -> None:
+        rows = self._db.query_all("SELECT * FROM world_availability_receipts")
+        for row in rows:
+            parsed = self._parse_receipt_row(row)
+            if parsed is None:
+                continue
+            self._remember_receipt(parsed)
+
+    def _remember_receipt(
+        self,
+        receipt: WorldAvailabilityReceipt,
+        *,
+        seen_at: datetime | None = None,
+    ) -> datetime:
+        digest = receipt.receipt_sha256
+        if not digest:
+            raise ValueError("availability receipt is missing receipt_sha256")
+        existing = self._first_seen_at.get(digest)
+        if existing is not None:
+            return existing
+        stamped = _aware_utc(seen_at if seen_at is not None else self._clock(), field_name="clock")
+        self._first_seen_at[digest] = stamped
+        return stamped
+
     def _append(
         self,
         *,
@@ -1214,4 +1790,17 @@ class WorldModelStore:
         result = dict(row)
         result["prediction"] = _json_load(result["prediction_json"])
         result["prediction_record"] = _json_load(result["payload_json"])
+        record = result["prediction_record"]
+        nested = result["prediction"]
+        for field in _PREDICTION_COHORT_FIELDS:
+            column_value = result.get(field)
+            json_value = record.get(field) if isinstance(record, Mapping) else None
+            if column_value not in (None, ""):
+                result[field] = column_value
+                if isinstance(record, dict):
+                    record[field] = column_value
+                if isinstance(nested, dict):
+                    nested[field] = column_value
+            elif json_value not in (None, ""):
+                result[field] = json_value
         return result
