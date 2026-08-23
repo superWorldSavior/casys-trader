@@ -36,6 +36,8 @@ from trader.application.world_model.encoding import (
     FutureLabelLeakageError,
     ModelUpdate,
     OutcomeEventConflictError,
+    WorldLaneModelIdentity,
+    bind_cold_lane_identity,
     build_feature_state,
     canonical_training_label_evidence,
     comparison_lineage,
@@ -45,14 +47,18 @@ from trader.application.world_model.encoding import (
     optional_model_timestamp,
     outcome_horizon_id,
     outcome_move_class,
+    bound_encoder_profile,
     revalidate_context_observation,
     training_event_signature,
+    world_encoder_profile_for_include_context,
 )
+from trader.domain.world_cohort import ModelFamily, WorldLaneDefinition
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
     WorldEpisode,
     WorldPrediction,
 )
+from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeatureMask
 
 
 MODEL_ID = "hierarchical_dirichlet_world_baseline"
@@ -179,6 +185,10 @@ class HierarchicalDirichletWorldBaseline:
         model_version: str | None = None,
         accepted_feature_contracts: frozenset[str] | None = None,
         include_context: bool = False,
+        feature_contract: WorldFeatureContract | None = None,
+        feature_mask: WorldFeatureMask | None = None,
+        seed: int | None = None,
+        lane_identity: WorldLaneModelIdentity | None = None,
     ) -> None:
         if not math.isfinite(alpha) or alpha <= 0:
             raise ValueError("alpha must be finite and strictly positive")
@@ -203,16 +213,37 @@ class HierarchicalDirichletWorldBaseline:
         self.model_id = model_id or MODEL_ID
         self.model_version = model_version or MODEL_VERSION
         self._accepted_feature_contracts = accepted_feature_contracts
-        self._include_context = include_context
+        self._profile = bound_encoder_profile(feature_contract, feature_mask, include_context=include_context)
+        self._include_context = self._profile.include_context if self._profile is not None else include_context
+        self.seed = seed
+        self.lane_identity = lane_identity
         self._feature_contract_fingerprint = (
-            FEATURE_CONTRACT_FINGERPRINT_V2 if include_context else FEATURE_CONTRACT_FINGERPRINT
+            self._profile.encoder_fingerprint
+            if self._profile is not None
+            else FEATURE_CONTRACT_FINGERPRINT_V2 if include_context else FEATURE_CONTRACT_FINGERPRINT
         )
+
+    @property
+    def feature_contract(self) -> WorldFeatureContract:
+        if self._profile is not None:
+            return self._profile.contract
+        return world_encoder_profile_for_include_context(self._include_context).contract
+
+    @property
+    def feature_mask(self) -> WorldFeatureMask:
+        if self._profile is not None:
+            return self._profile.mask
+        return world_encoder_profile_for_include_context(self._include_context).mask
 
     def accepts_episode(self, episode: object) -> bool:
         version = feature_contract_version_of(episode)
         if self._accepted_feature_contracts is not None:
             return version in self._accepted_feature_contracts
-        expected = CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+        expected = (
+            self._profile.contract.accepted_episode_contract
+            if self._profile is not None
+            else CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+        )
         return version == expected
 
     def _require_accepted(self, episode: object) -> None:
@@ -221,6 +252,14 @@ class HierarchicalDirichletWorldBaseline:
 
     def _feature_state(self, observation: object):
         self._require_accepted(observation)
+        if self._profile is not None:
+            if self._profile.include_context:
+                revalidate_context_observation(observation)
+            return build_feature_state(
+                observation,
+                feature_contract=self._profile.contract,
+                feature_mask=self._profile.mask,
+            )
         if self._include_context:
             revalidate_context_observation(observation)
             return build_feature_state(
@@ -586,6 +625,59 @@ class HierarchicalDirichletWorldBaseline:
 WorldBaseline = HierarchicalDirichletWorldBaseline
 
 
+def _assert_lane_contract_mask(
+    lane: WorldLaneDefinition,
+    contract: WorldFeatureContract,
+    mask: WorldFeatureMask,
+) -> None:
+    mask.assert_compatible_with(contract)
+    if lane.feature_contract_id != contract.contract_id or lane.feature_contract_fingerprint != contract.fingerprint:
+        raise ValueError("lane feature_contract fingerprint does not match WorldFeatureContract")
+    if lane.feature_mask_id != mask.mask_id or lane.feature_mask_fingerprint != mask.fingerprint:
+        raise ValueError("lane feature_mask fingerprint does not match WorldFeatureMask")
+
+
+def cold_markov_challenger(
+    *,
+    lane: WorldLaneDefinition,
+    contract: WorldFeatureContract,
+    mask: WorldFeatureMask,
+    study_cohort_id: str,
+    manifest_sha256: str,
+    started_event_id: str,
+    prototype: HierarchicalDirichletWorldBaseline | None = None,
+    **kwargs: object,
+) -> HierarchicalDirichletWorldBaseline:
+    """Mint a cold Markov lane. Never copies a warm prototype."""
+
+    if lane.model_family is not ModelFamily.MARKOV:
+        raise ValueError("cold Markov challenger requires model_family=markov")
+    _assert_lane_contract_mask(lane, contract, mask)
+    identity = bind_cold_lane_identity(
+        lane_id=lane.lane_id,
+        model_id=lane.model_id,
+        model_version=lane.model_version,
+        seed=lane.seed,
+        sequence_length=lane.sequence_length,
+        study_cohort_id=study_cohort_id,
+        manifest_sha256=manifest_sha256,
+        started_event_id=started_event_id,
+        prototype=prototype,
+    )
+    model = HierarchicalDirichletWorldBaseline(
+        model_id=lane.model_id,
+        model_version=lane.model_version,
+        feature_contract=contract,
+        feature_mask=mask,
+        seed=lane.seed,
+        lane_identity=identity,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    if model._horizons:
+        raise ValueError("cold Markov challenger must start untrained")
+    return model
+
+
 __all__ = [
     "ALLOWED_CATEGORICAL_FEATURES",
     "ALLOWED_NUMERIC_FEATURES",
@@ -601,4 +693,5 @@ __all__ = [
     "OutcomeEventConflictError",
     "WorldBaseline",
     "build_feature_state",
+    "cold_markov_challenger",
 ]

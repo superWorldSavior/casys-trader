@@ -1,18 +1,55 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
 from trader.application.world_model.context_capture import attach_world_context
-from trader.application.world_model.encoding import FeatureBoundaryError
+from trader.application.world_model.encoding import (
+    FEATURE_CONTRACT_FINGERPRINT,
+    FEATURE_CONTRACT_FINGERPRINT_V2,
+    FeatureBoundaryError,
+    WorldEncoderProfile,
+    build_feature_state,
+    world_encoder_profile_for_include_context,
+    world_lane_encoder_profile,
+)
 from trader.application.world_model.gru import OnlineGRUWorldChallenger
 from trader.domain.world_context import CONTEXT_FEATURE_CONTRACT_VERSION, SensorEvidence
-from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_VERSION
+from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_VERSION, WorldEpisode, WorldObservation
+from trader.domain.world_feature_contract import (
+    WorldFeatureContract,
+    WorldFeatureMask,
+    world_v1_feature_contract,
+    world_v2_feature_contract,
+)
 
 from tests.application.test_world_context_capture import _FakeSource, _v1_episode
 from tests.application.test_world_gru import HORIZON_4H, _episode, _outcome
+
+FROZEN_V1_ENCODER_FINGERPRINT = "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
+FROZEN_V2_ENCODER_FINGERPRINT = "a039216d5b53dab0c1aea134faabeac7b6f94c656d5880ec84882ebab05dbde5"
+_STATUS_CONTENT = frozenset(
+    {
+        "context_status",
+        "macro_status",
+        "company_status",
+        "company_coverage_status",
+        "company_freshness_status",
+        "company_source_count_bucket",
+    }
+)
+_COMPANY_CONTENT = frozenset({"company_thesis_status"})
+_MACRO_CONTENT = frozenset({"context_macro_regime", "context_rates_regime", "context_usd_regime"})
+_ENCODER_SOURCES = (
+    Path("trader/application/world_model/encoding.py"),
+    Path("trader/application/world_model/baseline.py"),
+    Path("trader/application/world_model/gru.py"),
+)
 
 
 def _v2_episode():
@@ -357,3 +394,161 @@ def _v2_like(episode):
             SensorEvidence(status="missing", reason="no_artifact"),
         ),
     )[0]
+
+
+def _rich_context_observation() -> dict[str, object]:
+    return {
+        "available_at": "2026-01-01T00:00:00+00:00",
+        "as_of_bar_ts": "2026-01-01T00:00:00+00:00",
+        "venue": "XNYS",
+        "symbol": "SPY",
+        "bar_interval": "1h",
+        "feature_contract_version": CONTEXT_FEATURE_CONTRACT_VERSION,
+        "categorical_features": {
+            "asset_family": "equities",
+            "venue": "XNYS",
+            "session_phase": "regular",
+            "market_regime": "trend_up",
+            "volatility_state": "normal",
+            "macro_regime": "quiet",
+        },
+        "numeric_features": {"return": 0.006, "atr_pct": 0.01, "range_position": 0.72},
+        "context": {
+            "categorical_features": {
+                "context_status": "complete",
+                "macro_status": "complete",
+                "company_status": "complete",
+                "company_coverage_status": "partial",
+                "company_freshness_status": "fresh",
+                "company_source_count_bucket": "b2",
+                "company_thesis_status": "intact",
+                "context_macro_regime": "risk_on",
+                "context_rates_regime": "easing",
+                "context_usd_regime": "strong",
+            }
+        },
+    }
+
+
+def _with_context_categoricals(episode: WorldEpisode, **updates: str) -> WorldEpisode:
+    context = dict(episode.observation.to_dict()["context"])
+    context.pop("content_sha256", None)
+    context.pop("context_id", None)
+    features = dict(context.get("categorical_features") or {})
+    features.update(updates)
+    context["categorical_features"] = features
+    payload = episode.observation.to_dict()
+    payload["context"] = context
+    return WorldEpisode(WorldObservation.from_dict(payload))
+
+
+def _state_keys(observation: object, profile: WorldEncoderProfile) -> set[str]:
+    state = build_feature_state(
+        observation,
+        feature_contract=profile.contract,
+        feature_mask=profile.mask,
+    )
+    return set(state.features)
+
+
+def test_encoder_fingerprints_stay_frozen_and_distinct_from_domain_contracts() -> None:
+    v1 = world_v1_feature_contract()
+    v2 = world_v2_feature_contract()
+    assert FEATURE_CONTRACT_FINGERPRINT == FROZEN_V1_ENCODER_FINGERPRINT
+    assert FEATURE_CONTRACT_FINGERPRINT_V2 == FROZEN_V2_ENCODER_FINGERPRINT
+    assert v1.fingerprint != FEATURE_CONTRACT_FINGERPRINT
+    assert v2.fingerprint != FEATURE_CONTRACT_FINGERPRINT_V2
+    assert type(v1) is WorldFeatureContract
+    assert type(v2) is WorldFeatureContract
+
+
+def test_include_context_facade_binds_frozen_v1_market_and_v2_joint_profiles() -> None:
+    v1_profile = world_encoder_profile_for_include_context(False)
+    v2_profile = world_encoder_profile_for_include_context(True)
+    market = world_lane_encoder_profile("market")
+    joint = world_lane_encoder_profile("joint")
+    assert isinstance(v1_profile, WorldEncoderProfile)
+    assert isinstance(v1_profile.mask, WorldFeatureMask)
+    assert v1_profile.contract == world_v1_feature_contract() == market.contract
+    assert v1_profile.mask == market.mask
+    assert v1_profile.mask.mask_id == "market.v1"
+    assert v1_profile.include_context is False
+    assert v1_profile.encoder_fingerprint == FEATURE_CONTRACT_FINGERPRINT
+    assert v2_profile.contract == world_v2_feature_contract() == joint.contract
+    assert v2_profile.mask == joint.mask
+    assert v2_profile.mask.mask_id == "joint.v1"
+    assert v2_profile.include_context is True
+    assert v2_profile.encoder_fingerprint == FEATURE_CONTRACT_FINGERPRINT_V2
+    assert inspect.signature(WorldFeatureContract).parameters.get("include_context") is None
+
+
+def test_lane_masks_are_frozen_domain_masks_without_cross_group_leakage() -> None:
+    observation = _rich_context_observation()
+    profiles = {kind: world_lane_encoder_profile(kind) for kind in ("market", "status_only", "company", "macro", "joint")}
+    assert profiles["status_only"].mask.mask_id == "status_only.v1"
+    assert profiles["company"].mask.mask_id == "company.v1"
+    assert profiles["macro"].mask.mask_id == "macro.v1"
+    assert profiles["market"].contract.contract_id == MARKET_FEATURE_CONTRACT_VERSION
+    for kind in ("status_only", "company", "macro", "joint"):
+        assert profiles[kind].contract.contract_id == CONTEXT_FEATURE_CONTRACT_VERSION
+        profiles[kind].mask.assert_compatible_with(profiles[kind].contract)
+    fingerprints = {profile.mask.fingerprint for profile in profiles.values()}
+    assert len(fingerprints) == 5
+
+    status_keys = _state_keys(observation, profiles["status_only"])
+    company_keys = _state_keys(observation, profiles["company"])
+    macro_keys = _state_keys(observation, profiles["macro"])
+    joint_keys = _state_keys(observation, profiles["joint"])
+    assert _STATUS_CONTENT <= status_keys
+    assert status_keys.isdisjoint(_COMPANY_CONTENT)
+    assert status_keys.isdisjoint(_MACRO_CONTENT)
+    assert _COMPANY_CONTENT <= company_keys
+    assert company_keys.isdisjoint(_MACRO_CONTENT)
+    assert _MACRO_CONTENT <= macro_keys
+    assert macro_keys.isdisjoint(_COMPANY_CONTENT)
+    assert _STATUS_CONTENT | _COMPANY_CONTENT | _MACRO_CONTENT <= joint_keys
+    v2_facade = build_feature_state(observation, include_context=True)
+    assert set(v2_facade.features) == joint_keys
+    assert v2_facade.feature_hash == build_feature_state(
+        observation,
+        feature_contract=profiles["joint"].contract,
+        feature_mask=profiles["joint"].mask,
+    ).feature_hash
+
+
+def test_market_mask_matches_v1_facade_and_ignores_v2_context_content() -> None:
+    v1 = {
+        "available_at": "2026-01-01T00:00:00+00:00",
+        "feature_contract_version": MARKET_FEATURE_CONTRACT_VERSION,
+        "categorical_features": {
+            "asset_family": "equities",
+            "venue": "XNYS",
+            "session_phase": "regular",
+            "market_regime": "trend_up",
+            "volatility_state": "normal",
+            "macro_regime": "quiet",
+        },
+        "numeric_features": {"return": 0.006, "atr_pct": 0.01, "range_position": 0.72},
+    }
+    market = world_lane_encoder_profile("market")
+    facade = build_feature_state(v1)
+    masked = build_feature_state(v1, feature_contract=market.contract, feature_mask=market.mask)
+    assert facade.feature_hash == masked.feature_hash
+    assert facade.exact_state == masked.exact_state
+    context_keys = _state_keys(_rich_context_observation(), world_lane_encoder_profile("status_only"))
+    assert not (_STATUS_CONTENT <= set(masked.features))
+    assert "company_thesis_status" not in masked.features
+    assert "context_macro_regime" not in masked.features
+    assert "context_status" in context_keys
+
+
+def test_encoding_and_models_stay_free_of_networkx() -> None:
+    for path in _ENCODER_SOURCES:
+        source = path.read_text(encoding="utf-8")
+        assert "networkx" not in source.lower()
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(alias.name.split(".", 1)[0] != "networkx" for alias in node.names)
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module.split(".", 1)[0] != "networkx"

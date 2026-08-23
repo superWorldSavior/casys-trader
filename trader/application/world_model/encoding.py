@@ -30,6 +30,17 @@ from trader.domain.world_episode import (
     WorldOutcome,
     canonical_sha256,
 )
+from trader.domain.world_feature_contract import (
+    COMPANY_FEATURE_GROUP_ID,
+    MACRO_FEATURE_GROUP_ID,
+    MARKET_FEATURE_GROUP_ID,
+    STATUS_FEATURE_GROUP_ID,
+    WorldFeatureContract,
+    WorldFeatureMask,
+    world_feature_contract_for_include_context,
+    world_v1_feature_contract,
+    world_v2_feature_contract,
+)
 
 
 OUTCOME_CLASSES: tuple[str, str, str] = PREDICTION_CLASSES
@@ -293,6 +304,169 @@ def _context_v2_feature_contract_fingerprint() -> str:
 
 
 FEATURE_CONTRACT_FINGERPRINT_V2 = _context_v2_feature_contract_fingerprint()
+
+_LANE_MASK_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "market": ("market.v1", (MARKET_FEATURE_GROUP_ID,)),
+    "status_only": ("status_only.v1", (MARKET_FEATURE_GROUP_ID, STATUS_FEATURE_GROUP_ID)),
+    "company": (
+        "company.v1",
+        (MARKET_FEATURE_GROUP_ID, STATUS_FEATURE_GROUP_ID, COMPANY_FEATURE_GROUP_ID),
+    ),
+    "macro": (
+        "macro.v1",
+        (MARKET_FEATURE_GROUP_ID, STATUS_FEATURE_GROUP_ID, MACRO_FEATURE_GROUP_ID),
+    ),
+    "joint": (
+        "joint.v1",
+        (MARKET_FEATURE_GROUP_ID, STATUS_FEATURE_GROUP_ID, COMPANY_FEATURE_GROUP_ID, MACRO_FEATURE_GROUP_ID),
+    ),
+}
+
+
+@dataclass(frozen=True)
+class WorldEncoderProfile:
+    """Application projection of a frozen domain contract/mask pair."""
+
+    contract: WorldFeatureContract
+    mask: WorldFeatureMask
+    allowed_categorical: frozenset[str]
+    allowed_numeric: frozenset[str]
+    coarse_features: frozenset[str]
+    include_context: bool
+    encoder_fingerprint: str
+
+
+@dataclass(frozen=True)
+class WorldLaneModelIdentity:
+    """Explicit cold-lane lineage consumed by Markov/GRU factories."""
+
+    lane_id: str
+    model_id: str
+    model_version: str
+    seed: int
+    sequence_length: int | None
+    study_cohort_id: str
+    manifest_sha256: str
+    started_event_id: str
+    replay_bound_event_id: str
+    prior_training_lineage: tuple[str, ...] = ()
+    trained_through: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.trained_through is not None:
+            raise ValueError("cold lane must not carry prior training")
+        if self.prior_training_lineage:
+            raise ValueError("cold lane must not reuse a warm lineage")
+        if self.replay_bound_event_id != self.started_event_id:
+            raise ValueError("cold lane replay must be bound to WorldCohortStarted")
+
+
+def _unselected_feature_names(contract: WorldFeatureContract, mask: WorldFeatureMask) -> frozenset[str]:
+    mask.assert_compatible_with(contract)
+    selected = set(mask.selected_groups)
+    names: set[str] = set()
+    for group in contract.groups:
+        if group.group_id in selected:
+            continue
+        names.update(group.categorical_features)
+        names.update(group.numeric_features)
+    return frozenset(names)
+
+
+def resolve_encoder_profile(contract: WorldFeatureContract, mask: WorldFeatureMask) -> WorldEncoderProfile:
+    """Intersect a domain mask with the frozen V1/V2 encoder vocabulary."""
+
+    if not isinstance(contract, WorldFeatureContract):
+        raise TypeError("encoder profile requires a WorldFeatureContract")
+    if not isinstance(mask, WorldFeatureMask):
+        raise TypeError("encoder profile requires a WorldFeatureMask")
+    mask.assert_compatible_with(contract)
+    if contract.contract_id == MARKET_FEATURE_CONTRACT_VERSION:
+        base_categorical = ALLOWED_CATEGORICAL_FEATURES
+        base_numeric = ALLOWED_NUMERIC_FEATURES
+        base_coarse = _COARSE_FEATURES
+        encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT
+        include_context = False
+    else:
+        base_categorical = CONTEXT_V2_CATEGORICAL_FEATURES
+        base_numeric = CONTEXT_V2_NUMERIC_FEATURES
+        base_coarse = CONTEXT_V2_COARSE_FEATURES
+        encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT_V2
+        include_context = True
+    dropped = _unselected_feature_names(contract, mask)
+    return WorldEncoderProfile(
+        contract=contract,
+        mask=mask,
+        allowed_categorical=frozenset(name for name in base_categorical if name not in dropped),
+        allowed_numeric=frozenset(name for name in base_numeric if name not in dropped),
+        coarse_features=frozenset(name for name in base_coarse if name not in dropped),
+        include_context=include_context,
+        encoder_fingerprint=encoder_fingerprint,
+    )
+
+
+def world_lane_encoder_profile(kind: str) -> WorldEncoderProfile:
+    key = kind.strip() if isinstance(kind, str) else ""
+    spec = _LANE_MASK_SPECS.get(key)
+    if spec is None:
+        raise ValueError(f"unknown world lane encoder profile: {kind!r}")
+    mask_id, selected_groups = spec
+    contract = world_v1_feature_contract() if key == "market" else world_v2_feature_contract()
+    mask = WorldFeatureMask.bind(contract, mask_id=mask_id, selected_groups=selected_groups)
+    return resolve_encoder_profile(contract, mask)
+
+
+def bound_encoder_profile(
+    contract: WorldFeatureContract | None,
+    mask: WorldFeatureMask | None,
+    *,
+    include_context: bool = False,
+) -> WorldEncoderProfile | None:
+    if (contract is None) ^ (mask is None):
+        raise ValueError("feature_contract and feature_mask must be provided together")
+    if contract is None or mask is None:
+        return None
+    profile = resolve_encoder_profile(contract, mask)
+    if include_context and not profile.include_context:
+        raise ValueError("include_context contradicts WorldFeatureMask")
+    return profile
+
+
+def world_encoder_profile_for_include_context(include_context: bool) -> WorldEncoderProfile:
+    """V1/V2 compatibility facade: False is market, True is the V2 joint mask."""
+
+    profile = world_lane_encoder_profile("joint" if include_context else "market")
+    expected = world_feature_contract_for_include_context(include_context)
+    if profile.contract != expected:
+        raise ValueError("include_context facade drifted from WorldFeatureContract")
+    return profile
+
+
+def bind_cold_lane_identity(
+    *,
+    lane_id: str,
+    model_id: str,
+    model_version: str,
+    seed: int,
+    sequence_length: int | None,
+    study_cohort_id: str,
+    manifest_sha256: str,
+    started_event_id: str,
+    prototype: object | None = None,
+) -> WorldLaneModelIdentity:
+    if prototype is not None:
+        raise ValueError("cold factory must not reuse a warm model")
+    return WorldLaneModelIdentity(
+        lane_id=lane_id,
+        model_id=model_id,
+        model_version=model_version,
+        seed=seed,
+        sequence_length=sequence_length,
+        study_cohort_id=study_cohort_id,
+        manifest_sha256=manifest_sha256,
+        started_event_id=started_event_id,
+        replay_bound_event_id=started_event_id,
+    )
 
 
 class FeatureBoundaryError(ValueError):
@@ -563,6 +737,8 @@ def build_feature_state(
     allowed_numeric: frozenset[str] | None = None,
     include_context: bool = False,
     coarse_features: frozenset[str] | None = None,
+    feature_contract: WorldFeatureContract | None = None,
+    feature_mask: WorldFeatureMask | None = None,
 ) -> FeatureState:
     """Return an immutable allow-listed World-state projection.
 
@@ -570,11 +746,28 @@ def build_feature_state(
     raise.  This lets a WorldEpisode retain provenance annotations without
     accidentally growing the model feature surface.  V1 callers must keep the
     default allow-lists so ``FEATURE_CONTRACT_FINGERPRINT`` stays frozen.
+    ``include_context`` remains the V1/V2 facade; cohort lanes pass a frozen
+    ``WorldFeatureContract`` + ``WorldFeatureMask`` instead.
     """
 
-    allowed_cats = allowed_categorical or ALLOWED_CATEGORICAL_FEATURES
-    allowed_nums = allowed_numeric or ALLOWED_NUMERIC_FEATURES
-    coarse = coarse_features or _COARSE_FEATURES
+    if (feature_contract is None) ^ (feature_mask is None):
+        raise ValueError("feature_contract and feature_mask must be provided together")
+    if feature_contract is not None and feature_mask is not None:
+        if allowed_categorical is not None or allowed_numeric is not None or coarse_features is not None:
+            raise ValueError("mask-driven encoding cannot also take explicit allow-lists")
+        profile = resolve_encoder_profile(feature_contract, feature_mask)
+        allowed_cats = profile.allowed_categorical
+        allowed_nums = profile.allowed_numeric
+        coarse = profile.coarse_features
+        include_context = profile.include_context
+    elif include_context:
+        allowed_cats = allowed_categorical or CONTEXT_V2_CATEGORICAL_FEATURES
+        allowed_nums = allowed_numeric or CONTEXT_V2_NUMERIC_FEATURES
+        coarse = coarse_features or CONTEXT_V2_COARSE_FEATURES
+    else:
+        allowed_cats = allowed_categorical or ALLOWED_CATEGORICAL_FEATURES
+        allowed_nums = allowed_numeric or ALLOWED_NUMERIC_FEATURES
+        coarse = coarse_features or _COARSE_FEATURES
     known_keys = (
         allowed_cats
         | allowed_nums
@@ -943,6 +1136,10 @@ __all__ = [
     "FutureLabelLeakageError",
     "ModelUpdate",
     "OutcomeEventConflictError",
+    "WorldEncoderProfile",
+    "WorldLaneModelIdentity",
+    "bind_cold_lane_identity",
+    "bound_encoder_profile",
     "build_feature_state",
     "canonical_move_class",
     "canonical_training_label_evidence",
@@ -960,6 +1157,9 @@ __all__ = [
     "outcome_move_class",
     "outcome_simple_return",
     "parse_model_timestamp",
+    "resolve_encoder_profile",
     "revalidate_context_observation",
     "training_event_signature",
+    "world_encoder_profile_for_include_context",
+    "world_lane_encoder_profile",
 ]

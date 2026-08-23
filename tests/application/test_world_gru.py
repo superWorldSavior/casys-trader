@@ -5,13 +5,20 @@ import math
 
 import pytest
 
+from trader.application.world_model.context_capture import attach_world_context
 from trader.application.world_model.encoding import (
     FeatureBoundaryError,
     FutureLabelLeakageError,
     OutcomeEventConflictError,
+    world_lane_encoder_profile,
 )
-from trader.application.world_model.gru import OnlineGRUWorldChallenger
-from trader.domain.world_episode import WorldEpisode, WorldObservation, WorldOutcome
+from trader.application.world_model.gru import OnlineGRUWorldChallenger, cold_gru_challenger
+from trader.domain.world_cohort import WorldLaneDefinition
+from trader.domain.world_context import SensorEvidence
+from trader.domain.world_episode import WorldEpisode, WorldObservation, WorldOutcome, canonical_sha256
+from trader.domain.world_feature_contract import world_v1_feature_contract, world_v2_feature_contract
+
+from tests.application.test_world_context_capture import _FakeSource, _v1_episode
 
 
 UTC = timezone.utc
@@ -315,3 +322,186 @@ def test_rejects_non_world_episode_envelope_before_encoding() -> None:
 
     with pytest.raises(FeatureBoundaryError, match="non-World fields"):
         _model().predict(contaminated, HORIZON_4H)
+
+
+STARTED_EVENT_ID = "world_cohort_started:v1:" + "d" * 64
+STUDY_COHORT_ID = "world_cohort:v1:" + "e" * 64
+MANIFEST_SHA256 = "f" * 64
+
+
+def _with_context_categoricals(episode: WorldEpisode, **updates: str) -> WorldEpisode:
+    context = dict(episode.observation.to_dict()["context"])
+    context.pop("content_sha256", None)
+    context.pop("context_id", None)
+    features = dict(context.get("categorical_features") or {})
+    features.update(updates)
+    context["categorical_features"] = features
+    payload = episode.observation.to_dict()
+    payload["context"] = context
+    return WorldEpisode(WorldObservation.from_dict(payload))
+
+
+def _lane(
+    kind: str,
+    *,
+    family: str = "gru",
+    sequence_length: int = 4,
+    seed: int = 17,
+    model_version: str | None = None,
+) -> WorldLaneDefinition:
+    profile = world_lane_encoder_profile(kind)
+    return WorldLaneDefinition(
+        lane_id=f"gru.{kind}",
+        model_family=family,
+        model_id="online_gru_world_challenger",
+        model_version=model_version or f"cohort.gru.{kind}.v1",
+        feature_contract_id=profile.contract.contract_id,
+        feature_contract_fingerprint=profile.contract.fingerprint,
+        feature_mask_id=profile.mask.mask_id,
+        feature_mask_fingerprint=profile.mask.fingerprint,
+        seed=seed,
+        sequence_length=sequence_length if family == "gru" else None,
+        hyperparameters_sha256=canonical_sha256({"family": family, "lane": f"gru.{kind}"}),
+        role="primary_control",
+    )
+
+
+def _cold_gru(kind: str = "market", **overrides: object) -> OnlineGRUWorldChallenger:
+    profile = world_lane_encoder_profile(kind)
+    settings: dict[str, object] = {
+        "lane": _lane(kind),
+        "contract": profile.contract,
+        "mask": profile.mask,
+        "study_cohort_id": STUDY_COHORT_ID,
+        "manifest_sha256": MANIFEST_SHA256,
+        "started_event_id": STARTED_EVENT_ID,
+        "hidden_size": 4,
+        "learning_rate": 0.05,
+        "gradient_clip": 0.75,
+        "minimum_global_support": 2,
+    }
+    settings.update(overrides)
+    return cold_gru_challenger(**settings)  # type: ignore[arg-type]
+
+
+def test_market_mask_gru_matches_v1_facade_predictions_bit_for_bit() -> None:
+    episode = _episode(0)
+    outcome = _outcome(episode, simple_return=0.01)
+    facade = _model()
+    masked = _cold_gru("market", lane=_lane("market", seed=17, model_version="v1"), hidden_size=5)
+    assert facade.apply_outcome(outcome, episode).applied
+    assert masked.apply_outcome(outcome, episode).applied
+    first = facade.predict(episode, HORIZON_4H, prediction_at=outcome.available_at)
+    second = masked.predict(episode, HORIZON_4H, prediction_at=outcome.available_at)
+    assert dict(first.probabilities) == dict(second.probabilities)
+    assert first.model_fingerprint == second.model_fingerprint
+    assert first.comparison_batch_id == second.comparison_batch_id
+    assert first.comparison_cohort_fingerprint == second.comparison_cohort_fingerprint
+    assert masked.feature_mask.mask_id == "market.v1"
+    assert masked.feature_contract == world_v1_feature_contract()
+    assert masked.sequence_len == 4
+
+
+def test_joint_mask_gru_matches_v2_include_context_facade() -> None:
+    v2 = attach_world_context(
+        (_v1_episode(),),
+        _FakeSource(
+            SensorEvidence(status="missing", reason="no_artifact"),
+            SensorEvidence(status="missing", reason="no_artifact"),
+        ),
+    )[0]
+    outcome = _outcome(v2, simple_return=0.01)
+    facade = OnlineGRUWorldChallenger(
+        include_context=True,
+        model_version="cohort.gru.joint.v1",
+        hidden_size=4,
+        sequence_len=4,
+        learning_rate=0.05,
+        gradient_clip=0.75,
+        minimum_global_support=2,
+        seed=17,
+    )
+    masked = _cold_gru("joint", lane=_lane("joint", seed=17))
+    assert facade.apply_outcome(outcome, v2).applied
+    assert masked.apply_outcome(outcome, v2).applied
+    predicted_at = outcome.available_at
+    first = facade.predict(v2, HORIZON_4H, prediction_at=predicted_at)
+    second = masked.predict(v2, HORIZON_4H, prediction_at=predicted_at)
+    assert dict(first.probabilities) == dict(second.probabilities)
+    assert first.feature_hash == second.feature_hash
+    assert masked.feature_contract == world_v2_feature_contract()
+
+
+def test_cold_gru_challengers_match_slots_without_warm_reuse_or_content_leakage() -> None:
+    v1 = _episode(0)
+    v2 = attach_world_context(
+        (v1,),
+        _FakeSource(
+            SensorEvidence(status="missing", reason="no_artifact"),
+            SensorEvidence(status="missing", reason="no_artifact"),
+        ),
+    )[0]
+    intact = _with_context_categoricals(v2, company_thesis_status="intact", context_macro_regime="risk_on")
+    other = _with_context_categoricals(v2, company_thesis_status="broken", context_macro_regime="risk_off")
+    lanes = {kind: _cold_gru(kind) for kind in ("market", "status_only", "company", "macro", "joint")}
+    predicted_at = v1.observation.available_at
+    batch_ids = {
+        lanes["market"].predict(v1, HORIZON_4H, prediction_at=predicted_at).comparison_batch_id,
+        lanes["status_only"].predict(v2, HORIZON_4H, prediction_at=predicted_at).comparison_batch_id,
+        lanes["company"].predict(v2, HORIZON_4H, prediction_at=predicted_at).comparison_batch_id,
+        lanes["macro"].predict(v2, HORIZON_4H, prediction_at=predicted_at).comparison_batch_id,
+        lanes["joint"].predict(v2, HORIZON_4H, prediction_at=predicted_at).comparison_batch_id,
+    }
+    fingerprints = {
+        lanes["market"].predict(v1, HORIZON_4H, prediction_at=predicted_at).comparison_cohort_fingerprint,
+        lanes["status_only"].predict(v2, HORIZON_4H, prediction_at=predicted_at).comparison_cohort_fingerprint,
+        lanes["joint"].predict(v2, HORIZON_4H, prediction_at=predicted_at).comparison_cohort_fingerprint,
+    }
+    assert len(batch_ids) == 1
+    assert len(fingerprints) == 1
+    assert lanes["status_only"].lane_identity.replay_bound_event_id == STARTED_EVENT_ID
+    assert lanes["status_only"].support(HORIZON_4H) == 0
+
+    status_intact = _cold_gru("status_only")
+    status_other = _cold_gru("status_only")
+    joint_intact = _cold_gru("joint")
+    joint_other = _cold_gru("joint")
+    outcome_intact = _outcome(intact, simple_return=0.01)
+    outcome_other = _outcome(other, simple_return=0.01)
+    assert status_intact.apply_outcome(outcome_intact, intact).applied
+    assert status_other.apply_outcome(outcome_other, other).applied
+    assert joint_intact.apply_outcome(outcome_intact, intact).applied
+    assert joint_other.apply_outcome(outcome_other, other).applied
+    later = intact.observation.available_at + timedelta(hours=5)
+    assert dict(status_intact.predict(intact, HORIZON_4H, prediction_at=later).probabilities) == dict(
+        status_other.predict(other, HORIZON_4H, prediction_at=later).probabilities
+    )
+    assert dict(joint_intact.predict(intact, HORIZON_4H, prediction_at=later).probabilities) != dict(
+        joint_other.predict(other, HORIZON_4H, prediction_at=later).probabilities
+    )
+
+    trained = lanes["market"]
+    assert trained.apply_outcome(_outcome(v1), v1).applied
+    sibling = _cold_gru("market")
+    assert sibling.support(HORIZON_4H) == 0
+    with pytest.raises(ValueError, match="warm|trained|reuse"):
+        cold_gru_challenger(
+            lane=_lane("market"),
+            contract=world_v1_feature_contract(),
+            mask=world_lane_encoder_profile("market").mask,
+            study_cohort_id=STUDY_COHORT_ID,
+            manifest_sha256=MANIFEST_SHA256,
+            started_event_id=STARTED_EVENT_ID,
+            prototype=trained,
+            hidden_size=4,
+        )
+    with pytest.raises(ValueError, match="gru|family|sequence"):
+        cold_gru_challenger(
+            lane=_lane("market", family="markov"),
+            contract=world_v1_feature_contract(),
+            mask=world_lane_encoder_profile("market").mask,
+            study_cohort_id=STUDY_COHORT_ID,
+            manifest_sha256=MANIFEST_SHA256,
+            started_event_id=STARTED_EVENT_ID,
+            hidden_size=4,
+        )

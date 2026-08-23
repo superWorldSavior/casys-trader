@@ -48,6 +48,9 @@ from trader.application.world_model.encoding import (
     FutureLabelLeakageError,
     ModelUpdate,
     OutcomeEventConflictError,
+    WorldLaneModelIdentity,
+    bind_cold_lane_identity,
+    bound_encoder_profile,
     build_feature_state,
     canonical_training_label_evidence,
     common_training_replay_key,
@@ -59,7 +62,9 @@ from trader.application.world_model.encoding import (
     outcome_move_class,
     revalidate_context_observation,
     training_event_signature,
+    world_encoder_profile_for_include_context,
 )
+from trader.domain.world_cohort import ModelFamily, WorldLaneDefinition
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
     PREDICTION_CLASSES,
@@ -69,6 +74,7 @@ from trader.domain.world_episode import (
     canonical_sha256,
     parse_utc_timestamp,
 )
+from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeatureMask
 
 
 OUTCOME_CLASSES: tuple[str, str, str] = PREDICTION_CLASSES
@@ -323,6 +329,9 @@ class OnlineGRUWorldChallenger:
         include_context: bool = False,
         extra_categorical_keys: frozenset[str] | None = None,
         feature_contract_fingerprint: str | None = None,
+        feature_contract: WorldFeatureContract | None = None,
+        feature_mask: WorldFeatureMask | None = None,
+        lane_identity: WorldLaneModelIdentity | None = None,
     ) -> None:
         for name, value in (
             ("sequence_len", sequence_len),
@@ -361,14 +370,33 @@ class OnlineGRUWorldChallenger:
         self.model_version = model_version or MODEL_VERSION
         self.encoder_version = encoder_version or ENCODER_VERSION
         self._accepted_feature_contracts = accepted_feature_contracts
-        self._include_context = include_context
+        self._profile = bound_encoder_profile(feature_contract, feature_mask, include_context=include_context)
+        self._include_context = self._profile.include_context if self._profile is not None else include_context
+        self.lane_identity = lane_identity
         extra_keys = extra_categorical_keys or frozenset()
-        if include_context:
+        if self._include_context:
             extra_keys = extra_keys | CONTEXT_V2_CATEGORICAL_FEATURES
-        self._categorical_keys = _CATEGORICAL_KEYS | extra_keys
+        categorical_keys = _CATEGORICAL_KEYS | extra_keys
+        if self._profile is not None:
+            categorical_keys = frozenset(name for name in categorical_keys if name in self._profile.allowed_categorical)
+        self._categorical_keys = categorical_keys
         self._feature_contract_fingerprint = feature_contract_fingerprint or (
-            FEATURE_CONTRACT_FINGERPRINT_V2 if include_context else FEATURE_CONTRACT_FINGERPRINT
+            self._profile.encoder_fingerprint
+            if self._profile is not None
+            else FEATURE_CONTRACT_FINGERPRINT_V2 if self._include_context else FEATURE_CONTRACT_FINGERPRINT
         )
+
+    @property
+    def feature_contract(self) -> WorldFeatureContract:
+        if self._profile is not None:
+            return self._profile.contract
+        return world_encoder_profile_for_include_context(self._include_context).contract
+
+    @property
+    def feature_mask(self) -> WorldFeatureMask:
+        if self._profile is not None:
+            return self._profile.mask
+        return world_encoder_profile_for_include_context(self._include_context).mask
 
     def reset_for_replay(self) -> None:
         """Clear learned state and sequence caches before ledger reconciliation."""
@@ -381,7 +409,11 @@ class OnlineGRUWorldChallenger:
         version = feature_contract_version_of(episode)
         if self._accepted_feature_contracts is not None:
             return version in self._accepted_feature_contracts
-        expected = CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+        expected = (
+            self._profile.contract.accepted_episode_contract
+            if self._profile is not None
+            else CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+        )
         return version == expected
 
     def _require_accepted(self, episode: object) -> None:
@@ -390,6 +422,14 @@ class OnlineGRUWorldChallenger:
 
     def _feature_state(self, observation: object):
         self._require_accepted(observation)
+        if self._profile is not None:
+            if self._profile.include_context:
+                revalidate_context_observation(observation)
+            return build_feature_state(
+                observation,
+                feature_contract=self._profile.contract,
+                feature_mask=self._profile.mask,
+            )
         if self._include_context:
             revalidate_context_observation(observation)
             return build_feature_state(
@@ -867,7 +907,10 @@ class OnlineGRUWorldChallenger:
         self._feature_state(episode)
         observation = episode.observation
         vector = np.zeros(self.input_size, dtype=np.float64)
+        allowed_numeric = None if self._profile is None else self._profile.allowed_numeric
         for index, (name, scale) in enumerate(_NUMERIC_SCALES):
+            if allowed_numeric is not None and name not in allowed_numeric:
+                continue
             value = observation.numeric_features.get(name)
             if value is None:
                 continue
@@ -1057,6 +1100,68 @@ class OnlineGRUWorldChallenger:
 WorldGRUChallenger = OnlineGRUWorldChallenger
 
 
+def _assert_lane_contract_mask(
+    lane: WorldLaneDefinition,
+    contract: WorldFeatureContract,
+    mask: WorldFeatureMask,
+) -> None:
+    mask.assert_compatible_with(contract)
+    if lane.feature_contract_id != contract.contract_id or lane.feature_contract_fingerprint != contract.fingerprint:
+        raise ValueError("lane feature_contract fingerprint does not match WorldFeatureContract")
+    if lane.feature_mask_id != mask.mask_id or lane.feature_mask_fingerprint != mask.fingerprint:
+        raise ValueError("lane feature_mask fingerprint does not match WorldFeatureMask")
+
+
+def cold_gru_challenger(
+    *,
+    lane: WorldLaneDefinition,
+    contract: WorldFeatureContract,
+    mask: WorldFeatureMask,
+    study_cohort_id: str,
+    manifest_sha256: str,
+    started_event_id: str,
+    prototype: OnlineGRUWorldChallenger | None = None,
+    **kwargs: object,
+) -> OnlineGRUWorldChallenger:
+    """Mint a cold GRU lane. Never copies a warm prototype."""
+
+    if lane.model_family is not ModelFamily.GRU:
+        raise ValueError("cold GRU challenger requires model_family=gru")
+    if lane.sequence_length is None:
+        raise ValueError("sequence_length is required for gru")
+    _assert_lane_contract_mask(lane, contract, mask)
+    identity = bind_cold_lane_identity(
+        lane_id=lane.lane_id,
+        model_id=lane.model_id,
+        model_version=lane.model_version,
+        seed=lane.seed,
+        sequence_length=lane.sequence_length,
+        study_cohort_id=study_cohort_id,
+        manifest_sha256=manifest_sha256,
+        started_event_id=started_event_id,
+        prototype=prototype,
+    )
+    sequence_len = kwargs.pop("sequence_len", None)
+    if sequence_len is not None and sequence_len != lane.sequence_length:
+        raise ValueError("sequence_len disagrees with WorldLaneDefinition")
+    seed = kwargs.pop("seed", None)
+    if seed is not None and seed != lane.seed:
+        raise ValueError("seed disagrees with WorldLaneDefinition")
+    model = OnlineGRUWorldChallenger(
+        sequence_len=lane.sequence_length,
+        seed=lane.seed,
+        model_id=lane.model_id,
+        model_version=lane.model_version,
+        feature_contract=contract,
+        feature_mask=mask,
+        lane_identity=identity,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    if any(state.support or state.training_steps for state in model._states.values()):
+        raise ValueError("cold GRU challenger must start untrained")
+    return model
+
+
 __all__ = [
     "DEFAULT_DIRECTION_BAND",
     "ENCODER_VERSION",
@@ -1066,4 +1171,5 @@ __all__ = [
     "OnlineGRUWorldChallenger",
     "SequenceMetadata",
     "WorldGRUChallenger",
+    "cold_gru_challenger",
 ]
