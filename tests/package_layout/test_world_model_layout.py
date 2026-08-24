@@ -260,3 +260,39 @@ def test_world_availability_receipt_public_surface_does_not_mint_ready_at() -> N
     assert "_attest_verified_store_receipt" not in availability_mod.__all__
     assert "resolve_world_market_anchor" not in scope_mod.__all__
     assert not hasattr(scope_mod, "resolve_world_market_anchor")
+
+
+def test_world_resource_budget_is_stdlib_domain_with_application_port() -> None:
+    domain_path = REPO_ROOT / "trader" / "domain" / "world_resource.py"
+    ports_path = REPO_ROOT / "trader" / "application" / "world_model" / "resource_ports.py"
+    budget_path = REPO_ROOT / "trader" / "application" / "world_model" / "resource_budget.py"
+    probe_path = REPO_ROOT / "trader" / "infrastructure" / "state_db" / "world_resource_probe.py"
+    config_path = REPO_ROOT / "config" / "world_shadow_resource_budget.yaml"
+
+    assert domain_path.exists()
+    assert ports_path.exists()
+    assert budget_path.exists()
+    assert probe_path.exists()
+    assert config_path.exists()
+    assert _domain_import_violations([domain_path], REPO_ROOT) == []
+    assert _import_violations(ports_path, _FORBIDDEN_APPLICATION_PREFIXES) == []
+    assert _import_violations(budget_path, _FORBIDDEN_APPLICATION_PREFIXES) == []
+    assert _import_violations(probe_path, ("trader.application", "trader.runtime", "trader.reporting")) == []
+
+    from trader.application.world_model.resource_budget import WorldResourceBudgetGuard
+    from trader.application.world_model.resource_ports import WorldResourceProbe
+    from trader.domain.world_resource import WorldResourceBudget, WorldResourceDecision, decide_world_resource_budget
+    from trader.infrastructure.state_db.world_resource_probe import FilesystemWorldResourceProbe
+
+    assert WorldResourceBudget.__module__ == "trader.domain.world_resource"
+    assert WorldResourceDecision.__module__ == "trader.domain.world_resource"
+    assert decide_world_resource_budget.__module__ == "trader.domain.world_resource"
+    assert WorldResourceProbe.__module__ == "trader.application.world_model.resource_ports"
+    assert WorldResourceBudgetGuard.__module__ == "trader.application.world_model.resource_budget"
+    assert FilesystemWorldResourceProbe.__module__ == "trader.infrastructure.state_db.world_resource_probe"
+    domain_source = domain_path.read_text(encoding="utf-8")
+    assert "VACUUM" not in domain_source
+    assert "TRUNCATE" not in domain_source
+    assert "os.environ" not in domain_source
+    assert "sqlite3" not in domain_source
+

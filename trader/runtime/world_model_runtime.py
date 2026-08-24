@@ -52,12 +52,14 @@ class WorldModelBackgroundRunner:
         thread_name: str = "world-model-shadow",
         context_enricher: WorldContextEpisodeEnricher | None = None,
         graph_enricher: WorldGraphEpisodeEnricher | None = None,
+        resource_guard: object | None = None,
     ) -> None:
         self.runtime = runtime
         self.log = logger or logging.getLogger("casys-trader")
         self.thread_name = str(thread_name).strip() or "world-model-shadow"
         self.context_enricher = context_enricher
         self.graph_enricher = graph_enricher
+        self.resource_guard = resource_guard
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._pending: _BackgroundSnapshot | None = None
@@ -150,36 +152,38 @@ class WorldModelBackgroundRunner:
                 "as_of": current.now.isoformat(),
                 "errors": [],
             }
-            try:
-                report["mature"] = self.runtime.mature_pending(
-                    current.now,
-                    bars_by_symbol=_clone(current.bars_by_symbol),
-                )
-            except Exception as exc:  # noqa: BLE001 - runtime is shadow-only even if its contract breaks
-                self._background_error(report, stage="mature", error=exc)
-            capture_snapshot = current
-            if self.context_enricher is not None:
+            skip_writes = self._apply_resource_budget(report, now=current.now)
+            if not skip_writes:
                 try:
-                    enriched = tuple(
-                        self.context_enricher.enrich(tuple(_clone(episode) for episode in current.episodes))
+                    report["mature"] = self.runtime.mature_pending(
+                        current.now,
+                        bars_by_symbol=_clone(current.bars_by_symbol),
                     )
-                    capture_snapshot = dataclasses.replace(current, episodes=enriched)
-                except Exception as exc:  # noqa: BLE001 - V2 enrichment is fail-open for V1
-                    self._background_error(report, stage="context_enrich", error=exc)
-            if self.graph_enricher is not None:
+                except Exception as exc:  # noqa: BLE001 - runtime is shadow-only even if its contract breaks
+                    self._background_error(report, stage="mature", error=exc)
+                capture_snapshot = current
+                if self.context_enricher is not None:
+                    try:
+                        enriched = tuple(
+                            self.context_enricher.enrich(tuple(_clone(episode) for episode in current.episodes))
+                        )
+                        capture_snapshot = dataclasses.replace(current, episodes=enriched)
+                    except Exception as exc:  # noqa: BLE001 - V2 enrichment is fail-open for V1
+                        self._background_error(report, stage="context_enrich", error=exc)
+                if self.graph_enricher is not None:
+                    try:
+                        enriched = tuple(
+                            self.graph_enricher.enrich(tuple(_clone(episode) for episode in capture_snapshot.episodes))
+                        )
+                        capture_snapshot = dataclasses.replace(capture_snapshot, episodes=enriched)
+                    except Exception as exc:  # noqa: BLE001 - V3 enrichment is fail-open for V1/V2
+                        self._background_error(report, stage="graph_enrich", error=exc)
                 try:
-                    enriched = tuple(
-                        self.graph_enricher.enrich(tuple(_clone(episode) for episode in capture_snapshot.episodes))
-                    )
-                    capture_snapshot = dataclasses.replace(capture_snapshot, episodes=enriched)
-                except Exception as exc:  # noqa: BLE001 - V3 enrichment is fail-open for V1/V2
-                    self._background_error(report, stage="graph_enrich", error=exc)
-            try:
-                report["capture"] = self._capture_and_predict(capture_snapshot)
-            except Exception as exc:  # noqa: BLE001 - still attempt capture after a maturity failure
-                self._background_error(report, stage="capture", error=exc)
-            if report["errors"]:
-                report["status"] = "partial"
+                    report["capture"] = self._capture_and_predict(capture_snapshot)
+                except Exception as exc:  # noqa: BLE001 - still attempt capture after a maturity failure
+                    self._background_error(report, stage="capture", error=exc)
+                if report["errors"]:
+                    report["status"] = "partial"
             try:
                 completed_report = copy.deepcopy(report)
             except Exception as exc:  # noqa: BLE001 - exotic collaborator output stays isolated
@@ -199,6 +203,56 @@ class WorldModelBackgroundRunner:
                     return
                 current = self._pending
                 self._pending = None
+
+    def _apply_resource_budget(self, report: dict[str, object], *, now: datetime) -> bool:
+        """Skip capture/training when the last-resort budget is breached. Never raises."""
+
+        if self.resource_guard is None:
+            return False
+        evaluate = getattr(self.resource_guard, "evaluate", None)
+        if not callable(evaluate):
+            return False
+        try:
+            evaluation = evaluate(now=now)
+            to_status = getattr(evaluation, "to_status", None)
+            report["resource_budget"] = to_status() if callable(to_status) else evaluation
+            decision = getattr(evaluation, "decision", evaluation)
+            emit_warning = bool(getattr(evaluation, "emit_warning", False))
+            allowed = bool(getattr(decision, "allowed", False))
+            reason = str(getattr(decision, "reason", "probe_error") or "probe_error")
+            if emit_warning:
+                payload = {"stage": "resource_budget"}
+                if isinstance(report.get("resource_budget"), Mapping):
+                    payload.update(dict(report["resource_budget"]))
+                else:
+                    payload["reason"] = reason
+                    payload["status"] = "skipped" if not allowed else "allowed"
+                payload["stage"] = "resource_budget"
+                self._warn(payload)
+            if allowed:
+                return False
+            report["status"] = "skipped"
+            report["reason"] = reason
+            return True
+        except Exception as exc:  # noqa: BLE001 - unreadable budget is fail-safe skip for shadow writes
+            report["status"] = "skipped"
+            report["reason"] = "probe_error"
+            report["resource_budget"] = {
+                "status": "skipped",
+                "reason": "probe_error",
+                "authority": "shadow_only",
+                "decision_effect": "none",
+                "error": f"{type(exc).__name__}:{exc}",
+            }
+            self._warn(
+                {
+                    "stage": "resource_budget",
+                    "status": "skipped",
+                    "reason": "probe_error",
+                    "error": f"{type(exc).__name__}:{exc}",
+                }
+            )
+            return True
 
     def _capture_and_predict(self, snapshot: _BackgroundSnapshot) -> object:
         """Call the canonical service with now; keep legacy doubles without now.
@@ -439,6 +493,34 @@ def _compose_graph_v3_capture(
     )
 
 
+def compose_world_resource_guard(
+    *,
+    db_path: str | Path,
+    config_dir: str | Path,
+    clock: object | None = None,
+) -> object:
+    """Compose the last-resort shadow budget guard. Fail-open to conservative defaults."""
+
+    from trader.application.world_model.resource_budget import (
+        WorldResourceBudgetGuard,
+        load_world_shadow_resource_budget,
+    )
+    from trader.domain.world_resource import WorldResourceBudget
+    from trader.infrastructure.state_db.world_resource_probe import FilesystemWorldResourceProbe
+
+    try:
+        budget = load_world_shadow_resource_budget(config_dir)
+    except Exception:  # noqa: BLE001 - missing config cannot disable the last-resort guard
+        budget = WorldResourceBudget.conservative_defaults()
+    kwargs: dict[str, object] = {
+        "budget": budget,
+        "probe": FilesystemWorldResourceProbe(db_path),
+    }
+    if clock is not None:
+        kwargs["clock"] = clock
+    return WorldResourceBudgetGuard(**kwargs)  # type: ignore[arg-type]
+
+
 def compose_local_graph_v3_lanes(
     *,
     enabled: bool | None = None,
@@ -667,6 +749,7 @@ __all__ = [
     "WorldModelShadowRuntime",
     "WorldTemporalTraversalAdapter",
     "compose_local_graph_v3_lanes",
+    "compose_world_resource_guard",
     "graph_v3_budget_view",
     "graph_v3_status_overlay",
 ]

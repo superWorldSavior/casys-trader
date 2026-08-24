@@ -2166,6 +2166,7 @@ def main(
                 WorldModelBackgroundRunner,
                 WorldModelRuntime,
                 compose_local_graph_v3_lanes,
+                compose_world_resource_guard,
             )
 
             _world_model_store = WorldModelStore(STATE_DIR / "world_model.db")
@@ -2263,11 +2264,24 @@ def main(
                 lookback=DEFAULT_RUNTIME_LOOKBACK,
                 cohort_service=_world_cohort_service,
             )
+            _world_resource_guard = None
+            try:
+                _world_resource_guard = compose_world_resource_guard(
+                    db_path=_world_model_store.path,
+                    config_dir=ROOT / "config",
+                )
+            except Exception as exc:  # noqa: BLE001 - guard compose cannot block V1 shadow
+                log.warning(
+                    "[world_model_shadow] resource_budget guard disabled after compose failure: %s:%s",
+                    type(exc).__name__,
+                    exc,
+                )
             _world_model_runner = WorldModelBackgroundRunner(
                 runtime=_world_model_runtime,
                 logger=log,
                 context_enricher=context_enricher,
                 graph_enricher=graph_enricher,
+                resource_guard=_world_resource_guard,
             )
             claimed_resources.world_model_store = _world_model_store
             claimed_resources.world_model_runner = _world_model_runner
@@ -2277,11 +2291,12 @@ def main(
             if graph_enricher is not None:
                 _world_model_lane_count += 2
             log.info(
-                "[world_model_shadow] enabled db=%s authority=shadow_only context_v2=%s graph_v3=%s lanes=%s",
+                "[world_model_shadow] enabled db=%s authority=shadow_only context_v2=%s graph_v3=%s lanes=%s resource_budget=%s",
                 STATE_DIR / "world_model.db",
                 int(_world_model_context_v2),
                 int(graph_enricher is not None),
                 _world_model_lane_count,
+                "on" if _world_resource_guard is not None else "off",
             )
         except Exception as exc:  # noqa: BLE001 - shadow boot cannot block trading
             log.warning(

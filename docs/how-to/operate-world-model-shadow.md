@@ -46,6 +46,11 @@ macro. Champs à lire en premier :
 `world graph status` (`world_graph_status.v1`) expose les budgets (profondeur
 4, 32 chemins) et `gaps.writes`. Un graphe **câblé** n'est pas une écriture.
 
+`world status` porte aussi `resource_budget` : décision live du garde-fou
+disque (taille logique / on-disk de `world_model.db` et octets libres). Cette
+lecture **ne crée pas** la base. `status=skipped` veut dire que le prochain
+batch d'écriture shadow serait sauté, pas que le Trader s'est arrêté.
+
 ### Cohortes (status + rapport)
 
 Le CLI n'a pas de `list`. Les `cohort_id` stables sont dérivés du YAML
@@ -79,6 +84,7 @@ Trois états distincts. Ne pas les fusionner :
 | `episodes_appended=0` au boot | l'activation **ne backfill pas** | un échec de plomberie |
 | Cycle daemon `idle_waiting_for_wake` / replay de la même barre | le daemon vit | un nouveau `WorldEpisode` |
 | Compteur d'épisodes qui monte | un **cycle dû** a capturé une ancre OHLCV valide | un effet Trader |
+| `resource_budget.status=skipped` / log `stage=resource_budget` | last-resort disque : capture/training shadow sautés | un HOLD Trader, un arrêt daemon, une purge |
 
 Le hook de capture tourne après le snapshot marché, **avant** le dispatch
 LLM (`reason=market_snapshot_pre_dispatch`). Sans ancre OHLCV valide : **aucun
@@ -154,6 +160,43 @@ est on.
 `config/world_graph_v3.yaml` garde `cohort_id: null`. L'id graphe est
 **injecté** au compose depuis le rapport d'activation, jamais lu dans ce
 fichier.
+
+## Garde-fou budget disque (last-resort)
+
+Le shadow a un **plafond de dernier recours**, local au World Model. Il ne
+remplace pas le dédoublonnage sémantique. Il ne touche ni Trader, ni Brain,
+ni Univers, ni broker, ni `casys.db`.
+
+Fichier versionné : `config/world_shadow_resource_budget.yaml`
+(`schema_version=world_shadow_resource_budget.v1`, `content_sha256` canonique).
+Pas de lecture magique d'environnement pour les seuils. YAML absent ou
+invalide → les défauts conservateurs restent actifs.
+
+Défauts du pilote d'une semaine (machine ~7 GiB libres, capture polluée
+~2 MiB/min) :
+
+| Seuil | Défaut | Effet |
+|---|---|---|
+| `max_db_bytes` | 2147483648 (2 GiB) | saute le batch si la taille logique **ou** on-disk (`world_model.db` + WAL/SHM) atteint le plafond |
+| `min_free_bytes` | 3221225472 (3 GiB) | saute le batch si le filesystem a moins que cette réserve |
+| `warn_interval_seconds` | 300 | warning structuré `[world_model_shadow]` au plus une fois par intervalle |
+
+Avant **chaque** batch d'écriture (un `stat` par cycle, pas par épisode) :
+si le plafond DB ou la réserve libre est franchi, le worker **saute seulement**
+capture + entraînement World Model de ce cycle. Le daemon continue. Le chemin
+de décision Trader n'est pas appelé par ce garde-fou.
+
+Le garde-fou **ne fait jamais** : `DELETE` / `TRUNCATE` / `VACUUM`, arrêt du
+daemon, mutation de l'historique append-only. Relire `world status` ne crée
+pas `world_model.db`.
+
+Raisons : `within_budget`, `db_size_exceeded`, `free_space_below_reserve`,
+`probe_error` (échec du port filesystem → skip fail-safe des écritures
+shadow, Trader inchangé).
+
+Pour desserrer le plafond : éditer le YAML (rehash `content_sha256`), puis
+redémarrage volontaire. Ne pas baisser `min_free_bytes` sous ce qu'il faut
+aux logs / `casys.db` / OS.
 
 ## Arrêter / désactiver le pilote
 

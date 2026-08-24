@@ -11,6 +11,32 @@ from trader.reporting.read_models.world_evaluation import evaluate_shadow
 from trader.reporting.read_models.world_impact import evaluate_world_shadow_impact
 from trader.reporting.read_models.world_macro_status import read_world_macro_status
 
+_DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+
+
+def _resource_budget_status(db_path: Path, *, config_dir: str | Path | None = None) -> dict[str, Any]:
+    """Live budget overlay. Never creates ``world_model.db``."""
+
+    try:
+        from trader.application.world_model.resource_budget import load_world_shadow_resource_budget
+        from trader.domain.world_resource import decide_world_resource_budget
+        from trader.infrastructure.state_db.world_resource_probe import FilesystemWorldResourceProbe
+
+        budget = load_world_shadow_resource_budget(config_dir or _DEFAULT_CONFIG_DIR)
+        usage = FilesystemWorldResourceProbe(db_path).measure()
+        return decide_world_resource_budget(budget, usage).to_dict()
+    except Exception as exc:  # noqa: BLE001 - status remains readable if the probe fails
+        return {
+            "status": "unavailable",
+            "reason": "probe_error",
+            "authority": "shadow_only",
+            "decision_effect": "none",
+            "recommendation": "NO_GO",
+            "causal_claim": False,
+            "pnl_claim": False,
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+
 
 def read_world_model_status(
     state_dir: str | Path,
@@ -33,6 +59,7 @@ def read_world_model_status(
         "db_path": str(db_path),
         "exists": bool(ledger.get("exists")),
         "macro": macro,
+        "resource_budget": _resource_budget_status(db_path),
     }
     status = str(ledger.get("status") or "unavailable")
     if status == "not_started":

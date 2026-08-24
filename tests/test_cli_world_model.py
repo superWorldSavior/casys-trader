@@ -50,6 +50,11 @@ def test_world_status_does_not_create_a_missing_database(tmp_path) -> None:
     assert result["evaluation"]["status"] == "warming_up"
     assert result["impact"]["actual_contribution"]["status"] == "not_attributable"
     assert not (tmp_path / "world_model.db").exists()
+    budget = result["resource_budget"]
+    assert budget["authority"] == "shadow_only"
+    assert budget["decision_effect"] == "none"
+    assert budget["status"] in {"allowed", "skipped", "unavailable"}
+    assert not (tmp_path / "world_model.db").exists()
 
 
 def test_world_status_reads_an_empty_dedicated_store(tmp_path) -> None:
