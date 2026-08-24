@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import get_args, get_origin, get_type_hints
 
+import pytest
+
 from tests.package_layout._helpers import REPO_ROOT
 from trader.domain.world_availability import (
     AvailabilityEvidence,
@@ -31,9 +33,11 @@ from trader.domain.world_macro import (
     MacroCollectionCompleted,
     MacroCollectionEvent,
     MacroCollectionEventId,
+    MacroCollectionPlan,
     MacroCollectionRegistered,
     MacroCollectionRunId,
     MacroCollectionStarted,
+    MacroCollectionTarget,
     MacroCoverage,
     MacroDerivationPolicy,
     MacroDimensionState,
@@ -62,7 +66,7 @@ _PORTS_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "macro_port
 _PIPELINE_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "macro_pipeline.py"
 
 
-def _scope(*, kind: str = "venue", entity_id: str = "mic:XTAI") -> MacroScope:
+def _scope(*, kind: str = "country", entity_id: str = "iso-3166:US") -> MacroScope:
     return MacroScope(kind=kind, entity_id=entity_id)
 
 
@@ -293,18 +297,31 @@ def _pipeline(
     )
 
 
-def _collect(pipeline, *, sources: Mapping[str, _Source], registry: MacroSourceRegistry | None = None, cutoff_at: datetime = CUTOFF):
+def _plan(registry: MacroSourceRegistry | None = None) -> MacroCollectionPlan:
+    return MacroCollectionPlan.from_registry(registry if registry is not None else _registry())
+
+
+def _collect(
+    pipeline,
+    *,
+    sources: Mapping[str, _Source],
+    registry: MacroSourceRegistry | None = None,
+    target: MacroCollectionTarget | None = None,
+    cutoff_at: datetime = CUTOFF,
+):
+    resolved_registry = registry if registry is not None else _registry()
+    resolved_target = target if target is not None else _plan(resolved_registry).target_for(_scope())
     return pipeline.collect(
-        scope=_scope(),
+        target=resolved_target,
         cutoff_at=cutoff_at,
-        registry=registry if registry is not None else _registry(),
+        registry=resolved_registry,
         sources=sources,
         observed_at=cutoff_at,
     )
 
 
-def _fed_fact() -> MacroSourceFact:
-    return _fact()
+def _fed_fact(**overrides: object) -> MacroSourceFact:
+    return _fact(**overrides)
 
 
 def _brent_fact() -> MacroSourceFact:
@@ -315,6 +332,16 @@ def _brent_fact() -> MacroSourceFact:
         value=MacroNumericValue(number=80.0, unit="usd_per_barrel"),
         period="2026-08-22",
         source=_source(provider_id="market_benchmark", adapter_version="commodities.v1", source_record_id="BRN"),
+    )
+
+
+def _usd_fact() -> MacroSourceFact:
+    return _fact(
+        metric_key="usd_index",
+        scope=_scope(kind="world", entity_id="market"),
+        value=MacroNumericValue(number=120.0, unit="index"),
+        period="2026-08-22",
+        source=_source(source_record_id="USD-BROAD"),
     )
 
 
@@ -417,35 +444,41 @@ def test_application_macro_modules_do_not_import_infrastructure_runtime_or_repor
 def test_collect_orchestrates_run_facts_and_observation_without_inventing_regimes() -> None:
     from trader.application.world_model.macro_pipeline import MacroWorldPipeline
 
+    world = _scope(kind="world", entity_id="market")
     fed = _Source((_fed_fact(),))
-    brent = _Source()
+    brent = _Source((_brent_fact(),))
     usd = _Source(error=TimeoutError("gdelt timeout"))
     history = _History()
     ledger = _Ledger()
     pipeline = _pipeline(history=history, ledger=ledger)
-    run = _collect(pipeline, sources={"fed_policy_rate": fed, "brent": brent, "broad_usd_index": usd})
+    run = _collect(
+        pipeline,
+        sources={"fed_policy_rate": fed, "brent": brent, "broad_usd_index": usd},
+        target=_plan().target_for(world),
+    )
 
     assert isinstance(pipeline, MacroWorldPipeline)
     assert run.status == "completed_partial"
+    assert run.expected_source_ids == ("brent", "broad_usd_index")
     assert run.terminal_result is not None
     assert run.terminal_result.failed_source_ids == ("broad_usd_index",)
     envelope = run.published_envelope
     assert envelope is not None
     observation = envelope.observation
-    assert observation.scope == _scope()
+    assert observation.scope == world
     assert observation.cutoff_at == CUTOFF
     assert observation.producer_version == MACRO_PRODUCER_VERSION
     assert observation.transform_version == MACRO_TRANSFORM_VERSION
     assert observation.source_registry_version == MACRO_SOURCE_REGISTRY_VERSION
-    assert observation.fact_refs == (_fed_fact().fact_version_id.value,)
+    assert observation.fact_refs == (_brent_fact().fact_version_id.value,)
     assert observation.features["macro_regime"] == "unknown"
     assert observation.features["rates_regime"] == "unknown"
     assert observation.features["usd_regime"] == "unknown"
     assert observation.coverage.status == "partial"
-    assert observation.coverage.required_sources == 3
+    assert observation.coverage.required_sources == 2
     assert observation.coverage.fresh_sources == 1
-    assert observation.coverage.missing_source_ids == ("brent", "broad_usd_index")
-    assert history.facts == [_fed_fact()]
+    assert observation.coverage.missing_source_ids == ("broad_usd_index",)
+    assert history.facts == [_brent_fact()]
     event_types = [type(event) for event in ledger.load(MacroCollectionRunId(run.run_id))]
     assert event_types[0] is MacroCollectionRegistered
     assert event_types[1] is MacroCollectionStarted
@@ -456,31 +489,32 @@ def test_collect_orchestrates_run_facts_and_observation_without_inventing_regime
     failed = next(event for event in run.events if isinstance(event, MacroSourceFailed))
     assert failed.source_id == "broad_usd_index"
     assert failed.reason == "timeout"
-    assert fed.calls == [(_scope(), CUTOFF)]
-    for source in (fed, brent, usd):
-        assert len(source.calls) == 1
+    assert fed.calls == []
+    assert brent.calls == [(world, CUTOFF)]
+    assert usd.calls == [(world, CUTOFF)]
 
 
 def test_same_input_and_versions_yield_the_same_observation_regardless_of_order() -> None:
-    fact_a = _fed_fact()
-    fact_b = _brent_fact()
+    fact_a = _brent_fact()
+    fact_b = _usd_fact()
+    world = _scope(kind="world", entity_id="market")
+    target = _plan().target_for(world)
     sources_left = {
-        "fed_policy_rate": _Source((fact_a, fact_b)),
-        "brent": _Source(),
-        "broad_usd_index": _Source(),
+        "brent": _Source((fact_a,)),
+        "broad_usd_index": _Source((fact_b,)),
     }
     sources_right = {
-        "broad_usd_index": _Source(),
-        "brent": _Source(),
-        "fed_policy_rate": _Source((fact_b, fact_a)),
+        "broad_usd_index": _Source((fact_b,)),
+        "brent": _Source((fact_a,)),
     }
-    left = _collect(_pipeline(), sources=sources_left)
-    right = _collect(_pipeline(), sources=sources_right)
+    left = _collect(_pipeline(), sources=sources_left, target=target)
+    right = _collect(_pipeline(), sources=sources_right, target=target)
     left_obs = left.published_envelope.observation
     right_obs = right.published_envelope.observation
     assert left.run_id == right.run_id
     assert left_obs.observation_id == right_obs.observation_id
     assert left_obs.content_sha256 == right_obs.content_sha256
+    assert left_obs.scope == world
     assert left_obs.fact_refs == tuple(sorted((fact_a.fact_version_id.value, fact_b.fact_version_id.value)))
     assert left_obs.to_dict() == right_obs.to_dict()
 
@@ -567,7 +601,7 @@ def test_category_facts_pass_through_closed_vocabulary_without_inventing_numeric
         cutoff_at=CUTOFF,
         source_registry_version=MACRO_SOURCE_REGISTRY_VERSION,
         facts=(numeric, rates),
-        expected_source_ids=("fed_policy_rate", "brent", "broad_usd_index"),
+        expected_source_ids=("fed_policy_rate",),
         failed_source_ids=(),
         fresh_source_ids=("fed_policy_rate",),
     )
@@ -602,8 +636,7 @@ def test_no_admissible_facts_fails_the_run_without_a_fake_observation() -> None:
         for event in run.events
         if isinstance(event, MacroSourceFailed)
     }
-    assert reasons["fed_policy_rate"] == "http_429"
-    assert reasons["brent"] == "timeout"
+    assert reasons == {"fed_policy_rate": "http_429"}
 
 
 def test_unproven_or_stale_facts_are_excluded_instead_of_being_treated_as_fresh() -> None:
@@ -634,15 +667,15 @@ def test_unproven_or_stale_facts_are_excluded_instead_of_being_treated_as_fresh(
 
 
 def test_missing_source_port_is_a_typed_failure_not_an_optimistic_gap_fill() -> None:
+    world = _scope(kind="world", entity_id="market")
     run = _collect(
         _pipeline(),
-        sources={
-            "fed_policy_rate": _Source((_fed_fact(),)),
-            "brent": _Source(),
-        },
+        sources={"brent": _Source((_brent_fact(),))},
+        target=_plan().target_for(world),
     )
     assert run.status == "completed_partial"
     observation = run.published_envelope.observation
+    assert observation.scope == world
     assert "broad_usd_index" in observation.coverage.missing_source_ids
     assert observation.features["usd_regime"] == "unknown"
     assert observation.coverage.status != "complete"
@@ -797,7 +830,7 @@ def test_select_does_not_treat_reader_order_or_unmapped_scope_as_latest() -> Non
         evidence=AvailabilityEvidence(receipt=persisted.receipt, first_seen_at=READY),
     )
     other_scope = _pipeline(reader=_Reader((envelope,))).select(
-        scope=_scope(kind="country", entity_id="iso-3166:US"),
+        scope=_scope(kind="venue", entity_id="mic:XTAI"),
         cutoff_at=CUTOFF,
     )
     assert other_scope is None
@@ -814,3 +847,154 @@ def test_pipeline_public_constructors_do_not_accept_ready_at() -> None:
     assert "ready_at" not in inspect.signature(MacroWorldPipeline.select).parameters
     assert "ready_at" not in inspect.signature(project_macro_world_observation).parameters
     assert list(inspect.signature(MacroWorldPipeline.collect).parameters)[0] == "self"
+    assert "target" in inspect.signature(MacroWorldPipeline.collect).parameters
+    assert "scope" not in inspect.signature(MacroWorldPipeline.collect).parameters
+
+
+def test_projector_refuses_foreign_scope_facts_and_does_not_stamp_a_mixed_observation() -> None:
+    from trader.application.world_model.macro_pipeline import project_macro_world_observation
+
+    xtai = _scope(kind="venue", entity_id="mic:XTAI")
+    us_fact = _fed_fact()
+    world_fact = _brent_fact()
+    mixed = project_macro_world_observation(
+        policy=_policy(),
+        scope=xtai,
+        cutoff_at=CUTOFF,
+        source_registry_version=MACRO_SOURCE_REGISTRY_VERSION,
+        facts=(us_fact, world_fact),
+        expected_source_ids=("fed_policy_rate", "brent", "broad_usd_index"),
+        failed_source_ids=(),
+        fresh_source_ids=("fed_policy_rate", "brent"),
+    )
+    foreign_only = project_macro_world_observation(
+        policy=_policy(),
+        scope=xtai,
+        cutoff_at=CUTOFF,
+        source_registry_version=MACRO_SOURCE_REGISTRY_VERSION,
+        facts=(us_fact,),
+        expected_source_ids=("fed_policy_rate",),
+        failed_source_ids=(),
+        fresh_source_ids=("fed_policy_rate",),
+    )
+    assert mixed is None
+    assert foreign_only is None
+    us_scope = _scope(kind="country", entity_id="iso-3166:US")
+    admitted = project_macro_world_observation(
+        policy=_policy(),
+        scope=us_scope,
+        cutoff_at=CUTOFF,
+        source_registry_version=MACRO_SOURCE_REGISTRY_VERSION,
+        facts=(us_fact,),
+        expected_source_ids=("fed_policy_rate",),
+        failed_source_ids=(),
+        fresh_source_ids=("fed_policy_rate",),
+    )
+    assert admitted is not None
+    assert admitted.scope == us_scope
+    assert admitted.fact_refs == (us_fact.fact_version_id.value,)
+    refused_mixed_us = project_macro_world_observation(
+        policy=_policy(),
+        scope=us_scope,
+        cutoff_at=CUTOFF,
+        source_registry_version=MACRO_SOURCE_REGISTRY_VERSION,
+        facts=(us_fact, world_fact),
+        expected_source_ids=("fed_policy_rate", "brent"),
+        failed_source_ids=(),
+        fresh_source_ids=("fed_policy_rate", "brent"),
+    )
+    assert refused_mixed_us is None
+
+
+def test_collect_binds_exact_target_source_ids_not_the_whole_registry() -> None:
+    registry = _registry()
+    plan = _plan(registry)
+    us = _scope(kind="country", entity_id="iso-3166:US")
+    world = _scope(kind="world", entity_id="market")
+    fed = _Source((_fed_fact(),))
+    brent = _Source((_brent_fact(),))
+    usd = _Source()
+    sources = {"fed_policy_rate": fed, "brent": brent, "broad_usd_index": usd}
+    us_run = _collect(_pipeline(), sources=sources, registry=registry, target=plan.target_for(us))
+    world_run = _collect(_pipeline(), sources=sources, registry=registry, target=plan.target_for(world))
+    assert us_run.expected_source_ids == ("fed_policy_rate",)
+    assert world_run.expected_source_ids == ("brent", "broad_usd_index")
+    assert us_run.scope == us
+    assert world_run.scope == world
+    assert us_run.published_envelope is not None
+    assert us_run.published_envelope.observation.scope == us
+    assert us_run.published_envelope.observation.fact_refs == (_fed_fact().fact_version_id.value,)
+    assert fed.calls == [(us, CUTOFF)]
+    assert brent.calls == [(world, CUTOFF)]
+    assert usd.calls == [(world, CUTOFF)]
+
+
+def test_collect_rejects_unsourced_or_mismatched_target_before_registering() -> None:
+    history = _History()
+    ledger = _Ledger()
+    pipeline = _pipeline(history=history, ledger=ledger)
+    registry = _registry()
+    xtai = MacroCollectionTarget(
+        scope=_scope(kind="venue", entity_id="mic:XTAI"),
+        source_ids=("fed_policy_rate",),
+    )
+    mixed = MacroCollectionTarget(
+        scope=_scope(kind="country", entity_id="iso-3166:US"),
+        source_ids=("fed_policy_rate", "brent", "broad_usd_index"),
+    )
+    sources = {"fed_policy_rate": _Source((_fed_fact(),)), "brent": _Source((_brent_fact(),)), "broad_usd_index": _Source()}
+    with pytest.raises(ValueError, match="collection target"):
+        pipeline.collect(target=xtai, cutoff_at=CUTOFF, registry=registry, sources=sources)
+    with pytest.raises(ValueError, match="bound registry plan"):
+        pipeline.collect(target=mixed, cutoff_at=CUTOFF, registry=registry, sources=sources)
+    assert history.facts == []
+    assert history.observations == []
+    assert ledger._events == {}
+
+
+def test_foreign_scope_or_provenance_mismatch_is_typed_failure_not_a_mixed_observation() -> None:
+    registry = _registry()
+    us_target = _plan(registry).target_for(_scope(kind="country", entity_id="iso-3166:US"))
+    history = _History()
+    foreign_run = _collect(
+        _pipeline(history=history),
+        sources={"fed_policy_rate": _Source((_brent_fact(),))},
+        registry=registry,
+        target=us_target,
+    )
+    assert foreign_run.status == "failed"
+    assert foreign_run.published_envelope is None
+    assert history.observations == []
+    assert history.facts == []
+    failed = next(event for event in foreign_run.events if isinstance(event, MacroSourceFailed))
+    assert failed.source_id == "fed_policy_rate"
+    assert failed.reason == "scope_mismatch"
+
+    poisoned = _fed_fact(source=_source(provider_id="other_provider"))
+    provenance_history = _History()
+    provenance_run = _collect(
+        _pipeline(history=provenance_history),
+        sources={"fed_policy_rate": _Source((poisoned,))},
+        registry=registry,
+        target=us_target,
+    )
+    assert provenance_run.status == "failed"
+    assert provenance_run.published_envelope is None
+    assert provenance_history.facts == []
+    assert provenance_history.observations == []
+    provenance_failed = next(event for event in provenance_run.events if isinstance(event, MacroSourceFailed))
+    assert provenance_failed.reason == "provenance_mismatch"
+
+    mixed_history = _History()
+    mixed_run = _collect(
+        _pipeline(history=mixed_history),
+        sources={"fed_policy_rate": _Source((_fed_fact(), _brent_fact()))},
+        registry=registry,
+        target=us_target,
+    )
+    assert mixed_run.status == "failed"
+    assert mixed_run.published_envelope is None
+    assert mixed_history.facts == []
+    assert mixed_history.observations == []
+    mixed_failed = next(event for event in mixed_run.events if isinstance(event, MacroSourceFailed))
+    assert mixed_failed.reason == "scope_mismatch"

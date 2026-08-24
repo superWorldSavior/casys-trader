@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.package_layout._helpers import REPO_ROOT
-from trader.domain.world_macro import MacroScope
+from trader.domain.world_macro import MacroCollectionTarget, MacroScope
 
 
 UTC = timezone.utc
@@ -170,20 +170,23 @@ def test_background_runner_stop_is_bounded_and_rejects_new_triggers() -> None:
     assert "join(timeout=" in stop_source
 
 
-def test_collect_runs_each_scope_once_sequentially_without_worker_retries() -> None:
+def test_collect_runs_each_target_once_sequentially_without_worker_retries() -> None:
     from trader.runtime.world_macro_runtime import collect_world_macro
 
-    scopes = (
-        MacroScope(kind="world", entity_id="market"),
-        MacroScope(kind="venue", entity_id="mic:XTAI"),
+    targets = (
+        MacroCollectionTarget(scope=MacroScope(kind="world", entity_id="market"), source_ids=("gold_usd",)),
+        MacroCollectionTarget(scope=MacroScope(kind="country", entity_id="iso-3166:US"), source_ids=("fed_funds_effective",)),
     )
-    calls: list[MacroScope] = []
+    calls: list[MacroCollectionTarget] = []
 
     class Pipeline:
         def collect(self, **kwargs: object) -> SimpleNamespace:
-            calls.append(kwargs["scope"])  # type: ignore[arg-type]
+            target = kwargs["target"]
+            assert isinstance(target, MacroCollectionTarget)
+            calls.append(target)
             assert kwargs["cutoff_at"] == NOW
-            return SimpleNamespace(status="completed", run_id=f"run:{kwargs['scope']}")
+            assert "scope" not in kwargs
+            return SimpleNamespace(status="completed", run_id=f"run:{target.scope}")
 
     report = collect_world_macro(
         now=NOW,
@@ -191,7 +194,7 @@ def test_collect_runs_each_scope_once_sequentially_without_worker_retries() -> N
         pipeline=Pipeline(),  # type: ignore[arg-type]
         registry=SimpleNamespace(entries=()),
         sources={"fed_funds_effective": object()},
-        scopes=scopes,
+        targets=targets,
         budgets=SimpleNamespace(
             fetch_in_run_cycle=False,
             fetch_in_world_capture_worker=False,
@@ -200,7 +203,7 @@ def test_collect_runs_each_scope_once_sequentially_without_worker_retries() -> N
             honor_retry_after=True,
         ),
     )
-    assert calls == list(scopes)
+    assert calls == list(targets)
     assert report["status"] == "ok"
     assert report["lane_identity"] == "context.v2.macro_source.v1"
     assert report["authority"] == "shadow_only"
@@ -212,19 +215,19 @@ def test_collect_runs_each_scope_once_sequentially_without_worker_retries() -> N
     assert "concurrent" not in source
 
 
-def test_scope_failure_does_not_abort_remaining_scopes_or_raise() -> None:
+def test_target_failure_does_not_abort_remaining_targets_or_raise() -> None:
     from trader.runtime.world_macro_runtime import collect_world_macro
 
-    scopes = (
-        MacroScope(kind="country", entity_id="iso-3166:US"),
-        MacroScope(kind="world", entity_id="market"),
+    targets = (
+        MacroCollectionTarget(scope=MacroScope(kind="country", entity_id="iso-3166:US"), source_ids=("fed_funds_effective",)),
+        MacroCollectionTarget(scope=MacroScope(kind="world", entity_id="market"), source_ids=("gold_usd",)),
     )
 
     class Pipeline:
         def collect(self, **kwargs: object) -> SimpleNamespace:
-            scope = kwargs["scope"]
-            assert isinstance(scope, MacroScope)
-            if scope.kind == "country":
+            target = kwargs["target"]
+            assert isinstance(target, MacroCollectionTarget)
+            if target.scope.kind == "country":
                 raise RuntimeError("http 429 too many requests")
             return SimpleNamespace(status="completed", run_id="run-world")
 
@@ -234,7 +237,7 @@ def test_scope_failure_does_not_abort_remaining_scopes_or_raise() -> None:
         pipeline=Pipeline(),  # type: ignore[arg-type]
         registry=object(),
         sources={},
-        scopes=scopes,
+        targets=targets,
     )
     assert report["status"] == "partial"
     assert len(report["errors"]) == 1
@@ -263,11 +266,9 @@ def test_collection_plan_is_source_backed_deterministic_and_excludes_unsourced_v
     bundle = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
     plan = collection_plan(bundle)
     scopes = collection_scopes(bundle)
-    expected = MacroCollectionPlan.from_registry(
-        bundle.registry,
-        control_scopes=(MacroScope(kind="world", entity_id="market"),),
-    )
+    expected = MacroCollectionPlan.from_registry(bundle.registry)
     assert plan == expected
+    assert plan.registry_content_sha256 == bundle.registry.content_sha256
     assert scopes == expected.scopes
     assert collection_scopes(bundle) == scopes
     ids = {(scope.kind, scope.entity_id) for scope in scopes}
@@ -280,15 +281,22 @@ def test_collection_plan_is_source_backed_deterministic_and_excludes_unsourced_v
     }
     assert ("venue", "mic:XTAI") not in ids
     assert not any(scope.kind == "venue" for scope in scopes)
+    by_scope = { (target.scope.kind, target.scope.entity_id): target.source_ids for target in plan.targets }
+    assert by_scope[("country", "iso-3166:US")] == ("cpi_us_imf", "fed_funds_effective", "unemployment_rate_us")
+    assert by_scope[("region", "iso-un-m49:150")] == ("ecb_deposit_rate", "hicp_euro_area")
+    assert by_scope[("world", "market")] == ("brent_crude_usd", "gold_usd")
+    assert sum(len(target.source_ids) for target in plan.targets) == 7
     mapping_ids = {
         (getattr(ref, "kind"), getattr(ref, "entity_id"))
         for entry in bundle.scope_mapping.entries
         for ref in (entry.venue, entry.country, entry.region, entry.world)
     }
     assert ids < mapping_ids
-    inspect_source = inspect.getsource(collection_scopes)
-    assert "scope_mapping" not in inspect_source
-    assert "mapping_entry" not in inspect_source
+    inspect_source = inspect.getsource(collection_plan)
+    assert "control_scopes" not in inspect_source
+    assert "WORLD_MARKET_CONTROL_SCOPE" not in inspect_source
+    assert "scope_mapping" not in inspect.getsource(collection_scopes)
+    assert "mapping_entry" not in inspect.getsource(collection_scopes)
 
 
 def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
@@ -412,10 +420,13 @@ class UrlFixtureTransport:
 
 def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: Path) -> None:
     from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
-    from trader.runtime.world_macro_runtime import MACRO_THREAD_NAME, collection_scopes, wire_world_macro_runtime
+    from trader.runtime.world_macro_runtime import MACRO_THREAD_NAME, collection_plan, collection_scopes, wire_world_macro_runtime
 
     operator = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
+    plan = collection_plan(operator)
     assert len(collection_scopes(operator)) == 3
+    assert len(plan.targets) == 3
+    assert sum(len(target.source_ids) for target in plan.targets) == 7
     clock = FakeClock(NOW)
     transport = UrlFixtureTransport()
     bundle = wire_world_macro_runtime(
@@ -432,12 +443,33 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     first_calls = list(transport.calls)
     assert len(first_calls) == 7
     assert len(set(first_calls)) == 7
+    events = _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
+    registered = [row for row in events if row.get("event_type") == "macro_collection_registered"]
+    source_results = [
+        row
+        for row in events
+        if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
+    ]
+    assert len(registered) == 3
+    assert {tuple(row["expected_source_ids"]) for row in registered} == {
+        ("cpi_us_imf", "fed_funds_effective", "unemployment_rate_us"),
+        ("ecb_deposit_rate", "hicp_euro_area"),
+        ("brent_crude_usd", "gold_usd"),
+    }
+    assert len(source_results) == 7
     clock.advance(hours=1)
     second = bundle.runner.trigger(now=clock(), reason="replay")
     assert second["triggered"] is True
     second["_thread"].join(timeout=5.0)
     assert second["_thread"].is_alive() is False
     assert transport.calls == first_calls
+    replay_events = _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
+    replay_results = [
+        row
+        for row in replay_events
+        if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
+    ]
+    assert len(replay_results) == 14
     bundle.runner.stop()
     status = bundle.runner.status()
     assert status["status"] in {"ok", "partial"}

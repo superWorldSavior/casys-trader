@@ -109,10 +109,14 @@ backfill.
 
 ### Macro source-only
 
-`MacroSourceFact` → `MacroWorldObservation` → envelope + reçu. Agrégat
-`MacroCollectionRun` : register / start / source completed|failed /
-published / completed. Fetch **hors** `run_cycle` et hors worker de
-capture barre. GDELT et `NewsMacroBrief` restent hors de ce producteur.
+`MacroSourceFact` → `MacroWorldObservation` → envelope + reçu. Plan de
+collecte typé (`MacroCollectionPlan` / `MacroCollectionTarget`) groupé
+par `canonical_scope` du registre ; un run n'invoque que les sources de
+sa cible. Agrégat `MacroCollectionRun` : register / start / source
+completed|failed / published / completed. Un fait hors scope ou hors
+provenance est un échec de source typé, jamais une observation mixte.
+Fetch **hors** `run_cycle` et hors worker de capture barre. GDELT et
+`NewsMacroBrief` restent hors de ce producteur.
 
 ### Graphe V3
 

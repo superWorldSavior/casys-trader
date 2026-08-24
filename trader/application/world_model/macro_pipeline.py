@@ -1,9 +1,11 @@
 """Orchestrate source-only macro collection, projection, and PIT selection.
 
-The use case owns run/facts/observation sequencing. Thresholds stay inside the
-injected ``MacroDerivationPolicy`` / projector: this module does not choose
-regimes, does not invent missing sources, and does not declare causality from
-store order. Infrastructure, runtime, and reporting stay behind the ports.
+The use case owns run/facts/observation sequencing for one typed collection
+target. Thresholds stay inside the injected ``MacroDerivationPolicy`` /
+projector: this module does not choose regimes, does not invent missing
+sources, and does not declare causality from store order. Foreign-scope or
+off-registry facts fail closed as typed source failures. Infrastructure,
+runtime, and reporting stay behind the ports.
 """
 
 from __future__ import annotations
@@ -28,8 +30,10 @@ from trader.domain.world_macro import (
     MACRO_FEATURE_KEYS,
     MACRO_TERMINAL_STATUSES,
     MacroCategoryValue,
+    MacroCollectionPlan,
     MacroCollectionRun,
     MacroCollectionRunId,
+    MacroCollectionTarget,
     MacroCoverage,
     MacroDerivationPolicy,
     MacroDimensionState,
@@ -40,6 +44,7 @@ from trader.domain.world_macro import (
     MacroSourceFact,
     MacroSourceFactVersionId,
     MacroSourceRegistry,
+    MacroSourceRegistryEntry,
     MacroWorldObservation,
 )
 
@@ -63,6 +68,24 @@ class MacroObservationProjector(Protocol):
 
 def _unique_sorted(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(frozenset(values)))
+
+
+def _fact_boundary_failure(
+    fact: MacroSourceFact,
+    *,
+    entry: MacroSourceRegistryEntry,
+    scope: MacroScope,
+) -> str | None:
+    if fact.scope != scope or fact.scope != entry.canonical_scope:
+        return "scope_mismatch"
+    if (
+        fact.source.provider_id != entry.provider_id
+        or fact.source.adapter_version != entry.adapter_version
+        or fact.fact_kind != entry.fact_kind
+        or fact.metric_key != entry.metric_key
+    ):
+        return "provenance_mismatch"
+    return None
 
 
 def _source_failure_reason(exc: BaseException) -> str:
@@ -96,6 +119,8 @@ def project_macro_world_observation(
 
     ordered = tuple(sorted(facts, key=lambda item: item.fact_version_id.value))
     if not ordered:
+        return None
+    if any(fact.scope != scope for fact in ordered):
         return None
     expected = _unique_sorted(expected_source_ids)
     failed = frozenset(failed_source_ids)
@@ -170,17 +195,24 @@ class MacroWorldPipeline:
     def collect(
         self,
         *,
-        scope: MacroScope,
+        target: MacroCollectionTarget,
         cutoff_at: datetime,
         registry: MacroSourceRegistry,
         sources: Mapping[str, MacroSourcePort],
         observed_at: datetime | None = None,
     ) -> MacroCollectionRun:
+        if not isinstance(target, MacroCollectionTarget):
+            raise TypeError("collect requires MacroCollectionTarget")
+        if not isinstance(registry, MacroSourceRegistry):
+            raise TypeError("collect requires MacroSourceRegistry")
+        plan = MacroCollectionPlan.from_registry(registry)
+        plan.bind_registry(registry)
+        scheduled = plan.require_target(target)
         observed = cutoff_at if observed_at is None else observed_at
         run = MacroCollectionRun.register(
-            scope=scope,
+            scope=scheduled.scope,
             cutoff_at=cutoff_at,
-            expected_source_ids=tuple(entry.source_id for entry in registry.entries),
+            expected_source_ids=scheduled.source_ids,
             producer_version=self.policy.producer_version,
             transform_version=self.policy.transform_version,
             source_registry_version=registry.registry_version,
@@ -202,9 +234,10 @@ class MacroWorldPipeline:
                 run,
                 source_id=source_id,
                 port=sources.get(source_id),
-                scope=scope,
+                scope=scheduled.scope,
                 cutoff_at=cutoff_at,
                 observed_at=observed,
+                registry=registry,
             )
             if eligible:
                 fresh.append(source_id)
@@ -225,7 +258,7 @@ class MacroWorldPipeline:
         ordered_facts = tuple(unique_facts[key] for key in sorted(unique_facts))
         observation = self.project(
             policy=self.policy,
-            scope=scope,
+            scope=scheduled.scope,
             cutoff_at=cutoff_at,
             source_registry_version=registry.registry_version,
             facts=ordered_facts,
@@ -280,15 +313,16 @@ class MacroWorldPipeline:
         scope: MacroScope,
         cutoff_at: datetime,
         observed_at: datetime,
+        registry: MacroSourceRegistry,
     ) -> tuple[MacroCollectionRun, tuple[MacroSourceFact, ...]]:
         if port is None:
             failed = MacroSourceFailed(run_id=run.run_id, source_id=source_id, reason="missing")
             return self._advance(run, run.record_source_result(failed)), ()
         try:
             raw = tuple(port.read_facts(scope, observed_at))
-            version_ids: list[str] = []
-            eligible: list[MacroSourceFact] = []
+            entry = registry.entry_for(source_id)
             seen: set[str] = set()
+            validated: list[MacroSourceFact] = []
             for fact in sorted(raw, key=lambda item: item.fact_version_id.value):
                 if not isinstance(fact, MacroSourceFact):
                     raise TypeError("source fact must be MacroSourceFact")
@@ -296,8 +330,16 @@ class MacroWorldPipeline:
                 if version in seen:
                     continue
                 seen.add(version)
+                reason = _fact_boundary_failure(fact, entry=entry, scope=scope)
+                if reason is not None:
+                    failed = MacroSourceFailed(run_id=run.run_id, source_id=source_id, reason=reason)
+                    return self._advance(run, run.record_source_result(failed)), ()
+                validated.append(fact)
+            version_ids: list[str] = []
+            eligible: list[MacroSourceFact] = []
+            for fact in validated:
                 persisted = self.history.append_fact(fact)
-                version_ids.append(version)
+                version_ids.append(fact.fact_version_id.value)
                 if self._fact_is_admissible(fact, persisted, cutoff_at):
                     eligible.append(fact)
         except Exception as exc:

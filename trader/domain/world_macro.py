@@ -30,6 +30,7 @@ MACRO_SOURCE_FACT_SCHEMA = "macro_source_fact.v1"
 MACRO_WORLD_OBSERVATION_SCHEMA = "macro_world_observation.v1"
 MACRO_WORLD_OBSERVATION_SUBJECT_KIND = "macro_world_observation"
 MACRO_SOURCE_REGISTRY_SCHEMA = "macro_source_registry.v1"
+MACRO_COLLECTION_PLAN_SCHEMA = "macro_collection_plan.v1"
 MACRO_COLLECTION_EVENT_SCHEMA = "macro_collection_event.v1"
 MACRO_PRODUCER_VERSION = "macro_source_only.v1"
 MACRO_TRANSFORM_VERSION = "macro_regimes.v1"
@@ -93,6 +94,7 @@ _FACT_VERSION_PREFIX = "macro_source_fact_version:v1"
 _OBSERVATION_ID_PREFIX = "macro_world_observation:v1"
 _RUN_ID_PREFIX = "macro_collection_run:v1"
 _EVENT_ID_PREFIX = "macro_collection_event:v1"
+_PLAN_ID_PREFIX = "macro_collection_plan:v1"
 
 
 def _required_text(value: Any, field_name: str) -> str:
@@ -745,6 +747,13 @@ class MacroSourceRegistry:
             return MacroProviderResolution(status="unmapped")
         return MacroProviderResolution(status="resolved", scope=matching[0].canonical_scope)
 
+    def entry_for(self, source_id: str) -> MacroSourceRegistryEntry:
+        query = _required_text(source_id, "source_id")
+        matching = [entry for entry in self.entries if entry.source_id == query]
+        if not matching:
+            raise ValueError(f"unknown source_id: {query}")
+        return matching[0]
+
     def content_payload(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
@@ -770,69 +779,166 @@ class MacroSourceRegistry:
         )
 
 
-def _unique_sorted_scopes(
-    value: Sequence[MacroScope | Mapping[str, Any]] | None,
-    field_name: str,
-) -> tuple[MacroScope, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
-        raise TypeError(f"{field_name} must be a sequence of MacroScope")
-    seen: dict[tuple[str, str], MacroScope] = {}
-    for item in value:
-        scope = item if isinstance(item, MacroScope) else MacroScope.from_mapping(item)
-        seen.setdefault((scope.kind, scope.entity_id), scope)
-    return tuple(sorted(seen.values(), key=lambda item: (item.kind, item.entity_id)))
+@dataclass(frozen=True)
+class MacroCollectionTarget:
+    """Immutable collection unit: one canonical scope and its declared source IDs."""
+
+    scope: MacroScope | Mapping[str, Any]
+    source_ids: Sequence[str]
+
+    def __post_init__(self) -> None:
+        scope = MacroScope.from_mapping(self.scope)
+        source_ids = _immutable_text_tuple(self.source_ids, "source_ids")
+        if not source_ids:
+            raise ValueError("source_ids must not be empty")
+        if len(set(source_ids)) != len(source_ids):
+            raise ValueError("source_ids must be unique")
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "source_ids", tuple(sorted(source_ids)))
+        assert_source_only_payload(self.to_dict(), "macro_collection_target")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"scope": self.scope.to_dict(), "source_ids": list(self.source_ids)}
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroCollectionTarget) -> MacroCollectionTarget:
+        if isinstance(value, MacroCollectionTarget):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("collection target must be MacroCollectionTarget or a mapping")
+        assert_source_only_payload(value, "macro_collection_target")
+        return cls(scope=value.get("scope"), source_ids=value.get("source_ids") or ())
+
+
+def _targets_from_registry(registry: MacroSourceRegistry) -> tuple[MacroCollectionTarget, ...]:
+    grouped: dict[tuple[str, str], list[str]] = {}
+    scopes: dict[tuple[str, str], MacroScope] = {}
+    for entry in registry.entries:
+        scope = entry.canonical_scope
+        key = (scope.kind, scope.entity_id)
+        scopes[key] = scope
+        grouped.setdefault(key, []).append(entry.source_id)
+    return tuple(MacroCollectionTarget(scope=scopes[key], source_ids=tuple(grouped[key])) for key in sorted(grouped))
 
 
 @dataclass(frozen=True)
 class MacroCollectionPlan:
-    """Deterministic schedule of scopes that can receive declared source facts.
+    """Deterministic schedule of typed targets grouped from registry canonical scopes.
 
-    WorldScopeMapping remains the ontology/resolution authority. It does not
-    schedule collection: unsourced venues stay honest missingness.
+    WorldScopeMapping remains the ontology/resolution authority and never schedules
+    collection. Unsourced venues stay honest missingness. ``world:market`` appears
+    only when declared sources bind that canonical scope.
     """
 
-    source_backed_scopes: Sequence[MacroScope | Mapping[str, Any]] = ()
-    control_scopes: Sequence[MacroScope | Mapping[str, Any]] = ()
-    scopes: Sequence[MacroScope | Mapping[str, Any]] | None = None
+    registry_version: str
+    registry_content_sha256: str
+    targets: Sequence[MacroCollectionTarget | Mapping[str, Any]] = ()
+    schema_version: str = MACRO_COLLECTION_PLAN_SCHEMA
+    content_sha256: str | None = None
+    plan_id: str | None = None
 
     def __post_init__(self) -> None:
-        source_backed = _unique_sorted_scopes(self.source_backed_scopes, "source_backed_scopes")
-        control = _unique_sorted_scopes(self.control_scopes, "control_scopes")
-        backed_keys = {(item.kind, item.entity_id) for item in source_backed}
-        for scope in control:
-            if scope.kind == "venue" and (scope.kind, scope.entity_id) not in backed_keys:
-                raise ValueError("control scopes cannot schedule unsourced venues")
-        scopes = _unique_sorted_scopes((*source_backed, *control), "scopes")
-        if self.scopes is not None:
-            provided = _unique_sorted_scopes(self.scopes, "scopes")
-            if provided != scopes:
-                raise ValueError("scopes do not match the union of source-backed and control scopes")
-        object.__setattr__(self, "source_backed_scopes", source_backed)
-        object.__setattr__(self, "control_scopes", control)
-        object.__setattr__(self, "scopes", scopes)
+        registry_version = _required_text(self.registry_version, "registry_version")
+        registry_content_sha256 = _required_text(self.registry_content_sha256, "registry_content_sha256")
+        if len(registry_content_sha256) != 64 or any(
+            char not in "0123456789abcdef" for char in registry_content_sha256
+        ):
+            raise ValueError("registry_content_sha256 digest must be a sha256 hex digest")
+        schema_version = _required_text(self.schema_version, "schema_version")
+        if schema_version != MACRO_COLLECTION_PLAN_SCHEMA:
+            raise ValueError(f"schema_version must be {MACRO_COLLECTION_PLAN_SCHEMA}")
+        targets = tuple(
+            item if isinstance(item, MacroCollectionTarget) else MacroCollectionTarget.from_mapping(item)
+            for item in self.targets
+        )
+        targets = tuple(sorted(targets, key=lambda item: (item.scope.kind, item.scope.entity_id)))
+        seen_scopes: set[tuple[str, str]] = set()
+        seen_sources: set[str] = set()
+        for target in targets:
+            scope_key = (target.scope.kind, target.scope.entity_id)
+            if scope_key in seen_scopes:
+                raise ValueError("collection targets must have unique scopes")
+            seen_scopes.add(scope_key)
+            overlap = seen_sources.intersection(target.source_ids)
+            if overlap:
+                raise ValueError("source_ids must appear exactly once in a collection plan")
+            seen_sources.update(target.source_ids)
+        payload = {
+            "schema_version": schema_version,
+            "registry_version": registry_version,
+            "registry_content_sha256": registry_content_sha256,
+            "targets": [target.to_dict() for target in targets],
+        }
+        digest = canonical_sha256(payload)
+        if self.content_sha256 is not None and _required_text(self.content_sha256, "content_sha256") != digest:
+            raise ValueError("content_sha256 does not match the canonical MacroCollectionPlan")
+        plan_id = _prefixed_id(_PLAN_ID_PREFIX, payload)
+        if self.plan_id is not None and _required_text(self.plan_id, "plan_id") != plan_id:
+            raise ValueError("plan_id does not match the canonical collection plan identity")
+        object.__setattr__(self, "registry_version", registry_version)
+        object.__setattr__(self, "registry_content_sha256", registry_content_sha256)
+        object.__setattr__(self, "schema_version", schema_version)
+        object.__setattr__(self, "targets", targets)
+        object.__setattr__(self, "content_sha256", digest)
+        object.__setattr__(self, "plan_id", plan_id)
         assert_source_only_payload(self.to_dict(), "macro_collection_plan")
 
-    def to_dict(self) -> dict[str, Any]:
+    def __iter__(self):
+        return iter(self.targets)
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    @property
+    def scopes(self) -> tuple[MacroScope, ...]:
+        return tuple(target.scope for target in self.targets)
+
+    def target_for(self, scope: MacroScope | Mapping[str, Any]) -> MacroCollectionTarget:
+        query = MacroScope.from_mapping(scope)
+        key = (query.kind, query.entity_id)
+        for target in self.targets:
+            if (target.scope.kind, target.scope.entity_id) == key:
+                return target
+        raise ValueError("collection target is not scheduled by the source registry")
+
+    def require_target(self, target: MacroCollectionTarget) -> MacroCollectionTarget:
+        if not isinstance(target, MacroCollectionTarget):
+            raise TypeError("target must be MacroCollectionTarget")
+        scheduled = self.target_for(target.scope)
+        if scheduled != target:
+            raise ValueError("collection target does not match the bound registry plan")
+        return scheduled
+
+    def bind_registry(self, registry: MacroSourceRegistry) -> None:
+        if not isinstance(registry, MacroSourceRegistry):
+            raise TypeError("registry must be MacroSourceRegistry")
+        expected = type(self).from_registry(registry)
+        if (
+            self.registry_version != registry.registry_version
+            or self.registry_content_sha256 != registry.content_sha256
+            or self != expected
+        ):
+            raise ValueError("collection plan does not match the exact source registry identity")
+
+    def content_payload(self) -> dict[str, Any]:
         return {
-            "source_backed_scopes": [item.to_dict() for item in self.source_backed_scopes],
-            "control_scopes": [item.to_dict() for item in self.control_scopes],
-            "scopes": [item.to_dict() for item in self.scopes],
+            "schema_version": self.schema_version,
+            "registry_version": self.registry_version,
+            "registry_content_sha256": self.registry_content_sha256,
+            "targets": [target.to_dict() for target in self.targets],
         }
 
+    def to_dict(self) -> dict[str, Any]:
+        return {**self.content_payload(), "content_sha256": self.content_sha256, "plan_id": self.plan_id}
+
     @classmethod
-    def from_registry(
-        cls,
-        registry: MacroSourceRegistry,
-        *,
-        control_scopes: Sequence[MacroScope | Mapping[str, Any]] = (),
-    ) -> MacroCollectionPlan:
+    def from_registry(cls, registry: MacroSourceRegistry) -> MacroCollectionPlan:
         if not isinstance(registry, MacroSourceRegistry):
             raise TypeError("registry must be MacroSourceRegistry")
         return cls(
-            source_backed_scopes=tuple(entry.canonical_scope for entry in registry.entries),
-            control_scopes=control_scopes,
+            registry_version=registry.registry_version,
+            registry_content_sha256=registry.content_sha256,
+            targets=_targets_from_registry(registry),
         )
 
     @classmethod
@@ -843,9 +949,12 @@ class MacroCollectionPlan:
             raise TypeError("collection plan must be MacroCollectionPlan or a mapping")
         assert_source_only_payload(value, "macro_collection_plan")
         return cls(
-            source_backed_scopes=value.get("source_backed_scopes") or (),
-            control_scopes=value.get("control_scopes") or (),
-            scopes=value.get("scopes"),
+            registry_version=value.get("registry_version"),
+            registry_content_sha256=value.get("registry_content_sha256"),
+            targets=value.get("targets") or (),
+            schema_version=_required_mapping_text(value, "schema_version"),
+            content_sha256=value.get("content_sha256"),
+            plan_id=value.get("plan_id"),
         )
 
 
@@ -2017,6 +2126,7 @@ def evaluate_macro_point_in_time(
 
 
 __all__ = [
+    "MACRO_COLLECTION_PLAN_SCHEMA",
     "MACRO_COVERAGE_STATUSES",
     "MACRO_FACT_KINDS",
     "MACRO_FEATURE_KEYS",
@@ -2034,6 +2144,7 @@ __all__ = [
     "MacroCollectionEventId",
     "MacroCollectionPlan",
     "MacroCollectionRegistered",
+    "MacroCollectionTarget",
     "MacroCollectionRun",
     "MacroCollectionRunId",
     "MacroCollectionStarted",

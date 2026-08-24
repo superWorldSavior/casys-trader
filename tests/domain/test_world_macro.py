@@ -24,6 +24,7 @@ from trader.domain.world_availability import (
 from trader.domain.world_episode import canonical_sha256
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_macro import (
+    MACRO_COLLECTION_PLAN_SCHEMA,
     MACRO_FACT_KINDS,
     MACRO_POLICY_DENYLIST,
     MACRO_PRODUCER_VERSION,
@@ -35,6 +36,7 @@ from trader.domain.world_macro import (
     MacroCollectionEvent,
     MacroCollectionPlan,
     MacroCollectionRegistered,
+    MacroCollectionTarget,
     MacroCollectionRun,
     MacroCollectionStarted,
     MacroCollectionTerminalResult,
@@ -123,7 +125,7 @@ def _observation(*, fact: MacroSourceFact | None = None, **overrides: object) ->
     resolved = fact if fact is not None else _fact()
     fact_ref = resolved.fact_version_id.value
     values: dict[str, object] = {
-        "scope": _scope(kind="venue", entity_id="mic:XTAI"),
+        "scope": resolved.scope,
         "cutoff_at": CUTOFF,
         "producer_version": MACRO_PRODUCER_VERSION,
         "transform_version": MACRO_TRANSFORM_VERSION,
@@ -240,7 +242,7 @@ def _registry() -> MacroSourceRegistry:
 
 def _run(*, expected: tuple[str, ...] = ("fed_policy_rate", "brent", "broad_usd_index")) -> MacroCollectionRun:
     return MacroCollectionRun.register(
-        scope=_scope(kind="venue", entity_id="mic:XTAI"),
+        scope=_scope(),
         cutoff_at=CUTOFF,
         expected_source_ids=expected,
     )
@@ -275,39 +277,66 @@ def test_source_registry_is_hashed_and_has_no_implicit_provider_crosswalk() -> N
     assert missing.scope is None
 
 
-def test_collection_plan_is_source_backed_deterministic_and_rejects_unsourced_venues() -> None:
+def test_collection_plan_owns_typed_targets_bound_to_registry_identity() -> None:
     registry = _registry()
     world = _scope(kind="world", entity_id="market")
     us = _scope(kind="country", entity_id="iso-3166:US")
     europe = _scope(kind="region", entity_id="iso-un-m49:150")
     xtai = _scope(kind="venue", entity_id="mic:XTAI")
 
-    plan = MacroCollectionPlan.from_registry(registry, control_scopes=(world,))
-    again = MacroCollectionPlan.from_registry(registry, control_scopes=(world,))
+    plan = MacroCollectionPlan.from_registry(registry)
+    again = MacroCollectionPlan.from_registry(registry)
     assert plan == again
-    assert plan.source_backed_scopes == (us, world)
-    assert plan.control_scopes == (world,)
+    assert plan.schema_version == MACRO_COLLECTION_PLAN_SCHEMA
+    assert plan.registry_version == registry.registry_version
+    assert plan.registry_content_sha256 == registry.content_sha256
+    assert plan.content_sha256 == again.content_sha256
+    assert plan.plan_id.startswith("macro_collection_plan:v1:")
+    us_target = MacroCollectionTarget(scope=us, source_ids=("fed_policy_rate",))
+    world_target = MacroCollectionTarget(scope=world, source_ids=("brent", "broad_usd_index"))
+    assert plan.targets == (us_target, world_target)
+    assert tuple(plan) == plan.targets
+    assert len(plan) == 2
+    assert plan.target_for(us) == us_target
+    assert plan.target_for(world) == world_target
     assert plan.scopes == (us, world)
-    assert plan.scopes == tuple(sorted(plan.scopes, key=lambda item: (item.kind, item.entity_id)))
     assert xtai not in plan.scopes
     assert europe not in plan.scopes
+    source_ids = [source_id for target in plan.targets for source_id in target.source_ids]
+    assert all(target.source_ids == tuple(sorted(target.source_ids)) for target in plan.targets)
+    assert len(source_ids) == len(set(source_ids)) == len(registry.entries)
+    assert all(target.source_ids for target in plan.targets)
     params = list(inspect.signature(MacroCollectionPlan.from_registry).parameters)
-    assert "registry" in params
+    assert params == ["registry"]
+    assert "control_scopes" not in params
     assert "mapping" not in params
     assert "scope_mapping" not in params
+    assert plan.require_target(us_target) == us_target
+    plan.bind_registry(registry)
+    with pytest.raises(ValueError, match="bound registry plan"):
+        plan.require_target(MacroCollectionTarget(scope=us, source_ids=("brent",)))
+    drifted = MacroSourceRegistry(registry_version="macro_sources.v2-test", entries=registry.entries)
+    with pytest.raises(ValueError, match="exact source registry"):
+        plan.bind_registry(drifted)
     with pytest.raises(FrozenInstanceError):
-        plan.scopes = ()  # type: ignore[misc]
-    with pytest.raises(ValueError, match="unsourced venue"):
-        MacroCollectionPlan.from_registry(registry, control_scopes=(xtai,))
-    with pytest.raises(ValueError, match="unsourced venue"):
-        MacroCollectionPlan(source_backed_scopes=(us,), control_scopes=(xtai,))
-    covered_venue = MacroCollectionPlan(
-        source_backed_scopes=(xtai,),
-        control_scopes=(xtai,),
-    )
-    assert covered_venue.scopes == (xtai,)
+        plan.targets = ()  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        us_target.source_ids = ()  # type: ignore[misc]
+    with pytest.raises(ValueError, match="collection target"):
+        plan.target_for(xtai)
+    with pytest.raises(ValueError, match="source_ids"):
+        MacroCollectionTarget(scope=us, source_ids=())
+    with pytest.raises(ValueError, match="unique"):
+        MacroCollectionTarget(scope=us, source_ids=("fed_policy_rate", "fed_policy_rate"))
+    with pytest.raises(ValueError, match="exactly once"):
+        MacroCollectionPlan(
+            registry_version=registry.registry_version,
+            registry_content_sha256=registry.content_sha256,
+            targets=(us_target, MacroCollectionTarget(scope=xtai, source_ids=("fed_policy_rate",))),
+        )
     replayed = MacroCollectionPlan.from_mapping(plan.to_dict())
     assert replayed == plan
+    assert replayed.content_sha256 == plan.content_sha256
     assert_source_only_payload(plan.to_dict(), "macro_collection_plan")
     fed = next(entry for entry in registry.entries if entry.source_id == "fed_policy_rate")
     with pytest.raises(ValueError, match="conflict"):
@@ -542,7 +571,7 @@ def test_observation_envelope_keeps_persisted_ref_and_evidence() -> None:
             subject_id=observation.observation_id,
             content_sha256=observation.content_sha256,
         ),
-        scope="venue:mic:XTAI",
+        scope=f"{observation.scope.kind}:{observation.scope.entity_id}",
         storage_locator=_locator(),
         content_sha256=observation.content_sha256,
         schema_version="availability_receipt.v2",

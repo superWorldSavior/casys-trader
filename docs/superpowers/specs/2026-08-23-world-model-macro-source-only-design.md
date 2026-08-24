@@ -155,7 +155,8 @@ une absence de correspondance donne `unmapped` et plusieurs correspondances
 incompatibles donnent `ambiguous`.
 
 Les contrats ne sont pas de simples schémas JSON. Le domaine expose les types
-`MacroScope`, `MacroSourceRegistry`, `MacroFactKey`,
+`MacroScope`, `MacroSourceRegistry`, `MacroCollectionTarget`,
+`MacroCollectionPlan`, `MacroFactKey`,
 `MacroSourceFactVersionId`, `MacroSourceFact`, `MacroDimensionState`,
 `MacroDerivationPolicy`, `MacroWorldObservation`, `MacroObservationEnvelope`,
 `WorldScopeMapping`, `WorldScopeResolution`, `MacroCollectionRun` et l'union
@@ -276,6 +277,20 @@ registered -> collecting -> completed
                        \--> completed_partial
                        \--> failed
 ```
+
+La collecte est planifiée par `MacroCollectionPlan` : cibles immuables
+`MacroCollectionTarget(scope, source_ids)` groupées depuis
+`canonical_scope` du registre, liées à `registry_version` et
+`content_sha256`. Aucun scope de contrôle unsourced n'est ajouté ;
+`world:market` n'entre que si des sources le déclarent.
+`WorldScopeMapping` reste l'autorité d'ontologie/résolution et ne schedule
+pas. Le runtime itère les cibles, pas des scopes nus. Un run reçoit
+exactement les `source_ids` de sa cible. Un port qui rend un fait dont le
+scope ou la provenance (provider, adapter, fact_kind, metric_key, scope
+canonique) diffère de la cible/entrée registre est un `MacroSourceFailed`
+typé (`scope_mismatch` / `provenance_mismatch`) : le fait n'est pas persisté,
+pas compté fresh, pas projeté. Le projecteur refuse indépendamment tout
+ensemble mixte. Aucune observation contaminée n'est publiée.
 
 Le runtime appelle les méthodes du run (`start`, `record_source_result`,
 `publish`, `complete`) ; il ne positionne pas un statut libre. `publish()` est
@@ -489,6 +504,8 @@ Contraintes runtime :
 - aucun fetch dans `run_cycle` ni dans le worker World Model qui capture une
   barre ;
 - un seul worker de collecte, file coalescente et budget par provider ;
+- le worker itère les `MacroCollectionTarget` du plan ; US/Europe/world
+  n'invoquent que leurs sources déclarées, jamais tout le registre ;
 - pour une future version événementielle, limiter GDELT à au plus une requête
   toutes les cinq secondes, honorer `Retry-After`, appliquer backoff avec
   jitter et cache local ;
@@ -509,8 +526,10 @@ Contraintes runtime :
    `WorldScopeMapping` dont version/hash sont gelés dans le manifeste, puis
    sélectionner l'observation éligible du scope canonique exact. Une résolution
    `unmapped` ou `ambiguous` donne macro missing tout en conservant ce statut
-   exact. Le producteur compose explicitement dans cette observation les faits
-   country/region/world autorisés. Aucun fallback implicite du reader ne peut
+   exact. Chaque `MacroWorldObservation` ne porte que des faits du même scope
+   canonique que sa cible de collecte. Country, region et world restent des
+   observations distinctes ; le producteur ne tamponne jamais un scope de run
+   sur des faits étrangers. Aucun fallback implicite du reader ne peut
    changer silencieusement la population de sources.
 4. Projeter uniquement les catégories allowlistées. Raw facts, titres, URLs et
    texte sont hors feature vector.
@@ -633,8 +652,8 @@ listé dans `allowed_edits`.
 - **allowed_edits** : `trader/application/world_model/macro_pipeline.py`,
   `trader/application/world_model/macro_ports.py`,
   `tests/application/test_world_macro_pipeline.py`.
-- **sortie** : ports §7.1, orchestration run/facts/observation et politique de
-  dérivation injectée.
+- **sortie** : ports §7.1, orchestration run/facts/observation bornée par
+  cible typée, et politique de dérivation injectée.
 - **tests** : `uv run pytest -q tests/application/test_world_macro_pipeline.py
   tests/package_layout/test_world_model_layout.py`.
 - **exit** : aucune importation infrastructure/runtime/reporting ; même input +

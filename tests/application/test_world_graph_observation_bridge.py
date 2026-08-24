@@ -87,11 +87,11 @@ def _scope(*, kind: str = "venue", entity_id: str = "mic:XTAI") -> MacroScope:
     return MacroScope(kind=kind, entity_id=entity_id)
 
 
-def _fact() -> MacroSourceFact:
+def _fact(*, scope: MacroScope | None = None) -> MacroSourceFact:
     return MacroSourceFact(
         fact_kind="series_point",
         metric_key="policy_rate",
-        scope=_scope(kind="country", entity_id="iso-3166:US"),
+        scope=scope if scope is not None else _scope(),
         value=MacroNumericValue(number=4.25, unit="percent"),
         period="2026-08",
         occurred_at="2026-08-23T00:00:00Z",
@@ -107,10 +107,11 @@ def _fact() -> MacroSourceFact:
 
 
 def _observation(*, scope: MacroScope | None = None, cutoff_at: datetime = CUTOFF) -> MacroWorldObservation:
-    fact = _fact()
+    resolved_scope = scope if scope is not None else _scope()
+    fact = _fact(scope=resolved_scope)
     fact_ref = fact.fact_version_id.value
     return MacroWorldObservation(
-        scope=scope if scope is not None else _scope(),
+        scope=resolved_scope,
         cutoff_at=cutoff_at,
         producer_version=MACRO_PRODUCER_VERSION,
         transform_version=MACRO_TRANSFORM_VERSION,

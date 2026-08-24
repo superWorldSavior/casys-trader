@@ -17,13 +17,12 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trader.domain.world_macro import MacroCollectionPlan, MacroScope, MacroSourceRegistry
+from trader.domain.world_macro import MacroCollectionPlan, MacroCollectionTarget, MacroScope, MacroSourceRegistry
 
 
 MACRO_LANE_IDENTITY = "context.v2.macro_source.v1"
 MACRO_THREAD_NAME = "world-macro-source-only"
 GRAPH_V3_FLAG = "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
-WORLD_MARKET_CONTROL_SCOPE = MacroScope(kind="world", entity_id="market")
 _BRIDGE_KEY = "macro_graph_bridge.v1"
 
 
@@ -204,20 +203,17 @@ def graph_v3_enabled(environ: Mapping[str, str] | None = None) -> bool:
 
 
 def collection_plan(bundle: object) -> MacroCollectionPlan:
-    """Schedule only scopes that can receive declared source facts.
+    """Schedule typed targets grouped from declared source canonical scopes.
 
     ``WorldScopeMapping`` stays the ontology/resolution authority and is not a
     collection input. Unsourced venues remain honest missingness on the graph.
-    ``world:market`` is the explicit control scope for global coverage.
+    ``world:market`` is collected only when sources declare that canonical scope.
     """
 
     registry = getattr(bundle, "registry", None)
     if not isinstance(registry, MacroSourceRegistry):
         raise TypeError("collection plan requires MacroSourceRegistry")
-    return MacroCollectionPlan.from_registry(
-        registry,
-        control_scopes=(WORLD_MARKET_CONTROL_SCOPE,),
-    )
+    return MacroCollectionPlan.from_registry(registry)
 
 
 def collection_scopes(bundle: object) -> tuple[MacroScope, ...]:
@@ -233,10 +229,10 @@ def collect_world_macro(
     pipeline: object,
     registry: MacroSourceRegistry | object,
     sources: Mapping[str, object],
-    scopes: Sequence[MacroScope],
+    targets: Sequence[MacroCollectionTarget],
     budgets: object | None = None,
 ) -> dict[str, object]:
-    """Run one sequential collect per scope. Provider missingness stays on the pipeline."""
+    """Run one sequential collect per typed target. Provider missingness stays on the pipeline."""
 
     if budgets is not None and (
         getattr(budgets, "fetch_in_run_cycle", False)
@@ -259,10 +255,12 @@ def collect_world_macro(
     errors = report["errors"]
     assert isinstance(runs, list)
     assert isinstance(errors, list)
-    for scope in scopes:
+    for target in targets:
         try:
+            if not isinstance(target, MacroCollectionTarget):
+                raise TypeError("collect_world_macro requires MacroCollectionTarget values")
             run = collect(
-                scope=scope,
+                target=target,
                 cutoff_at=cutoff,
                 registry=registry,
                 sources=sources,
@@ -270,13 +268,13 @@ def collect_world_macro(
             )
             runs.append(
                 {
-                    "scope": scope.to_dict(),
+                    "scope": target.scope.to_dict(),
                     "status": getattr(run, "status", "unknown"),
                     "run_id": getattr(run, "run_id", None),
                 }
             )
-        except Exception as exc:  # noqa: BLE001 - one scope cannot abort the worker
-            errors.append({"scope": scope.to_dict(), "error": f"{type(exc).__name__}:{exc}"})
+        except Exception as exc:  # noqa: BLE001 - one target cannot abort the worker
+            errors.append({"scope": target.scope.to_dict(), "error": f"{type(exc).__name__}:{exc}"})
     if errors:
         report["status"] = "partial"
     return report
@@ -323,7 +321,8 @@ def wire_world_macro_runtime(
         reader=store,
         policy=operator.policy,
     )
-    scopes = collection_scopes(operator)
+    plan = collection_plan(operator)
+    targets = plan.targets
     graph_enabled = bool(graph_v3_enabled)
     graph_store = None
     if graph_enabled:
@@ -338,7 +337,7 @@ def wire_world_macro_runtime(
             pipeline=pipeline,
             registry=operator.registry,
             sources=ports,
-            scopes=scopes,
+            targets=targets,
             budgets=operator.budgets,
         )
         if graph_store is None:

@@ -975,7 +975,7 @@ def _macro_fact(**overrides: object) -> MacroSourceFact:
     values: dict[str, object] = {
         "fact_kind": "series_point",
         "metric_key": "policy_rate",
-        "scope": _macro_scope(kind="country", entity_id="iso-3166:US"),
+        "scope": _macro_scope(),
         "value": MacroNumericValue(number=4.25, unit="percent"),
         "period": "2026-08",
         "occurred_at": "2026-08-23T00:00:00Z",
@@ -1004,10 +1004,11 @@ def _macro_dimension(
 
 
 def _macro_observation(*, scope: MacroScope | None = None, **overrides: object) -> MacroWorldObservation:
-    fact = _macro_fact()
+    resolved_scope = scope if scope is not None else _macro_scope()
+    fact = _macro_fact(scope=resolved_scope)
     fact_ref = fact.fact_version_id.value
     values: dict[str, object] = {
-        "scope": scope if scope is not None else _macro_scope(),
+        "scope": resolved_scope,
         "cutoff_at": CUTOFF,
         "producer_version": MACRO_PRODUCER_VERSION,
         "transform_version": MACRO_TRANSFORM_VERSION,
@@ -1131,6 +1132,7 @@ def test_macro_observation_knowledge_link_is_deterministic_for_mapping_outputs()
     envelope = _observation_envelope(_macro_observation(scope=_macro_scope(kind="venue", entity_id="mic:XTAI")))
     first = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, revision)
     second = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, revision)
+    assert envelope.observation.scope == _macro_scope(kind="venue", entity_id="mic:XTAI")
     assert first.status == "linked"
     assert first.skip_reason is None
     assert first.relation is not None
