@@ -262,7 +262,10 @@ def test_dbnomics_adapter_emits_typed_fact_for_canonical_scope_not_run_scope() -
     assert fact.value == MacroNumericValue(number=4.33, unit="percent")
     assert fact.source.provider_id == "dbnomics"
     assert fact.source.adapter_version == "dbnomics_series.v1"
-    assert fact.valid_until == OBSERVED_AT + timedelta(hours=72)
+    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    assert fact.published_at == published
+    assert fact.valid_until == published + timedelta(hours=72)
+    assert fact.valid_until != OBSERVED_AT + timedelta(hours=72)
     assert "XTAI" not in json.dumps(fact.to_dict())
     assert transport.calls == ["https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1"]
 
@@ -273,7 +276,10 @@ def test_dbnomics_monthly_cpi_uses_monthly_ttl_and_index_unit() -> None:
     assert facts[0].metric_key == "cpi_index"
     assert facts[0].value.unit == "index"
     assert facts[0].occurred_at == datetime(2026, 7, 1, tzinfo=UTC)
-    assert facts[0].valid_until == OBSERVED_AT + timedelta(days=40)
+    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    assert facts[0].published_at == published
+    assert facts[0].valid_until == published + timedelta(days=40)
+    assert facts[0].valid_until != OBSERVED_AT + timedelta(days=40)
 
 
 def test_yahoo_commodity_adapter_emits_front_month_benchmark() -> None:
@@ -288,7 +294,10 @@ def test_yahoo_commodity_adapter_emits_front_month_benchmark() -> None:
     assert fact.value == MacroNumericValue(number=91.22, unit="usd")
     assert fact.source.provider_id == "yahoo_finance"
     assert fact.source.adapter_version == "yahoo_commodity.v1"
-    assert fact.valid_until == OBSERVED_AT + timedelta(hours=72)
+    published = datetime(2026, 8, 21, tzinfo=UTC)
+    assert fact.published_at == published
+    assert fact.valid_until == published + timedelta(hours=72)
+    assert fact.valid_until != OBSERVED_AT + timedelta(hours=72)
     assert transport.calls[0].endswith("BZ=F?range=5d&interval=1d")
 
 
@@ -324,6 +333,51 @@ def test_same_period_value_and_unit_is_replayed_not_a_new_vintage() -> None:
     second = ports["fed_funds_effective"].read_facts(RUN_SCOPE, clock())
     assert first[0].fact_version_id == second[0].fact_version_id
     assert second[0].supersedes_fact_version_id is None
+
+
+def test_adapter_reconstruction_replays_identical_external_data_across_runtime_restarts(tmp_path: Path) -> None:
+    from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
+
+    body = _dbnomics_body("2026-08-22", 4.33, indexed_at="2026-08-23T12:30:00Z")
+    first_observed = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
+    later_observed = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    first = _ports(ScriptedTransport([body]), clock=FakeClock(first_observed))["fed_funds_effective"].read_facts(
+        RUN_SCOPE, first_observed
+    )
+    second = _ports(ScriptedTransport([body]), clock=FakeClock(later_observed))["fed_funds_effective"].read_facts(
+        RUN_SCOPE, later_observed
+    )
+    assert first[0].fact_version_id == second[0].fact_version_id
+    assert first[0].content_sha256 == second[0].content_sha256
+    assert first[0].valid_until == second[0].valid_until == published + timedelta(hours=72)
+    assert first[0].valid_until != later_observed + timedelta(hours=72)
+    assert first[0].ingested_at == first_observed
+    assert second[0].ingested_at == later_observed
+    store = WorldMacroStore(tmp_path, clock=lambda: first_observed)
+    first_ref = store.append_fact(first[0])
+    replayed = store.append_fact(second[0])
+    assert replayed.receipt.receipt_id == first_ref.receipt.receipt_id
+    assert replayed.receipt.ready_at == first_ref.receipt.ready_at == first_observed
+    history = tmp_path / "facts" / "2026-08-23.jsonl"
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(rows) == 1
+    loaded = MacroSourceFact.from_mapping(rows[0])
+    assert loaded.ingested_at == first_observed
+    assert loaded.valid_until == published + timedelta(hours=72)
+    assert loaded.content_sha256 == first[0].content_sha256
+
+
+def test_late_fetch_does_not_extend_valid_until_of_already_expired_provider_data() -> None:
+    published = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    observed = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
+    facts = _ports(
+        ScriptedTransport([_dbnomics_body("2026-08-20", 4.33, indexed_at="2026-08-20T12:00:00Z")])
+    )["fed_funds_effective"].read_facts(RUN_SCOPE, observed)
+    assert facts[0].published_at == published
+    assert facts[0].valid_until == published + timedelta(hours=72)
+    assert facts[0].valid_until < observed
+    assert facts[0].valid_until != observed + timedelta(hours=72)
 
 
 def test_urllib_macro_transport_get_uses_mocked_urlopen(monkeypatch: pytest.MonkeyPatch) -> None:

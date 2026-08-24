@@ -4,7 +4,7 @@ import ast
 import inspect
 import sys
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -38,6 +38,7 @@ from trader.domain.world_macro import (
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroObservationProvenance,
     committed_macro_collection_plan,
+    derive_macro_source_fact_valid_until,
     require_committed_macro_collection_plan,
     MacroCategoryValue,
     MacroCollectionCompleted,
@@ -383,6 +384,55 @@ def test_fact_hashes_are_deterministic_and_ignore_ingest_order_and_ingested_at()
     replayed = MacroSourceFact.from_mapping(first.to_dict())
     assert replayed == first
     assert reconcile_macro_source_fact(first, second) == first
+
+
+def test_fact_valid_until_is_derived_from_published_at_not_the_observation_clock() -> None:
+    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    daily = timedelta(hours=72)
+    monthly = timedelta(days=40)
+    benchmark = timedelta(hours=24)
+    assert (
+        derive_macro_source_fact_valid_until(
+            fact_kind="series_point",
+            period="2026-08-22",
+            published_at=published,
+            series_point_daily=daily,
+            series_point_monthly=monthly,
+            market_benchmark_daily=benchmark,
+        )
+        == published + daily
+    )
+    assert (
+        derive_macro_source_fact_valid_until(
+            fact_kind="series_point",
+            period="2026-07",
+            published_at=published,
+            series_point_daily=daily,
+            series_point_monthly=monthly,
+            market_benchmark_daily=benchmark,
+        )
+        == published + monthly
+    )
+    assert (
+        derive_macro_source_fact_valid_until(
+            fact_kind="market_benchmark",
+            period="2026-08-21",
+            published_at=published,
+            series_point_daily=daily,
+            series_point_monthly=monthly,
+            market_benchmark_daily=benchmark,
+        )
+        == published + benchmark
+    )
+
+
+def test_same_version_different_valid_until_remains_an_explicit_conflict() -> None:
+    first = _fact(valid_until=VALID_UNTIL)
+    drifted = _fact(valid_until=datetime(2026, 8, 24, 17, 0, tzinfo=UTC))
+    assert drifted.fact_version_id == first.fact_version_id
+    assert drifted.content_sha256 != first.content_sha256
+    with pytest.raises(ValueError, match="conflict"):
+        reconcile_macro_source_fact(first, drifted)
 
 
 def test_fact_kind_and_value_vocabularies_are_closed() -> None:

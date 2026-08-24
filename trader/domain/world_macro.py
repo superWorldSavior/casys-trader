@@ -9,7 +9,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any
 
@@ -483,6 +483,47 @@ def _fact_version_payload(
         "schema_version": schema_version,
         "adapter_version": adapter_version,
     }
+
+
+def _positive_timedelta(value: Any, field_name: str) -> timedelta:
+    if isinstance(value, bool) or not isinstance(value, timedelta):
+        raise TypeError(f"{field_name} must be a timedelta")
+    if value <= timedelta(0):
+        raise ValueError(f"{field_name} must be positive")
+    return value
+
+
+def derive_macro_source_fact_valid_until(
+    *,
+    fact_kind: str,
+    period: str,
+    published_at: datetime | str,
+    series_point_daily: timedelta,
+    series_point_monthly: timedelta,
+    market_benchmark_daily: timedelta,
+) -> datetime:
+    """Vintage expiration from published_at plus the frozen operator TTL.
+
+    Reconstruction clocks (`observed_at`, `ingested_at`, local now) must not
+    participate: identical external data must replay the same valid_until.
+    """
+
+    kind = _required_text(fact_kind, "fact_kind")
+    if kind not in MACRO_FACT_KINDS:
+        allowed = ", ".join(sorted(MACRO_FACT_KINDS))
+        raise ValueError(f"fact_kind must be one of: {allowed}")
+    period_text = _required_text(period, "period")
+    published = parse_utc_timestamp(published_at, "published_at")
+    daily = _positive_timedelta(series_point_daily, "series_point_daily")
+    monthly = _positive_timedelta(series_point_monthly, "series_point_monthly")
+    benchmark = _positive_timedelta(market_benchmark_daily, "market_benchmark_daily")
+    if kind == "market_benchmark":
+        return published + benchmark
+    if len(period_text) == 7:
+        return published + monthly
+    if len(period_text) == 10:
+        return published + daily
+    raise ValueError(f"unsupported period: {period_text}")
 
 
 def _fact_content_payload(
@@ -2567,6 +2608,7 @@ __all__ = [
     "WorldScopeMapping",
     "WorldScopeResolution",
     "assert_source_only_payload",
+    "derive_macro_source_fact_valid_until",
     "evaluate_macro_point_in_time",
     "is_admitted_macro_producer",
     "macro_observes_producer_ref",

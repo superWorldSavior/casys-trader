@@ -28,6 +28,7 @@ from trader.domain.world_macro import (
     MacroSourceFact,
     MacroSourceRegistry,
     MacroSourceRegistryEntry,
+    derive_macro_source_fact_valid_until,
 )
 from trader.domain.world_scope import WorldScopeMapping
 from trader.infrastructure.market_sources.commodity_prices import parse_yahoo_last_close
@@ -295,12 +296,15 @@ def _period_occurred_at(period: str) -> datetime:
     raise ValueError(f"unsupported period: {period}")
 
 
-def _valid_until(observed_at: datetime, *, fact_kind: str, period: str, ttl: MacroTtlPolicy) -> datetime:
-    if fact_kind == "market_benchmark":
-        return observed_at + timedelta(hours=ttl.market_benchmark_daily_h)
-    if len(period) == 7:
-        return observed_at + timedelta(days=ttl.series_point_monthly_d)
-    return observed_at + timedelta(hours=ttl.series_point_daily_h)
+def _ttl_valid_until(published_at: datetime, *, fact_kind: str, period: str, ttl: MacroTtlPolicy) -> datetime:
+    return derive_macro_source_fact_valid_until(
+        fact_kind=fact_kind,
+        period=period,
+        published_at=published_at,
+        series_point_daily=timedelta(hours=ttl.series_point_daily_h),
+        series_point_monthly=timedelta(days=ttl.series_point_monthly_d),
+        market_benchmark_daily=timedelta(hours=ttl.market_benchmark_daily_h),
+    )
 
 
 def _retry_after_seconds(response: MacroHttpResponse, fallback: float) -> float:
@@ -550,8 +554,8 @@ class BoundMacroSourceAdapter:
                 "source_record_id": f"{self._entry.provider_entity_id}:{period}",
                 "source_ref": url,
             },
-            valid_until=_valid_until(
-                observed_at,
+            valid_until=_ttl_valid_until(
+                published,
                 fact_kind=self._entry.fact_kind,
                 period=period,
                 ttl=self._ttl,

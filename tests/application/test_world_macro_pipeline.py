@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import get_args, get_origin, get_type_hints
 
 import pytest
@@ -1077,3 +1077,110 @@ def test_hanging_source_is_target_local_timeout_and_does_not_block_sibling_sourc
         assert "BoundedSemaphore" in owner_src
     finally:
         hang.set()
+
+
+def test_first_cutoff_can_stage_receipt_and_later_cutoff_publishes_after_adapter_replay(tmp_path) -> None:
+    import json
+
+    from tests.infrastructure.test_world_macro_series_adapter import (
+        CONFIG_DIR,
+        FakeClock,
+        ScriptedTransport,
+        _dbnomics_body,
+    )
+    from trader.application.world_model.macro_pipeline import MacroWorldPipeline
+    from trader.infrastructure.market_sources.world_macro import (
+        build_macro_source_ports,
+        load_world_macro_operator_configs,
+    )
+    from trader.infrastructure.state_db.availability_receipt import (
+        load_receipts,
+        parse_world_availability_receipt,
+    )
+    from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
+
+    bundle = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
+    entry = bundle.registry.entry_for("fed_funds_effective")
+    registry = MacroSourceRegistry(registry_version=bundle.registry.registry_version, entries=(entry,))
+    target = MacroCollectionPlan.from_registry(registry).target_for(entry.canonical_scope)
+    body = _dbnomics_body("2026-08-22", 4.33, indexed_at="2026-08-23T11:55:00Z")
+    first_cutoff = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+    staged_ready = datetime(2026, 8, 23, 12, 5, tzinfo=UTC)
+    second_cutoff = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
+    published = datetime(2026, 8, 23, 11, 55, tzinfo=UTC)
+    clock = FakeClock(staged_ready)
+    store = WorldMacroStore(tmp_path, clock=clock)
+    pipeline = MacroWorldPipeline(history=store, ledger=store, reader=store, policy=bundle.policy)
+
+    first_ports = build_macro_source_ports(
+        bundle,
+        transport=ScriptedTransport([body]),
+        clock=clock,
+        sleeper=lambda _seconds: None,
+    )
+    first = pipeline.collect(
+        target=target,
+        cutoff_at=first_cutoff,
+        registry=registry,
+        sources={"fed_funds_effective": first_ports["fed_funds_effective"]},
+        observed_at=first_cutoff,
+    )
+    assert first.status == "failed"
+    assert first.published_envelope is None
+    assert first.terminal_result is not None
+    assert first.terminal_result.reason == "no_admissible_observation"
+
+    clock.now = second_cutoff
+    second_ports = build_macro_source_ports(
+        bundle,
+        transport=ScriptedTransport([body]),
+        clock=clock,
+        sleeper=lambda _seconds: None,
+    )
+    second = pipeline.collect(
+        target=target,
+        cutoff_at=second_cutoff,
+        registry=registry,
+        sources={"fed_funds_effective": second_ports["fed_funds_effective"]},
+        observed_at=second_cutoff,
+    )
+    assert second.status == "completed"
+    assert second.published_envelope is not None
+    observation = second.published_envelope.observation
+    observation_evidence = second.published_envelope.evidence
+    assert observation.cutoff_at == second_cutoff
+    assert observation_evidence.receipt.ready_at == second_cutoff
+    assert observation_evidence.effective_ready_at == second_cutoff
+    assert observation_evidence.effective_ready_at != staged_ready
+    assert staged_ready <= second_cutoff
+    assert observation.valid_until is None or second_cutoff < observation.valid_until
+
+    fact_rows = [
+        json.loads(line)
+        for line in (tmp_path / "facts" / "2026-08-23.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(fact_rows) == 1
+    loaded = MacroSourceFact.from_mapping(fact_rows[0])
+    assert loaded.ingested_at == first_cutoff
+    assert loaded.valid_until == published + timedelta(hours=72)
+    assert loaded.valid_until != second_cutoff + timedelta(hours=72)
+    fact_receipts = load_receipts(tmp_path / "facts" / "availability_receipts" / "2026-08-23.jsonl")
+    assert len(fact_receipts) == 1
+    fact_receipt = parse_world_availability_receipt(fact_receipts[0])
+    assert fact_receipt is not None
+    assert fact_receipt.ready_at == staged_ready
+    observation_receipts = load_receipts(
+        tmp_path / "observations" / "availability_receipts" / "2026-08-23.jsonl"
+    )
+    assert len(observation_receipts) == 1
+    observation_receipt = parse_world_availability_receipt(observation_receipts[0])
+    assert observation_receipt is not None
+    assert observation_receipt.ready_at == second_cutoff
+    assert observation_receipt.ready_at != fact_receipt.ready_at
+    observation_rows = [
+        json.loads(line)
+        for line in (tmp_path / "observations" / "2026-08-23.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(observation_rows) == 1

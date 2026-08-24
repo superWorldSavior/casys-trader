@@ -316,7 +316,11 @@ payload historique.
 | `first_seen_at` | première lecture effective du reçu par le consumer | anti-rétroactivité |
 | `effective_ready_at` | `max(ready_at, first_seen_at)` | éligibilité |
 | `cutoff_at` | clôture de la barre de l'épisode | sélection des faits |
-| `valid_until` | expiration explicite | fraîcheur |
+| `valid_until` | expiration déterministe de la vintage fournisseur | fraîcheur |
+
+`valid_until` d'un fait est `published_at` plus le TTL opérateur figé. Une
+re-observation locale (`observed_at`, `ingested_at`, horloge runtime) ne mute
+jamais un fait.
 
 Un fait ou une observation est admissible seulement si :
 
