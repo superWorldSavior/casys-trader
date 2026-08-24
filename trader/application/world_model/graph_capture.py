@@ -2,13 +2,13 @@
 
 One V3 companion is attached per V1 market slot. Cutoff is the completed-bar
 clock. Missing, unpublished, unmapped, or budget-exceeded graph is encoded as
-snapshot missingness; it does not drop V1/V2. A builder failure skips the V3
-companion (fail-open).
+snapshot missingness; it does not drop V1/V2. Unmapped or ambiguous
+``WorldScopeResolution`` never invents an instrument root, venue, or topology.
+A builder failure skips the V3 companion (fail-open).
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,11 +31,8 @@ from trader.domain.world_feature_contract import (
     WorldFeatureMask,
     world_v3_graph_content_mask,
 )
-from trader.domain.world_graph import WorldEntityRef, WorldGraphSnapshot
-from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping, WorldScopeResolution
-
-
-_MIC_RE = re.compile(r"^[A-Z0-9]{4}$")
+from trader.domain.world_graph import WorldGraphSnapshot, world_instrument_root_for_resolution
+from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping
 
 
 @dataclass(frozen=True)
@@ -122,9 +119,7 @@ def _attach_one(episode: WorldEpisode, config: WorldGraphCaptureConfig) -> World
         resolution = config.scope_mapping.resolve(
             WorldMarketAnchorRef(market_venue=observation.venue, instrument=observation.symbol)
         )
-        root = _root_entity(observation, config.scope_mapping, resolution)
-        if root is None:
-            return None
+        root = world_instrument_root_for_resolution(resolution, instrument=observation.symbol)
         request = WorldGraphSnapshotRequest(
             episode=episode,
             root_entity=root,
@@ -171,33 +166,6 @@ def _persist_snapshot(service: object, snapshot: WorldGraphSnapshot) -> None:
         persist(snapshot)
     except Exception:
         return
-
-
-def _root_entity(
-    observation: WorldObservation,
-    mapping: WorldScopeMapping,
-    resolution: WorldScopeResolution,
-) -> WorldEntityRef | None:
-    symbol = observation.symbol
-    if resolution.status == "resolved":
-        venue = next(scope for scope in resolution.scopes if scope.kind == "venue")
-        return WorldEntityRef(kind="instrument", entity_id=f"{venue.entity_id}:symbol:{symbol}")
-    venue_ids = {
-        entry.venue.entity_id for entry in mapping.entries if entry.anchor.market_venue == observation.venue
-    }
-    if len(venue_ids) == 1:
-        return WorldEntityRef(kind="instrument", entity_id=f"{next(iter(venue_ids))}:symbol:{symbol}")
-    instrument_venues = {
-        entry.venue.entity_id for entry in mapping.entries if entry.anchor.instrument == symbol
-    }
-    if len(instrument_venues) == 1:
-        return WorldEntityRef(kind="instrument", entity_id=f"{next(iter(instrument_venues))}:symbol:{symbol}")
-    venue = observation.venue
-    if venue.startswith("mic:") and _MIC_RE.fullmatch(venue[4:]):
-        return WorldEntityRef(kind="instrument", entity_id=f"{venue}:symbol:{symbol}")
-    if _MIC_RE.fullmatch(venue):
-        return WorldEntityRef(kind="instrument", entity_id=f"mic:{venue}:symbol:{symbol}")
-    return None
 
 
 __all__ = [

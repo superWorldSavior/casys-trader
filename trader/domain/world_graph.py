@@ -28,7 +28,12 @@ from trader.domain.world_macro import (
     is_admitted_macro_producer,
     macro_observes_producer_ref,
 )
-from trader.domain.world_scope import SCOPE_KINDS, WorldCanonicalScopeRef, WorldScopeMapping
+from trader.domain.world_scope import (
+    SCOPE_KINDS,
+    WorldCanonicalScopeRef,
+    WorldScopeMapping,
+    WorldScopeResolution,
+)
 
 
 WORLD_ENTITY_KINDS = frozenset(
@@ -2323,12 +2328,33 @@ def parse_world_ontology_revision_event(
     return parser(value)
 
 
+def world_instrument_root_for_resolution(
+    resolution: WorldScopeResolution,
+    *,
+    instrument: str,
+) -> WorldEntityRef | None:
+    """Exact-anchor instrument root. Unmapped/ambiguous never invent a MIC."""
+
+    if not isinstance(resolution, WorldScopeResolution):
+        raise TypeError("resolution must be WorldScopeResolution")
+    instrument_id = _required_text(instrument, "instrument")
+    if resolution.status != "resolved":
+        return None
+    if instrument_id != resolution.anchor.instrument:
+        raise ValueError("instrument must match the resolved market anchor")
+    venue = next(scope for scope in resolution.scopes if scope.kind == "venue")
+    return WorldEntityRef(kind="instrument", entity_id=f"{venue.entity_id}:symbol:{instrument_id}")
+
+
 @dataclass(frozen=True)
 class WorldGraphSnapshot:
-    """Immutable V3 subgraph at a cutoff. Structural and knowledge refs stay two sets."""
+    """Immutable V3 subgraph at a cutoff. Structural and knowledge refs stay two sets.
+
+    Unmapped/ambiguous missingness forbids a world-entity root and graph members.
+    """
 
     root_episode_id: str
-    root_entity: WorldEntityRef | Mapping[str, Any]
+    root_entity: WorldEntityRef | Mapping[str, Any] | None
     cutoff_at: datetime | str
     ontology_revision: str
     ontology_hash: str
@@ -2353,9 +2379,7 @@ class WorldGraphSnapshot:
         if schema_version != WORLD_GRAPH_SNAPSHOT_SCHEMA:
             raise ValueError(f"schema_version must be {WORLD_GRAPH_SNAPSHOT_SCHEMA}")
         root_episode_id = _validate_prefixed_id(self.root_episode_id, _EPISODE_ID_PREFIX, "root_episode_id")
-        root_entity = WorldEntityRef.from_mapping(self.root_entity)
-        if root_entity.kind != "instrument":
-            raise ValueError("snapshot root_entity must have kind=instrument")
+        root_entity = None if self.root_entity is None else WorldEntityRef.from_mapping(self.root_entity)
         cutoff_at = parse_utc_timestamp(self.cutoff_at, "cutoff_at")
         ontology_revision = _required_text(self.ontology_revision, "ontology_revision")
         ontology_hash = _sha256_hex(self.ontology_hash, "ontology_hash")
@@ -2379,11 +2403,30 @@ class WorldGraphSnapshot:
             )
         producer_versions = _mapping_proxy_text(self.producer_versions, "producer_versions")
         missingness = _freeze_mapping(self.missingness, "missingness")
+        scope_status = missingness.get("scope") if isinstance(missingness, Mapping) else None
+        if scope_status in {"unmapped", "ambiguous"}:
+            if root_entity is not None:
+                raise ValueError("unmapped/ambiguous snapshot must not select a world entity root")
+            if status != "missing":
+                raise ValueError("unmapped/ambiguous snapshot status must be missing")
+            if (
+                entity_revision_refs
+                or identity_link_refs
+                or structural_relation_refs
+                or knowledge_relation_refs
+                or artifact_refs
+            ):
+                raise ValueError("unmapped/ambiguous snapshot must not carry graph members")
+        else:
+            if root_entity is None:
+                raise ValueError("snapshot root_entity is required when scope is not unmapped/ambiguous")
+            if root_entity.kind != "instrument":
+                raise ValueError("snapshot root_entity must have kind=instrument")
         traversal_policy_version = _required_text(self.traversal_policy_version, "traversal_policy_version")
         identity = {
             "schema_version": schema_version,
             "root_episode_id": root_episode_id,
-            "root_entity": root_entity.to_dict(),
+            "root_entity": None if root_entity is None else root_entity.to_dict(),
             "cutoff_at": _iso(cutoff_at),
             "ontology_revision": ontology_revision,
             "ontology_hash": ontology_hash,
@@ -2436,7 +2479,7 @@ class WorldGraphSnapshot:
             "schema_version": self.schema_version,
             "snapshot_id": self.snapshot_id,
             "root_episode_id": self.root_episode_id,
-            "root_entity": self.root_entity.to_dict(),
+            "root_entity": None if self.root_entity is None else self.root_entity.to_dict(),
             "cutoff_at": _iso(self.cutoff_at),
             "ontology_revision": self.ontology_revision,
             "ontology_hash": self.ontology_hash,
@@ -3869,5 +3912,6 @@ __all__ = [
     "parse_world_relation_event",
     "reconcile_world_graph_snapshot",
     "reconcile_world_ontology_revision",
+    "world_instrument_root_for_resolution",
     "world_observation_ref_for_observation_id",
 ]

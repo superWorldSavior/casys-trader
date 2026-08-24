@@ -656,8 +656,8 @@ class WorldGraphStore:
                     (
                         snapshot.snapshot_id,
                         snapshot.root_episode_id,
-                        snapshot.root_entity.kind,
-                        snapshot.root_entity.entity_id,
+                        "" if snapshot.root_entity is None else snapshot.root_entity.kind,
+                        "" if snapshot.root_entity is None else snapshot.root_entity.entity_id,
                         payload["cutoff_at"],
                         snapshot.ontology_revision,
                         snapshot.ontology_hash,

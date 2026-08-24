@@ -788,6 +788,7 @@ def test_graph_v3_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
 
 
 def test_idle_unmapped_cycle_does_not_write_v3_from_graph_wiring_alone(tmp_path) -> None:
+    import json
     from pathlib import Path
 
     from trader.application.world_model import labeler
@@ -841,7 +842,39 @@ def test_idle_unmapped_cycle_does_not_write_v3_from_graph_wiring_alone(tmp_path)
             (row.get("feature_contract_version") or row["observation"]["feature_contract_version"]) for row in rows
         }
         assert "market_ohlcv_causal.v1" in versions
-        assert GRAPH_FEATURE_CONTRACT_VERSION not in versions
+        assert GRAPH_FEATURE_CONTRACT_VERSION in versions
+        v3_rows = [
+            row
+            for row in rows
+            if (row.get("feature_contract_version") or row["observation"]["feature_contract_version"])
+            == GRAPH_FEATURE_CONTRACT_VERSION
+        ]
+        assert len(v3_rows) == 1
+        observation = v3_rows[0]["observation"]
+        snapshot = observation.get("graph") or (observation.get("graph_features") or {}).get("snapshot")
+        assert snapshot is not None
+        assert snapshot["status"] == "missing"
+        assert snapshot["missingness"]["scope"] == "unmapped"
+        assert snapshot["root_entity"] is None
+        assert snapshot["structural_relation_refs"] == []
+        assert snapshot["knowledge_relation_refs"] == []
+        dumped = json.dumps(snapshot)
+        assert "XNYS" not in dumped
+        assert "mic:" not in dumped
+        first_count = store.counts()["episodes"]
+        replay = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=100.0)},
+            data_age_by_symbol={"AAA": 3.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW,
+        )
+        replay["_thread"].join(timeout=2)
+        assert store.counts()["episodes"] == first_count
         assert store.list_collecting_cohort_ids() == ()
         assert all(
             (row.get("prediction_record") or {}).get("decision_effect", "none") == "none"

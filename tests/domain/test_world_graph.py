@@ -67,6 +67,7 @@ from trader.domain.world_graph import (
     WorldGraphSnapshot,
     WorldGraphSnapshotRef,
     WorldKnowledgeRelationRef,
+    world_instrument_root_for_resolution,
     WorldObservationRef,
     WorldOntologyRevision,
     WorldOntologyRevisionPublished,
@@ -797,6 +798,78 @@ def test_snapshot_keeps_structural_and_knowledge_refs_as_two_sets() -> None:
     assert snapshot.root_entity.kind == "instrument"
     with pytest.raises(ValueError, match="instrument"):
         _snapshot(root_entity=_venue())
+
+
+def _us_gm_mapping() -> WorldScopeMapping:
+    return WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(
+            WorldScopeMappingEntry(
+                anchor=WorldMarketAnchorRef(market_venue="US", instrument="GM"),
+                venue={"kind": "venue", "entity_id": "mic:XNYS"},
+                country={"kind": "country", "entity_id": "iso-3166:US"},
+                region={"kind": "region", "entity_id": "iso-un-m49:021"},
+                world={"kind": "world", "entity_id": "market"},
+                provider_proofs=("provider:world-scope:xnys",),
+                taxonomy_version="sessions_mic.v1",
+            ),
+        ),
+    )
+
+
+def _unmapped_snapshot(**overrides: object) -> WorldGraphSnapshot:
+    values: dict[str, object] = {
+        "root_entity": None,
+        "status": "missing",
+        "missingness": {"scope": "unmapped"},
+        "entity_revision_refs": (),
+        "identity_link_refs": (),
+        "structural_relation_refs": (),
+        "knowledge_relation_refs": (),
+        "artifact_refs": (),
+    }
+    values.update(overrides)
+    return _snapshot(**values)
+
+
+def test_instrument_root_is_exact_resolved_anchor_only() -> None:
+    mapping = _us_gm_mapping()
+    resolved = mapping.resolve(WorldMarketAnchorRef(market_venue="US", instrument="GM"))
+    root = world_instrument_root_for_resolution(resolved, instrument="GM")
+    assert root is not None
+    assert root.kind == "instrument"
+    assert root.entity_id == "mic:XNYS:symbol:GM"
+
+    unmapped = mapping.resolve(WorldMarketAnchorRef(market_venue="US", instrument="AAA"))
+    assert unmapped.status == "unmapped"
+    assert unmapped.scopes == ()
+    assert world_instrument_root_for_resolution(unmapped, instrument="AAA") is None
+    with pytest.raises(ValueError, match="instrument"):
+        world_instrument_root_for_resolution(resolved, instrument="AAA")
+
+
+def test_unmapped_snapshot_never_selects_a_world_entity_root_or_topology() -> None:
+    fabricated = WorldEntityRef(kind="instrument", entity_id="mic:XNYS:symbol:AAA")
+    with pytest.raises(ValueError, match="unmapped|root"):
+        _unmapped_snapshot(root_entity=fabricated)
+    with pytest.raises(ValueError, match="unmapped|member"):
+        _unmapped_snapshot(structural_relation_refs=frozenset({_structural_ref()}))
+    with pytest.raises(ValueError, match="root"):
+        _snapshot(root_entity=None)
+
+    snapshot = _unmapped_snapshot()
+    replayed = WorldGraphSnapshot.from_mapping(snapshot.to_dict())
+    assert snapshot.root_entity is None
+    assert replayed == snapshot
+    assert snapshot.status == "missing"
+    assert snapshot.missingness["scope"] == "unmapped"
+    assert snapshot.structural_relation_refs == frozenset()
+    assert snapshot.knowledge_relation_refs == frozenset()
+    payload = snapshot.to_dict()
+    assert payload["root_entity"] is None
+    dumped = json.dumps(payload)
+    assert "XNYS" not in dumped
+    assert "mic:" not in dumped
 
 
 def test_v2_entity_refs_remain_locally_scoped_and_unrelated_to_v3_ids() -> None:

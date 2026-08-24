@@ -487,6 +487,33 @@ def test_identity_relation_revision_events_round_trip_and_split_families(tmp_pat
         assert canonical_sha256(envelope.event.to_dict()) == envelope.evidence.receipt.subject.content_sha256
 
 
+def test_unmapped_missing_snapshot_persists_without_a_world_entity_root(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    snapshot = _snapshot(
+        root_entity=None,
+        status="missing",
+        missingness={"scope": "unmapped"},
+        entity_revision_refs=(),
+        identity_link_refs=(),
+        structural_relation_refs=(),
+        knowledge_relation_refs=(),
+        artifact_refs=(),
+    )
+    persisted = store.append(snapshot)
+    loaded = store.get(persisted.identity)
+    assert loaded is not None
+    assert loaded.root_entity is None
+    assert loaded.missingness["scope"] == "unmapped"
+    row = store._db.query_one(
+        "SELECT root_entity_kind, root_entity_id, payload_json FROM world_graph_snapshots WHERE snapshot_id=?",
+        (snapshot.snapshot_id,),
+    )
+    assert row["root_entity_kind"] == ""
+    assert row["root_entity_id"] == ""
+    assert "XNYS" not in row["payload_json"]
+    assert '"root_entity":null' in row["payload_json"]
+
+
 def test_append_rejects_wrong_relation_family(tmp_path: Path) -> None:
     store = _store(tmp_path)
     with pytest.raises(TypeError):

@@ -56,7 +56,7 @@ _PRODUCER_VERSIONS: Mapping[str, str] = MappingProxyType(
 @dataclass(frozen=True)
 class WorldGraphSnapshotRequest:
     episode: WorldEpisode | Mapping[str, Any]
-    root_entity: WorldEntityRef | Mapping[str, Any]
+    root_entity: WorldEntityRef | Mapping[str, Any] | None
     cutoff_at: datetime | str
     scope_mapping: WorldScopeMapping
     scope_resolution: WorldScopeResolution | Mapping[str, Any]
@@ -70,8 +70,18 @@ class WorldGraphSnapshotRequest:
             raise TypeError("scope_mapping must be WorldScopeMapping")
         resolution = WorldScopeResolution.from_mapping(self.scope_resolution)
         slot = None if self.slot is None else WorldCohortSlot.from_mapping(self.slot)
+        if resolution.status in {"unmapped", "ambiguous"}:
+            if self.root_entity is not None:
+                raise ValueError("unmapped/ambiguous graph request must not select a world entity root")
+            root = None
+        else:
+            if self.root_entity is None:
+                raise ValueError("resolved graph request requires an instrument root")
+            root = WorldEntityRef.from_mapping(self.root_entity)
+            if root.kind != "instrument":
+                raise ValueError("graph root_entity must have kind=instrument")
         object.__setattr__(self, "episode", episode)
-        object.__setattr__(self, "root_entity", WorldEntityRef.from_mapping(self.root_entity))
+        object.__setattr__(self, "root_entity", root)
         object.__setattr__(self, "cutoff_at", parse_utc_timestamp(self.cutoff_at, "cutoff_at"))
         object.__setattr__(self, "scope_resolution", resolution)
         object.__setattr__(self, "slot", slot)
@@ -227,9 +237,11 @@ def _missing_snapshot(
     ontology_revision = "unpublished" if published is None else published.revision_id
     ontology_hash = canonical_sha256({"status": "unpublished"}) if published is None else published.content_sha256
     identity_hash = view.identity_map_hash if published is None else published.identity_map_hash
+    root = request.root_entity
+    root_node = None if root is None else root.node_id
     snapshot = WorldGraphSnapshot(
         root_episode_id=request.episode.episode_id,
-        root_entity=request.root_entity,
+        root_entity=root,
         cutoff_at=request.cutoff_at,
         ontology_revision=ontology_revision,
         ontology_hash=ontology_hash,
@@ -237,10 +249,10 @@ def _missing_snapshot(
         scope_mapping_id=request.scope_mapping.mapping_id,
         scope_mapping_hash=request.scope_mapping.content_sha256,
         entity_revision_refs=tuple(
-            item for item in view.entity_revision_refs if item.entity.node_id == request.root_entity.node_id
+            item for item in view.entity_revision_refs if root_node is not None and item.entity.node_id == root_node
         ),
         identity_link_refs=tuple(
-            link.as_ref() for link in view.identity_links if link.v3_ref.node_id == request.root_entity.node_id
+            link.as_ref() for link in view.identity_links if root_node is not None and link.v3_ref.node_id == root_node
         ),
         structural_relation_refs=(),
         knowledge_relation_refs=(),
@@ -286,6 +298,22 @@ class WorldGraphSnapshotService:
         view = self._ontology.at_cutoff(cutoff)
         published = view.published_revision
         _require_mapping_alignment(resolved, published)
+        if resolved.scope_resolution.status in {"unmapped", "ambiguous"}:
+            missingness = {"scope": resolved.scope_resolution.status}
+            if published is None:
+                missingness["ontology"] = "unpublished"
+            else:
+                view = _revision_bound_view(view, published)
+                _assert_scope_heads(
+                    expected_scope_heads(resolved.scope_mapping), _actual_scope_heads(view.structural_relations)
+                )
+            return _missing_snapshot(
+                request=resolved,
+                view=view,
+                published=published,
+                missingness=missingness,
+                status="missing",
+            )
         if published is None:
             return _missing_snapshot(
                 request=resolved,
@@ -298,14 +326,6 @@ class WorldGraphSnapshotService:
         _assert_scope_heads(
             expected_scope_heads(resolved.scope_mapping), _actual_scope_heads(view.structural_relations)
         )
-        if resolved.scope_resolution.status in {"unmapped", "ambiguous"}:
-            return _missing_snapshot(
-                request=resolved,
-                view=view,
-                published=published,
-                missingness={"scope": resolved.scope_resolution.status},
-                status="missing",
-            )
         overlay = self._knowledge.at_cutoff(cutoff, published)
         return self._bundle_from_views(resolved, view, overlay, published)
 
@@ -316,6 +336,8 @@ class WorldGraphSnapshotService:
         overlay: WorldKnowledgeOverlayView,
         published: WorldOntologyRevision,
     ) -> WorldGraphSnapshotBundle:
+        if request.root_entity is None:
+            raise ValueError("resolved graph request requires an instrument root")
         paths = self._traversal.enumerate_paths(
             view,
             overlay,

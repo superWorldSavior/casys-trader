@@ -174,8 +174,9 @@ injecte l'id de la cohorte `graph_v3` matérialisée au boot. Le YAML n'est
 pas une autorité de cohorte.
 
 Un graphe **câblé** au boot n'écrit rien (`writes=none_until_due_cycle`).
-Un cycle idle ou un instrument unmapped peut écrire du V1 et **zéro**
-compagnon V3.
+Un cycle dû dont l'ancre est `unmapped` ou `ambiguous` écrit le V1 et un
+compagnon V3 missing/status-only, sans racine d'entité monde ni topologie
+inventée. Un cycle idle ou un replay exact restent un no-op.
 
 ## V1 gelée, V2 opt-in, V3 cohorte séparée
 

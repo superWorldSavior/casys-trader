@@ -1562,8 +1562,8 @@ class WorldModelStore:
                     (
                         parsed.snapshot_id,
                         parsed.root_episode_id,
-                        parsed.root_entity.kind,
-                        parsed.root_entity.entity_id,
+                        "" if parsed.root_entity is None else parsed.root_entity.kind,
+                        "" if parsed.root_entity is None else parsed.root_entity.entity_id,
                         payload["cutoff_at"],
                         parsed.ontology_revision,
                         parsed.ontology_hash,

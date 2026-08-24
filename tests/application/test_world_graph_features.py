@@ -124,7 +124,7 @@ def test_late_data_and_unmapped_missingness_are_encoded_without_networkx() -> No
         anchor=WorldMarketAnchorRef(market_venue="TW", instrument="2330"),
         status="unmapped",
     )
-    missing = _encode(_service(empty_ledger).build(_request(empty, scope_resolution=unmapped)))
+    missing = _encode(_service(empty_ledger).build(_request(empty, root_entity=None, scope_resolution=unmapped)))
     assert missing.categorical_features["graph_status"] == "missing"
     assert missing.categorical_features["graph_scope_status"] == "unmapped"
     assert missing.categorical_features["graph_missingness_status"] == "unmapped"

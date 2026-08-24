@@ -654,13 +654,19 @@ def test_unmapped_and_ambiguous_slots_are_valid_members_without_fabricated_obser
         anchor=WorldMarketAnchorRef(market_venue="TW", instrument="2330"),
         status="unmapped",
     )
-    bundle = _service(ledger).build(_request(mapping, scope_resolution=unmapped))
+    with pytest.raises(ValueError, match="unmapped|root"):
+        _service(ledger).build(_request(mapping, scope_resolution=unmapped))
+    bundle = _service(ledger).build(_request(mapping, root_entity=None, scope_resolution=unmapped))
     assert bundle.snapshot.status == "missing"
     assert bundle.snapshot.missingness["scope"] == "unmapped"
+    assert bundle.snapshot.root_entity is None
     assert bundle.snapshot.knowledge_relation_refs == frozenset()
     assert bundle.snapshot.structural_relation_refs == frozenset()
     assert bundle.knowledge_relations == ()
     assert all(item.kind != "OBSERVES" for item in bundle.knowledge_relations)
+    dumped = str(bundle.snapshot.to_dict())
+    assert "XTAI" not in dumped
+    assert "mic:" not in dumped
 
     ambiguous = WorldScopeResolution(
         mapping_id=mapping.mapping_id,
@@ -668,9 +674,10 @@ def test_unmapped_and_ambiguous_slots_are_valid_members_without_fabricated_obser
         anchor=WorldMarketAnchorRef(market_venue="TW", instrument="2330"),
         status="ambiguous",
     )
-    amb = _service(ledger).build(_request(mapping, scope_resolution=ambiguous))
+    amb = _service(ledger).build(_request(mapping, root_entity=None, scope_resolution=ambiguous))
     assert amb.snapshot.status == "missing"
     assert amb.snapshot.missingness["scope"] == "ambiguous"
+    assert amb.snapshot.root_entity is None
     assert amb.snapshot.knowledge_relation_refs == frozenset()
 
 
@@ -718,8 +725,16 @@ def test_scope_mapping_mismatch_and_contradictory_heads_are_rejected() -> None:
             ),
         ),
     )
+    resolved_aapl = other.resolve(WorldMarketAnchorRef(market_venue="US", instrument="AAPL"))
+    assert resolved_aapl.status == "resolved"
     with pytest.raises(ValueError, match="scope_mapping"):
-        service.build(_request(other, scope_resolution=_resolution_for(other, instrument="AAPL")))
+        service.build(
+            _request(
+                other,
+                root_entity=WorldEntityRef(kind="instrument", entity_id="mic:XNAS:symbol:AAPL"),
+                scope_resolution=resolved_aapl,
+            )
+        )
 
     drifted = WorldScopeResolution(
         mapping_id=mapping.mapping_id,
@@ -728,7 +743,7 @@ def test_scope_mapping_mismatch_and_contradictory_heads_are_rejected() -> None:
         status="unmapped",
     )
     with pytest.raises(ValueError, match="scope"):
-        service.build(_request(mapping, scope_resolution=drifted))
+        service.build(_request(mapping, root_entity=None, scope_resolution=drifted))
 
     wrong_country = _InMemoryWorldGraphLedger()
     mapping_ok = _mapping()

@@ -26,7 +26,18 @@ from trader.domain.world_feature_contract import (
     world_v3_graph_content_mask,
     world_v3_topology_status_only_mask,
 )
-from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping, WorldScopeResolution
+from trader.domain.world_graph import (
+    StructuralWorldRelation,
+    WorldEntityRef,
+    WorldOntologyRevision,
+    WorldStructuralRelationRef,
+)
+from trader.domain.world_scope import (
+    WorldMarketAnchorRef,
+    WorldScopeMapping,
+    WorldScopeMappingEntry,
+    WorldScopeResolution,
+)
 
 
 _GRAPH_CAPTURE = REPO_ROOT / "trader" / "application" / "world_model" / "graph_capture.py"
@@ -109,6 +120,131 @@ def _unmapped_config(**overrides):
     return _capture_config(ledger=ledger, mapping=mapping, **overrides)
 
 
+def _us_gm_mapping() -> WorldScopeMapping:
+    return WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(
+            WorldScopeMappingEntry(
+                anchor=WorldMarketAnchorRef(market_venue="US", instrument="GM"),
+                venue={"kind": "venue", "entity_id": "mic:XNYS"},
+                country={"kind": "country", "entity_id": "iso-3166:US"},
+                region={"kind": "region", "entity_id": "iso-un-m49:021"},
+                world={"kind": "world", "entity_id": "market"},
+                provider_proofs=("provider:world-scope:xnys",),
+                taxonomy_version="sessions_mic.v1",
+            ),
+        ),
+    )
+
+
+def _us_aaa_episode() -> WorldEpisode:
+    from trader.application.world_model.capture import capture_world_episodes
+
+    return capture_world_episodes(
+        active_symbols=("AAA",),
+        tradable_symbols=("AAA",),
+        bars_by_symbol={
+            "AAA": [
+                {
+                    "ts": "2026-08-22T10:00:00+00:00",
+                    "open": 100.0,
+                    "high": 104.0,
+                    "low": 99.0,
+                    "close": 102.0,
+                    "volume": 1000.0,
+                    "available_at": "2026-08-22T10:05:00+00:00",
+                    "source": "unit-market-bars",
+                    "interval": "1h",
+                    "timestamp_semantics": "bar_close",
+                }
+            ]
+        },
+        market_metadata_by_symbol={
+            "AAA": {
+                "venue": "US",
+                "asset_family": "equity",
+                "session_phase": "regular",
+                "market_regime": "trending_up",
+                "family_regime": "risk_on",
+                "freshness": {"status": "fresh", "data_age_minutes": 5.0},
+                "available_at": "2026-08-22T10:05:00+00:00",
+            }
+        },
+        source="unit-market-bars",
+        interval="1h",
+        timestamp_semantics="bar_close",
+        captured_at="2026-08-22T10:30:00+00:00",
+    )[0]
+
+
+def _seed_mapping_heads(ledger, mapping: WorldScopeMapping) -> None:
+    from trader.application.world_model.ontology_service import (
+        AssertStructuralWorldRelation,
+        AssertWorldEntity,
+        PublishWorldOntologyRevision,
+        WorldOntologyService,
+    )
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    service = WorldOntologyService(ledger)
+    entities: list[WorldEntityRef] = []
+    structural: list[StructuralWorldRelation] = []
+    seen: set[str] = set()
+
+    def add_entity(kind: str, entity_id: str) -> WorldEntityRef:
+        ref = WorldEntityRef(kind=kind, entity_id=entity_id)
+        if ref.node_id not in seen:
+            seen.add(ref.node_id)
+            entities.append(ref)
+            service.assert_entity(
+                AssertWorldEntity(entity=ref, source_refs=(f"provider:{ref.node_id}",), effective_from=t0)
+            )
+        return ref
+
+    for entry in mapping.entries:
+        instrument = add_entity("instrument", f"{entry.venue.entity_id}:symbol:{entry.anchor.instrument}")
+        venue = add_entity("venue", entry.venue.entity_id)
+        country = add_entity("country", entry.country.entity_id)
+        region = add_entity("region", entry.region.entity_id)
+        world = add_entity("world", entry.world.entity_id)
+        heads = (
+            ("TRADED_ON", instrument, venue, "head:traded-on"),
+            ("LOCATED_IN", venue, country, "head:venue-country"),
+            ("LOCATED_IN", country, region, "head:country-region"),
+            ("PART_OF_WORLD", region, world, "head:region-world"),
+        )
+        for kind, source, target, proof in heads:
+            relation = StructuralWorldRelation(
+                kind=kind,
+                source=source,
+                target=target,
+                effective_from=t0,
+                ontology_revision="market_ontology.v1",
+                source_refs=(proof,),
+            )
+            structural.append(relation)
+            service.assert_structural_relation(AssertStructuralWorldRelation(relation=relation))
+    service.publish_revision(
+        PublishWorldOntologyRevision(
+            revision=WorldOntologyRevision(
+                revision_id="market_ontology.v1",
+                entities=tuple(entities),
+                structural_relation_refs=tuple(WorldStructuralRelationRef.from_relation(item) for item in structural),
+                identity_link_refs=(),
+                scope_mapping_id=mapping.mapping_id,
+                scope_mapping_hash=mapping.content_sha256,
+            )
+        )
+    )
+
+
+def _us_gm_published_config(**overrides):
+    mapping = _us_gm_mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    _seed_mapping_heads(ledger, mapping)
+    return _capture_config(ledger=ledger, mapping=mapping, **overrides)
+
+
 def _attach(episodes, config):
     from trader.application.world_model.graph_capture import attach_world_graph
 
@@ -181,23 +317,27 @@ def test_v1_identity_stays_frozen_and_v3_companion_shares_the_market_slot() -> N
 
 
 def test_missing_unpublished_unmapped_and_budget_graph_are_neutral_v3_companions() -> None:
-    v1 = _v1_episode()
-    unpublished = _attach((v1,), _unpublished_config())[0]
-    unmapped = _attach((v1,), _unmapped_config())[0]
+    mapped_v1 = _graph6_v1_episode()
+    unmapped_v1 = _us_aaa_episode()
+    unpublished = _attach((mapped_v1,), _unpublished_config())[0]
+    unmapped = _attach((unmapped_v1,), _unmapped_config())[0]
     assert unpublished.training_eligible is True
     assert unmapped.training_eligible is True
     unpublished_snapshot = _graph_snapshot(unpublished.observation)
     unmapped_snapshot = _graph_snapshot(unmapped.observation)
     assert unpublished_snapshot.status == "missing"
     assert unpublished_snapshot.missingness["ontology"] == "unpublished"
+    assert unpublished_snapshot.root_entity is not None
+    assert unpublished_snapshot.root_entity.entity_id == "mic:XTAI:symbol:2330"
     assert unmapped_snapshot.status == "missing"
     assert unmapped_snapshot.missingness["scope"] == "unmapped"
+    assert unmapped_snapshot.root_entity is None
     assert unmapped_snapshot.structural_relation_refs == frozenset()
     assert unmapped_snapshot.knowledge_relation_refs == frozenset()
     features = _graph_features(unpublished.observation)["categorical_features"]
     assert features["graph_status"] == "missing"
     assert features["graph_missingness_status"] == "unpublished"
-    assert v1.episode_id == V1_EPISODE_ID
+    assert mapped_v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_VERSION
 
     seeded = _complete_config(max_paths=1)
     complete_v1 = _graph6_v1_episode()
@@ -209,6 +349,46 @@ def test_missing_unpublished_unmapped_and_budget_graph_are_neutral_v3_companions
     budget_features = _graph_features(budget.observation)["categorical_features"]
     assert "graph_status" in budget_features
     assert complete_v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_VERSION
+
+
+def test_unmapped_us_aaa_never_selects_sole_us_mic_or_world_entity_root() -> None:
+    v1 = _us_aaa_episode()
+    mapping = _us_gm_mapping()
+    resolution = mapping.resolve(WorldMarketAnchorRef(market_venue="US", instrument="AAA"))
+    assert resolution.status == "unmapped"
+    assert resolution.scopes == ()
+    v3 = _attach((v1,), _us_gm_published_config())[0]
+    snapshot = _graph_snapshot(v3.observation)
+    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert snapshot.status == "missing"
+    assert snapshot.missingness["scope"] == "unmapped"
+    assert snapshot.root_entity is None
+    assert snapshot.structural_relation_refs == frozenset()
+    assert snapshot.knowledge_relation_refs == frozenset()
+    payload = snapshot.to_dict()
+    dumped = str(payload)
+    assert "XNYS" not in dumped
+    assert "mic:" not in dumped
+    assert payload["entity_revision_refs"] == []
+    assert payload["identity_link_refs"] == []
+    features = _graph_features(v3.observation)["categorical_features"]
+    assert features["graph_scope_status"] == "unmapped"
+    assert features["graph_missingness_status"] == "unmapped"
+
+
+def test_exact_known_anchor_still_emits_normal_graph_v3() -> None:
+    v1 = _graph6_v1_episode()
+    v3 = _attach((v1,), _complete_config())[0]
+    snapshot = _graph_snapshot(v3.observation)
+    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert snapshot.root_entity is not None
+    assert snapshot.root_entity.entity_id == "mic:XTAI:symbol:2330"
+    assert snapshot.status == "complete"
+    assert "scope" not in snapshot.missingness
+    assert snapshot.structural_relation_refs
+    features = _graph_features(v3.observation)["categorical_features"]
+    assert features["graph_scope_status"] == "resolved"
+    assert features["graph_status"] == "complete"
 
 
 def test_graph_cutoff_is_completed_bar_clock_and_unknown_semantics_fail_closed() -> None:
@@ -277,7 +457,7 @@ def test_v2_is_not_widened_and_v3_does_not_replace_v1() -> None:
         ),
     )[0]
     v3_from_v2 = _attach((v2,), _unmapped_config())
-    v3 = _attach((v1,), _unmapped_config())[0]
+    v3 = _attach((_us_aaa_episode(),), _unmapped_config())[0]
     assert v3_from_v2 == ()
     assert v2.observation.context is not None
     assert "graph_features" not in v2.observation.to_dict()

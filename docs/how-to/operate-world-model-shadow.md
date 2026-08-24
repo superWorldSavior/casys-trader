@@ -88,10 +88,12 @@ Trois états distincts. Ne pas les fusionner :
 
 Le hook de capture tourne après le snapshot marché, **avant** le dispatch
 LLM (`reason=market_snapshot_pre_dispatch`). Sans ancre OHLCV valide : **aucun
-épisode**. Un replay exact est un no-op. Un cycle idle, un symbole unmapped
-pour le graphe, ou un worker encore en file (`queued_latest`) peuvent donc
-produire **zéro** nouvelle ligne alors que le daemon et le shadow sont
-câblés. Le graphe le dit explicitement : `gaps.writes=none_until_due_cycle`.
+épisode**. Un replay exact est un no-op. Un cycle idle ou un worker encore
+en file (`queued_latest`) peuvent donc produire **zéro** nouvelle ligne alors
+que le daemon et le shadow sont câblés. Le graphe le dit explicitement :
+`gaps.writes=none_until_due_cycle`. Un cycle dû dont le `(market_venue,
+instrument)` est `unmapped` ou `ambiguous` écrit le V1 et un compagnon V3
+missing/status-only, sans racine MIC ni relation structurelle/connaissance.
 
 Vérifier ensuite, dans cet ordre :
 
