@@ -770,6 +770,85 @@ class MacroSourceRegistry:
         )
 
 
+def _unique_sorted_scopes(
+    value: Sequence[MacroScope | Mapping[str, Any]] | None,
+    field_name: str,
+) -> tuple[MacroScope, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise TypeError(f"{field_name} must be a sequence of MacroScope")
+    seen: dict[tuple[str, str], MacroScope] = {}
+    for item in value:
+        scope = item if isinstance(item, MacroScope) else MacroScope.from_mapping(item)
+        seen.setdefault((scope.kind, scope.entity_id), scope)
+    return tuple(sorted(seen.values(), key=lambda item: (item.kind, item.entity_id)))
+
+
+@dataclass(frozen=True)
+class MacroCollectionPlan:
+    """Deterministic schedule of scopes that can receive declared source facts.
+
+    WorldScopeMapping remains the ontology/resolution authority. It does not
+    schedule collection: unsourced venues stay honest missingness.
+    """
+
+    source_backed_scopes: Sequence[MacroScope | Mapping[str, Any]] = ()
+    control_scopes: Sequence[MacroScope | Mapping[str, Any]] = ()
+    scopes: Sequence[MacroScope | Mapping[str, Any]] | None = None
+
+    def __post_init__(self) -> None:
+        source_backed = _unique_sorted_scopes(self.source_backed_scopes, "source_backed_scopes")
+        control = _unique_sorted_scopes(self.control_scopes, "control_scopes")
+        backed_keys = {(item.kind, item.entity_id) for item in source_backed}
+        for scope in control:
+            if scope.kind == "venue" and (scope.kind, scope.entity_id) not in backed_keys:
+                raise ValueError("control scopes cannot schedule unsourced venues")
+        scopes = _unique_sorted_scopes((*source_backed, *control), "scopes")
+        if self.scopes is not None:
+            provided = _unique_sorted_scopes(self.scopes, "scopes")
+            if provided != scopes:
+                raise ValueError("scopes do not match the union of source-backed and control scopes")
+        object.__setattr__(self, "source_backed_scopes", source_backed)
+        object.__setattr__(self, "control_scopes", control)
+        object.__setattr__(self, "scopes", scopes)
+        assert_source_only_payload(self.to_dict(), "macro_collection_plan")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_backed_scopes": [item.to_dict() for item in self.source_backed_scopes],
+            "control_scopes": [item.to_dict() for item in self.control_scopes],
+            "scopes": [item.to_dict() for item in self.scopes],
+        }
+
+    @classmethod
+    def from_registry(
+        cls,
+        registry: MacroSourceRegistry,
+        *,
+        control_scopes: Sequence[MacroScope | Mapping[str, Any]] = (),
+    ) -> MacroCollectionPlan:
+        if not isinstance(registry, MacroSourceRegistry):
+            raise TypeError("registry must be MacroSourceRegistry")
+        return cls(
+            source_backed_scopes=tuple(entry.canonical_scope for entry in registry.entries),
+            control_scopes=control_scopes,
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroCollectionPlan) -> MacroCollectionPlan:
+        if isinstance(value, MacroCollectionPlan):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("collection plan must be MacroCollectionPlan or a mapping")
+        assert_source_only_payload(value, "macro_collection_plan")
+        return cls(
+            source_backed_scopes=value.get("source_backed_scopes") or (),
+            control_scopes=value.get("control_scopes") or (),
+            scopes=value.get("scopes"),
+        )
+
+
 @dataclass(frozen=True)
 class MacroDerivationPolicy:
     """Versioned closed vocabularies. Threshold constants live in transform_version, not here."""
@@ -1953,6 +2032,7 @@ __all__ = [
     "MacroCollectionCompleted",
     "MacroCollectionEvent",
     "MacroCollectionEventId",
+    "MacroCollectionPlan",
     "MacroCollectionRegistered",
     "MacroCollectionRun",
     "MacroCollectionRunId",

@@ -17,12 +17,13 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trader.domain.world_macro import MacroScope, MacroSourceRegistry
+from trader.domain.world_macro import MacroCollectionPlan, MacroScope, MacroSourceRegistry
 
 
 MACRO_LANE_IDENTITY = "context.v2.macro_source.v1"
 MACRO_THREAD_NAME = "world-macro-source-only"
 GRAPH_V3_FLAG = "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
+WORLD_MARKET_CONTROL_SCOPE = MacroScope(kind="world", entity_id="market")
 _BRIDGE_KEY = "macro_graph_bridge.v1"
 
 
@@ -202,30 +203,27 @@ def graph_v3_enabled(environ: Mapping[str, str] | None = None) -> bool:
     return str(env.get(GRAPH_V3_FLAG, "0")).strip() == "1"
 
 
-def collection_scopes(bundle: object) -> tuple[MacroScope, ...]:
-    """Unique canonical scopes from the registry and operator mapping."""
+def collection_plan(bundle: object) -> MacroCollectionPlan:
+    """Schedule only scopes that can receive declared source facts.
 
-    seen: dict[tuple[str, str], MacroScope] = {}
+    ``WorldScopeMapping`` stays the ontology/resolution authority and is not a
+    collection input. Unsourced venues remain honest missingness on the graph.
+    ``world:market`` is the explicit control scope for global coverage.
+    """
 
-    def add(kind: object, entity_id: object) -> None:
-        scope = MacroScope(kind=str(kind), entity_id=str(entity_id))
-        seen.setdefault((scope.kind, scope.entity_id), scope)
-
-    add("world", "market")
     registry = getattr(bundle, "registry", None)
-    for entry in getattr(registry, "entries", ()) or ():
-        canonical = getattr(entry, "canonical_scope", None)
-        if canonical is None:
-            continue
-        add(getattr(canonical, "kind", None), getattr(canonical, "entity_id", None))
-    mapping = getattr(bundle, "scope_mapping", None)
-    for mapping_entry in getattr(mapping, "entries", ()) or ():
-        for attr in ("venue", "country", "region", "world"):
-            ref = getattr(mapping_entry, attr, None)
-            if ref is None:
-                continue
-            add(getattr(ref, "kind", None), getattr(ref, "entity_id", None))
-    return tuple(sorted(seen.values(), key=lambda item: (item.kind, item.entity_id)))
+    if not isinstance(registry, MacroSourceRegistry):
+        raise TypeError("collection plan requires MacroSourceRegistry")
+    return MacroCollectionPlan.from_registry(
+        registry,
+        control_scopes=(WORLD_MARKET_CONTROL_SCOPE,),
+    )
+
+
+def collection_scopes(bundle: object) -> tuple[MacroScope, ...]:
+    """Unique canonical scopes from the source-backed collection plan."""
+
+    return collection_plan(bundle).scopes
 
 
 def collect_world_macro(
@@ -423,6 +421,7 @@ __all__ = [
     "WorldMacroBackgroundRunner",
     "WorldMacroRuntimeBundle",
     "collect_world_macro",
+    "collection_plan",
     "collection_scopes",
     "graph_v3_enabled",
     "wire_world_macro_runtime",

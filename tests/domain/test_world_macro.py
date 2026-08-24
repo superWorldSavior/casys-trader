@@ -33,6 +33,7 @@ from trader.domain.world_macro import (
     MacroCategoryValue,
     MacroCollectionCompleted,
     MacroCollectionEvent,
+    MacroCollectionPlan,
     MacroCollectionRegistered,
     MacroCollectionRun,
     MacroCollectionStarted,
@@ -54,6 +55,7 @@ from trader.domain.world_macro import (
     MacroWorldObservation,
     WorldScopeMapping,
     WorldScopeResolution,
+    assert_source_only_payload,
     parse_macro_collection_event,
     reconcile_macro_source_fact,
     reconcile_macro_world_observation,
@@ -271,6 +273,42 @@ def test_source_registry_is_hashed_and_has_no_implicit_provider_crosswalk() -> N
     missing = registry.resolve_canonical_scope(provider_id="twse", provider_entity_id="TW")
     assert missing.status == "unmapped"
     assert missing.scope is None
+
+
+def test_collection_plan_is_source_backed_deterministic_and_rejects_unsourced_venues() -> None:
+    registry = _registry()
+    world = _scope(kind="world", entity_id="market")
+    us = _scope(kind="country", entity_id="iso-3166:US")
+    europe = _scope(kind="region", entity_id="iso-un-m49:150")
+    xtai = _scope(kind="venue", entity_id="mic:XTAI")
+
+    plan = MacroCollectionPlan.from_registry(registry, control_scopes=(world,))
+    again = MacroCollectionPlan.from_registry(registry, control_scopes=(world,))
+    assert plan == again
+    assert plan.source_backed_scopes == (us, world)
+    assert plan.control_scopes == (world,)
+    assert plan.scopes == (us, world)
+    assert plan.scopes == tuple(sorted(plan.scopes, key=lambda item: (item.kind, item.entity_id)))
+    assert xtai not in plan.scopes
+    assert europe not in plan.scopes
+    params = list(inspect.signature(MacroCollectionPlan.from_registry).parameters)
+    assert "registry" in params
+    assert "mapping" not in params
+    assert "scope_mapping" not in params
+    with pytest.raises(FrozenInstanceError):
+        plan.scopes = ()  # type: ignore[misc]
+    with pytest.raises(ValueError, match="unsourced venue"):
+        MacroCollectionPlan.from_registry(registry, control_scopes=(xtai,))
+    with pytest.raises(ValueError, match="unsourced venue"):
+        MacroCollectionPlan(source_backed_scopes=(us,), control_scopes=(xtai,))
+    covered_venue = MacroCollectionPlan(
+        source_backed_scopes=(xtai,),
+        control_scopes=(xtai,),
+    )
+    assert covered_venue.scopes == (xtai,)
+    replayed = MacroCollectionPlan.from_mapping(plan.to_dict())
+    assert replayed == plan
+    assert_source_only_payload(plan.to_dict(), "macro_collection_plan")
     fed = next(entry for entry in registry.entries if entry.source_id == "fed_policy_rate")
     with pytest.raises(ValueError, match="conflict"):
         MacroSourceRegistry(

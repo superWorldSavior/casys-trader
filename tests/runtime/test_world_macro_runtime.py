@@ -255,19 +255,119 @@ def test_runtime_module_excludes_gdelt_news_macro_brief_and_run_cycle_fetch() ->
     assert "ArmWorldCohort" not in source
 
 
-def test_collection_scopes_are_canonical_and_include_mapping_venues() -> None:
+def test_collection_plan_is_source_backed_deterministic_and_excludes_unsourced_venues() -> None:
+    from trader.domain.world_macro import MacroCollectionPlan
     from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
-    from trader.runtime.world_macro_runtime import collection_scopes
+    from trader.runtime.world_macro_runtime import collection_plan, collection_scopes
 
     bundle = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
+    plan = collection_plan(bundle)
     scopes = collection_scopes(bundle)
-    kinds = {scope.kind for scope in scopes}
+    expected = MacroCollectionPlan.from_registry(
+        bundle.registry,
+        control_scopes=(MacroScope(kind="world", entity_id="market"),),
+    )
+    assert plan == expected
+    assert scopes == expected.scopes
+    assert collection_scopes(bundle) == scopes
     ids = {(scope.kind, scope.entity_id) for scope in scopes}
-    assert kinds == {"world", "region", "country", "venue"}
-    assert ("world", "market") in ids
-    assert ("venue", "mic:XTAI") in ids
-    assert ("country", "iso-3166:US") in ids
-    assert scopes == tuple(sorted(scopes, key=lambda item: (item.kind, item.entity_id)))
+    kinds = {scope.kind for scope in scopes}
+    assert kinds == {"world", "region", "country"}
+    assert ids == {
+        ("country", "iso-3166:US"),
+        ("region", "iso-un-m49:150"),
+        ("world", "market"),
+    }
+    assert ("venue", "mic:XTAI") not in ids
+    assert not any(scope.kind == "venue" for scope in scopes)
+    mapping_ids = {
+        (getattr(ref, "kind"), getattr(ref, "entity_id"))
+        for entry in bundle.scope_mapping.entries
+        for ref in (entry.venue, entry.country, entry.region, entry.world)
+    }
+    assert ids < mapping_ids
+    inspect_source = inspect.getsource(collection_scopes)
+    assert "scope_mapping" not in inspect_source
+    assert "mapping_entry" not in inspect_source
+
+
+def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.application.test_world_scope_universe_coverage import COMMITTED_UNIVERSE_ANCHORS
+    from trader.application.world_model.ontology_bootstrap import derive_market_ontology
+    from trader.domain.world_scope import WorldMarketAnchorRef
+    from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
+    from trader.runtime.world_macro_runtime import collection_scopes, wire_world_macro_runtime
+
+    operator = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
+    mapping = operator.scope_mapping
+    assert mapping.mapping_id == "world_scope_mapping.v2"
+    assert len(COMMITTED_UNIVERSE_ANCHORS) == 33
+    for market_venue, instrument in COMMITTED_UNIVERSE_ANCHORS:
+        resolved = mapping.resolve(WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument))
+        assert resolved.status == "resolved", (market_venue, instrument)
+    historical = (("TW", "2301.TW"), ("TW", "2404.TW"), ("TW", "6488.TWO"))
+    for market_venue, instrument in historical:
+        resolved = mapping.resolve(WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument))
+        assert resolved.status == "resolved", (market_venue, instrument)
+    assert len(mapping.entries) == 36
+
+    collection_ids = {(scope.kind, scope.entity_id) for scope in collection_scopes(operator)}
+    assert collection_ids == {
+        ("country", "iso-3166:US"),
+        ("region", "iso-un-m49:150"),
+        ("world", "market"),
+    }
+    entities, _relations, revision = derive_market_ontology(mapping)
+    venue_ids = {entity.entity_id for entity in entities if entity.kind == "venue"}
+    assert "mic:XTAI" in venue_ids
+    assert "mic:XNYS" in venue_ids
+    assert ("venue", "mic:XTAI") not in collection_ids
+    assert revision.scope_mapping_id == mapping.mapping_id
+    assert revision.scope_mapping_hash == mapping.content_sha256
+
+    captured: list[object] = []
+
+    class _Bootstrap:
+        def __init__(self, _store: object, mapping_arg: object) -> None:
+            captured.append(mapping_arg)
+
+        def ensure_published(self, **_kwargs: object) -> object:
+            return SimpleNamespace(status="ready")
+
+        def expected_revision(self) -> object:
+            return SimpleNamespace(revision_id="market_ontology.v2")
+
+    monkeypatch.setattr(
+        "trader.application.world_model.ontology_bootstrap.WorldOntologyBootstrapService",
+        _Bootstrap,
+    )
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
+        lambda **_kwargs: SimpleNamespace(
+            activate=lambda _request_id: SimpleNamespace(events=(), active_run=None),
+            reconcile=lambda **_k: SimpleNamespace(events=(), active_run=None),
+            handoff=lambda **_k: SimpleNamespace(events=(), active_run=None, version=1),
+        ),
+    )
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=FakeClock(NOW),
+        sleeper=lambda _seconds: None,
+        graph_v3_enabled=True,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="full-mapping")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=15.0)
+    assert first["_thread"].is_alive() is False
+    bundle.runner.stop()
+    assert captured
+    assert captured[0] is bundle.mapping
+    assert len(captured[0].entries) == 36
+    assert any(entry.venue.entity_id == "mic:XTAI" for entry in captured[0].entries)
 
 
 def test_wire_does_not_fetch_until_trigger(tmp_path: Path) -> None:
@@ -311,8 +411,11 @@ class UrlFixtureTransport:
 
 
 def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: Path) -> None:
-    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+    from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
+    from trader.runtime.world_macro_runtime import MACRO_THREAD_NAME, collection_scopes, wire_world_macro_runtime
 
+    operator = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
+    assert len(collection_scopes(operator)) == 3
     clock = FakeClock(NOW)
     transport = UrlFixtureTransport()
     bundle = wire_world_macro_runtime(
@@ -324,7 +427,7 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     )
     first = bundle.runner.trigger(now=NOW, reason="first")
     assert first["triggered"] is True
-    first["_thread"].join(timeout=60.0)
+    first["_thread"].join(timeout=15.0)
     assert first["_thread"].is_alive() is False
     first_calls = list(transport.calls)
     assert len(first_calls) == 7
@@ -332,13 +435,14 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     clock.advance(hours=1)
     second = bundle.runner.trigger(now=clock(), reason="replay")
     assert second["triggered"] is True
-    second["_thread"].join(timeout=60.0)
+    second["_thread"].join(timeout=5.0)
     assert second["_thread"].is_alive() is False
     assert transport.calls == first_calls
     bundle.runner.stop()
     status = bundle.runner.status()
     assert status["status"] in {"ok", "partial"}
     assert status.get("lane_identity") == "context.v2.macro_source.v1"
+    assert not any(thread.name == MACRO_THREAD_NAME and thread.is_alive() for thread in threading.enumerate())
 
 
 def test_graph_v3_flag_defaults_off_and_collect_does_not_create_graph_relations(
@@ -641,7 +745,7 @@ def test_graph_bridge_handoff_after_config_drift_block(
 def test_typed_graph_flag_false_does_not_reread_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+    from trader.runtime.world_macro_runtime import MACRO_THREAD_NAME, wire_world_macro_runtime
 
     monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", "1")
     calls: list[str] = []
@@ -649,6 +753,7 @@ def test_typed_graph_flag_false_does_not_reread_env(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
         lambda **_kwargs: calls.append("bridge") or SimpleNamespace(),
     )
+    live_before = {thread.ident for thread in threading.enumerate() if thread.name == MACRO_THREAD_NAME and thread.is_alive()}
     bundle = wire_world_macro_runtime(
         config_dir=CONFIG_DIR,
         state_dir=tmp_path,
@@ -659,8 +764,15 @@ def test_typed_graph_flag_false_does_not_reread_env(
     )
     first = bundle.runner.trigger(now=NOW, reason="env-ignored")
     assert first["triggered"] is True
-    first["_thread"].join(timeout=60.0)
+    first["_thread"].join(timeout=15.0)
+    assert first["_thread"].is_alive() is False
     bundle.runner.stop()
     assert calls == []
     world_model_db = tmp_path / "world_model.db"
     assert not world_model_db.exists()
+    live_after = {
+        thread
+        for thread in threading.enumerate()
+        if thread.name == MACRO_THREAD_NAME and thread.is_alive() and thread.ident not in live_before
+    }
+    assert live_after == set()
