@@ -35,7 +35,7 @@ ONTOLOGY_REVISION = "semantic_catalog.v1"
 CONTEXT_SNAPSHOT_SCHEMA_VERSION = "world_context_snapshot.v1"
 NON_CAUSAL_STATUS = "non_causal_association"
 
-ENTITY_KINDS = frozenset({"world", "venue", "family", "company", "instrument", "sensor"})
+ENTITY_KINDS = frozenset({"world", "region", "country", "venue", "family", "company", "instrument", "sensor"})
 EDGE_KINDS = frozenset(
     {
         "PART_OF_WORLD",

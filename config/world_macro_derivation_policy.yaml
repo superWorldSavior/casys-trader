@@ -1,9 +1,9 @@
 schema_version: world_macro_derivation_policy.v1
-producer_version: macro_source_only.v1
+producer_version: macro_source_only.v2
 transform_version: macro_regimes.v1
 authority: shadow_only
 decision_effect: none
-content_sha256: "d30dc3eed3ebe0a5c2d184cbbd4ab5fb41dd501c873d7ea78bee8080f67035bb"
+content_sha256: "832db64f878b17c3e2b3e32261ab438ce50b46cb525a88ecfb8076facb292f5f"
 
 vocabularies:
   macro_regime: [unknown, mixed, quiet, tightening, easing]

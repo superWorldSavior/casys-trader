@@ -53,6 +53,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevision,
     WorldStructuralRelationRef,
 )
+from trader.domain.world_macro import MACRO_PRODUCER_VERSION, MACRO_PRODUCER_VERSION_V1, macro_observes_producer_ref
 from trader.domain.world_scope import (
     WorldMarketAnchorRef,
     WorldScopeMapping,
@@ -142,7 +143,10 @@ def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
         "target": _region(),
         "effective_from": CUTOFF - timedelta(hours=1),
         "ontology_revision": "market_ontology.v1",
-        "source_refs": (f"macro_world_observation:v1:{OBS_SHA}",),
+        "source_refs": (
+            f"macro_world_observation:v1:{OBS_SHA}",
+            macro_observes_producer_ref(MACRO_PRODUCER_VERSION),
+        ),
     }
     values.update(overrides)
     return KnowledgeWorldRelation(**values)  # type: ignore[arg-type]
@@ -319,11 +323,15 @@ def _import_violations(path: Path) -> list[str]:
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
-            if any(node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+            if any(
+                node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+            ):
                 violations.append(f"{rel_path}: from {node.module} import ...")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if any(alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+                if any(
+                    alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+                ):
                     violations.append(f"{rel_path}: import {alias.name}")
     source = path.read_text(encoding="utf-8")
     for marker in ("world_graph_store", "world_temporal_networkx", "openai", "httpx"):
@@ -362,7 +370,10 @@ class _InMemoryWorldGraphLedger:
         return PersistedWorldRef(identity=WorldEntityEventId(event.event_id), receipt=evidence.receipt)  # type: ignore[attr-defined]
 
     def append_identity_event(self, event: object) -> PersistedWorldRef[str]:
-        from trader.application.world_model.graph_ports import WorldEntityIdentityEventEnvelope, WorldEntityIdentityEventId
+        from trader.application.world_model.graph_ports import (
+            WorldEntityIdentityEventEnvelope,
+            WorldEntityIdentityEventId,
+        )
 
         evidence = self._evidence(event, kind="world_entity_identity_event")
         self.identity_log.append(WorldEntityIdentityEventEnvelope(event=event, evidence=evidence))
@@ -504,7 +515,9 @@ def _seed_rfc_graph(
         service.link_identity(LinkWorldEntityIdentity(link=link))
     for relation in structural:
         service.assert_structural_relation(AssertStructuralWorldRelation(relation=relation))
-    revision = _revision_for(mapping, entities=entities, structural=structural, identity_links=(link,) if identity else ())
+    revision = _revision_for(
+        mapping, entities=entities, structural=structural, identity_links=(link,) if identity else ()
+    )
     service.publish_revision(PublishWorldOntologyRevision(revision=revision))
     for item in knowledge if knowledge is not None else (_knowledge(), _about()):
         service.assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=item))
@@ -580,7 +593,10 @@ def test_same_input_and_cutoff_yield_the_same_snapshot_identity() -> None:
     assert "MultiDiGraph" not in encoded
     assert snapshot.knowledge_relation_refs
     assert all(isinstance(item, WorldKnowledgeRelationRef) for item in snapshot.knowledge_relation_refs)
-    assert all(item.availability_receipt_id.startswith("world-availability-receipt:v1:") for item in snapshot.knowledge_relation_refs)
+    assert all(
+        item.availability_receipt_id.startswith("world-availability-receipt:v1:")
+        for item in snapshot.knowledge_relation_refs
+    )
     observes = next(item for item in first.knowledge_relations if item.kind == "OBSERVES")
     observes_receipt = next(
         ref.availability_receipt_id
@@ -630,9 +646,7 @@ def test_unmapped_and_ambiguous_slots_are_valid_members_without_fabricated_obser
     mapping = WorldScopeMapping(mapping_id="world_scope_mapping.v1", entries=())
     ledger = _InMemoryWorldGraphLedger()
     WorldOntologyService(ledger).publish_revision(
-        PublishWorldOntologyRevision(
-            revision=_revision_for(mapping, entities=(), structural=(), identity_links=())
-        )
+        PublishWorldOntologyRevision(revision=_revision_for(mapping, entities=(), structural=(), identity_links=()))
     )
     unmapped = WorldScopeResolution(
         mapping_id=mapping.mapping_id,
@@ -658,6 +672,31 @@ def test_unmapped_and_ambiguous_slots_are_valid_members_without_fabricated_obser
     assert amb.snapshot.status == "missing"
     assert amb.snapshot.missingness["scope"] == "ambiguous"
     assert amb.snapshot.knowledge_relation_refs == frozenset()
+
+
+def test_legacy_v1_observes_are_excluded_even_when_effective_until_is_in_the_future() -> None:
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    _seed_rfc_graph(ledger, mapping, knowledge=())
+    future_until = CUTOFF + timedelta(hours=72)
+    legacy = _knowledge(
+        effective_until=future_until,
+        source_refs=(
+            f"macro_world_observation:v1:{OBS_SHA}",
+            macro_observes_producer_ref(MACRO_PRODUCER_VERSION_V1),
+        ),
+    )
+    WorldOntologyService(ledger).assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=legacy))
+    bundle = _service(ledger).build(_request(mapping))
+    assert all(item.kind != "OBSERVES" for item in bundle.knowledge_relations)
+    assert all(ref.relation_id != legacy.relation_id for ref in bundle.snapshot.knowledge_relation_refs)
+    admitted = _knowledge()
+    WorldOntologyService(ledger).assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=admitted))
+    admitted_bundle = _service(ledger).build(_request(mapping))
+    assert any(item.relation_id == admitted.relation_id for item in admitted_bundle.knowledge_relations)
+    assert admitted.target.kind in {"region", "country", "world"}
+    assert admitted_bundle.snapshot.producer_versions["macro_producer"] == MACRO_PRODUCER_VERSION
+    assert not any(item.kind in {"SUPERSEDES", "CAUSES"} for item in admitted_bundle.knowledge_relations)
 
 
 def test_scope_mapping_mismatch_and_contradictory_heads_are_rejected() -> None:
@@ -788,7 +827,9 @@ def test_snapshot_membership_is_bound_to_published_revision_refs() -> None:
         source_refs=("taxonomy:v1:later-family",),
     )
     ontology = WorldOntologyService(ledger)
-    ontology.assert_entity(AssertWorldEntity(entity=extra_family, source_refs=("taxonomy:v1:later-family",), effective_from=T0))
+    ontology.assert_entity(
+        AssertWorldEntity(entity=extra_family, source_refs=("taxonomy:v1:later-family",), effective_from=T0)
+    )
     ontology.assert_structural_relation(AssertStructuralWorldRelation(relation=extra))
     bundle = _service(ledger).build(_request(mapping))
     extra_ref = WorldStructuralRelationRef.from_relation(extra)
@@ -811,7 +852,9 @@ def test_later_structural_relation_is_visible_only_after_superseding_revision() 
         source_refs=("taxonomy:v1:later-family",),
     )
     ontology = WorldOntologyService(ledger)
-    ontology.assert_entity(AssertWorldEntity(entity=extra_family, source_refs=("taxonomy:v1:later-family",), effective_from=T0))
+    ontology.assert_entity(
+        AssertWorldEntity(entity=extra_family, source_refs=("taxonomy:v1:later-family",), effective_from=T0)
+    )
     ontology.assert_structural_relation(AssertStructuralWorldRelation(relation=extra))
     before = _service(ledger).build(_request(mapping))
     extra_ref = WorldStructuralRelationRef.from_relation(extra)

@@ -265,7 +265,7 @@ def test_collection_coverage_freshness_and_gaps_are_reconstructed_from_histories
     stale = read_world_macro_status(tmp_path, now=STALE_NOW)
 
     assert fresh["status"] == "loaded"
-    assert fresh["lane_identity"] == "context.v2.macro_source.v1"
+    assert fresh["lane_identity"] == "context.v2.macro_source.v2"
     collection = fresh["collection"]
     assert collection["status"] == "completed_partial"
     assert collection["runs"] == 1
@@ -375,7 +375,7 @@ def test_attach_is_separated_from_ml_study_and_missing_db_stays_read_only(tmp_pa
     assert payload["attach"]["episodes"] == 2
     assert payload["attach"]["macro_present"] == 1
     assert payload["attach"]["macro_missing"] == 1
-    assert payload["attach"]["lane_identity"] == "context.v2.macro_source.v1"
+    assert payload["attach"]["lane_identity"] == "context.v2.macro_source.v2"
     _assert_separated_from_ml(payload)
     assert world_status["macro"]["collection"] == payload["collection"]
     assert world_status["macro"]["coverage"] == payload["coverage"]

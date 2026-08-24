@@ -39,6 +39,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevision,
     WorldStructuralRelationRef,
 )
+from trader.domain.world_macro import MACRO_PRODUCER_VERSION
 from trader.domain.world_scope import WorldScopeMapping, WorldScopeResolution
 
 
@@ -47,6 +48,7 @@ _PRODUCER_VERSIONS: Mapping[str, str] = MappingProxyType(
     {
         "graph_snapshot": WORLD_GRAPH_SNAPSHOT_SCHEMA,
         "graph_traversal": GRAPH_TRAVERSAL_POLICY_VERSION,
+        "macro_producer": MACRO_PRODUCER_VERSION,
     }
 )
 
@@ -63,9 +65,7 @@ class WorldGraphSnapshotRequest:
     max_paths: int | None = None
 
     def __post_init__(self) -> None:
-        episode = (
-            self.episode if isinstance(self.episode, WorldEpisode) else WorldEpisode.from_dict(self.episode)
-        )
+        episode = self.episode if isinstance(self.episode, WorldEpisode) else WorldEpisode.from_dict(self.episode)
         if not isinstance(self.scope_mapping, WorldScopeMapping):
             raise TypeError("scope_mapping must be WorldScopeMapping")
         resolution = WorldScopeResolution.from_mapping(self.scope_resolution)
@@ -143,9 +143,7 @@ def _revision_bound_view(
     allowed_entities = {entity.node_id for entity in published.entities}
     allowed_structural = frozenset(published.structural_relation_refs)
     allowed_identity = frozenset(published.identity_link_refs)
-    entity_revision_refs = tuple(
-        item for item in view.entity_revision_refs if item.entity.node_id in allowed_entities
-    )
+    entity_revision_refs = tuple(item for item in view.entity_revision_refs if item.entity.node_id in allowed_entities)
     entities = tuple(item.entity for item in entity_revision_refs)
     if not entities:
         entities = tuple(entity for entity in published.entities)
@@ -155,7 +153,9 @@ def _revision_bound_view(
         if WorldStructuralRelationRef.from_relation(relation) in allowed_structural
     )
     identity_links = tuple(
-        link for link in view.identity_links if isinstance(link, WorldEntityIdentityLink) and link.as_ref() in allowed_identity
+        link
+        for link in view.identity_links
+        if isinstance(link, WorldEntityIdentityLink) and link.as_ref() in allowed_identity
     )
     return replace(
         view,
@@ -179,10 +179,7 @@ def _require_mapping_alignment(request: WorldGraphSnapshotRequest, published: Wo
         slot_resolution = request.slot.scope_resolution
         if slot_resolution is None:
             raise ValueError("WorldCohortSlot requires scope_resolution")
-        if (
-            slot_resolution.mapping_id != mapping.mapping_id
-            or slot_resolution.mapping_sha256 != mapping.content_sha256
-        ):
+        if slot_resolution.mapping_id != mapping.mapping_id or slot_resolution.mapping_sha256 != mapping.content_sha256:
             raise ValueError("WorldCohortSlot scope mapping mismatch")
         if slot_resolution != resolution:
             raise ValueError("WorldCohortSlot scope resolution mismatch")
@@ -298,7 +295,9 @@ class WorldGraphSnapshotService:
                 status="missing",
             )
         view = _revision_bound_view(view, published)
-        _assert_scope_heads(expected_scope_heads(resolved.scope_mapping), _actual_scope_heads(view.structural_relations))
+        _assert_scope_heads(
+            expected_scope_heads(resolved.scope_mapping), _actual_scope_heads(view.structural_relations)
+        )
         if resolved.scope_resolution.status in {"unmapped", "ambiguous"}:
             return _missing_snapshot(
                 request=resolved,
@@ -359,12 +358,8 @@ class WorldGraphSnapshotService:
             identity_map_hash=published.identity_map_hash,
             scope_mapping_id=request.scope_mapping.mapping_id,
             scope_mapping_hash=request.scope_mapping.content_sha256,
-            entity_revision_refs=tuple(
-                item for item in view.entity_revision_refs if item.entity.node_id in node_ids
-            ),
-            identity_link_refs=tuple(
-                link.as_ref() for link in view.identity_links if link.v3_ref.node_id in node_ids
-            ),
+            entity_revision_refs=tuple(item for item in view.entity_revision_refs if item.entity.node_id in node_ids),
+            identity_link_refs=tuple(link.as_ref() for link in view.identity_links if link.v3_ref.node_id in node_ids),
             structural_relation_refs=frozenset(
                 WorldStructuralRelationRef.from_relation(item) for item in structural_members
             ),

@@ -102,7 +102,7 @@ def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
         "target": _country(),
         "effective_from": T0,
         "ontology_revision": "market_ontology.v1",
-        "source_refs": ("macro_world_observation:v1:" + SHA,),
+        "source_refs": ("macro_world_observation:v1:" + SHA, "producer:macro_source_only.v2"),
     }
     values.update(overrides)
     return KnowledgeWorldRelation(**values)  # type: ignore[arg-type]
@@ -174,11 +174,15 @@ def _import_violations(path: Path) -> list[str]:
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
-            if any(node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+            if any(
+                node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+            ):
                 violations.append(f"{rel_path}: from {node.module} import ...")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if any(alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+                if any(
+                    alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+                ):
                     violations.append(f"{rel_path}: import {alias.name}")
     source = path.read_text(encoding="utf-8")
     if "world_graph_store" in source:
@@ -226,7 +230,10 @@ class _InMemoryWorldGraphLedger:
         self,
         event: WorldEntityIdentityLinked | WorldEntityIdentityUnlinked | WorldEntityIdentityLinkSuperseded,
     ) -> PersistedWorldRef[str]:
-        from trader.application.world_model.graph_ports import WorldEntityIdentityEventEnvelope, WorldEntityIdentityEventId
+        from trader.application.world_model.graph_ports import (
+            WorldEntityIdentityEventEnvelope,
+            WorldEntityIdentityEventId,
+        )
 
         evidence = self._evidence(event, kind="world_entity_identity_event")
         self.identity_log.append(WorldEntityIdentityEventEnvelope(event=event, evidence=evidence))
@@ -578,7 +585,7 @@ def test_knowledge_overlay_does_not_enter_structural_heads_or_foreign_revisions(
     service.assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=_knowledge()))
     foreign = _knowledge(
         ontology_revision="market_ontology.v2",
-        source_refs=("macro_world_observation:v1:" + "c" * 64,),
+        source_refs=("macro_world_observation:v1:" + "c" * 64, "producer:macro_source_only.v2"),
         source=WorldObservationRef(observation_id=f"world_observation:v1:{'c' * 64}"),
     )
     service.assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=foreign))
@@ -627,12 +634,16 @@ def test_identity_map_at_cutoff_is_authored_by_structural_resolver_and_ignores_a
     left = WorldOntologyService(first)
     right = WorldOntologyService(second)
     venue_link = _link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",))
-    left.assert_entity(AssertWorldEntity(entity=_entity(), source_refs=("provider:instrument-master:2330",), effective_from=T0))
+    left.assert_entity(
+        AssertWorldEntity(entity=_entity(), source_refs=("provider:instrument-master:2330",), effective_from=T0)
+    )
     left.assert_entity(AssertWorldEntity(entity=_venue(), source_refs=("mic:XTAI",), effective_from=T0))
     left.link_identity(LinkWorldEntityIdentity(link=_link()))
     left.link_identity(LinkWorldEntityIdentity(link=venue_link))
     right.assert_entity(AssertWorldEntity(entity=_venue(), source_refs=("mic:XTAI",), effective_from=T0))
-    right.assert_entity(AssertWorldEntity(entity=_entity(), source_refs=("provider:instrument-master:2330",), effective_from=T0))
+    right.assert_entity(
+        AssertWorldEntity(entity=_entity(), source_refs=("provider:instrument-master:2330",), effective_from=T0)
+    )
     right.link_identity(LinkWorldEntityIdentity(link=venue_link))
     right.link_identity(LinkWorldEntityIdentity(link=_link()))
     left_view = WorldOntologyResolver(first).at_cutoff(CUTOFF)

@@ -37,9 +37,9 @@ from trader.domain.world_context import (
 from trader.domain.world_episode import parse_utc_timestamp
 from trader.domain.world_macro import (
     MACRO_WORLD_OBSERVATION_SCHEMA,
+    MacroContextSearchPlan,
+    MacroContextSelection,
     MacroObservationEnvelope,
-    MacroScope,
-    evaluate_macro_point_in_time,
 )
 from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping, WorldScopeResolution
 from trader.infrastructure.state_db._jsonl_store import read_jsonl_objects
@@ -138,8 +138,6 @@ class WorldContextReader:
                 proven=False,
                 payload={"scope_resolution": _resolution_payload(resolution)},
             )
-        venue_ref = resolution.scopes[0]
-        scope = MacroScope(kind=venue_ref.kind, entity_id=venue_ref.entity_id)
         if self._macro_store is None:
             return SensorEvidence(
                 status="missing",
@@ -147,8 +145,45 @@ class WorldContextReader:
                 proven=False,
                 payload={"scope_resolution": _resolution_payload(resolution)},
             )
-        candidates = self._macro_store.list_candidates_available_through(scope, cutoff)
-        return self._select_macro_observation(candidates, cutoff=cutoff, scope=scope, resolution=resolution)
+        plan = MacroContextSearchPlan.from_resolution(resolution)
+        visible: list[MacroObservationEnvelope] = []
+        for scope in plan.ancestry:
+            for envelope in self._macro_store.list_candidates_available_through(scope, cutoff):
+                reader_seen = self._remember_macro_receipt(envelope)
+                if max(envelope.evidence.effective_ready_at, reader_seen) > cutoff:
+                    continue
+                visible.append(envelope)
+        selection = plan.select(visible, cutoff_at=cutoff)
+        if selection is None:
+            return SensorEvidence(
+                status="missing",
+                reason="no_proven_artifact_at_cutoff",
+                proven=False,
+                payload={"scope_resolution": _resolution_payload(resolution)},
+            )
+        if selection.eligibility_status == "stale":
+            return self._macro_evidence(
+                selection,
+                resolution,
+                status="stale",
+                ready_at=max(
+                    selection.envelope.evidence.effective_ready_at,
+                    self._remember_macro_receipt(selection.envelope),
+                ),
+                reason="valid_until_at_or_before_cutoff",
+            )
+        status = selection.envelope.observation.coverage.status
+        if status not in _SNAPSHOT_MACRO_STATUSES:
+            status = "partial"
+        return self._macro_evidence(
+            selection,
+            resolution,
+            status=status,
+            ready_at=max(
+                selection.envelope.evidence.effective_ready_at,
+                self._remember_macro_receipt(selection.envelope),
+            ),
+        )
 
     def lookup_company(self, *, symbol: str, cutoff_at: datetime | str) -> SensorEvidence:
         cutoff = parse_utc_timestamp(cutoff_at, "cutoff_at")
@@ -177,76 +212,20 @@ class WorldContextReader:
             return None
         return self._scope_mapping.resolve(WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument))
 
-    def _select_macro_observation(
-        self,
-        candidates: tuple[MacroObservationEnvelope, ...],
-        *,
-        cutoff: datetime,
-        scope: MacroScope,
-        resolution: WorldScopeResolution,
-    ) -> SensorEvidence:
-        eligible: list[tuple[MacroObservationEnvelope, datetime]] = []
-        stale: list[tuple[MacroObservationEnvelope, datetime]] = []
-        for envelope in candidates:
-            observation = envelope.observation
-            if observation.scope != scope:
-                continue
-            store_decision = evaluate_macro_point_in_time(
-                evidence=envelope.evidence,
-                cutoff_at=cutoff,
-                valid_until=observation.valid_until,
-                version=observation.transform_version,
-            )
-            reader_seen = self._remember_macro_receipt(envelope)
-            effective = max(envelope.evidence.effective_ready_at, reader_seen)
-            if effective > cutoff:
-                continue
-            if store_decision.status == "eligible":
-                eligible.append((envelope, effective))
-            elif store_decision.status == "stale":
-                stale.append((envelope, effective))
-        if eligible:
-            chosen, effective = max(
-                eligible,
-                key=lambda item: (item[0].observation.cutoff_at, item[0].observation.observation_id),
-            )
-            status = chosen.observation.coverage.status
-            if status not in _SNAPSHOT_MACRO_STATUSES:
-                status = "partial"
-            return self._macro_evidence(chosen, resolution, status=status, ready_at=effective)
-        if stale:
-            chosen, effective = max(
-                stale,
-                key=lambda item: (item[0].observation.cutoff_at, item[0].observation.observation_id),
-            )
-            return self._macro_evidence(
-                chosen,
-                resolution,
-                status="stale",
-                ready_at=effective,
-                reason="valid_until_at_or_before_cutoff",
-            )
-        return SensorEvidence(
-            status="missing",
-            reason="no_proven_artifact_at_cutoff",
-            proven=False,
-            payload={"scope_resolution": _resolution_payload(resolution)},
-        )
-
     def _macro_evidence(
         self,
-        envelope: MacroObservationEnvelope,
+        selection: MacroContextSelection,
         resolution: WorldScopeResolution,
         *,
         status: str,
         ready_at: datetime,
         reason: str = "sidecar_ready",
     ) -> SensorEvidence:
-        observation = envelope.observation
+        observation = selection.envelope.observation
         artifact = KnowledgeArtifact(
             kind="macro_world_observation",
             artifact_id=observation.observation_id,
-            subjects=(EntityRef("venue", observation.scope.entity_id),),
+            subjects=(EntityRef(observation.scope.kind, observation.scope.entity_id),),
             schema_version=observation.schema_version or MACRO_WORLD_OBSERVATION_SCHEMA,
             content_sha256=observation.content_sha256,
             occurred_at=observation.cutoff_at,
@@ -260,6 +239,9 @@ class WorldContextReader:
             "dimensions": [item.to_dict() for item in observation.dimensions],
             "coverage": observation.coverage.to_dict(),
             "scope_resolution": _resolution_payload(resolution),
+            "origin_scope": selection.origin_scope.to_dict(),
+            "ancestry_distance": selection.distance,
+            "producer_version": observation.producer_version,
         }
         return SensorEvidence(
             status=status,

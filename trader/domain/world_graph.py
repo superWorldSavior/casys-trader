@@ -21,7 +21,13 @@ from trader.domain.world_availability import (
 )
 from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import canonical_payload, canonical_sha256, parse_utc_timestamp
-from trader.domain.world_macro import MacroObservationEnvelope, MacroSourceFactVersionId
+from trader.domain.world_macro import (
+    MACRO_PRODUCER_VERSION,
+    MacroObservationEnvelope,
+    MacroSourceFactVersionId,
+    is_admitted_macro_producer,
+    macro_observes_producer_ref,
+)
 from trader.domain.world_scope import SCOPE_KINDS, WorldCanonicalScopeRef, WorldScopeMapping
 
 
@@ -67,7 +73,7 @@ FORBIDDEN_RELATION_KINDS = frozenset(
     }
 )
 SNAPSHOT_STATUSES = frozenset({"complete", "partial", "missing", "stale"})
-IDENTITY_MAPPABLE_V2_KINDS = frozenset({"world", "venue", "family", "company", "instrument"})
+IDENTITY_MAPPABLE_V2_KINDS = frozenset({"world", "region", "country", "venue", "family", "company", "instrument"})
 _COMPANY_PREFIXES = ("lei:", "cik:", "issuer:")
 _INSTRUMENT_ID_RE = re.compile(r"^mic:[A-Z0-9]{4}:symbol:.+$")
 _LOCATED_IN_PAIRS = frozenset({("country", "region"), ("venue", "country"), ("venue", "region")})
@@ -112,7 +118,7 @@ MACRO_GRAPH_BRIDGE_EVENT_SCHEMA = "macro_graph_bridge_event.v1"
 MACRO_OBSERVATION_CURSOR_SCHEMA = "macro_observation_cursor.v1"
 MACRO_OBSERVATION_CURSOR_RESERVATION_SCHEMA = "macro_observation_cursor_reservation.v1"
 MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA = "macro_graph_bridge_run_spec.v1"
-MACRO_GRAPH_SKIP_REASONS = frozenset({"scope_not_registered", "invalid_envelope"})
+MACRO_GRAPH_SKIP_REASONS = frozenset({"scope_not_registered", "invalid_envelope", "producer_not_admitted"})
 MACRO_GRAPH_BLOCK_REASONS = frozenset({"config_drift"})
 MACRO_GRAPH_RUN_STATUSES = frozenset({"active", "blocked", "superseded"})
 MACRO_GRAPH_LINK_STATUSES = frozenset({"linked", "skipped"})
@@ -671,7 +677,9 @@ class StructuralWorldRelation:
         ontology_revision = _required_text(self.ontology_revision, "ontology_revision")
         source_refs = _require_source_refs(self.source_refs)
         supersedes = (
-            None if self.supersedes is None else _validate_prefixed_id(self.supersedes, _RELATION_ID_PREFIX, "supersedes")
+            None
+            if self.supersedes is None
+            else _validate_prefixed_id(self.supersedes, _RELATION_ID_PREFIX, "supersedes")
         )
         identity = _relation_identity_payload(
             kind=kind,
@@ -798,7 +806,9 @@ class KnowledgeWorldRelation:
         ontology_revision = _required_text(self.ontology_revision, "ontology_revision")
         source_refs = _require_source_refs(self.source_refs)
         supersedes = (
-            None if self.supersedes is None else _validate_prefixed_id(self.supersedes, _RELATION_ID_PREFIX, "supersedes")
+            None
+            if self.supersedes is None
+            else _validate_prefixed_id(self.supersedes, _RELATION_ID_PREFIX, "supersedes")
         )
         identity = _relation_identity_payload(
             kind=kind,
@@ -1272,7 +1282,9 @@ class WorldEntityIdentityLink:
         effective_until = _optional_utc(self.effective_until, "effective_until")
         if effective_until is not None and effective_until < effective_from:
             raise ValueError("effective_until must not precede effective_from")
-        supersedes = None if self.supersedes is None else _validate_prefixed_id(self.supersedes, _LINK_ID_PREFIX, "supersedes")
+        supersedes = (
+            None if self.supersedes is None else _validate_prefixed_id(self.supersedes, _LINK_ID_PREFIX, "supersedes")
+        )
         identity = {
             "schema_version": schema_version,
             "v2_ref": v2_ref.to_dict(),
@@ -1717,7 +1729,9 @@ class StructuralWorldRelationAsserted:
         }
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any] | StructuralWorldRelationAsserted) -> StructuralWorldRelationAsserted:
+    def from_mapping(
+        cls, value: Mapping[str, Any] | StructuralWorldRelationAsserted
+    ) -> StructuralWorldRelationAsserted:
         if isinstance(value, StructuralWorldRelationAsserted):
             return value
         if not isinstance(value, Mapping):
@@ -2034,7 +2048,9 @@ def _identity_link_ref_tuple(value: Sequence[Any] | None) -> tuple[WorldEntityId
     for item in value:
         if isinstance(item, str):
             raise TypeError("identity_link_refs must be identity/hash refs, not bare strings")
-        parsed.append(item if isinstance(item, WorldEntityIdentityLinkRef) else WorldEntityIdentityLinkRef.from_mapping(item))
+        parsed.append(
+            item if isinstance(item, WorldEntityIdentityLinkRef) else WorldEntityIdentityLinkRef.from_mapping(item)
+        )
     return tuple(sorted(parsed, key=lambda item: item.link_id))
 
 
@@ -2095,14 +2111,20 @@ class WorldOntologyRevision:
         entity_heads_hash = canonical_sha256([item.to_dict() for item in entities])
         structural_heads_hash = canonical_sha256([item.to_dict() for item in structural_relation_refs])
         identity_map_hash = canonical_sha256([item.to_dict() for item in identity_link_refs])
-        if self.entity_heads_hash is not None and _required_text(self.entity_heads_hash, "entity_heads_hash") != entity_heads_hash:
+        if (
+            self.entity_heads_hash is not None
+            and _required_text(self.entity_heads_hash, "entity_heads_hash") != entity_heads_hash
+        ):
             raise ValueError("entity_heads_hash does not match the canonical entity heads")
         if (
             self.structural_heads_hash is not None
             and _required_text(self.structural_heads_hash, "structural_heads_hash") != structural_heads_hash
         ):
             raise ValueError("structural_heads_hash does not match the canonical structural heads")
-        if self.identity_map_hash is not None and _required_text(self.identity_map_hash, "identity_map_hash") != identity_map_hash:
+        if (
+            self.identity_map_hash is not None
+            and _required_text(self.identity_map_hash, "identity_map_hash") != identity_map_hash
+        ):
             raise ValueError("identity_map_hash does not match the canonical identity-map heads")
         payload = {
             "schema_version": schema_version,
@@ -2352,7 +2374,9 @@ class WorldGraphSnapshot:
         structural_ids = {item.relation_id for item in structural_relation_refs}
         knowledge_ids = {item.relation_id for item in knowledge_relation_refs}
         if structural_ids & knowledge_ids:
-            raise ValueError("structural and knowledge relation refs must be disjoint; a relation cannot be in both sets")
+            raise ValueError(
+                "structural and knowledge relation refs must be disjoint; a relation cannot be in both sets"
+            )
         producer_versions = _mapping_proxy_text(self.producer_versions, "producer_versions")
         missingness = _freeze_mapping(self.missingness, "missingness")
         traversal_policy_version = _required_text(self.traversal_policy_version, "traversal_policy_version")
@@ -2503,9 +2527,7 @@ class MacroObservationCursor:
             observation_id = None
         else:
             receipt_id = _validate_prefixed_id(self.receipt_id, _RECEIPT_ID_PREFIX, "receipt_id")
-            observation_id = _validate_prefixed_id(
-                self.observation_id, _MACRO_OBSERVATION_ID_PREFIX, "observation_id"
-            )
+            observation_id = _validate_prefixed_id(self.observation_id, _MACRO_OBSERVATION_ID_PREFIX, "observation_id")
         object.__setattr__(self, "schema_version", schema_version)
         object.__setattr__(self, "receipt_log_generation", generation)
         object.__setattr__(self, "ordinal", ordinal)
@@ -2774,6 +2796,8 @@ class MacroObservationKnowledgeLink:
             key = (observation.scope.kind, observation.scope.entity_id)
             if key not in _canonical_scope_outputs(scope_mapping):
                 return cls(status="skipped", skip_reason="scope_not_registered")
+            if not is_admitted_macro_producer(observation.producer_version):
+                return cls(status="skipped", skip_reason="producer_not_admitted")
             observation_ref = world_observation_ref_for_observation_id(observation.observation_id)
             receipt = envelope.persisted.receipt
             relation = KnowledgeWorldRelation(
@@ -2787,11 +2811,26 @@ class MacroObservationKnowledgeLink:
                     f"{observation.observation_id}/{observation.content_sha256}",
                     f"{receipt.receipt_id}/{receipt.receipt_sha256}",
                     f"{scope_mapping.mapping_id}/{scope_mapping.content_sha256}",
+                    macro_observes_producer_ref(observation.producer_version),
                 ),
             )
             return cls(status="linked", relation=relation, observation_ref=observation_ref)
         except (TypeError, ValueError):
             return cls(status="skipped", skip_reason="invalid_envelope")
+
+
+def admits_macro_observes_relation(
+    relation: KnowledgeWorldRelation,
+    *,
+    admitted_producer_version: str = MACRO_PRODUCER_VERSION,
+) -> bool:
+    """Keep non-OBSERVES knowledge; admit OBSERVES only with the live producer token."""
+
+    if not isinstance(relation, KnowledgeWorldRelation):
+        raise TypeError("relation must be KnowledgeWorldRelation")
+    if relation.kind != "OBSERVES":
+        return True
+    return macro_observes_producer_ref(admitted_producer_version) in relation.source_refs
 
 
 def _set_bridge_event_id(event: Any, payload: Mapping[str, Any]) -> None:
@@ -2906,7 +2945,9 @@ class MacroGraphObservationLinked:
             "observation_id",
             _validate_prefixed_id(self.observation_id, _MACRO_OBSERVATION_ID_PREFIX, "observation_id"),
         )
-        object.__setattr__(self, "relation_id", _validate_prefixed_id(self.relation_id, _RELATION_ID_PREFIX, "relation_id"))
+        object.__setattr__(
+            self, "relation_id", _validate_prefixed_id(self.relation_id, _RELATION_ID_PREFIX, "relation_id")
+        )
         object.__setattr__(
             self,
             "relation_event_id",
@@ -3079,9 +3120,7 @@ class MacroGraphBridgeCursorAdvanced:
         }
 
     @classmethod
-    def from_mapping(
-        cls, value: Mapping[str, Any] | MacroGraphBridgeCursorAdvanced
-    ) -> MacroGraphBridgeCursorAdvanced:
+    def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeCursorAdvanced) -> MacroGraphBridgeCursorAdvanced:
         if isinstance(value, MacroGraphBridgeCursorAdvanced):
             return value
         if not isinstance(value, Mapping):
@@ -3816,6 +3855,7 @@ __all__ = [
     "WorldRelation",
     "WorldRelationEvent",
     "WorldStructuralRelationRef",
+    "admits_macro_observes_relation",
     "evaluate_world_graph_point_in_time",
     "fold_knowledge_relation_events_at_cutoff",
     "fold_structural_relation_events_at_cutoff",

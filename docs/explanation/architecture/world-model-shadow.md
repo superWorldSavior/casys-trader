@@ -112,7 +112,13 @@ backfill.
 `MacroSourceFact` → `MacroWorldObservation` → envelope + reçu. Plan de
 collecte typé (`MacroCollectionPlan` / `MacroCollectionTarget`) groupé
 par `canonical_scope` du registre ; un run n'invoque que les sources de
-sa cible. Agrégat `MacroCollectionRun` : register / start / source
+sa cible. Le producteur live est `macro_source_only.v2` / lane
+`context.v2.macro_source.v2` ; les observations `v1` restent lisibles
+pour l'audit mais ne sont pas admises dans l'ombre. Le consommateur
+cherche l'ancestry marché du plus proche au plus large
+(`MacroContextSearchPlan`) et sélectionne la première observation v2
+exact-scope ; un fait pays/région/monde n'est jamais restampé en
+place. Agrégat `MacroCollectionRun` : register / start / source
 completed|failed / published / completed. Un fait hors scope ou hors
 provenance est un échec de source typé, jamais une observation mixte.
 Fetch **hors** `run_cycle` et hors worker de capture barre. GDELT et
@@ -138,7 +144,7 @@ Le YAML pilote matérialise deux `pipeline_pilot` distinctes. C1 ne porte
 | `gru.market` | GRU froid | `secondary_challenger` | idem, `sequence_length=4` |
 | `markov.status_only` / `gru.status_only` | Markov / GRU | process / challenger | contexte V2, masque status |
 | `markov.company` / `gru.company` | Markov / GRU | process / challenger | company sidecar-prouvé |
-| `markov.macro` / `gru.macro` | Markov / GRU | process / challenger | `macro_world_observation.v1` |
+| `markov.macro` / `gru.macro` | Markov / GRU | process / challenger | `macro_source_only.v2` |
 | `markov.joint` / `gru.joint` | Markov / GRU | `pilot_treatment` / challenger | status + company + macro |
 | `markov.graph` | Markov | `primary_control` de la cohorte V3 | `topology_status_only.v1` |
 | `gru.graph` | GRU froid | `pilot_treatment` V3 | `graph_content.v1` |

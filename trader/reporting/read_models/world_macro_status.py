@@ -26,6 +26,7 @@ from trader.domain.world_cohort import (
 )
 from trader.domain.world_macro import (
     MACRO_FEATURE_KEYS,
+    MACRO_LANE_IDENTITY,
     MacroSourceFact,
     MacroWorldObservation,
 )
@@ -33,7 +34,7 @@ from trader.infrastructure.state_db.availability_receipt import load_receipts, p
 
 
 MACRO_STATUS_SCHEMA = "world_macro_status.v1"
-WORLD_MACRO_LANE_IDENTITY = "context.v2.macro_source.v1"
+WORLD_MACRO_LANE_IDENTITY = MACRO_LANE_IDENTITY
 _MACRO_ROOT = "world_macro"
 _FACT_KIND = "macro_source_fact"
 _OBSERVATION_KIND = "macro_world_observation"
@@ -324,10 +325,7 @@ def _proven_count(
                 continue
             digest = str(row.get("content_sha256") or history_digest)
         matches = receipts.get((kind, subject_id), ())
-        if any(
-            item.subject.content_sha256 in {digest, history_digest}
-            for item in matches
-        ):
+        if any(item.subject.content_sha256 in {digest, history_digest} for item in matches):
             proven += 1
     return proven
 
@@ -515,9 +513,7 @@ def _read_attach(state_dir: Path) -> dict[str, Any]:
         uri = f"file:{quote(str(db_path.resolve()), safe='/')}?mode=ro&immutable=1"
         connection = sqlite3.connect(uri, uri=True)
         try:
-            tables = {
-                str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            }
+            tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "world_episodes" not in tables:
                 payload["status"] = "schema_unavailable"
                 return payload

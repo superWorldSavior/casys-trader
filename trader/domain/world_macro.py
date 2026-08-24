@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
@@ -32,9 +32,15 @@ MACRO_WORLD_OBSERVATION_SUBJECT_KIND = "macro_world_observation"
 MACRO_SOURCE_REGISTRY_SCHEMA = "macro_source_registry.v1"
 MACRO_COLLECTION_PLAN_SCHEMA = "macro_collection_plan.v1"
 MACRO_COLLECTION_EVENT_SCHEMA = "macro_collection_event.v1"
-MACRO_PRODUCER_VERSION = "macro_source_only.v1"
+MACRO_PRODUCER_VERSION_V1 = "macro_source_only.v1"
+MACRO_PRODUCER_VERSION = "macro_source_only.v2"
+MACRO_LANE_IDENTITY_V1 = "context.v2.macro_source.v1"
+MACRO_LANE_IDENTITY = "context.v2.macro_source.v2"
+MACRO_ADMITTED_PRODUCER_VERSIONS = frozenset({MACRO_PRODUCER_VERSION})
 MACRO_TRANSFORM_VERSION = "macro_regimes.v1"
 MACRO_SOURCE_REGISTRY_VERSION = "macro_sources.v1"
+WORLD_MACRO_COLLECTION_PLAN_SHA256 = "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
+WORLD_MACRO_COLLECTION_PLAN_ID = "macro_collection_plan:v1:" + WORLD_MACRO_COLLECTION_PLAN_SHA256
 
 MACRO_FACT_KINDS = frozenset({"series_point", "market_benchmark"})
 MACRO_SCOPE_KINDS = frozenset({"world", "region", "country", "venue"})
@@ -149,6 +155,18 @@ def assert_source_only_payload(value: Any, field_name: str = "payload") -> None:
                 visit(nested, f"{path}[{index}]")
 
     visit(value, field_name)
+
+
+def macro_observes_producer_ref(producer_version: str) -> str:
+    """Canonical OBSERVES provenance token bound to one admitted producer contract."""
+
+    return f"producer:{_required_text(producer_version, 'producer_version')}"
+
+
+def is_admitted_macro_producer(producer_version: str | None) -> bool:
+    if producer_version is None:
+        return False
+    return _required_text(producer_version, "producer_version") in MACRO_ADMITTED_PRODUCER_VERSIONS
 
 
 def _immutable_text_tuple(value: Sequence[str] | None, field_name: str) -> tuple[str, ...]:
@@ -322,7 +340,9 @@ class MacroCategoryValue:
         return {"category": self.category}
 
 
-def parse_macro_value(value: MacroNumericValue | MacroCategoryValue | Mapping[str, Any]) -> MacroNumericValue | MacroCategoryValue:
+def parse_macro_value(
+    value: MacroNumericValue | MacroCategoryValue | Mapping[str, Any],
+) -> MacroNumericValue | MacroCategoryValue:
     if isinstance(value, (MacroNumericValue, MacroCategoryValue)):
         return value
     if not isinstance(value, Mapping):
@@ -486,7 +506,9 @@ class MacroSourceFact:
         supersedes = (
             None
             if self.supersedes_fact_version_id is None
-            else _validate_prefixed_id(self.supersedes_fact_version_id, _FACT_VERSION_PREFIX, "supersedes_fact_version_id")
+            else _validate_prefixed_id(
+                self.supersedes_fact_version_id, _FACT_VERSION_PREFIX, "supersedes_fact_version_id"
+            )
         )
         fact_key_value = _prefixed_id(
             _FACT_KEY_PREFIX,
@@ -1163,7 +1185,9 @@ class MacroWorldObservation:
             extra = set(by_name[name].fact_refs) - set(fact_refs)
             if extra:
                 raise ValueError(f"dimension {name} fact_refs must be a subset of observation fact_refs")
-        coverage = self.coverage if isinstance(self.coverage, MacroCoverage) else MacroCoverage.from_mapping(self.coverage)
+        coverage = (
+            self.coverage if isinstance(self.coverage, MacroCoverage) else MacroCoverage.from_mapping(self.coverage)
+        )
         observation_id = _prefixed_id(
             _OBSERVATION_ID_PREFIX,
             _observation_id_payload(
@@ -1298,6 +1322,141 @@ class MacroObservationEnvelope:
             raise ValueError("availability evidence receipt must equal the persisted receipt")
         object.__setattr__(self, "observation", observation)
         assert_source_only_payload(observation.to_dict(), "macro_observation_envelope")
+
+
+@dataclass(frozen=True)
+class MacroContextSearchPlan:
+    """Nearest-to-broadest exact-scope search over a resolved market ancestry.
+
+    Venue/country/region/world stay the mapping's scopes. The consumer never
+    restamps a broader observation as venue. Unmapped/ambiguous ancestry is
+    empty: fail closed, no global world fallback.
+    """
+
+    resolution: WorldScopeResolution | Mapping[str, Any]
+    admitted_producer_version: str = MACRO_PRODUCER_VERSION
+    ancestry: tuple[MacroScope, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        resolution = WorldScopeResolution.from_mapping(self.resolution)
+        admitted = _required_text(self.admitted_producer_version, "admitted_producer_version")
+        if admitted not in MACRO_ADMITTED_PRODUCER_VERSIONS:
+            raise ValueError("search plan admitted_producer_version is not the live producer contract")
+        ancestry = tuple(MacroScope(kind=scope.kind, entity_id=scope.entity_id) for scope in resolution.scopes)
+        object.__setattr__(self, "resolution", resolution)
+        object.__setattr__(self, "admitted_producer_version", admitted)
+        object.__setattr__(self, "ancestry", ancestry)
+        assert_source_only_payload(self.to_dict(), "macro_context_search_plan")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "admitted_producer_version": self.admitted_producer_version,
+            "resolution": self.resolution.to_dict(),
+            "ancestry": [scope.to_dict() for scope in self.ancestry],
+        }
+
+    def select(
+        self,
+        candidates: Sequence[MacroObservationEnvelope],
+        *,
+        cutoff_at: datetime | str,
+    ) -> MacroContextSelection | None:
+        if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes, bytearray)):
+            raise TypeError("candidates must be a sequence of MacroObservationEnvelope")
+        cutoff = parse_utc_timestamp(cutoff_at, "cutoff_at")
+        policy = PointInTimeEligibilityPolicy(admitted_versions=frozenset({self.admitted_producer_version}))
+        stale_choice: MacroContextSelection | None = None
+        for distance, scope in enumerate(self.ancestry):
+            scoped = [
+                envelope
+                for envelope in candidates
+                if isinstance(envelope, MacroObservationEnvelope) and envelope.observation.scope == scope
+            ]
+            eligible: list[MacroObservationEnvelope] = []
+            stale: list[MacroObservationEnvelope] = []
+            for envelope in scoped:
+                decision = policy.evaluate(
+                    evidence=envelope.evidence,
+                    cutoff_at=cutoff,
+                    valid_until=envelope.observation.valid_until,
+                    version=envelope.observation.producer_version,
+                )
+                if decision.status == "eligible":
+                    eligible.append(envelope)
+                elif decision.status == "stale":
+                    stale.append(envelope)
+            if eligible:
+                chosen = max(eligible, key=lambda item: (item.observation.cutoff_at, item.observation.observation_id))
+                return MacroContextSelection(
+                    envelope=chosen,
+                    origin_scope=scope,
+                    distance=distance,
+                    search_plan=self,
+                    eligibility_status="eligible",
+                )
+            if stale and stale_choice is None:
+                chosen = max(stale, key=lambda item: (item.observation.cutoff_at, item.observation.observation_id))
+                stale_choice = MacroContextSelection(
+                    envelope=chosen,
+                    origin_scope=scope,
+                    distance=distance,
+                    search_plan=self,
+                    eligibility_status="stale",
+                )
+        return stale_choice
+
+    @classmethod
+    def from_resolution(
+        cls,
+        resolution: WorldScopeResolution | Mapping[str, Any],
+        *,
+        admitted_producer_version: str = MACRO_PRODUCER_VERSION,
+    ) -> MacroContextSearchPlan:
+        return cls(resolution=resolution, admitted_producer_version=admitted_producer_version)
+
+
+@dataclass(frozen=True)
+class MacroContextSelection:
+    """Exact-scope v2 observation chosen from a search plan. Origin scope is never restamped."""
+
+    envelope: MacroObservationEnvelope
+    origin_scope: MacroScope | Mapping[str, Any]
+    distance: int
+    search_plan: MacroContextSearchPlan
+    eligibility_status: str = "eligible"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.envelope, MacroObservationEnvelope):
+            raise TypeError("selection envelope must be MacroObservationEnvelope")
+        if not isinstance(self.search_plan, MacroContextSearchPlan):
+            raise TypeError("selection search_plan must be MacroContextSearchPlan")
+        origin = MacroScope.from_mapping(self.origin_scope)
+        if self.envelope.observation.scope != origin:
+            raise ValueError("selection origin_scope must equal the observation scope")
+        if not is_admitted_macro_producer(self.envelope.observation.producer_version):
+            raise ValueError("selection cannot admit a producer outside the live contract")
+        if self.envelope.observation.producer_version != self.search_plan.admitted_producer_version:
+            raise ValueError("selection producer_version must match the search plan")
+        distance = _non_negative_int(self.distance, "distance")
+        if distance >= len(self.search_plan.ancestry) or self.search_plan.ancestry[distance] != origin:
+            raise ValueError("selection distance must index the origin scope in the search ancestry")
+        status = _required_text(self.eligibility_status, "eligibility_status")
+        if status not in {"eligible", "stale"}:
+            raise ValueError("eligibility_status must be eligible or stale")
+        object.__setattr__(self, "origin_scope", origin)
+        object.__setattr__(self, "distance", distance)
+        object.__setattr__(self, "eligibility_status", status)
+        assert_source_only_payload(self.to_dict(), "macro_context_selection")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "observation_id": self.envelope.observation.observation_id,
+            "origin_scope": self.origin_scope.to_dict(),
+            "distance": self.distance,
+            "eligibility_status": self.eligibility_status,
+            "admitted_producer_version": self.search_plan.admitted_producer_version,
+            "producer_version": self.envelope.observation.producer_version,
+        }
 
 
 def _event_id_for(payload: Mapping[str, Any]) -> str:
@@ -1872,7 +2031,9 @@ class MacroCollectionRun:
                 if set(seen_sources) != expected:
                     raise ValueError("complete requires a terminal result for every source")
                 failed_ids = tuple(
-                    sorted(source_id for source_id, result in seen_sources.items() if isinstance(result, MacroSourceFailed))
+                    sorted(
+                        source_id for source_id, result in seen_sources.items() if isinstance(result, MacroSourceFailed)
+                    )
                 )
                 if event.status == "failed":
                     if published is not None or event.observation_id is not None:
@@ -1949,7 +2110,9 @@ class MacroCollectionRun:
 
     def _failed_source_ids(self) -> tuple[str, ...]:
         return tuple(
-            sorted(source_id for source_id, result in self.source_results.items() if isinstance(result, MacroSourceFailed))
+            sorted(
+                source_id for source_id, result in self.source_results.items() if isinstance(result, MacroSourceFailed)
+            )
         )
 
     def _sources_terminal(self) -> bool:
@@ -2131,13 +2294,19 @@ __all__ = [
     "MACRO_FACT_KINDS",
     "MACRO_FEATURE_KEYS",
     "MACRO_FEATURE_VALUES",
+    "MACRO_ADMITTED_PRODUCER_VERSIONS",
+    "MACRO_LANE_IDENTITY",
+    "MACRO_LANE_IDENTITY_V1",
     "MACRO_POLICY_DENYLIST",
     "MACRO_PRODUCER_VERSION",
+    "MACRO_PRODUCER_VERSION_V1",
     "MACRO_REGIME_VALUES",
     "MACRO_SOURCE_REGISTRY_VERSION",
     "MACRO_TERMINAL_STATUSES",
     "MACRO_TRANSFORM_VERSION",
     "MACRO_WORLD_OBSERVATION_SUBJECT_KIND",
+    "WORLD_MACRO_COLLECTION_PLAN_ID",
+    "WORLD_MACRO_COLLECTION_PLAN_SHA256",
     "MacroCategoryValue",
     "MacroCollectionCompleted",
     "MacroCollectionEvent",
@@ -2149,6 +2318,8 @@ __all__ = [
     "MacroCollectionRunId",
     "MacroCollectionStarted",
     "MacroCollectionTerminalResult",
+    "MacroContextSearchPlan",
+    "MacroContextSelection",
     "MacroCoverage",
     "MacroDerivationPolicy",
     "MacroDimensionState",
@@ -2170,6 +2341,8 @@ __all__ = [
     "WorldScopeResolution",
     "assert_source_only_payload",
     "evaluate_macro_point_in_time",
+    "is_admitted_macro_producer",
+    "macro_observes_producer_ref",
     "parse_macro_collection_event",
     "parse_macro_value",
     "reconcile_macro_source_fact",

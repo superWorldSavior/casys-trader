@@ -119,8 +119,10 @@ Le hot-set live n'est plus couvert par les 8 ancres exactes de
 `world_scope_mapping.v1`. Le YAML committe `world_scope_mapping.v2` +
 `market_ontology.v2` (table exacte `(market_venue, instrument)`, preuves
 suffixe/`sessions` existantes, **aucun** fallback runtime).
-`lifecycle_generation` du pilote passe à **4** : nouvelles identités de
-cohorte, les cohortes `v1` déjà terminales ne sont pas ranimées.
+`lifecycle_generation` du pilote passe à **5** : nouvelles identités de
+cohorte, le contrat producteur/lane/plan de collecte `macro_source_only.v2`
+est gelé dans le YAML. Les identités des générations 3/4 ne sont pas
+réutilisées ; les cohortes déjà terminales ne sont pas ranimées.
 
 Après déploiement du commit, **un redémarrage volontaire** du daemon :
 

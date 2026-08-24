@@ -159,7 +159,6 @@ def build_world_context_snapshot(
         )
     )
     instrument = EntityRef("instrument", symbol)
-    venue_ref = EntityRef("venue", venue)
     proofs: list[dict[str, object]] = []
     artifact_refs: list[str] = []
     proofs.append(_proof("macro_world_observation", macro))
@@ -169,7 +168,7 @@ def build_world_context_snapshot(
             edges.append(
                 TopologyEdge(
                     kind="DESCRIBED_BY",
-                    source=venue_ref,
+                    source=macro.artifact.subjects[0],
                     target=EntityRef("sensor", "macro_world_observation"),
                     effective_from=cutoff,
                     ready_at=macro.artifact.ready_at,
@@ -264,10 +263,20 @@ def _proof(kind: str, evidence: SensorEvidence) -> dict[str, object]:
         if evidence.artifact.valid_until is not None:
             proof["valid_until"] = evidence.artifact.valid_until.isoformat()
     resolution = None
-    if evidence.payload is not None:
-        raw = evidence.payload.get("scope_resolution")
+    payload = evidence.payload
+    if payload is not None:
+        raw = payload.get("scope_resolution")
         if isinstance(raw, Mapping):
             resolution = raw
+        origin = payload.get("origin_scope")
+        if isinstance(origin, Mapping):
+            proof["origin_scope"] = dict(origin)
+        distance = payload.get("ancestry_distance")
+        if isinstance(distance, int) and not isinstance(distance, bool):
+            proof["ancestry_distance"] = distance
+        producer_version = str(payload.get("producer_version") or "").strip()
+        if producer_version:
+            proof["producer_version"] = producer_version
     if resolution is not None:
         mapping_id = str(resolution.get("mapping_id") or "").strip()
         mapping_sha256 = str(resolution.get("mapping_sha256") or "").strip()

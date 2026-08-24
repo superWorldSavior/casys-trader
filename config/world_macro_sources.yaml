@@ -2,9 +2,9 @@ schema_version: macro_source_registry.v1
 registry_version: macro_sources.v1
 authority: shadow_only
 decision_effect: none
-producer_version: macro_source_only.v1
+producer_version: macro_source_only.v2
 content_sha256: "00219ea60f1a95b3fdc58282b100775c3bff493d7e21713af63f1e1dc6cd6ee6"
-operator_config_sha256: "9f6193744bd189b35bd70ee5421743b52fce4be462fbfbbc96494c050ad8d535"
+operator_config_sha256: "87f525a30f1f86a9aadecb80abdb46f88f44bc264df278140894ddced0ee6e2a"
 
 budgets:
   worker: single_flight

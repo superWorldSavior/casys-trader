@@ -163,7 +163,7 @@ def test_committed_policy_full_content_hash_matches() -> None:
     assert canonical_sha256(payload) == claimed
     assert bundle.policy_content_sha256 == claimed
     assert bundle.policy.transform_version == "macro_regimes.v1"
-    assert bundle.policy.producer_version == "macro_source_only.v1"
+    assert bundle.policy.producer_version == "macro_source_only.v2"
     for dimension, values in raw["vocabularies"].items():
         assert "unknown" in values
         assert frozenset(values) == MACRO_FEATURE_VALUES[dimension]
@@ -264,9 +264,7 @@ def test_dbnomics_adapter_emits_typed_fact_for_canonical_scope_not_run_scope() -
     assert fact.source.adapter_version == "dbnomics_series.v1"
     assert fact.valid_until == OBSERVED_AT + timedelta(hours=72)
     assert "XTAI" not in json.dumps(fact.to_dict())
-    assert transport.calls == [
-        "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1"
-    ]
+    assert transport.calls == ["https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1"]
 
 
 def test_dbnomics_monthly_cpi_uses_monthly_ttl_and_index_unit() -> None:

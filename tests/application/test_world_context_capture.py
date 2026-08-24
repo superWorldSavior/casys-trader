@@ -450,6 +450,57 @@ def test_partial_macro_observation_extracts_proven_dimensions_and_keeps_unknown_
     assert proofs[0]["resolution_status"] == "resolved"
 
 
+def test_described_by_uses_honest_country_subject_not_logical_venue() -> None:
+    ready = datetime(2026, 8, 22, 9, 0, tzinfo=timezone.utc)
+    artifact = KnowledgeArtifact(
+        kind="macro_world_observation",
+        artifact_id="macro_world_observation:v1:" + "b" * 64,
+        subjects=[EntityRef("country", "iso-3166:US")],
+        schema_version="macro_world_observation.v1",
+        content_sha256="abc",
+        ready_at=ready,
+        valid_until=datetime(2026, 8, 23, 10, 0, tzinfo=timezone.utc),
+    )
+    snapshot = build_world_context_snapshot(
+        symbol="GM",
+        venue="US",
+        cutoff_at=CUTOFF,
+        family="equity",
+        macro=SensorEvidence(
+            status="partial",
+            reason="sidecar_ready",
+            proven=True,
+            artifact=artifact,
+            payload={
+                "features": {"macro_regime": "mixed", "rates_regime": "stable", "usd_regime": "unknown"},
+                "origin_scope": {"kind": "country", "entity_id": "iso-3166:US"},
+                "ancestry_distance": 1,
+                "producer_version": "macro_source_only.v2",
+                "scope_resolution": {
+                    "mapping_id": "world_scope_mapping.v2",
+                    "mapping_sha256": "b" * 64,
+                    "resolution_status": "resolved",
+                    "anchor": {"market_venue": "US", "instrument": "GM"},
+                },
+            },
+        ),
+        company=SensorEvidence(status="missing", reason="no_artifact"),
+    )
+    described = [edge for edge in snapshot.topology_edges if edge.kind == "DESCRIBED_BY"]
+    macro_edges = [edge for edge in described if edge.target.entity_id == "macro_world_observation"]
+    assert len(macro_edges) == 1
+    assert macro_edges[0].source.kind == "country"
+    assert macro_edges[0].source.entity_id == "iso-3166:US"
+    assert not any(
+        edge.kind == "DESCRIBED_BY" and edge.source.kind == "venue" and edge.source.entity_id == "US"
+        for edge in snapshot.topology_edges
+    )
+    proofs = [item for item in snapshot.artifact_proofs if item["kind"] == "macro_world_observation"]
+    assert proofs[0]["origin_scope"] == {"kind": "country", "entity_id": "iso-3166:US"}
+    assert proofs[0]["ancestry_distance"] == 1
+    assert snapshot.categorical_features["context_macro_regime"] == "mixed"
+
+
 def test_unmapped_gm_stays_missing_with_explicit_resolution_status() -> None:
     snapshot = build_world_context_snapshot(
         symbol="BMW.DE",

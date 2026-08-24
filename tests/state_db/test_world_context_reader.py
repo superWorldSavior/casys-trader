@@ -13,6 +13,7 @@ from trader.domain.situation import NewsMacroBrief
 from trader.domain.world_context import NO_PROVEN_ARTIFACT_REASON, SCOPE_UNMAPPED_REASON
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
+    MACRO_PRODUCER_VERSION_V1,
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
     MacroCoverage,
@@ -258,9 +259,7 @@ def test_late_and_stale_macro_receipts_are_explicit(tmp_path: Path) -> None:
     assert later.payload["features"]["usd_regime"] == "unknown"
 
     stale_store = WorldMacroStore(tmp_path / "stale", clock=lambda: READY)
-    stale_store.append_observation(
-        _observation(valid_until=datetime(2026, 8, 23, 12, 30, tzinfo=timezone.utc))
-    )
+    stale_store.append_observation(_observation(valid_until=datetime(2026, 8, 23, 12, 30, tzinfo=timezone.utc)))
     stale = _reader(tmp_path, store=stale_store, clock=_clock_at(BOOT)).lookup_macro(
         venue="TW",
         symbol="2301.TW",
@@ -373,7 +372,9 @@ def test_receipt_declared_before_cutoff_but_first_seen_after_stays_missing(tmp_p
 def test_restart_applies_conservative_first_seen(tmp_path: Path) -> None:
     writer = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
     writer.append_observation(_observation())
-    restarted = WorldMacroStore(tmp_path / "world_macro", clock=_clock_at(datetime(2026, 8, 23, 13, 30, tzinfo=timezone.utc)))
+    restarted = WorldMacroStore(
+        tmp_path / "world_macro", clock=_clock_at(datetime(2026, 8, 23, 13, 30, tzinfo=timezone.utc))
+    )
     reader = _reader(
         tmp_path,
         store=restarted,
@@ -405,9 +406,10 @@ def test_receipt_primed_before_later_cutoff_becomes_eligible(tmp_path: Path) -> 
     assert evidence.artifact.ready_at == BOOT
     assert evidence.payload is not None
     assert evidence.payload["features"]["usd_regime"] == "unknown"
-    assert evidence.payload["scope_resolution"]["status"] == "resolved" or evidence.payload["scope_resolution"][
-        "resolution_status"
-    ] == "resolved"
+    assert (
+        evidence.payload["scope_resolution"]["status"] == "resolved"
+        or evidence.payload["scope_resolution"]["resolution_status"] == "resolved"
+    )
 
 
 def _fact_with_record(record_id: str) -> MacroSourceFact:
@@ -421,13 +423,14 @@ def _fact_with_record(record_id: str) -> MacroSourceFact:
     )
 
 
-def test_two_suffix_selects_exact_xtai_scope_only(tmp_path: Path) -> None:
+def test_two_suffix_ignores_future_valid_v1_venue_and_keeps_country_subject(tmp_path: Path) -> None:
     store = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
-    store.append_observation(_observation())
+    store.append_observation(_observation(producer_version=MACRO_PRODUCER_VERSION_V1))
     eu_fact = _fact_with_record("eu-rate")
     other = _observation(
         fact=eu_fact,
         scope=MacroScope(kind="venue", entity_id="mic:XPAR"),
+        producer_version=MACRO_PRODUCER_VERSION_V1,
         features={"macro_regime": "tightening", "rates_regime": "rising", "usd_regime": "unknown"},
         dimensions=(
             MacroDimensionState(
@@ -488,9 +491,13 @@ def test_two_suffix_selects_exact_xtai_scope_only(tmp_path: Path) -> None:
     evidence = reader.lookup_macro(venue="TW", symbol="6488.TWO", cutoff_at=CUTOFF)
     assert evidence.status == "partial"
     assert evidence.payload is not None
-    assert evidence.payload["features"]["macro_regime"] == "mixed"
+    assert evidence.payload["features"]["macro_regime"] == "easing"
     assert evidence.artifact is not None
-    assert evidence.artifact.subjects[0].entity_id == "mic:XTAI"
+    assert evidence.artifact.subjects[0].kind == "country"
+    assert evidence.artifact.subjects[0].entity_id == "iso-3166:TW"
+    assert evidence.payload["origin_scope"] == {"kind": "country", "entity_id": "iso-3166:TW"}
+    assert evidence.payload["ancestry_distance"] == 1
+    assert evidence.payload["producer_version"] == MACRO_PRODUCER_VERSION
 
 
 def test_unmapped_gm_keeps_mapping_identity_and_does_not_fallback(tmp_path: Path) -> None:
@@ -531,3 +538,93 @@ def test_lookup_macro_requires_instrument_and_has_no_mic_heuristic() -> None:
     assert "tw ->" not in lowered
     assert "us ->" not in lowered
     assert "eu ->" not in lowered
+
+
+def _scoped_observation(scope: MacroScope, *, record_id: str, regime: str) -> MacroWorldObservation:
+    fact = _fact_with_record(record_id)
+    rates = {"mixed": "stable", "easing": "falling", "tightening": "rising"}[regime]
+    return _observation(
+        fact=fact,
+        scope=scope,
+        features={"macro_regime": regime, "rates_regime": rates, "usd_regime": "unknown"},
+        dimensions=(
+            MacroDimensionState(
+                dimension="macro_regime",
+                value=regime,
+                coverage_status="complete",
+                method=MACRO_TRANSFORM_VERSION,
+                fact_refs=(fact.fact_version_id.value,),
+            ),
+            MacroDimensionState(
+                dimension="rates_regime",
+                value=rates,
+                coverage_status="complete",
+                method=MACRO_TRANSFORM_VERSION,
+                fact_refs=(fact.fact_version_id.value,),
+            ),
+            MacroDimensionState(
+                dimension="usd_regime",
+                value="unknown",
+                coverage_status="unknown",
+                method=MACRO_TRANSFORM_VERSION,
+                fact_refs=(),
+            ),
+        ),
+    )
+
+
+def test_tw_resolves_to_available_world_when_country_is_absent(tmp_path: Path) -> None:
+    store = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
+    store.append_observation(_observation(producer_version=MACRO_PRODUCER_VERSION_V1))
+    world = _scoped_observation(MacroScope(kind="world", entity_id="market"), record_id="brent", regime="mixed")
+    store.append_observation(world)
+    reader = _reader(tmp_path, store=store, clock=_clock_at(BOOT))
+    evidence = reader.lookup_macro(venue="TW", symbol="2301.TW", cutoff_at=CUTOFF)
+    assert evidence.artifact is not None
+    assert evidence.artifact.subjects[0].kind == "world"
+    assert evidence.artifact.subjects[0].entity_id == "market"
+    assert evidence.payload is not None
+    assert evidence.payload["origin_scope"] == {"kind": "world", "entity_id": "market"}
+    assert evidence.payload["ancestry_distance"] == 3
+
+
+def test_eu_selects_region_150_and_us_selects_country_before_world(tmp_path: Path) -> None:
+    store = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
+    world = _scoped_observation(MacroScope(kind="world", entity_id="market"), record_id="gold", regime="mixed")
+    europe = _scoped_observation(
+        MacroScope(kind="region", entity_id="iso-un-m49:150"), record_id="ecb", regime="tightening"
+    )
+    us = _scoped_observation(MacroScope(kind="country", entity_id="iso-3166:US"), record_id="fed", regime="easing")
+    store.append_observation(world)
+    store.append_observation(europe)
+    store.append_observation(us)
+    reader = _reader(tmp_path, store=store, clock=_clock_at(BOOT))
+    eu = reader.lookup_macro(venue="EU", symbol="SAP.DE", cutoff_at=CUTOFF)
+    assert eu.artifact is not None
+    assert eu.artifact.subjects[0].kind == "region"
+    assert eu.artifact.subjects[0].entity_id == "iso-un-m49:150"
+    assert eu.payload is not None
+    assert eu.payload["features"]["macro_regime"] == "tightening"
+    assert eu.payload["ancestry_distance"] == 2
+    us_ev = reader.lookup_macro(venue="US", symbol="GM", cutoff_at=CUTOFF)
+    assert us_ev.artifact is not None
+    assert us_ev.artifact.subjects[0].kind == "country"
+    assert us_ev.artifact.subjects[0].entity_id == "iso-3166:US"
+    assert us_ev.payload is not None
+    assert us_ev.payload["features"]["macro_regime"] == "easing"
+    assert us_ev.payload["ancestry_distance"] == 1
+
+
+def test_restart_still_parses_v1_but_does_not_admit_it_into_the_shadow(tmp_path: Path) -> None:
+    writer = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
+    writer.append_observation(_observation(producer_version=MACRO_PRODUCER_VERSION_V1))
+    restarted = WorldMacroStore(tmp_path / "world_macro", clock=_clock_at(BOOT))
+    listed = restarted.list_candidates_available_through(MacroScope(kind="venue", entity_id="mic:XTAI"), CUTOFF)
+    assert len(listed) == 1
+    assert listed[0].observation.producer_version == MACRO_PRODUCER_VERSION_V1
+    reader = _reader(tmp_path, store=restarted, clock=_clock_at(BOOT))
+    evidence = reader.lookup_macro(venue="TW", symbol="2301.TW", cutoff_at=CUTOFF)
+    assert evidence.status == "missing"
+    assert evidence.reason == NO_PROVEN_ARTIFACT_REASON
+    assert evidence.proven is False
+    assert evidence.artifact is None

@@ -60,6 +60,12 @@ from trader.domain.world_feature_contract import (
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
+from trader.domain.world_macro import (
+    MACRO_LANE_IDENTITY,
+    MACRO_PRODUCER_VERSION,
+    WORLD_MACRO_COLLECTION_PLAN_ID,
+    WORLD_MACRO_COLLECTION_PLAN_SHA256,
+)
 
 
 WORLD_SHADOW_PILOT_SCHEMA = "world_shadow_pilot.v2"
@@ -212,6 +218,15 @@ def _parse_world_shadow_pilot_config(path: Path) -> WorldShadowPilotConfig:
         raise ValueError(f"scope_mapping must reuse the committed {WORLD_SCOPE_MAPPING_ID}")
     if scope.get("mapping_sha256") != WORLD_SCOPE_MAPPING_SHA256:
         raise ValueError("scope_mapping must reuse the committed world_scope_mapping hash")
+    macro = _mapping(payload.get("macro_producer"), "macro_producer")
+    if macro.get("producer_version") != MACRO_PRODUCER_VERSION:
+        raise ValueError(f"macro_producer.producer_version must be {MACRO_PRODUCER_VERSION}")
+    if macro.get("lane_identity") != MACRO_LANE_IDENTITY:
+        raise ValueError(f"macro_producer.lane_identity must be {MACRO_LANE_IDENTITY}")
+    if macro.get("collection_plan_id") != WORLD_MACRO_COLLECTION_PLAN_ID:
+        raise ValueError("macro_producer.collection_plan_id must match the committed source-backed plan")
+    if macro.get("collection_plan_sha256") != WORLD_MACRO_COLLECTION_PLAN_SHA256:
+        raise ValueError("macro_producer.collection_plan_sha256 must match the committed source-backed plan")
     workers_raw = _mapping(payload.get("workers"), "workers")
     workers = {
         key: _required_bool(workers_raw.get(key), f"workers.{key}")
@@ -355,7 +370,7 @@ def _sensors(lanes: Sequence[WorldLaneDefinition]) -> tuple[WorldSensorRequireme
         sensors.append(
             WorldSensorRequirement(
                 sensor_id="macro",
-                source_contract_id="macro_world_observation.v1",
+                source_contract_id=MACRO_PRODUCER_VERSION,
                 projection_contract_id="macro_context_projection.v1",
                 mode="required",
                 lane_ids=macro_lanes,
@@ -662,11 +677,7 @@ def superseded_world_shadow_cohort_ids(
     prior_id = WORLD_SHADOW_PILOT_PRIOR_ID
     if resolved is not None:
         specs = resolved.payload.get("cohorts") or ()
-        keys = tuple(
-            _required_text(spec.get("key"), "cohorts[].key")
-            for spec in specs
-            if isinstance(spec, Mapping)
-        )
+        keys = tuple(_required_text(spec.get("key"), "cohorts[].key") for spec in specs if isinstance(spec, Mapping))
         policy = resolved.activation_policy
         prior_id = _required_text(
             resolved.payload.get("supersedes_pilot_id") or WORLD_SHADOW_PILOT_PRIOR_ID,

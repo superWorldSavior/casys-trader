@@ -100,7 +100,7 @@ class ScriptedTransport:
 def test_macro_lane_identity_is_distinct_from_v1_and_context_v2() -> None:
     from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY, MACRO_THREAD_NAME
 
-    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v1"
+    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v2"
     assert MACRO_LANE_IDENTITY != "context.v2"
     assert MACRO_THREAD_NAME != "world-model-shadow"
     assert "macro" in MACRO_THREAD_NAME
@@ -175,7 +175,9 @@ def test_collect_runs_each_target_once_sequentially_without_worker_retries() -> 
 
     targets = (
         MacroCollectionTarget(scope=MacroScope(kind="world", entity_id="market"), source_ids=("gold_usd",)),
-        MacroCollectionTarget(scope=MacroScope(kind="country", entity_id="iso-3166:US"), source_ids=("fed_funds_effective",)),
+        MacroCollectionTarget(
+            scope=MacroScope(kind="country", entity_id="iso-3166:US"), source_ids=("fed_funds_effective",)
+        ),
     )
     calls: list[MacroCollectionTarget] = []
 
@@ -205,7 +207,7 @@ def test_collect_runs_each_target_once_sequentially_without_worker_retries() -> 
     )
     assert calls == list(targets)
     assert report["status"] == "ok"
-    assert report["lane_identity"] == "context.v2.macro_source.v1"
+    assert report["lane_identity"] == "context.v2.macro_source.v2"
     assert report["authority"] == "shadow_only"
     assert report["decision_effect"] == "none"
     assert len(report["runs"]) == 2
@@ -219,7 +221,9 @@ def test_target_failure_does_not_abort_remaining_targets_or_raise() -> None:
     from trader.runtime.world_macro_runtime import collect_world_macro
 
     targets = (
-        MacroCollectionTarget(scope=MacroScope(kind="country", entity_id="iso-3166:US"), source_ids=("fed_funds_effective",)),
+        MacroCollectionTarget(
+            scope=MacroScope(kind="country", entity_id="iso-3166:US"), source_ids=("fed_funds_effective",)
+        ),
         MacroCollectionTarget(scope=MacroScope(kind="world", entity_id="market"), source_ids=("gold_usd",)),
     )
 
@@ -268,6 +272,10 @@ def test_collection_plan_is_source_backed_deterministic_and_excludes_unsourced_v
     scopes = collection_scopes(bundle)
     expected = MacroCollectionPlan.from_registry(bundle.registry)
     assert plan == expected
+    from trader.domain.world_macro import WORLD_MACRO_COLLECTION_PLAN_ID, WORLD_MACRO_COLLECTION_PLAN_SHA256
+
+    assert plan.plan_id == WORLD_MACRO_COLLECTION_PLAN_ID
+    assert plan.content_sha256 == WORLD_MACRO_COLLECTION_PLAN_SHA256
     assert plan.registry_content_sha256 == bundle.registry.content_sha256
     assert scopes == expected.scopes
     assert collection_scopes(bundle) == scopes
@@ -281,7 +289,7 @@ def test_collection_plan_is_source_backed_deterministic_and_excludes_unsourced_v
     }
     assert ("venue", "mic:XTAI") not in ids
     assert not any(scope.kind == "venue" for scope in scopes)
-    by_scope = { (target.scope.kind, target.scope.entity_id): target.source_ids for target in plan.targets }
+    by_scope = {(target.scope.kind, target.scope.entity_id): target.source_ids for target in plan.targets}
     assert by_scope[("country", "iso-3166:US")] == ("cpi_us_imf", "fed_funds_effective", "unemployment_rate_us")
     assert by_scope[("region", "iso-un-m49:150")] == ("ecb_deposit_rate", "hicp_euro_area")
     assert by_scope[("world", "market")] == ("brent_crude_usd", "gold_usd")
@@ -420,7 +428,12 @@ class UrlFixtureTransport:
 
 def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: Path) -> None:
     from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
-    from trader.runtime.world_macro_runtime import MACRO_THREAD_NAME, collection_plan, collection_scopes, wire_world_macro_runtime
+    from trader.runtime.world_macro_runtime import (
+        MACRO_THREAD_NAME,
+        collection_plan,
+        collection_scopes,
+        wire_world_macro_runtime,
+    )
 
     operator = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
     plan = collection_plan(operator)
@@ -446,9 +459,7 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     events = _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
     registered = [row for row in events if row.get("event_type") == "macro_collection_registered"]
     source_results = [
-        row
-        for row in events
-        if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
+        row for row in events if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
     ]
     assert len(registered) == 3
     assert {tuple(row["expected_source_ids"]) for row in registered} == {
@@ -465,15 +476,13 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     assert transport.calls == first_calls
     replay_events = _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
     replay_results = [
-        row
-        for row in replay_events
-        if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
+        row for row in replay_events if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
     ]
     assert len(replay_results) == 14
     bundle.runner.stop()
     status = bundle.runner.status()
     assert status["status"] in {"ok", "partial"}
-    assert status.get("lane_identity") == "context.v2.macro_source.v1"
+    assert status.get("lane_identity") == "context.v2.macro_source.v2"
     assert not any(thread.name == MACRO_THREAD_NAME and thread.is_alive() for thread in threading.enumerate())
 
 
@@ -676,9 +685,7 @@ def test_default_macro_runtime_with_mocked_urlopen_yields_typed_facts(
     assert len(remaining_failures) == failed_count
 
 
-def test_graph_v3_yaml_only_enables_macro_graph_bridge(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_graph_v3_yaml_only_enables_macro_graph_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from trader.runtime.world_macro_runtime import wire_world_macro_runtime
 
     monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", raising=False)
@@ -718,9 +725,7 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(
     assert any(item.startswith("reconcile:") for item in calls)
 
 
-def test_graph_bridge_handoff_after_config_drift_block(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_graph_bridge_handoff_after_config_drift_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from trader.runtime.world_macro_runtime import wire_world_macro_runtime
 
     _stub_ontology_bootstrap(monkeypatch)
@@ -774,9 +779,7 @@ def test_graph_bridge_handoff_after_config_drift_block(
     assert calls.count("reconcile:32") == 2
 
 
-def test_typed_graph_flag_false_does_not_reread_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_typed_graph_flag_false_does_not_reread_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from trader.runtime.world_macro_runtime import MACRO_THREAD_NAME, wire_world_macro_runtime
 
     monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", "1")
@@ -785,7 +788,9 @@ def test_typed_graph_flag_false_does_not_reread_env(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
         lambda **_kwargs: calls.append("bridge") or SimpleNamespace(),
     )
-    live_before = {thread.ident for thread in threading.enumerate() if thread.name == MACRO_THREAD_NAME and thread.is_alive()}
+    live_before = {
+        thread.ident for thread in threading.enumerate() if thread.name == MACRO_THREAD_NAME and thread.is_alive()
+    }
     bundle = wire_world_macro_runtime(
         config_dir=CONFIG_DIR,
         state_dir=tmp_path,

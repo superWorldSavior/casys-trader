@@ -94,7 +94,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v2"
     assert payload["pilot_id"] == "world_shadow_pilot.v2"
     assert payload["supersedes_pilot_id"] == "world_shadow_pilot.v1"
-    assert payload["lifecycle_generation"] == 4
+    assert payload["lifecycle_generation"] == 5
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -122,6 +122,18 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert "2026-08-17" not in CONFIG_PATH.read_text(encoding="utf-8")
     assert payload["scope_mapping"]["mapping_id"] == WORLD_SCOPE_MAPPING_ID
     assert payload["scope_mapping"]["mapping_sha256"] == WORLD_SCOPE_MAPPING_SHA256
+    from trader.domain.world_macro import (
+        MACRO_LANE_IDENTITY,
+        MACRO_PRODUCER_VERSION,
+        WORLD_MACRO_COLLECTION_PLAN_ID,
+        WORLD_MACRO_COLLECTION_PLAN_SHA256,
+    )
+
+    macro = payload["macro_producer"]
+    assert macro["producer_version"] == MACRO_PRODUCER_VERSION == "macro_source_only.v2"
+    assert macro["lane_identity"] == MACRO_LANE_IDENTITY == "context.v2.macro_source.v2"
+    assert macro["collection_plan_id"] == WORLD_MACRO_COLLECTION_PLAN_ID
+    assert macro["collection_plan_sha256"] == WORLD_MACRO_COLLECTION_PLAN_SHA256
     source = CONFIG_PATH.read_text(encoding="utf-8")
     assert "gdelt" not in source.lower()
     assert "news_macro_brief" not in source.lower()
@@ -230,6 +242,10 @@ def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_v3_lane() -> No
     assert c1.manifest.ontology_revision == "semantic_catalog.v1"
     assert graph.manifest.ontology_revision == WORLD_GRAPH_V3_ONTOLOGY_REVISION
     assert graph.phase is CohortPhase.REGISTERED
+    from trader.domain.world_macro import MACRO_PRODUCER_VERSION
+
+    macro_sensors = [item for item in c1.manifest.sensor_requirements if item.sensor_id == "macro"]
+    assert macro_sensors and all(item.source_contract_id == MACRO_PRODUCER_VERSION for item in macro_sensors)
 
 
 def test_env_and_config_disable_skip_register_without_raising() -> None:

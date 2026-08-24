@@ -111,7 +111,7 @@ mot `causal` ne qualifie jamais un résultat live.
 | Capteur | Source | Statut actuel |
 |---|---|---|
 | Marché OHLCV | capture V1 déjà gelée | contrôle, toujours émis si ancre valide |
-| Macro source-only | `MacroWorldObservation` (`macro_source_only.v1`) | éligible si envelope + reçu PIT ; worker opt-in / OR YAML |
+| Macro source-only | `MacroWorldObservation` (`macro_source_only.v2`) | éligible si envelope + reçu PIT **et** producteur admis `v2` ; worker opt-in / OR YAML. `v1` reste parseable, hors ombre. |
 | Macro Univers | `NewsMacroBrief` | **exclu** comme source modèle World Context (`policy_contaminated`) |
 | Événements GDELT | `state/gdelt/` | **exclu** du registre macro source-only |
 | Company micro | `CompanyIntelligenceBrief` | éligible seulement si sidecar-prouvé **et** action-free |
@@ -182,7 +182,7 @@ compagnon V3.
 | Voie | Contrat | Identité typique |
 |---|---|---|
 | Markov / GRU marché V1 | `market_ohlcv_causal.v1` | baseline / challenger historiques |
-| Markov / GRU contexte V2 | `market_ohlcv_context.v2` | `context.v2` ou `context.v2.macro_source.v1` si le store macro est câblé |
+| Markov / GRU contexte V2 | `market_ohlcv_context.v2` | `context.v2` ou `context.v2.macro_source.v2` si le store macro est câblé |
 | Lanes C1 | masques market / status / company / macro / joint | GRU froid `sequence_length=4` |
 | Markov / GRU graphe V3 | `market_ohlcv_graph.v3` | `topology_status_only` vs `graph_content` |
 

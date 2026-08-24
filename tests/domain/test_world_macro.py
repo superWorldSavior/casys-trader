@@ -26,11 +26,16 @@ from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_macro import (
     MACRO_COLLECTION_PLAN_SCHEMA,
     MACRO_FACT_KINDS,
+    MACRO_LANE_IDENTITY,
+    MACRO_LANE_IDENTITY_V1,
     MACRO_POLICY_DENYLIST,
     MACRO_PRODUCER_VERSION,
+    MACRO_PRODUCER_VERSION_V1,
     MACRO_REGIME_VALUES,
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
+    WORLD_MACRO_COLLECTION_PLAN_ID,
+    WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroCategoryValue,
     MacroCollectionCompleted,
     MacroCollectionEvent,
@@ -40,6 +45,8 @@ from trader.domain.world_macro import (
     MacroCollectionRun,
     MacroCollectionStarted,
     MacroCollectionTerminalResult,
+    MacroContextSearchPlan,
+    MacroContextSelection,
     MacroCoverage,
     MacroDerivationPolicy,
     MacroDimensionState,
@@ -58,11 +65,13 @@ from trader.domain.world_macro import (
     WorldScopeMapping,
     WorldScopeResolution,
     assert_source_only_payload,
+    is_admitted_macro_producer,
+    macro_observes_producer_ref,
     parse_macro_collection_event,
     reconcile_macro_source_fact,
     reconcile_macro_world_observation,
 )
-from trader.domain.world_scope import WorldCanonicalScopeRef
+from trader.domain.world_scope import WorldCanonicalScopeRef, WorldMarketAnchorRef
 
 
 UTC = timezone.utc
@@ -640,7 +649,9 @@ def test_collection_run_rejects_publish_until_every_source_has_a_typed_result() 
     with pytest.raises(ValueError, match="source"):
         run.publish(envelope)
     run = run.record_source_result(
-        MacroSourceCompleted(run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,))
+        MacroSourceCompleted(
+            run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,)
+        )
     )
     run = run.record_source_result(MacroSourceFailed(run_id=run.run_id, source_id="brent", reason="missing"))
     with pytest.raises(ValueError, match="source"):
@@ -655,9 +666,7 @@ def test_collection_run_rejects_publish_until_every_source_has_a_typed_result() 
 def test_publish_refuses_a_fake_empty_observation_and_complete_fails_without_one() -> None:
     run = _run().start()
     for source_id in ("fed_policy_rate", "brent", "broad_usd_index"):
-        run = run.record_source_result(
-            MacroSourceFailed(run_id=run.run_id, source_id=source_id, reason="missing")
-        )
+        run = run.record_source_result(MacroSourceFailed(run_id=run.run_id, source_id=source_id, reason="missing"))
     empty_features = {"macro_regime": "unknown", "rates_regime": "unknown", "usd_regime": "unknown"}
     empty_dimensions = (
         _dimension(dimension="macro_regime", value="unknown", coverage_status="unknown", fact_refs=()),
@@ -668,7 +677,12 @@ def test_publish_refuses_a_fake_empty_observation_and_complete_fails_without_one
         fact_refs=(),
         features=empty_features,
         dimensions=empty_dimensions,
-        coverage=MacroCoverage(status="unknown", required_sources=3, fresh_sources=0, missing_source_ids=("fed_policy_rate", "brent", "broad_usd_index")),
+        coverage=MacroCoverage(
+            status="unknown",
+            required_sources=3,
+            fresh_sources=0,
+            missing_source_ids=("fed_policy_rate", "brent", "broad_usd_index"),
+        ),
     )
     with pytest.raises(ValueError, match="admissible"):
         run.publish(_envelope(fake))
@@ -714,7 +728,9 @@ def test_failed_source_plus_published_observation_is_completed_partial() -> None
     fact = _fact()
     envelope = _envelope(_observation(fact=fact))
     run = run.record_source_result(
-        MacroSourceCompleted(run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,))
+        MacroSourceCompleted(
+            run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,)
+        )
     )
     run = run.record_source_result(MacroSourceCompleted(run_id=run.run_id, source_id="brent", fact_version_ids=()))
     run = run.record_source_result(MacroSourceFailed(run_id=run.run_id, source_id="broad_usd_index", reason="timeout"))
@@ -738,7 +754,9 @@ def test_event_union_round_trips_and_reconstruction_is_typed() -> None:
     fact = _fact()
     envelope = _envelope(_observation(fact=fact))
     run = run.record_source_result(
-        MacroSourceCompleted(run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,))
+        MacroSourceCompleted(
+            run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,)
+        )
     )
     run = run.record_source_result(MacroSourceCompleted(run_id=run.run_id, source_id="brent", fact_version_ids=()))
     run = run.record_source_result(MacroSourceFailed(run_id=run.run_id, source_id="broad_usd_index", reason="timeout"))
@@ -850,7 +868,9 @@ def test_nested_observation_and_aggregate_events_are_deeply_immutable() -> None:
     run = _run().start()
     fact = _fact()
     run = run.record_source_result(
-        MacroSourceCompleted(run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,))
+        MacroSourceCompleted(
+            run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,)
+        )
     )
     with pytest.raises(AttributeError):
         run.events.append(run.events[0])  # type: ignore[attr-defined]
@@ -884,7 +904,9 @@ def test_publish_rejects_optimistic_or_inconsistent_coverage() -> None:
     run = _run().start()
     fact = _fact()
     run = run.record_source_result(
-        MacroSourceCompleted(run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,))
+        MacroSourceCompleted(
+            run_id=run.run_id, source_id="fed_policy_rate", fact_version_ids=(fact.fact_version_id.value,)
+        )
     )
     run = run.record_source_result(MacroSourceCompleted(run_id=run.run_id, source_id="brent", fact_version_ids=()))
     run = run.record_source_result(MacroSourceFailed(run_id=run.run_id, source_id="broad_usd_index", reason="timeout"))
@@ -937,3 +959,117 @@ def test_publish_does_not_require_observation_receipt_to_predate_run_cutoff() ->
     published = run.publish(envelope)
     assert published.published_envelope == envelope
     assert envelope.evidence.effective_ready_at > run.cutoff_at
+
+
+def _resolution(
+    *,
+    market_venue: str = "TW",
+    instrument: str = "2301.TW",
+    status: str = "resolved",
+    venue: str = "mic:XTAI",
+    country: str = "iso-3166:TW",
+    region: str = "iso-un-m49:030",
+) -> WorldScopeResolution:
+    anchor = WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument)
+    if status != "resolved":
+        return WorldScopeResolution(
+            mapping_id="world_scope_mapping.v2",
+            mapping_sha256="e" * 64,
+            anchor=anchor,
+            status=status,
+        )
+    return WorldScopeResolution(
+        mapping_id="world_scope_mapping.v2",
+        mapping_sha256="e" * 64,
+        anchor=anchor,
+        status="resolved",
+        scopes=(
+            WorldCanonicalScopeRef(kind="venue", entity_id=venue),
+            WorldCanonicalScopeRef(kind="country", entity_id=country),
+            WorldCanonicalScopeRef(kind="region", entity_id=region),
+            WorldCanonicalScopeRef(kind="world", entity_id="market"),
+        ),
+    )
+
+
+def test_live_producer_contract_is_v2_and_keeps_v1_parseable() -> None:
+    assert MACRO_PRODUCER_VERSION == "macro_source_only.v2"
+    assert MACRO_PRODUCER_VERSION_V1 == "macro_source_only.v1"
+    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v2"
+    assert MACRO_LANE_IDENTITY_V1 == "context.v2.macro_source.v1"
+    assert MACRO_LANE_IDENTITY != MACRO_LANE_IDENTITY_V1
+    assert is_admitted_macro_producer(MACRO_PRODUCER_VERSION) is True
+    assert is_admitted_macro_producer(MACRO_PRODUCER_VERSION_V1) is False
+    assert macro_observes_producer_ref(MACRO_PRODUCER_VERSION) == "producer:macro_source_only.v2"
+    assert WORLD_MACRO_COLLECTION_PLAN_ID == f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_SHA256}"
+    v1 = _observation(producer_version=MACRO_PRODUCER_VERSION_V1)
+    replayed = MacroWorldObservation.from_mapping(v1.to_dict())
+    assert replayed.producer_version == MACRO_PRODUCER_VERSION_V1
+    assert replayed.observation_id == v1.observation_id
+    v2 = _observation()
+    assert v2.producer_version == MACRO_PRODUCER_VERSION
+    assert v2.observation_id != v1.observation_id
+
+
+def test_search_plan_walks_resolved_ancestry_and_ignores_v1_venue_contamination() -> None:
+    tw = MacroContextSearchPlan.from_resolution(_resolution())
+    assert [scope.to_dict() for scope in tw.ancestry] == [
+        {"kind": "venue", "entity_id": "mic:XTAI"},
+        {"kind": "country", "entity_id": "iso-3166:TW"},
+        {"kind": "region", "entity_id": "iso-un-m49:030"},
+        {"kind": "world", "entity_id": "market"},
+    ]
+    venue_v1 = _envelope(
+        _observation(scope=_scope(kind="venue", entity_id="mic:XTAI"), producer_version=MACRO_PRODUCER_VERSION_V1)
+    )
+    world = _envelope(_observation(scope=_scope(kind="world", entity_id="market")))
+    selected = tw.select((venue_v1, world), cutoff_at=CUTOFF)
+    assert selected is not None
+    assert selected.origin_scope == world.observation.scope
+    assert selected.distance == 3
+    assert selected.envelope.observation.observation_id == world.observation.observation_id
+    assert selected.eligibility_status == "eligible"
+    assert selected.to_dict()["origin_scope"] == {"kind": "world", "entity_id": "market"}
+    with pytest.raises(ValueError, match="producer"):
+        MacroContextSelection(
+            envelope=venue_v1,
+            origin_scope=venue_v1.observation.scope,
+            distance=0,
+            search_plan=tw,
+        )
+
+
+def test_search_plan_selects_eu_region_then_us_country_before_world() -> None:
+    europe = _envelope(_observation(scope=_scope(kind="region", entity_id="iso-un-m49:150")))
+    world = _envelope(_observation(scope=_scope(kind="world", entity_id="market")))
+    eu = MacroContextSearchPlan.from_resolution(
+        _resolution(
+            market_venue="EU", instrument="SAP.DE", venue="mic:XETR", country="iso-3166:DE", region="iso-un-m49:150"
+        )
+    )
+    eu_selected = eu.select((world, europe), cutoff_at=CUTOFF)
+    assert eu_selected is not None
+    assert eu_selected.origin_scope.kind == "region"
+    assert eu_selected.origin_scope.entity_id == "iso-un-m49:150"
+    assert eu_selected.distance == 2
+    assert eu_selected.envelope.observation.scope != _scope(kind="venue", entity_id="mic:XETR")
+
+    us_country = _envelope(_observation(scope=_scope(kind="country", entity_id="iso-3166:US")))
+    us = MacroContextSearchPlan.from_resolution(
+        _resolution(
+            market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"
+        )
+    )
+    us_selected = us.select((world, us_country), cutoff_at=CUTOFF)
+    assert us_selected is not None
+    assert us_selected.origin_scope == us_country.observation.scope
+    assert us_selected.distance == 1
+
+
+def test_unmapped_search_fails_closed_and_does_not_borrow_world() -> None:
+    world = _envelope(_observation(scope=_scope(kind="world", entity_id="market")))
+    unmapped = MacroContextSearchPlan.from_resolution(
+        _resolution(status="unmapped", market_venue="GM", instrument="BMW.DE")
+    )
+    assert unmapped.ancestry == ()
+    assert unmapped.select((world,), cutoff_at=CUTOFF) is None

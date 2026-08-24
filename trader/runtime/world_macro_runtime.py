@@ -17,10 +17,15 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trader.domain.world_macro import MacroCollectionPlan, MacroCollectionTarget, MacroScope, MacroSourceRegistry
+from trader.domain.world_macro import (
+    MACRO_LANE_IDENTITY,
+    MacroCollectionPlan,
+    MacroCollectionTarget,
+    MacroScope,
+    MacroSourceRegistry,
+)
 
 
-MACRO_LANE_IDENTITY = "context.v2.macro_source.v1"
 MACRO_THREAD_NAME = "world-macro-source-only"
 GRAPH_V3_FLAG = "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
 _BRIDGE_KEY = "macro_graph_bridge.v1"
@@ -235,8 +240,7 @@ def collect_world_macro(
     """Run one sequential collect per typed target. Provider missingness stays on the pipeline."""
 
     if budgets is not None and (
-        getattr(budgets, "fetch_in_run_cycle", False)
-        or getattr(budgets, "fetch_in_world_capture_worker", False)
+        getattr(budgets, "fetch_in_run_cycle", False) or getattr(budgets, "fetch_in_world_capture_worker", False)
     ):
         raise ValueError("source-only macro collection cannot fetch in run_cycle or world capture worker")
     cutoff = _utc(now)
@@ -397,9 +401,7 @@ def _reconcile_macro_graph_bridge(
         structural_revision=revision,
         bridge_key=_BRIDGE_KEY,
     )
-    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256(
-        {"bridge_key": _BRIDGE_KEY, "intent": "activate"}
-    )
+    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256({"bridge_key": _BRIDGE_KEY, "intent": "activate"})
     use_case.activate(request_id)
     registry = use_case.reconcile(limit=32)
     run = getattr(registry, "active_run", None)

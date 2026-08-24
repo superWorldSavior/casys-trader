@@ -86,6 +86,7 @@ from trader.domain.world_graph import (
 )
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
+    MACRO_PRODUCER_VERSION_V1,
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
     MACRO_WORLD_OBSERVATION_SUBJECT_KIND,
@@ -99,8 +100,14 @@ from trader.domain.world_macro import (
     MacroSourceFact,
     MacroSourceFactVersionId,
     MacroWorldObservation,
+    macro_observes_producer_ref,
 )
-from trader.domain.world_scope import WorldCanonicalScopeRef, WorldMarketAnchorRef, WorldScopeMapping, WorldScopeMappingEntry
+from trader.domain.world_scope import (
+    WorldCanonicalScopeRef,
+    WorldMarketAnchorRef,
+    WorldScopeMapping,
+    WorldScopeMappingEntry,
+)
 
 
 UTC = timezone.utc
@@ -363,7 +370,10 @@ def test_identity_map_links_v2_to_v3_and_rejects_ambiguity() -> None:
     with pytest.raises(ValueError, match="kind"):
         _link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_entity())
     with pytest.raises(ValueError, match="sensor"):
-        _link(v2_ref=EntityRef(kind="sensor", entity_id="news_macro"), v3_ref=_entity(kind="event", entity_id="provider:evt-1"))
+        _link(
+            v2_ref=EntityRef(kind="sensor", entity_id="news_macro"),
+            v3_ref=_entity(kind="event", entity_id="provider:evt-1"),
+        )
 
 
 def test_identity_correction_supersedes_without_rewriting_the_old_link() -> None:
@@ -686,7 +696,9 @@ def test_entity_and_revision_lifecycle_events_round_trip() -> None:
     replayed_revision = WorldOntologyRevision.from_mapping(revision.to_dict())
     assert replayed_revision.content_sha256 == revision.content_sha256
     assert revision.identity_map_hash != revision.structural_heads_hash
-    other_identity = _revision(identity_link_refs=(_link(v2_ref=EntityRef(kind="instrument", entity_id="2454")).as_ref(),))
+    other_identity = _revision(
+        identity_link_refs=(_link(v2_ref=EntityRef(kind="instrument", entity_id="2454")).as_ref(),)
+    )
     with pytest.raises(ValueError, match="conflict"):
         reconcile_world_ontology_revision(revision, other_identity)
     assert reconcile_world_ontology_revision(revision, _revision()) == revision
@@ -713,12 +725,16 @@ def test_revision_hash_is_independent_of_append_order() -> None:
     assert left.content_sha256 == right.content_sha256
     assert left.entity_heads_hash == right.entity_heads_hash
     assert left.structural_heads_hash == right.structural_heads_hash
-    map_left = WorldEntityIdentityMap.empty().link(_link()).link(
-        _link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",))
+    map_left = (
+        WorldEntityIdentityMap.empty()
+        .link(_link())
+        .link(_link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",)))
     )
-    map_right = WorldEntityIdentityMap.empty().link(
-        _link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",))
-    ).link(_link())
+    map_right = (
+        WorldEntityIdentityMap.empty()
+        .link(_link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",)))
+        .link(_link())
+    )
     assert map_left.heads_hash_at(CUTOFF) == map_right.heads_hash_at(CUTOFF)
     assert {event.event_id for event in map_left.events} == {event.event_id for event in map_right.events}
 
@@ -790,8 +806,15 @@ def test_v2_entity_refs_remain_locally_scoped_and_unrelated_to_v3_ids() -> None:
     assert v3.entity_id == "mic:XTAI:symbol:2330"
     assert v2.to_dict() != v3.to_dict()
     assert "sensor" in ENTITY_KINDS
+    assert "country" in ENTITY_KINDS
+    assert "region" in ENTITY_KINDS
     assert "sensor" not in WORLD_ENTITY_KINDS
     assert "macro_indicator" in WORLD_ENTITY_KINDS
+    country_link = _link(
+        v2_ref=EntityRef(kind="country", entity_id="iso-3166:TW"),
+        v3_ref=WorldEntityRef(kind="country", entity_id="iso-3166:TW"),
+    )
+    assert country_link.v2_ref.kind == country_link.v3_ref.kind == "country"
     edge = TopologyEdge(
         kind="TRADED_ON",
         source=v2,
@@ -1115,7 +1138,9 @@ def _reservation(
     )
 
 
-def _run_spec(mapping: WorldScopeMapping | None = None, revision: WorldOntologyRevision | None = None) -> MacroGraphBridgeRunSpec:
+def _run_spec(
+    mapping: WorldScopeMapping | None = None, revision: WorldOntologyRevision | None = None
+) -> MacroGraphBridgeRunSpec:
     resolved_mapping = mapping if mapping is not None else _scope_mapping()
     resolved_revision = revision if revision is not None else _revision_for_mapping(resolved_mapping)
     return MacroGraphBridgeRunSpec(
@@ -1151,6 +1176,7 @@ def test_macro_observation_knowledge_link_is_deterministic_for_mapping_outputs()
         f"{observation.observation_id}/{observation.content_sha256}",
         f"{receipt.receipt_id}/{receipt.receipt_sha256}",
         f"{mapping.mapping_id}/{mapping.content_sha256}",
+        macro_observes_producer_ref(observation.producer_version),
     )
     world = MacroObservationKnowledgeLink.from_envelope(
         _observation_envelope(_macro_observation(scope=_macro_scope(kind="world", entity_id="market"))),
@@ -1191,6 +1217,14 @@ def test_unregistered_or_invalid_scope_is_terminal_skip_never_an_invented_relati
     assert invalid.status == "skipped"
     assert invalid.skip_reason == "invalid_envelope"
     assert invalid.relation is None
+    legacy = MacroObservationKnowledgeLink.from_envelope(
+        _observation_envelope(_macro_observation(producer_version=MACRO_PRODUCER_VERSION_V1)),
+        mapping,
+        revision,
+    )
+    assert legacy.status == "skipped"
+    assert legacy.skip_reason == "producer_not_admitted"
+    assert legacy.relation is None
 
 
 def test_knowledge_link_rejects_mapping_hash_mismatch_without_sealing_a_relation() -> None:

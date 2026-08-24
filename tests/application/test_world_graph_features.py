@@ -95,9 +95,10 @@ def test_topology_status_only_drops_graph_content_and_stays_stable_when_paths_ch
     assert status_full.mask_id == "topology_status_only.v1"
     assert content_full.mask_id == "graph_content.v1"
     assert status_full.categorical_features == status_again.categorical_features
-    assert content_full.categorical_features["graph_path_signature"] != content_truncated.categorical_features[
-        "graph_path_signature"
-    ]
+    assert (
+        content_full.categorical_features["graph_path_signature"]
+        != content_truncated.categorical_features["graph_path_signature"]
+    )
     assert {item.feature_name for item in status_full.provenance} == set(status_full.categorical_features)
     assert "graph_path_signature" not in {item.feature_name for item in status_full.provenance}
 
@@ -137,7 +138,7 @@ def test_window_counts_and_macro_agreement_use_only_snapshot_members() -> None:
     ledger = _InMemoryWorldGraphLedger()
     extra = _knowledge(
         source={"node_kind": "world_observation", "observation_id": "world_observation:v1:" + "e" * 64},
-        source_refs=("macro_world_observation:v1:" + "e" * 64,),
+        source_refs=("macro_world_observation:v1:" + "e" * 64, "producer:macro_source_only.v2"),
     )
     _seed_rfc_graph(ledger, mapping, knowledge=(_knowledge(), extra))
     bundle = _service(ledger).build(_request(mapping))

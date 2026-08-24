@@ -51,6 +51,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevisionPublished,
     WorldOntologyRevisionSuperseded,
     WorldStructuralRelationRef,
+    admits_macro_observes_relation,
     evaluate_world_graph_point_in_time,
     fold_knowledge_relation_events_at_cutoff,
     fold_structural_relation_events_at_cutoff,
@@ -376,6 +377,7 @@ class WorldKnowledgeResolver:
             relation
             for relation in _fold_knowledge_relations(envelopes, cutoff)
             if relation.ontology_revision == structural_revision.revision_id
+            and admits_macro_observes_relation(relation)
         )
         return WorldKnowledgeOverlayView(
             cutoff_at=cutoff,

@@ -1,8 +1,8 @@
 schema_version: world_shadow_pilot.v2
-content_sha256: "c42d02aec5ba0bf978c16560f35ba8c079b58a3969a35242a6c8a90b65391b65"
+content_sha256: "55e5f4d52f32848c0fcb159b460b2930039bdfbe3cd3ad049a8b17920f931848"
 pilot_id: world_shadow_pilot.v2
 supersedes_pilot_id: world_shadow_pilot.v1
-lifecycle_generation: 4
+lifecycle_generation: 5
 authority: shadow_only
 decision_effect: none
 recommendation: NO_GO
@@ -30,6 +30,12 @@ ontology_revision: semantic_catalog.v1
 scope_mapping:
   mapping_id: world_scope_mapping.v2
   mapping_sha256: "e1289a4a86e5cb07600cb3ac45122b170f1a0bb249db2fbb6e5c093a4a8a501b"
+
+macro_producer:
+  producer_version: macro_source_only.v2
+  lane_identity: context.v2.macro_source.v2
+  collection_plan_id: "macro_collection_plan:v1:74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
+  collection_plan_sha256: "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
 
 runtime_identity_intent:
   schema_version: world_runtime_identity_intent.v1

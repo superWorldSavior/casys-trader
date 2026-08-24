@@ -634,7 +634,7 @@ def test_v2_predictors_use_macro_lane_identity_only_when_producer_store_is_wired
     from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY
 
     source = Path(daemon.__file__).read_text(encoding="utf-8")
-    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v1"
+    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v2"
     assert "MACRO_LANE_IDENTITY" in source
     assert 'else "context.v2"' in source
     assert "macro_store=" in source
