@@ -225,6 +225,17 @@ def _predecessor_spec() -> WorldOntologyLifecycleSpec:
         predecessor_revision_id="market_ontology.v0",
         successor_mapping_id="world_scope_mapping.v1",
         predecessor_mapping_id="world_scope_mapping.v0",
+        predecessor_mapping_sha256="0" * 64,
+    )
+
+
+def _successor_spec(*, predecessor_mapping_sha256: str) -> WorldOntologyLifecycleSpec:
+    return WorldOntologyLifecycleSpec(
+        successor_revision_id="market_ontology.v2",
+        predecessor_revision_id="market_ontology.v1",
+        successor_mapping_id="world_scope_mapping.v2",
+        predecessor_mapping_id="world_scope_mapping.v1",
+        predecessor_mapping_sha256=predecessor_mapping_sha256,
     )
 
 
@@ -254,7 +265,11 @@ def test_boot_supersedes_persisted_predecessor_without_in_place_conflict(tmp_pat
         first = predecessor.ensure_published(now=CUTOFF)
         assert first.status == "ready"
         assert first.revision_id == "market_ontology.v1"
-        successor = WorldOntologyBootstrapService(store, v2_mapping)
+        successor = WorldOntologyBootstrapService(
+            store,
+            v2_mapping,
+            lifecycle_spec=_successor_spec(predecessor_mapping_sha256=v1_mapping.content_sha256),
+        )
         pending = successor.readiness(CUTOFF)
         assert pending.status == "unpublished"
         assert pending.reason == "predecessor_published"
@@ -275,6 +290,50 @@ def test_boot_supersedes_persisted_predecessor_without_in_place_conflict(tmp_pat
         instrument_ids = {entity.entity_id for entity in view.entities if entity.kind == "instrument"}
         assert "mic:XTAI:symbol:2301.TW" in instrument_ids
         assert "mic:XNYS:symbol:GM" in instrument_ids
+    finally:
+        store.close()
+
+
+def test_v1_id_with_wrong_mapping_hash_is_drifted_and_never_superseded(tmp_path: Path) -> None:
+    from trader.domain.world_feature_contract import WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
+    from trader.domain.world_graph import WorldOntologyRevisionPublished, WorldOntologyRevisionSuperseded
+
+    v1_mapping = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(_entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),),
+    )
+    v2_mapping = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v2",
+        entries=(
+            _entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),
+            _entry(market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"),
+        ),
+    )
+    assert v1_mapping.content_sha256 != WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
+    path = tmp_path / "world_model.db"
+    store = WorldGraphStore(path, clock=lambda: CUTOFF)
+    try:
+        predecessor = WorldOntologyBootstrapService(
+            store,
+            v1_mapping,
+            revision_id="market_ontology.v1",
+            lifecycle_spec=_predecessor_spec(),
+        )
+        first = predecessor.ensure_published(now=CUTOFF)
+        assert first.status == "ready"
+        successor = WorldOntologyBootstrapService(store, v2_mapping)
+        pending = successor.readiness(CUTOFF)
+        assert pending.status == "drifted"
+        with pytest.raises(ValueError, match="conflict"):
+            successor.ensure_published(now=CUTOFF)
+        events = [envelope.event for envelope in store.list_revision_events_available_through(CUTOFF)]
+        assert not any(isinstance(event, WorldOntologyRevisionSuperseded) for event in events)
+        assert isinstance(events[-1], WorldOntologyRevisionPublished)
+        assert events[-1].revision.revision_id == "market_ontology.v1"
+        view = WorldOntologyService(store).ontology.at_cutoff(CUTOFF)
+        assert view.published_revision is not None
+        assert view.published_revision.revision_id == "market_ontology.v1"
+        assert view.published_revision.scope_mapping_hash == v1_mapping.content_sha256
     finally:
         store.close()
 

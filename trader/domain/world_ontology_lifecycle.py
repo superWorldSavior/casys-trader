@@ -15,6 +15,7 @@ from trader.domain.world_feature_contract import (
     WORLD_GRAPH_V3_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
+    WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
 )
 from trader.domain.world_graph import WorldOntologyRevision
 
@@ -31,6 +32,13 @@ def _required_text(value: Any, field_name: str) -> str:
     return text
 
 
+def _sha256_hex(value: Any, field_name: str) -> str:
+    text = _required_text(value, field_name)
+    if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
+        raise ValueError(f"{field_name} must be a sha256 hex digest")
+    return text
+
+
 @dataclass(frozen=True)
 class WorldOntologyLifecycleSpec:
     """Committed predecessor → successor pair for mapping and ontology identities."""
@@ -39,12 +47,14 @@ class WorldOntologyLifecycleSpec:
     predecessor_revision_id: str
     successor_mapping_id: str
     predecessor_mapping_id: str
+    predecessor_mapping_sha256: str
 
     def __post_init__(self) -> None:
         successor_revision_id = _required_text(self.successor_revision_id, "successor_revision_id")
         predecessor_revision_id = _required_text(self.predecessor_revision_id, "predecessor_revision_id")
         successor_mapping_id = _required_text(self.successor_mapping_id, "successor_mapping_id")
         predecessor_mapping_id = _required_text(self.predecessor_mapping_id, "predecessor_mapping_id")
+        predecessor_mapping_sha256 = _sha256_hex(self.predecessor_mapping_sha256, "predecessor_mapping_sha256")
         if successor_revision_id == predecessor_revision_id:
             raise ValueError("successor_revision_id must differ from predecessor_revision_id")
         if successor_mapping_id == predecessor_mapping_id:
@@ -53,6 +63,7 @@ class WorldOntologyLifecycleSpec:
         object.__setattr__(self, "predecessor_revision_id", predecessor_revision_id)
         object.__setattr__(self, "successor_mapping_id", successor_mapping_id)
         object.__setattr__(self, "predecessor_mapping_id", predecessor_mapping_id)
+        object.__setattr__(self, "predecessor_mapping_sha256", predecessor_mapping_sha256)
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -60,6 +71,7 @@ class WorldOntologyLifecycleSpec:
             "predecessor_revision_id": self.predecessor_revision_id,
             "successor_mapping_id": self.successor_mapping_id,
             "predecessor_mapping_id": self.predecessor_mapping_id,
+            "predecessor_mapping_sha256": self.predecessor_mapping_sha256,
         }
 
     @classmethod
@@ -73,6 +85,7 @@ class WorldOntologyLifecycleSpec:
             predecessor_revision_id=value.get("predecessor_revision_id"),
             successor_mapping_id=value.get("successor_mapping_id"),
             predecessor_mapping_id=value.get("predecessor_mapping_id"),
+            predecessor_mapping_sha256=value.get("predecessor_mapping_sha256"),
         )
 
 
@@ -123,6 +136,7 @@ def committed_world_ontology_lifecycle_spec() -> WorldOntologyLifecycleSpec:
         predecessor_revision_id=WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION,
         successor_mapping_id=WORLD_SCOPE_MAPPING_ID,
         predecessor_mapping_id=WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
+        predecessor_mapping_sha256=WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
     )
 
 
@@ -170,6 +184,8 @@ def plan_world_ontology_publication(
     if published.revision_id == resolved_spec.predecessor_revision_id:
         if published.scope_mapping_id != resolved_spec.predecessor_mapping_id:
             raise ValueError("conflict: predecessor revision is not bound to predecessor mapping")
+        if published.scope_mapping_hash != resolved_spec.predecessor_mapping_sha256:
+            raise ValueError("conflict: predecessor mapping hash drifted")
         return WorldOntologyPublicationPlan(
             action="supersede_and_publish",
             spec=resolved_spec,

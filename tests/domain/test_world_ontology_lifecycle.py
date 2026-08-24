@@ -10,6 +10,7 @@ from trader.domain.world_feature_contract import (
     WORLD_GRAPH_V3_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
+    WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
 )
 from trader.domain.world_graph import WorldEntityRef, WorldOntologyRevision
 from trader.domain.world_ontology_lifecycle import (
@@ -49,6 +50,7 @@ def test_committed_spec_is_a_forward_successor_pair() -> None:
     assert spec.predecessor_revision_id == WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION == "market_ontology.v1"
     assert spec.successor_mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
     assert spec.predecessor_mapping_id == WORLD_SCOPE_MAPPING_PREDECESSOR_ID == "world_scope_mapping.v1"
+    assert spec.predecessor_mapping_sha256 == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
     assert spec.successor_revision_id != spec.predecessor_revision_id
     assert spec.successor_mapping_id != spec.predecessor_mapping_id
     with pytest.raises(ValueError, match="differ"):
@@ -57,6 +59,7 @@ def test_committed_spec_is_a_forward_successor_pair() -> None:
             predecessor_revision_id="market_ontology.v1",
             successor_mapping_id="world_scope_mapping.v2",
             predecessor_mapping_id="world_scope_mapping.v1",
+            predecessor_mapping_sha256=WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
         )
     with pytest.raises(FrozenInstanceError):
         spec.successor_revision_id = "other"  # type: ignore[misc]
@@ -74,12 +77,46 @@ def test_empty_store_publishes_successor_without_requiring_predecessor() -> None
 
 def test_persisted_predecessor_plans_deterministic_supersession() -> None:
     spec = committed_world_ontology_lifecycle_spec()
-    published = _revision(revision_id=spec.predecessor_revision_id, mapping_id=spec.predecessor_mapping_id)
+    published = _revision(
+        revision_id=spec.predecessor_revision_id,
+        mapping_id=spec.predecessor_mapping_id,
+        mapping_hash=spec.predecessor_mapping_sha256,
+    )
     expected = _revision(revision_id=spec.successor_revision_id, mapping_id=spec.successor_mapping_id, mapping_hash="b" * 64)
     plan = plan_world_ontology_publication(published=published, expected=expected, spec=spec)
     assert plan.action == "supersede_and_publish"
     assert plan.published_revision_id == spec.predecessor_revision_id
     assert plan.to_dict()["action"] == "supersede_and_publish"
+
+
+def test_predecessor_mapping_sha256_must_match_before_supersede() -> None:
+    spec = committed_world_ontology_lifecycle_spec()
+    assert spec.predecessor_mapping_sha256 == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
+    payload = spec.to_dict()
+    assert payload["predecessor_mapping_sha256"] == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
+    assert WorldOntologyLifecycleSpec.from_mapping(payload) == spec
+    expected = _revision(
+        revision_id=spec.successor_revision_id,
+        mapping_id=spec.successor_mapping_id,
+        mapping_hash="b" * 64,
+    )
+    matching = _revision(
+        revision_id=spec.predecessor_revision_id,
+        mapping_id=spec.predecessor_mapping_id,
+        mapping_hash=WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
+    )
+    plan = plan_world_ontology_publication(published=matching, expected=expected, spec=spec)
+    assert plan.action == "supersede_and_publish"
+    assert plan.to_dict()["spec"]["predecessor_mapping_sha256"] == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
+    drifted = _revision(
+        revision_id=spec.predecessor_revision_id,
+        mapping_id=spec.predecessor_mapping_id,
+        mapping_hash="d" * 64,
+    )
+    with pytest.raises(ValueError, match="conflict"):
+        plan_world_ontology_publication(published=drifted, expected=expected, spec=spec)
+    with pytest.raises(FrozenInstanceError):
+        spec.predecessor_mapping_sha256 = "e" * 64  # type: ignore[misc]
 
 
 def test_matching_successor_is_ready_and_same_id_hash_drift_conflicts() -> None:
