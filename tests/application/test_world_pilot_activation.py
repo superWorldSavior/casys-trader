@@ -9,7 +9,14 @@ import yaml
 from tests.application.test_world_cohort_service import _MemoryWorldCohortStore
 from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.cohort_service import WorldCohortService
-from trader.domain.world_cohort import CohortPhase, ModelFamily, WorldCohortId
+from trader.domain.world_cohort import (
+    CohortPhase,
+    InvalidateWorldCohort,
+    InvalidationReason,
+    ModelFamily,
+    WorldCohortId,
+    WorldRuntimeIdentity,
+)
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import WORLD_SCOPE_MAPPING_ID, WORLD_SCOPE_MAPPING_SHA256
 
@@ -44,6 +51,35 @@ def _activate(**kwargs):
     return activate_world_shadow_pilot(**values)
 
 
+class _FixedIdentity:
+    def __init__(self, identity: WorldRuntimeIdentity) -> None:
+        self._identity = identity
+
+    def measure(self) -> WorldRuntimeIdentity:
+        return self._identity
+
+
+def _identity(git_commit: str = "b" * 40) -> WorldRuntimeIdentity:
+    return WorldRuntimeIdentity(
+        git_commit=git_commit,
+        python_version="3.11.9",
+        numpy_version="1.26.4",
+        application_build_id="casys-trader.world.shadow_pilot.v2",
+    )
+
+
+def _write_hashed_pilot_config(directory: Path, payload: dict) -> Path:
+    hashed = {str(key): value for key, value in payload.items() if key != "content_sha256"}
+    out = dict(payload)
+    out["content_sha256"] = canonical_sha256(hashed)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "world_shadow_pilot.yaml").write_text(
+        yaml.safe_dump(out, sort_keys=False),
+        encoding="utf-8",
+    )
+    return directory
+
+
 def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_authorized() -> None:
     from trader.application.world_model.pilot_activation import (
         WORLD_SHADOW_PILOT_SCHEMA,
@@ -54,7 +90,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v2"
     assert payload["pilot_id"] == "world_shadow_pilot.v2"
     assert payload["supersedes_pilot_id"] == "world_shadow_pilot.v1"
-    assert payload["lifecycle_generation"] == 2
+    assert payload["lifecycle_generation"] == 3
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -237,3 +273,62 @@ def test_activation_does_not_write_episodes_or_admit_pre_start_slots() -> None:
         cohort = store.load(WorldCohortId(item["cohort_id"]))
         assert cohort.admitted_slots == ()
         assert all(event.event_type != "world_cohort_slot_admitted" for event in cohort.events)
+
+
+def test_lifecycle_generation_bump_mints_new_ids_and_does_not_revive_terminal_cohorts(
+    tmp_path,
+) -> None:
+    service, store = _service()
+    identity = _identity()
+    drifted = _identity("c" * 40)
+    first = _activate(cohort_service=service, runtime_identity=_FixedIdentity(identity))
+    second = _activate(
+        cohort_service=service,
+        runtime_identity=_FixedIdentity(identity),
+        now=LATER_BOOT,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    assert first_ids == {item["key"]: item["cohort_id"] for item in second.cohorts}
+    assert second.window["planned_start_not_before"] == BOOT
+    assert second.window["collection_stop_at"] == BOOT + timedelta(days=7)
+
+    for cohort_id in first_ids.values():
+        service.invalidate(
+            WorldCohortId(cohort_id),
+            InvalidateWorldCohort(
+                reason=InvalidationReason.ACCEPTED_DRIFT,
+                scope="cohort",
+                proofs=("runtime_commit_changed",),
+                occurred_at=LATER_BOOT,
+            ),
+        )
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.INVALIDATED
+
+    retained = _activate(
+        cohort_service=service,
+        runtime_identity=_FixedIdentity(drifted),
+        now=LATER_BOOT,
+    )
+    retained_ids = {item["key"]: item["cohort_id"] for item in retained.cohorts}
+    assert retained_ids == first_ids
+    for cohort_id in retained_ids.values():
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.INVALIDATED
+
+    payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    payload["lifecycle_generation"] = int(payload["lifecycle_generation"]) + 1
+    next_dir = _write_hashed_pilot_config(tmp_path / "next_generation", payload)
+    next_report = _activate(
+        cohort_service=service,
+        config_dir=next_dir,
+        runtime_identity=_FixedIdentity(drifted),
+        now=LATER_BOOT,
+    )
+    next_ids = {item["key"]: item["cohort_id"] for item in next_report.cohorts}
+    assert set(next_ids) == {"technical_c1", "graph_v3"}
+    assert set(next_ids.values()).isdisjoint(first_ids.values())
+    assert next_report.window["planned_start_not_before"] == LATER_BOOT
+    assert next_report.window["collection_stop_at"] == LATER_BOOT + timedelta(days=7)
+    assert store.load(WorldCohortId(next_ids["technical_c1"])).phase is CohortPhase.COLLECTING
+    assert store.load(WorldCohortId(next_ids["graph_v3"])).phase is CohortPhase.REGISTERED
+    for cohort_id in first_ids.values():
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.INVALIDATED
