@@ -53,7 +53,7 @@ from trader.domain.world_episode import (
     canonical_sha256,
     parse_utc_timestamp,
 )
-from trader.domain.world_graph import WorldGraphSnapshot
+from trader.domain.world_graph import WorldEntityRef, WorldGraphSnapshot
 from trader.infrastructure.state_db.availability_receipt import (
     UtcClock,
     _seal_world_availability_receipt,
@@ -214,6 +214,18 @@ def _canonical_v3_episode(payload: Mapping[str, Any], observation: Mapping[str, 
     if not is_v3:
         return None
     return WorldEpisode.from_dict(payload)
+
+
+def _graph_snapshot_root_adapter_columns(root: WorldEntityRef | None) -> tuple[str, str]:
+    """Project optional domain root onto TEXT NOT NULL index columns.
+
+    Empty strings are the non-destructive stand-in for SQL NULL. They are not a
+    WorldEntityRef; rehydration always reads payload_json.
+    """
+
+    if root is None:
+        return "", ""
+    return root.kind, root.entity_id
 
 
 # This migration namespace belongs only to ``world_model.db``.  It must never
@@ -1549,6 +1561,7 @@ class WorldModelStore:
                 raise WorldModelConflictError("graph snapshot already exists with different canonical content")
             return False
         recorded_at = _utc_now()
+        root_kind, root_id = _graph_snapshot_root_adapter_columns(parsed.root_entity)
         try:
             with self._db.transaction() as cur:
                 cur.execute(
@@ -1562,8 +1575,8 @@ class WorldModelStore:
                     (
                         parsed.snapshot_id,
                         parsed.root_episode_id,
-                        "" if parsed.root_entity is None else parsed.root_entity.kind,
-                        "" if parsed.root_entity is None else parsed.root_entity.entity_id,
+                        root_kind,
+                        root_id,
                         payload["cutoff_at"],
                         parsed.ontology_revision,
                         parsed.ontology_hash,

@@ -504,14 +504,26 @@ def test_unmapped_missing_snapshot_persists_without_a_world_entity_root(tmp_path
     assert loaded is not None
     assert loaded.root_entity is None
     assert loaded.missingness["scope"] == "unmapped"
+    assert loaded.entity_revision_refs == ()
+    assert loaded.identity_link_refs == ()
+    assert loaded.structural_relation_refs == frozenset()
+    assert loaded.knowledge_relation_refs == frozenset()
+    assert loaded.artifact_refs == ()
     row = store._db.query_one(
         "SELECT root_entity_kind, root_entity_id, payload_json FROM world_graph_snapshots WHERE snapshot_id=?",
         (snapshot.snapshot_id,),
     )
     assert row["root_entity_kind"] == ""
     assert row["root_entity_id"] == ""
+    with pytest.raises((TypeError, ValueError)):
+        WorldEntityRef(kind=row["root_entity_kind"], entity_id=row["root_entity_id"])
     assert "XNYS" not in row["payload_json"]
     assert '"root_entity":null' in row["payload_json"]
+    members = store._db.query_all(
+        "SELECT member_kind FROM world_graph_snapshot_members WHERE snapshot_id=?",
+        (snapshot.snapshot_id,),
+    )
+    assert members == []
 
 
 def test_append_rejects_wrong_relation_family(tmp_path: Path) -> None:

@@ -872,6 +872,23 @@ def test_unmapped_snapshot_never_selects_a_world_entity_root_or_topology() -> No
     assert "mic:" not in dumped
 
 
+def test_historical_instrument_root_snapshot_payload_remains_parseable() -> None:
+    complete = _snapshot()
+    payload = complete.to_dict()
+    assert isinstance(payload["root_entity"], dict)
+    assert payload["root_entity"]["kind"] == "instrument"
+    parsed = WorldGraphSnapshot.from_mapping(json.loads(json.dumps(payload)))
+    assert parsed == complete
+    assert parsed.root_entity == complete.root_entity
+
+    unpublished = _snapshot(status="missing", missingness={"ontology": "unpublished"})
+    unpublished_payload = unpublished.to_dict()
+    assert unpublished_payload["root_entity"]["entity_id"] == "mic:XTAI:symbol:2330"
+    replayed = WorldGraphSnapshot.from_mapping(unpublished_payload)
+    assert replayed == unpublished
+    assert replayed.root_entity is not None
+
+
 def test_v2_entity_refs_remain_locally_scoped_and_unrelated_to_v3_ids() -> None:
     v2 = EntityRef(kind="instrument", entity_id="2330")
     v3 = _entity()

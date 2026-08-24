@@ -79,6 +79,7 @@ from trader.infrastructure.state_db.world_model_store import (
     WORLD_MODEL_STORE_ID,
     WorldModelConflictError,
     _aware_utc,
+    _graph_snapshot_root_adapter_columns,
     _open_dedicated_state_db,
 )
 
@@ -659,6 +660,7 @@ class WorldGraphStore:
         payload_sha256 = canonical_sha256(payload)
         recorded_at = _utc_now()
         members = _snapshot_members(snapshot)
+        root_kind, root_id = _graph_snapshot_root_adapter_columns(snapshot.root_entity)
         try:
             with self._db.transaction() as cur:
                 existing = cur.execute(
@@ -680,8 +682,8 @@ class WorldGraphStore:
                     (
                         snapshot.snapshot_id,
                         snapshot.root_episode_id,
-                        "" if snapshot.root_entity is None else snapshot.root_entity.kind,
-                        "" if snapshot.root_entity is None else snapshot.root_entity.entity_id,
+                        root_kind,
+                        root_id,
                         payload["cutoff_at"],
                         snapshot.ontology_revision,
                         snapshot.ontology_hash,

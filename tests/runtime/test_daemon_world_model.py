@@ -787,7 +787,7 @@ def test_graph_v3_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
         store.close()
 
 
-def test_idle_unmapped_cycle_does_not_write_v3_from_graph_wiring_alone(tmp_path) -> None:
+def test_due_unmapped_anchor_writes_missing_v3_without_fabricated_mic(tmp_path) -> None:
     import json
     from pathlib import Path
 
