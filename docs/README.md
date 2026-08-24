@@ -4,9 +4,10 @@ Point d'entrée de la doc. Deux choses ici : **où vit chaque type de doc**
 (cadre Diátaxis) et **la carte de couverture** (quel sous-système est
 documenté, où, et quels trous restent).
 
-> Statut carte : **v6 — 2026-08-20**, vérifiée contre le runtime courant :
-> SQLite canonique, queue grain-symbole, pilote de preuve, profils LLM,
-> learnings automatiques et pipeline de rapports global/macro/régional/micro.
+> Statut carte : **v7 — 2026-08-22**. Le socle v6 a été vérifié contre le
+> runtime courant (SQLite canonique, queue grain-symbole, pilote de preuve,
+> profils LLM, learnings automatiques et pipeline de rapports
+> global/macro/régional/micro) ; v7 ajoute le bounded context World Model D19.
 > Les `🟡`/`❌` sont un backlog priorisé ; corriger une ligne = ouvrir la doc citée.
 
 ---
@@ -24,7 +25,7 @@ Documents complémentaires, hors des quatre quadrants :
 
 | Registre | Dossier | Rôle |
 |---|---|---|
-| **Décisions (ADR)** | [`docs/decisions/`](decisions/README.md) | Journal D1-D15 daté, à ne pas réécrire comme une référence runtime |
+| **Décisions (ADR)** | [`docs/decisions/`](decisions/README.md) | Journal D1-D19 daté, à ne pas réécrire comme une référence runtime |
 | **Postmortems** | [`docs/postmortems/`](postmortems/README.md) | Incidents, causes et corrections |
 | **Specs / plans** | [`docs/superpowers/`](superpowers/README.md) | Intention de conception au moment T |
 
@@ -104,6 +105,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Cycle de vie / rotation | `runtime/daemon_bootstrap`, `runtime/cycle_dispatch`, `runtime/cycle_reporting`, `runtime/runtime_shutdown`, `infrastructure/files/ledger_rotation`, `infrastructure/files/decision_ledger` | ✅ | archi §1.1, §12 | — |
 | Intelligence entreprise | `runtime/company_intelligence_runtime`, `infrastructure/market_sources/company`, `state_db/company_*` | ✅ | **`reference/company-intelligence.md`** | advisory |
 | État persistant | `runtime/daemon_bootstrap`, `state/casys.db`, files/ledgers spécialisés, `infrastructure/state_db/*` | ✅ | archi §1.1, §8, `reference/task-queue.md` | SQLite paper canonique |
+| **World Model shadow** | `domain/world_episode`, `application/world_model`, `infrastructure/state_db/world_model_*`, `reporting/read_models/world_*`, `runtime/world_model_runtime` | ✅ | **`reference/world-model.md`**, **`explanation/architecture/world-model-shadow.md`** | D19, `shadow_only` / `NO_GO` |
 
 ### Univers & régime
 | Sous-système | Package/module | Réf | Où | Décisions |
@@ -144,6 +146,7 @@ Légende : ✅ couvert · 🟡 partiel / dispersé / potentiellement périmé ·
 | Rafraîchir et diagnostiquer les quatre niveaux de rapports | ✅ | `how-to/refresh-and-diagnose-reports.md` |
 | Mesurer (`measure_d7.py`) & rejouer des plans (`plan_replay`) | ✅ | `how-to/measure-and-replay.md` |
 | Configurer l'apparence cockpit terminal | ✅ | `how-to/cockpit-glass.md` |
+| Lire et diagnostiquer le World Model shadow sans lui attribuer le P&L Trader | ✅ | `how-to/operate-world-model-shadow.md` |
 
 ---
 
@@ -157,12 +160,12 @@ Les 5 trous prioritaires identifiés à la v2 sont comblés :
 4. ~~Cockpit & attribution~~ ✅ [`cockpit`](reference/cockpit.md) · [`reporting`](reference/reporting.md)
 5. ~~Config univers/portefeuille~~ ✅ [`reference/config.md`](reference/config.md)
 
-La consolidation v6 compte **25 pages Reference (index compris)**, **8 pages
-How-to (index compris)**, **4 pages Tutorials (index compris)** et **6 pages
-Explanation (index compris)**. Elle ajoute le découpage d'architecture, les
-tutoriels de cycle paper et de chaîne Brain → Univers, sans transformer les
-specs/plans historiques en vérité courante ni prétendre que les snapshots de
-`etat-systeme.md` restent vrais sans vérification live.
+La consolidation v7 compte **26 pages Reference (index compris)**, **9 pages
+How-to (index compris)**, **4 pages Tutorials (index compris)** et **9 pages
+Explanation (index compris)**. Elle étend le découpage d'architecture au World
+Model D19 et conserve les tutoriels de cycle paper et de chaîne Brain → Univers,
+sans transformer les specs/plans historiques en vérité courante ni prétendre
+que les snapshots de `etat-systeme.md` restent vrais sans vérification live.
 
 Maintenir : quand un module change, mettre à jour sa page (lire code → éditer →
 re-fact-check si substantiel). Les seules lignes volontairement `🟡` sont les

@@ -30,10 +30,11 @@ ou le portefeuille.
 | `runtime/world_model_runtime` | composition | adapter background fail-open et façade `WorldModelRuntime` |
 | `interfaces/cli/world_model` | surface | adaptateur mince vers le projector reporting |
 
-`application/world_model` n'importe ni `runtime`, ni `infrastructure`, ni
-`reporting`. Les chemins historiques `application.world_model.evaluation` et
-`.impact` sont des shims vers les owners reporting. Le GRU n'importe pas le
-baseline : les deux consomment `encoding.py`.
+`application/world_model` n'importe ni `runtime`, ni `infrastructure`. Ses
+modules canoniques n'importent pas `reporting` ; seuls les chemins historiques
+`application.world_model.evaluation` et `.impact` sont des shims de
+compatibilité vers les owners reporting. Le GRU n'importe pas le baseline : les
+deux modèles consomment `encoding.py`.
 
 ## Capture et ancre
 
