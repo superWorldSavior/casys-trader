@@ -534,6 +534,8 @@ class FeatureState:
     coarse_state: _StateKey
     features: Mapping[str, str]
     feature_hash: str
+    categorical_values: Mapping[str, str]
+    numeric_values: Mapping[str, float]
 
     def as_dict(self) -> dict[str, str]:
         return dict(self.features)
@@ -887,6 +889,8 @@ def build_feature_state(
     _assert_no_forbidden_keys(numeric, path="numeric_features", known_feature_keys=known_keys)
 
     canonical: dict[str, str] = {}
+    selected_categorical: dict[str, str] = {}
+    selected_numeric: dict[str, float] = {}
     for raw_key, raw_value in categorical.items():
         key = _normalise_key(raw_key)
         key = _CATEGORICAL_ALIASES.get(key, key)
@@ -897,6 +901,7 @@ def build_feature_state(
         if existing is not None and existing != value:
             raise FeatureBoundaryError(f"conflicting values for World feature {key!r}")
         canonical[key] = value
+        selected_categorical[key] = value
 
     for raw_key, raw_value in numeric.items():
         key = _normalise_key(raw_key)
@@ -905,13 +910,17 @@ def build_feature_state(
             continue
         if raw_value is None:
             continue
-        if key not in _NUMERIC_BUCKETS:
-            continue
         if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
             raise FeatureBoundaryError(f"numeric World feature {key!r} must be a finite number")
         value = float(raw_value)
         if not math.isfinite(value):
             raise FeatureBoundaryError(f"numeric World feature {key!r} must be finite")
+        existing_numeric = selected_numeric.get(key)
+        if existing_numeric is not None and existing_numeric != value:
+            raise FeatureBoundaryError(f"conflicting values for World feature {key!r}")
+        selected_numeric[key] = value
+        if key not in _NUMERIC_BUCKETS:
+            continue
         bucket_key, thresholds = _NUMERIC_BUCKETS[key]
         bucket_value = _bucket(value, thresholds)
         existing = canonical.get(bucket_key)
@@ -927,6 +936,8 @@ def build_feature_state(
         coarse_state=coarse_items,
         features=MappingProxyType(dict(canonical_items)),
         feature_hash=sha256(canonical_json.encode("utf-8")).hexdigest(),
+        categorical_values=MappingProxyType(dict(sorted(selected_categorical.items()))),
+        numeric_values=MappingProxyType(dict(sorted(selected_numeric.items()))),
     )
 
 

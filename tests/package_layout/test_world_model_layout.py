@@ -160,6 +160,31 @@ def test_world_evaluation_and_impact_are_reporting_read_model_canonical() -> Non
     assert _module_imports(query_path, "sqlite3")
 
 
+def test_production_world_model_has_no_macro_graph_bridge_handoff() -> None:
+    roots = (
+        REPO_ROOT / "trader" / "domain",
+        REPO_ROOT / "trader" / "application" / "world_model",
+        REPO_ROOT / "trader" / "infrastructure",
+        REPO_ROOT / "trader" / "runtime",
+    )
+    forbidden = (
+        "MacroGraphBridgeRunHandedOff",
+        "macro_graph_bridge_run_handed_off",
+        "def handoff(",
+    )
+    violations: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            relative = path.relative_to(REPO_ROOT)
+            for token in forbidden:
+                if token in text:
+                    violations.append(f"{relative}: {token}")
+    assert violations == []
+
+
 def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     availability_path = REPO_ROOT / "trader" / "domain" / "world_availability.py"
     scope_path = REPO_ROOT / "trader" / "domain" / "world_scope.py"

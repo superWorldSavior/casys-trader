@@ -76,7 +76,9 @@ class RegisterMacroObservationKnowledge:
     def _load(self) -> MacroGraphBridgeRegistry:
         return self._bridge.load(self._key())
 
-    def _append(self, registry: MacroGraphBridgeRegistry, fence: MacroGraphBridgeFence | None) -> MacroGraphBridgeRegistry:
+    def _append(
+        self, registry: MacroGraphBridgeRegistry, fence: MacroGraphBridgeFence | None
+    ) -> MacroGraphBridgeRegistry:
         event = registry.events[-1]
         self._bridge.append_event(event, expected_registry_version=registry.version - 1, fence=fence)
         return self._load()
@@ -100,7 +102,7 @@ class RegisterMacroObservationKnowledge:
             updated = registry.resume(spec=desired, expected_version=registry.version)
             if updated.version == registry.version:
                 return updated
-            return self._append(updated, fence=None)
+            return self._append(updated, fence=registry.fence)
         if decision.status == "drifted_active":
             updated = registry.block(reason="config_drift", expected_version=registry.version)
             registry = self._append(updated, fence=registry.fence)

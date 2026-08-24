@@ -42,9 +42,11 @@ from trader.domain.world_graph import (
     KnowledgeWorldRelationAsserted,
     KnowledgeWorldRelationEvent,
     KnowledgeWorldRelationRetired,
+    MacroGraphBridgeBlocked,
     MacroGraphBridgeEvent,
     MacroGraphBridgeFence,
     MacroGraphBridgeRegistry,
+    MacroGraphBridgeResumed,
     StaleBridgeEpoch,
     StructuralWorldRelationAsserted,
     StructuralWorldRelationEvent,
@@ -62,11 +64,14 @@ from trader.domain.world_graph import (
     WorldOntologyRevisionPublished,
     WorldOntologyRevisionSuperseded,
     WorldRelationEvent,
+    knowledge_write_requires_macro_bridge_fence,
+    macro_graph_bridge_event_requires_fence,
     parse_macro_graph_bridge_event,
     parse_world_entity_event,
     parse_world_entity_identity_event,
     parse_world_ontology_revision_event,
     parse_world_relation_event,
+    require_macro_observes_bridge_fence,
 )
 from trader.infrastructure.state_db.availability_receipt import (
     UtcClock,
@@ -329,7 +334,26 @@ class WorldGraphStore:
             raise TypeError("event must be a knowledge relation event")
         existing = self._event_row(_KNOWLEDGE_LOG.table, parsed.event_id)
         allow_blocked = isinstance(parsed, KnowledgeWorldRelationRetired)
-        if fence is not None:
+        kind = self._knowledge_kind_for(parsed)
+        if knowledge_write_requires_macro_bridge_fence(kind):
+            if not isinstance(fence, MacroGraphBridgeFence):
+                raise ValueError("OBSERVES writes require an exact active MacroGraphBridgeFence")
+            registry = self._registry_from_rows(fence.bridge_key, proven_only=False)
+            run = registry.active_run
+            require_macro_observes_bridge_fence(
+                kind=kind,
+                fence=fence,
+                active_fence=registry.fence,
+                run_status=None if run is None else run.status,
+                allow_blocked=allow_blocked,
+            )
+            self._assert_fence(
+                fence,
+                expected_registry_version,
+                for_new_insert=existing is None,
+                allow_blocked=allow_blocked,
+            )
+        elif fence is not None:
             self._assert_fence(
                 fence,
                 expected_registry_version,
@@ -399,19 +423,24 @@ class WorldGraphStore:
     ) -> PersistedWorldRef[MacroGraphBridgeEventId]:
         parsed = parse_macro_graph_bridge_event(event)
         existing = self._event_row(_BRIDGE_TABLE, parsed.event_id)
-        status_change = parsed.event_type in {
-            "macro_graph_bridge_blocked",
-            "macro_graph_bridge_run_handed_off",
-            "macro_graph_bridge_activated",
-        }
+        status_change = isinstance(parsed, (MacroGraphBridgeBlocked, MacroGraphBridgeResumed))
         if existing is None:
-            if fence is not None:
+            if macro_graph_bridge_event_requires_fence(parsed):
+                if not isinstance(fence, MacroGraphBridgeFence):
+                    raise ValueError("macro graph bridge event requires an exact active MacroGraphBridgeFence")
+                self._assert_fence(
+                    fence,
+                    expected_registry_version,
+                    for_new_insert=True,
+                    allow_blocked=isinstance(parsed, MacroGraphBridgeResumed),
+                )
+            elif fence is not None:
                 self._assert_fence(fence, expected_registry_version, for_new_insert=True)
             self._persist_bridge_event(parsed, expected_registry_version=expected_registry_version)
         else:
             if existing["payload_sha256"] != canonical_sha256(parsed.to_dict()):
                 raise _conflict("event_id", parsed.event_id)
-        if fence is not None and not status_change:
+        if fence is not None and not status_change and macro_graph_bridge_event_requires_fence(parsed):
             self._assert_fence(fence, expected_registry_version, for_new_insert=False)
         receipt = self._commit_availability_receipt(
             subject_kind=_BRIDGE_SUBJECT_KIND,
@@ -455,9 +484,24 @@ class WorldGraphStore:
         return snapshot
 
     def _bridge_event_columns(self, event: MacroGraphBridgeEvent) -> tuple[str | None, int | None]:
-        run_id = getattr(event, "run_id", None) or getattr(event, "successor_run_id", None)
+        run_id = getattr(event, "run_id", None)
         epoch = getattr(event, "epoch", None)
         return (None if run_id is None else str(run_id), None if epoch is None else int(epoch))
+
+    def _knowledge_kind_for(self, event: KnowledgeWorldRelationEvent) -> str | None:
+        if isinstance(event, KnowledgeWorldRelationAsserted):
+            return event.relation.kind
+        row = self._db.query_one(
+            """
+            SELECT relation_kind FROM world_relation_events
+            WHERE family=? AND relation_id=? AND relation_kind IS NOT NULL
+            ORDER BY sequence ASC
+            """,
+            ("knowledge", event.relation_id),
+        )
+        if row is None or row["relation_kind"] in (None, ""):
+            return None
+        return str(row["relation_kind"])
 
     def _proven_bridge_version(self, bridge_key: str) -> int:
         rows = self._db.query_all(

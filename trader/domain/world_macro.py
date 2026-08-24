@@ -448,9 +448,7 @@ class MacroFactSource:
 
     def __post_init__(self) -> None:
         provider_id = _required_text(self.provider_id, "provider_id")
-        adapter_version = require_admitted_macro_adapter(
-            provider_id=provider_id, adapter_version=self.adapter_version
-        )
+        adapter_version = require_admitted_macro_adapter(provider_id=provider_id, adapter_version=self.adapter_version)
         object.__setattr__(self, "provider_id", provider_id)
         object.__setattr__(self, "adapter_version", adapter_version)
         object.__setattr__(self, "source_record_id", _required_text(self.source_record_id, "source_record_id"))
@@ -782,9 +780,7 @@ class MacroSourceRegistryEntry:
             allowed = ", ".join(sorted(MACRO_FACT_KINDS))
             raise ValueError(f"fact_kind must be one of: {allowed}")
         provider_id = _required_text(self.provider_id, "provider_id")
-        adapter_version = require_admitted_macro_adapter(
-            provider_id=provider_id, adapter_version=self.adapter_version
-        )
+        adapter_version = require_admitted_macro_adapter(provider_id=provider_id, adapter_version=self.adapter_version)
         object.__setattr__(self, "source_id", _required_text(self.source_id, "source_id"))
         object.__setattr__(self, "provider_id", provider_id)
         object.__setattr__(self, "provider_entity_id", _required_text(self.provider_entity_id, "provider_entity_id"))

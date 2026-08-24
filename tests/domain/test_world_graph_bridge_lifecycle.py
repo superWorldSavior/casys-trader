@@ -159,8 +159,35 @@ def test_lifecycle_module_is_stdlib_domain() -> None:
     assert "trader.infrastructure" not in source
     assert "trader.application" not in source
     assert "def handoff" not in source
+    assert "MacroGraphBridgeRunHandedOff" not in source
+    assert "macro_graph_bridge_run_handed_off" not in source
     assert "committed_macro_graph_bridge_predecessor" not in source
     assert "committed_macro_graph_bridge_successor" not in source
+
+
+def test_production_has_no_macro_graph_bridge_handoff_event_or_method() -> None:
+    roots = (
+        REPO_ROOT / "trader" / "domain",
+        REPO_ROOT / "trader" / "application" / "world_model",
+        REPO_ROOT / "trader" / "infrastructure",
+        REPO_ROOT / "trader" / "runtime",
+    )
+    forbidden = (
+        "MacroGraphBridgeRunHandedOff",
+        "macro_graph_bridge_run_handed_off",
+        "def handoff(",
+    )
+    violations: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            relative = path.relative_to(REPO_ROOT)
+            for token in forbidden:
+                if token in text:
+                    violations.append(f"{relative}: {token}")
+    assert violations == []
 
 
 def test_current_run_spec_binds_collection_plan_identity() -> None:

@@ -641,9 +641,7 @@ class YahooCommodityAdapter(BoundMacroSourceAdapter):
         if entry.provider_id != "yahoo_finance":
             raise ValueError("YahooCommodityAdapter requires provider_id yahoo_finance")
         if entry.adapter_version != MACRO_YAHOO_COMMODITY_ADAPTER_VERSION:
-            raise ValueError(
-                f"YahooCommodityAdapter requires adapter_version {MACRO_YAHOO_COMMODITY_ADAPTER_VERSION}"
-            )
+            raise ValueError(f"YahooCommodityAdapter requires adapter_version {MACRO_YAHOO_COMMODITY_ADAPTER_VERSION}")
         super().__init__(**kwargs)
 
 

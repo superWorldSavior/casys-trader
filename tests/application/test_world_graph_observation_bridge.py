@@ -432,7 +432,13 @@ class _Bridge:
             current = self.registry.fence
             if current is None or current != fence:
                 raise StaleBridgeEpoch("stale_bridge_epoch")
-            if self.registry.active_run is None or self.registry.active_run.status != "active":
+            run = self.registry.active_run
+            if run is None:
+                raise StaleBridgeEpoch("stale_bridge_epoch")
+            if getattr(event, "event_type", None) == "macro_graph_bridge_resumed":
+                if run.status != "blocked":
+                    raise StaleBridgeEpoch("stale_bridge_epoch")
+            elif run.status != "active":
                 raise StaleBridgeEpoch("stale_bridge_epoch")
         if expected_registry_version != self.registry.version:
             existing = next((item for item in self.registry.events if item.event_id == event.event_id), None)

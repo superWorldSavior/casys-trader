@@ -278,9 +278,7 @@ def test_dbnomics_adapter_emits_typed_fact_for_canonical_scope_not_run_scope() -
     assert "observations=" not in fact.source.source_ref
     assert "metadata=" not in fact.source.source_ref
     assert "XTAI" not in json.dumps(fact.to_dict())
-    assert transport.calls == [
-        "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1&metadata=0"
-    ]
+    assert transport.calls == ["https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1&metadata=0"]
 
 
 def test_dbnomics_urls_add_metadata_zero_and_keep_period_value_indexed_at() -> None:
@@ -288,9 +286,7 @@ def test_dbnomics_urls_add_metadata_zero_and_keep_period_value_indexed_at() -> N
     db_entries = [entry for entry in bundle.registry.entries if entry.provider_id == "dbnomics"]
     assert db_entries
     indexed_at = "2026-08-23T12:30:00Z"
-    transport = ScriptedTransport(
-        [_dbnomics_body("2026-08-22", 4.33, indexed_at=indexed_at) for _ in db_entries]
-    )
+    transport = ScriptedTransport([_dbnomics_body("2026-08-22", 4.33, indexed_at=indexed_at) for _ in db_entries])
     ports = _ports(transport)
     for entry in db_entries:
         facts = ports[entry.source_id].read_facts(RUN_SCOPE, OBSERVED_AT)
@@ -452,9 +448,7 @@ def test_hydrated_correction_replays_then_extends_chain(tmp_path: Path) -> None:
     third_body = _dbnomics_body("2026-08", 4.75, indexed_at="2026-08-24T12:00:00Z")
     clock = FakeClock(OBSERVED_AT)
     store = WorldMacroStore(tmp_path, clock=clock)
-    value_a = _ports(ScriptedTransport([first_body]), clock=clock)["ecb_deposit_rate"].read_facts(
-        RUN_SCOPE, clock()
-    )[0]
+    value_a = _ports(ScriptedTransport([first_body]), clock=clock)["ecb_deposit_rate"].read_facts(RUN_SCOPE, clock())[0]
     store.append_fact(value_a)
     clock.advance(hours=25)
     value_b = _ports(
@@ -466,9 +460,9 @@ def test_hydrated_correction_replays_then_extends_chain(tmp_path: Path) -> None:
     store.append_fact(value_b)
 
     rebuilt = WorldMacroStore(tmp_path, clock=clock)
-    unseeded = _ports(ScriptedTransport([second_body]), clock=clock)["ecb_deposit_rate"].read_facts(
-        RUN_SCOPE, clock()
-    )[0]
+    unseeded = _ports(ScriptedTransport([second_body]), clock=clock)["ecb_deposit_rate"].read_facts(RUN_SCOPE, clock())[
+        0
+    ]
     assert unseeded.fact_version_id == value_b.fact_version_id
     assert unseeded.supersedes_fact_version_id is None
     assert unseeded.content_sha256 != value_b.content_sha256
@@ -502,9 +496,9 @@ def test_hydrated_correction_replays_then_extends_chain(tmp_path: Path) -> None:
 def test_late_fetch_does_not_extend_valid_until_of_already_expired_provider_data() -> None:
     published = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
     observed = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
-    facts = _ports(
-        ScriptedTransport([_dbnomics_body("2026-08-20", 4.33, indexed_at="2026-08-20T12:00:00Z")])
-    )["fed_funds_effective"].read_facts(RUN_SCOPE, observed)
+    facts = _ports(ScriptedTransport([_dbnomics_body("2026-08-20", 4.33, indexed_at="2026-08-20T12:00:00Z")]))[
+        "fed_funds_effective"
+    ].read_facts(RUN_SCOPE, observed)
     assert facts[0].published_at == published
     assert facts[0].valid_until == published + timedelta(hours=72)
     assert facts[0].valid_until < observed

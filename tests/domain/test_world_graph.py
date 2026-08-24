@@ -43,7 +43,6 @@ from trader.domain.world_graph import (
     MacroGraphBridgeFence,
     MacroGraphBridgeRegistry,
     MacroGraphBridgeResumed,
-    MacroGraphBridgeRunHandedOff,
     MacroGraphBridgeRunSpec,
     MacroGraphObservationLinked,
     MacroGraphObservationSkipped,
@@ -53,6 +52,7 @@ from trader.domain.world_graph import (
     MacroSourceFactVersionRef,
     PatternHypothesisRef,
     SensorRef,
+    StaleBridgeEpoch,
     StructuralWorldRelation,
     StructuralWorldRelationAsserted,
     StructuralWorldRelationRetired,
@@ -79,7 +79,10 @@ from trader.domain.world_graph import (
     evaluate_world_graph_point_in_time,
     fold_knowledge_relation_events_at_cutoff,
     fold_structural_relation_events_at_cutoff,
+    knowledge_write_requires_macro_bridge_fence,
+    macro_graph_bridge_event_requires_fence,
     parse_macro_graph_bridge_event,
+    require_macro_observes_bridge_fence,
     parse_world_entity_event,
     parse_world_entity_identity_event,
     parse_world_graph_node_ref,
@@ -1570,51 +1573,43 @@ def test_config_drift_blocks_without_skipping_or_advancing_and_resume_requires_s
         blocked.resume(spec=other, expected_version=2)
 
 
-def test_handoff_is_a_single_event_with_incremented_epoch_and_exactly_one_active_run() -> None:
-    mapping = _scope_mapping()
-    revision = _revision_for_mapping(mapping)
-    spec = _run_spec(mapping, revision)
-    blocked = (
-        MacroGraphBridgeRegistry.empty(BRIDGE_KEY)
-        .activate(reservation=_reservation(), spec=spec, expected_version=0)
-        .block(reason="config_drift", expected_version=1)
-    )
-    next_mapping = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v1",
-        entries=mapping.entries,
-    )
-    next_revision = _revision(
-        revision_id="market_ontology.v1",
-        scope_mapping_id=next_mapping.mapping_id,
-        scope_mapping_hash=next_mapping.content_sha256,
-    )
-    next_spec = _run_spec(next_mapping, next_revision)
-    handed = blocked.handoff(
-        active_run_id=blocked.active_run.run_id,
-        next_run_spec=next_spec,
-        expected_version=2,
-    )
-    assert handed.version == 3
-    assert isinstance(handed.events[-1], MacroGraphBridgeRunHandedOff)
-    event = handed.events[-1]
-    assert event.epoch == 2
-    assert event.predecessor_run_id == blocked.active_run.run_id
-    assert event.successor_run_id == handed.active_run.run_id
-    assert handed.active_run is not None
-    assert handed.active_run.epoch == 2
-    assert handed.active_run.status == "active"
-    assert handed.active_run.cursor == blocked.active_run.cursor
-    assert handed.active_run.spec == next_spec
-    assert len([run for run in handed.runs if run.status == "active"]) == 1
-    assert handed.fence.epoch == 2
-    replay = parse_macro_graph_bridge_event(event.to_dict())
-    assert replay == event
-    with pytest.raises(ValueError, match="active|blocked"):
-        handed.handoff(
-            active_run_id=handed.active_run.run_id,
-            next_run_spec=spec,
-            expected_version=3,
+def test_historical_handoff_is_archived_and_never_parsed() -> None:
+    with pytest.raises(ValueError, match="unknown macro graph bridge event_type"):
+        parse_macro_graph_bridge_event(
+            {
+                "event_type": "macro_graph_bridge_run_handed_off",
+                "schema_version": "macro_graph_bridge_event.v1",
+                "bridge_key": BRIDGE_KEY,
+            }
         )
+    assert not hasattr(MacroGraphBridgeRegistry, "handoff")
+    assert "def handoff" not in inspect.getsource(MacroGraphBridgeRegistry)
+
+
+def test_observes_ownership_is_a_typed_domain_rule() -> None:
+    assert knowledge_write_requires_macro_bridge_fence("OBSERVES") is True
+    assert knowledge_write_requires_macro_bridge_fence("ABOUT") is False
+    assert knowledge_write_requires_macro_bridge_fence("DERIVED_FROM") is False
+    assert knowledge_write_requires_macro_bridge_fence(None) is True
+    require_macro_observes_bridge_fence(kind="ABOUT", fence=None, active_fence=None, run_status=None)
+    with pytest.raises(ValueError, match="OBSERVES|fence"):
+        require_macro_observes_bridge_fence(kind="OBSERVES", fence=None, active_fence=None, run_status="active")
+    mapping = _scope_mapping()
+    spec = _run_spec(mapping, _revision_for_mapping(mapping))
+    registry = MacroGraphBridgeRegistry.empty(BRIDGE_KEY).activate(
+        reservation=_reservation(), spec=spec, expected_version=0
+    )
+    fence = registry.fence
+    require_macro_observes_bridge_fence(kind="OBSERVES", fence=fence, active_fence=fence, run_status="active")
+    stale = MacroGraphBridgeFence(bridge_key=BRIDGE_KEY, run_id=fence.run_id, epoch=fence.epoch + 1)
+    with pytest.raises(StaleBridgeEpoch, match="stale_bridge_epoch"):
+        require_macro_observes_bridge_fence(kind="OBSERVES", fence=stale, active_fence=fence, run_status="active")
+    with pytest.raises(StaleBridgeEpoch, match="stale_bridge_epoch"):
+        require_macro_observes_bridge_fence(kind="OBSERVES", fence=fence, active_fence=fence, run_status="blocked")
+    activated = registry.events[-1]
+    blocked = registry.block(reason="config_drift", expected_version=1).events[-1]
+    assert macro_graph_bridge_event_requires_fence(activated) is False
+    assert macro_graph_bridge_event_requires_fence(blocked) is True
 
 
 def test_cursor_is_ordinal_not_datetime_and_first_seen_cannot_move_it() -> None:

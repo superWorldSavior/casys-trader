@@ -6,10 +6,13 @@ import math
 import pytest
 
 from trader.application.world_model.context_capture import attach_world_context
+import numpy as np
+
 from trader.application.world_model.encoding import (
     FeatureBoundaryError,
     FutureLabelLeakageError,
     OutcomeEventConflictError,
+    build_feature_state,
     world_lane_encoder_profile,
 )
 from trader.application.world_model.gru import OnlineGRUWorldChallenger, cold_gru_challenger
@@ -17,8 +20,11 @@ from trader.domain.world_cohort import WorldLaneDefinition
 from trader.domain.world_context import SensorEvidence
 from trader.domain.world_episode import WorldEpisode, WorldObservation, WorldOutcome, canonical_sha256
 from trader.domain.world_feature_contract import (
+    GRAPH_CONTENT_CATEGORICAL_FEATURES,
+    GRAPH_FEATURE_CONTRACT_ID,
     GRAPH_GRU_MODEL_IDENTITY,
     GRAPH_MODEL_VERSION,
+    GRAPH_STATUS_CATEGORICAL_FEATURES,
     market_feature_contract,
     context_feature_contract,
     graph_feature_contract,
@@ -566,3 +572,139 @@ def test_cold_gru_graph_topology_status_only_is_constructible_and_isolated() -> 
             prototype=model,
             hidden_size=4,
         )
+
+
+_GRAPH_STATUS = {
+    "graph_status": "complete",
+    "graph_scope_status": "resolved",
+    "graph_coverage_status": "complete",
+    "graph_freshness_status": "0-4h",
+    "graph_source_count_bucket": "b1",
+    "graph_artifact_count_bucket": "b1",
+    "graph_missingness_status": "none",
+}
+_GRAPH_CONTEXT = {
+    "context_status": "partial",
+    "macro_status": "partial",
+    "company_status": "missing",
+    "context_macro_regime": "risk_on",
+}
+_GRAPH_CONTENT_A = {
+    "graph_path_count_bucket": "b1",
+    "graph_depth_min_bucket": "b1",
+    "graph_depth_max_bucket": "b1",
+    "graph_path_freshness_min_bucket": "0-4h",
+    "graph_path_freshness_max_bucket": "0-4h",
+    "graph_path_signature": "sig:aaaaaaaaaaaaaaaa",
+    "graph_macro_agreement_status": "single",
+    "graph_window_0_4h_count_bucket": "b1",
+    "graph_window_4_24h_count_bucket": "b0",
+    "graph_window_1_7d_count_bucket": "b0",
+    "graph_window_older_count_bucket": "b0",
+}
+_GRAPH_CONTENT_B = {
+    "graph_path_count_bucket": "b3",
+    "graph_depth_min_bucket": "b2",
+    "graph_depth_max_bucket": "b4",
+    "graph_path_freshness_min_bucket": "4-24h",
+    "graph_path_freshness_max_bucket": "1-7d",
+    "graph_path_signature": "sig:bbbbbbbbbbbbbbbb",
+    "graph_macro_agreement_status": "agree",
+    "graph_window_0_4h_count_bucket": "b0",
+    "graph_window_4_24h_count_bucket": "b2",
+    "graph_window_1_7d_count_bucket": "b1",
+    "graph_window_older_count_bucket": "b0",
+}
+
+
+def _graph_episode(
+    *,
+    content: dict[str, str],
+    numeric: dict[str, float] | None = None,
+) -> WorldEpisode:
+    episode = _episode(0, feature_contract_version=GRAPH_FEATURE_CONTRACT_ID)
+    payload = episode.observation.to_dict()
+    payload["graph_features"] = {
+        "categorical_features": {**_GRAPH_STATUS, **_GRAPH_CONTEXT, **content},
+        "numeric_features": dict(numeric or {}),
+    }
+    return WorldEpisode(WorldObservation.from_dict(payload))
+
+
+def _vector(model: OnlineGRUWorldChallenger, episode: WorldEpisode) -> np.ndarray:
+    return np.asarray(model._encode_episode(episode), dtype=np.float64)
+
+
+def test_graph_content_gru_encodes_masked_graph_fields_and_keeps_other_lanes_isolated() -> None:
+    first = _graph_episode(content=_GRAPH_CONTENT_A, numeric={"efficiency_ratio": 0.31, "z_score": -0.4})
+    second = _graph_episode(content=_GRAPH_CONTENT_B, numeric={"efficiency_ratio": 0.31, "z_score": -0.4})
+    numeric_shift = _graph_episode(content=_GRAPH_CONTENT_A, numeric={"efficiency_ratio": 0.88, "z_score": 1.7})
+    status_only = _cold_gru("topology_status_only")
+    content = _cold_gru("graph_content")
+    market = _cold_gru("market")
+    joint = _cold_gru("joint")
+    market_profile = world_lane_encoder_profile("market")
+    joint_profile = world_lane_encoder_profile("joint")
+
+    first_content = _vector(content, first)
+    second_content = _vector(content, second)
+    first_status = _vector(status_only, first)
+    second_status = _vector(status_only, second)
+    numeric_content = _vector(content, numeric_shift)
+    numeric_status = _vector(status_only, numeric_shift)
+
+    assert not np.array_equal(first_content, second_content)
+    assert np.array_equal(first_status, second_status)
+    assert not np.array_equal(first_content, numeric_content)
+    assert not np.array_equal(first_status, numeric_status)
+    assert GRAPH_CONTENT_CATEGORICAL_FEATURES
+    assert GRAPH_STATUS_CATEGORICAL_FEATURES
+    first_state = content._feature_state(first)
+    second_state = content._feature_state(second)
+    assert first_state.categorical_values["graph_path_signature"] == "sig:aaaaaaaaaaaaaaaa"
+    assert second_state.categorical_values["graph_path_signature"] == "sig:bbbbbbbbbbbbbbbb"
+    assert first_state.numeric_values["efficiency_ratio"] == 0.31
+    assert numeric_shift.observation.graph_features["numeric_features"]["z_score"] == 1.7
+    assert content._feature_state(numeric_shift).numeric_values["z_score"] == 1.7
+    status_state = status_only._feature_state(first)
+    assert "graph_path_signature" not in status_state.categorical_values
+    assert "graph_path_count_bucket" not in status_state.categorical_values
+    assert status_state.categorical_values["graph_status"] == "complete"
+    assert status_only._feature_state(second).categorical_values["graph_status"] == "complete"
+
+    assert build_feature_state(
+        first, feature_contract=market_profile.contract, feature_mask=market_profile.mask
+    ) == build_feature_state(second, feature_contract=market_profile.contract, feature_mask=market_profile.mask)
+    assert build_feature_state(
+        first, feature_contract=joint_profile.contract, feature_mask=joint_profile.mask
+    ) == build_feature_state(second, feature_contract=joint_profile.contract, feature_mask=joint_profile.mask)
+    with pytest.raises(FeatureBoundaryError):
+        market.predict(first, HORIZON_4H)
+    with pytest.raises(FeatureBoundaryError):
+        joint.predict(first, HORIZON_4H)
+    v1 = _episode(0)
+    v2 = attach_world_context(
+        (v1,),
+        _FakeSource(
+            SensorEvidence(status="missing", reason="no_artifact"),
+            SensorEvidence(status="missing", reason="no_artifact"),
+        ),
+    )[0]
+    market_vector = _vector(market, v1)
+    joint_vector = _vector(joint, v2)
+    other_market = _vector(_cold_gru("market"), v1)
+    other_joint = _vector(
+        _cold_gru("joint"),
+        attach_world_context(
+            (_episode(0),),
+            _FakeSource(
+                SensorEvidence(status="missing", reason="no_artifact"),
+                SensorEvidence(status="missing", reason="no_artifact"),
+            ),
+        )[0],
+    )
+    assert np.array_equal(market_vector, other_market)
+    assert np.array_equal(joint_vector, other_joint)
+    assert content.accepts_episode(first) is True
+    assert market.accepts_episode(first) is False
+    assert joint.accepts_episode(first) is False

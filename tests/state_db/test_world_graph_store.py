@@ -25,9 +25,11 @@ from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_graph import (
     FORBIDDEN_RELATION_KINDS,
+    KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
     KnowledgeWorldRelationRetired,
+    MacroGraphBridgeFence,
     MacroGraphBridgeRegistry,
     MacroGraphBridgeRunSpec,
     MacroObservationCursor,
@@ -131,6 +133,34 @@ def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
     }
     values.update(overrides)
     return KnowledgeWorldRelation(**values)  # type: ignore[arg-type]
+
+
+def _artifact(*, digest: str = SHA) -> KnowledgeArtifactRef:
+    return KnowledgeArtifactRef(artifact_id=f"knowledge_artifact:v1:{digest}", content_sha256=digest)
+
+
+def _about(**overrides: object) -> KnowledgeWorldRelation:
+    values: dict[str, object] = {
+        "kind": "ABOUT",
+        "source": _artifact(),
+        "target": _venue(),
+        "effective_from": T0,
+        "ontology_revision": "market_ontology.v1",
+        "source_refs": ("artifact:proof",),
+    }
+    values.update(overrides)
+    return KnowledgeWorldRelation(**values)  # type: ignore[arg-type]
+
+
+def _derived() -> KnowledgeWorldRelation:
+    return KnowledgeWorldRelation(
+        kind="DERIVED_FROM",
+        source=_artifact(),
+        target=_artifact(digest="b" * 64),
+        effective_from=T0,
+        ontology_revision="market_ontology.v1",
+        source_refs=("artifact:derived",),
+    )
 
 
 def _link(**overrides: object) -> WorldEntityIdentityLink:
@@ -446,13 +476,13 @@ def test_identity_relation_revision_events_round_trip_and_split_families(tmp_pat
             source_refs=("provider:instrument-master:2330",),
         )
     )
-    knowledge = _knowledge()
+    knowledge = _about()
     store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=knowledge))
     store.append_knowledge_relation_event(
         KnowledgeWorldRelationRetired(
             relation_id=knowledge.relation_id,
             retired_at=T1,
-            source_refs=("macro_world_observation:v1:" + SHA,),
+            source_refs=("artifact:proof",),
         )
     )
 
@@ -541,7 +571,7 @@ def test_persisted_payloads_never_contain_networkx_or_causes(tmp_path: Path) -> 
     store = _store(tmp_path)
     store.append_entity_event(_entity_event())
     store.append_structural_relation_event(StructuralWorldRelationAsserted(relation=_structural()))
-    store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=_knowledge()))
+    store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=_about()))
     store.append(_snapshot())
     blobs = [
         row[0]
@@ -840,7 +870,7 @@ def test_bridge_event_cas_and_identical_retry_repairs_receipt_after_head_advance
     assert store.load(BRIDGE_KEY).events == ()
     monkeypatch.undo()
     blocked = activated.block(reason="config_drift", expected_version=1)
-    store.append_event(blocked.events[-1], expected_registry_version=0, fence=None)
+    store.append_event(blocked.events[-1], expected_registry_version=0, fence=activated.fence)
     repaired = store.append_event(event, expected_registry_version=0, fence=None)
     assert repaired.receipt.ready_at == READY
     loaded = store.load(BRIDGE_KEY)
@@ -859,52 +889,67 @@ def test_bridge_event_cas_and_identical_retry_repairs_receipt_after_head_advance
         store.append_event(other.events[-1], expected_registry_version=0, fence=None)
 
 
-def test_fenced_knowledge_append_and_old_worker_is_rejected_after_handoff(tmp_path: Path) -> None:
+def test_observes_writes_require_the_active_fence_and_generic_knowledge_does_not(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     registry = _activate(store)
     fence = registry.fence
-    knowledge = KnowledgeWorldRelationAsserted(relation=_knowledge())
+    with pytest.raises(ValueError, match="OBSERVES|fence"):
+        store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=_knowledge()))
+    about = KnowledgeWorldRelationAsserted(relation=_about())
+    store.append_knowledge_relation_event(about)
+    store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=_derived()))
+    observes = KnowledgeWorldRelationAsserted(relation=_knowledge())
     persisted = store.append_knowledge_relation_event(
-        knowledge,
+        observes,
         fence=fence,
         expected_registry_version=registry.version,
     )
     assert persisted.receipt.storage_locator.table == "world_relation_events"
     visible = store.list_knowledge_relation_events_available_through(LATER)
-    assert len(visible) == 1
-    blocked = registry.block(reason="config_drift", expected_version=registry.version)
-    store.append_event(blocked.events[-1], expected_registry_version=registry.version, fence=fence)
-    next_plan = MacroCollectionPlan(
-        registry_version="world_macro_sources.v1",
-        registry_content_sha256="c" * 64,
-        targets=(
-            MacroCollectionTarget(
-                scope=MacroScope(kind="venue", entity_id="mic:XTAI"),
-                source_ids=("fed_policy_rate",),
-            ),
-        ),
-    )
-    next_spec = MacroGraphBridgeRunSpec(
-        scope_mapping_id="world_scope_mapping.v1",
-        scope_mapping_hash="b" * 64,
-        ontology_revision_id="market_ontology.v1",
-        ontology_revision_hash="c" * 64,
-        collection_plan_id=next_plan.plan_id,
-        collection_plan_hash=next_plan.content_sha256,
-        producer_version=MACRO_PRODUCER_VERSION,
-    )
-    handed = store.load(BRIDGE_KEY).handoff(
-        active_run_id=blocked.active_run.run_id,
-        next_run_spec=next_spec,
-        expected_version=2,
-    )
-    store.append_event(handed.events[-1], expected_registry_version=2, fence=None)
+    assert {item.event.relation.kind for item in visible if hasattr(item.event, "relation")} >= {
+        "ABOUT",
+        "DERIVED_FROM",
+        "OBSERVES",
+    }
+    stale = MacroGraphBridgeFence(bridge_key=BRIDGE_KEY, run_id=fence.run_id, epoch=fence.epoch + 1)
     other = _knowledge(source=WorldObservationRef(observation_id=f"world_observation:v1:{'b' * 64}"))
     with pytest.raises(StaleBridgeEpoch, match="stale_bridge_epoch"):
         store.append_knowledge_relation_event(
             KnowledgeWorldRelationAsserted(relation=other),
-            fence=fence,
-            expected_registry_version=1,
+            fence=stale,
+            expected_registry_version=registry.version,
         )
+    blocked = registry.block(reason="config_drift", expected_version=registry.version)
+    with pytest.raises(ValueError, match="Fence"):
+        store.append_event(blocked.events[-1], expected_registry_version=registry.version, fence=None)
+    store.append_event(blocked.events[-1], expected_registry_version=registry.version, fence=fence)
+    blocked_registry = store.load(BRIDGE_KEY)
+    drifted = _knowledge(source=WorldObservationRef(observation_id=f"world_observation:v1:{'c' * 64}"))
+    with pytest.raises(ValueError, match="OBSERVES|fence"):
+        store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=drifted))
+    with pytest.raises(StaleBridgeEpoch, match="stale_bridge_epoch"):
+        store.append_knowledge_relation_event(
+            KnowledgeWorldRelationAsserted(relation=drifted),
+            fence=fence,
+            expected_registry_version=blocked_registry.version,
+        )
+    store.append_knowledge_relation_event(
+        KnowledgeWorldRelationRetired(
+            relation_id=observes.relation.relation_id,
+            retired_at=T1,
+            source_refs=("macro_world_observation:v1:" + SHA,),
+        ),
+        fence=fence,
+        expected_registry_version=blocked_registry.version,
+    )
+    store.append_knowledge_relation_event(
+        KnowledgeWorldRelationRetired(
+            relation_id=about.relation.relation_id,
+            retired_at=T1,
+            source_refs=("artifact:proof",),
+        )
+    )
     unproven = store.list_knowledge_relation_events_available_through(CUTOFF)
     assert unproven == ()

@@ -923,19 +923,15 @@ class OnlineGRUWorldChallenger:
         return matrix, mask, metadata
 
     def _encode_episode(self, episode: WorldEpisode) -> np.ndarray:
-        """Encode only fixed-market fields; no fitted preprocessing is allowed."""
+        """Encode the masked FeatureState; no fitted preprocessing is allowed."""
 
-        # This call is intentionally redundant with registration: it protects
-        # against a future caller mutating a custom mapping before conversion
-        # and keeps the encoder aligned with the reviewed baseline boundary.
-        self._feature_state(episode)
-        observation = episode.observation
+        state = self._feature_state(episode)
         vector = np.zeros(self.input_size, dtype=np.float64)
         allowed_numeric = None if self._profile is None else self._profile.allowed_numeric
         for index, (name, scale) in enumerate(_NUMERIC_SCALES):
             if allowed_numeric is not None and name not in allowed_numeric:
                 continue
-            value = observation.numeric_features.get(name)
+            value = state.numeric_values.get(name)
             if value is None:
                 continue
             numeric = float(value)
@@ -944,29 +940,12 @@ class OnlineGRUWorldChallenger:
             vector[index * 2] = math.tanh(numeric / scale)
             vector[index * 2 + 1] = 1.0
 
-        categorical: dict[str, str] = {
-            key: str(value).strip().lower()
-            for key, value in observation.categorical_features.items()
-            if key in self._categorical_keys
+        categorical = {
+            key: value for key, value in state.categorical_values.items() if key in self._categorical_keys and value
         }
-        if self._include_context and isinstance(observation.context, Mapping):
-            extra = observation.context.get("categorical_features") or {}
-            if isinstance(extra, Mapping):
-                for key, value in extra.items():
-                    if key in self._categorical_keys and value is not None:
-                        categorical.setdefault(str(key), str(value).strip().lower())
-        categorical.update(
-            {
-                "venue": observation.venue.strip().lower(),
-                "bar_interval": observation.bar_interval.strip().lower(),
-                "data_freshness": observation.freshness.status.strip().lower(),
-            }
-        )
         category_offset = len(_NUMERIC_SCALES) * 2
         populated = 0
         for key, value in sorted(categorical.items()):
-            if not value:
-                continue
             token = f"{key}={value}".encode("utf-8")
             digest = sha256(token).digest()
             bucket = int.from_bytes(digest[:8], "big", signed=False) % self.categorical_hash_buckets
