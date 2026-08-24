@@ -13,6 +13,9 @@
 - **Supersède** : aucun
 - **RFCs sœurs** : [cohorte prospective](2026-08-23-world-model-prospective-cohort-design.md),
   [graphe et hypothèses de patterns](2026-08-23-world-model-graph-pattern-hypotheses-design.md)
+- **Lignée live gelée** : registre/adapters `v2` et plan de collecte
+  `32757eeb…` — voir §17 ; les contrats payload restent `macro_source_fact.v1`
+  / `macro_world_observation.v1`
 
 ## 1. Résumé et décision proposée
 
@@ -256,7 +259,9 @@ de couverture, sa méthode et les faits qui la justifient. Une observation
   `MacroSourceFactVersionId` et pointe
   `supersedes_fact_version_id` vers la feuille précédente ;
 - une observation référence toujours des version IDs exacts ;
-- l'ordre d'arrivée sur disque ne doit pas modifier le résultat canonique.
+- l'ordre d'arrivée sur disque ne doit pas modifier le résultat canonique ;
+- `source_ref` est l'identité de ressource, pas l'URL de transport ; la
+  lignée registre/adapter live est figée en §17.
 
 ### 5.5 Cycle de vie piloté par l'agrégat
 
@@ -320,7 +325,7 @@ payload historique.
 
 `valid_until` d'un fait est `published_at` plus le TTL opérateur figé. Une
 re-observation locale (`observed_at`, `ingested_at`, horloge runtime) ne mute
-jamais un fait.
+jamais un fait. Les TTL live et le staging PIT sont figés en §17.
 
 Un fait ou une observation est admissible seulement si :
 
@@ -483,7 +488,8 @@ Une preuve invalide est visible en reporting mais exclue du modèle.
 
 ## 9. Sources, cadence et budgets
 
-Le registre `macro_sources.v1` est versionné et configuré. Il commence par :
+Le registre est versionné et configuré. Le contrat initial était
+`macro_sources.v1` ; la lignée live est `macro_sources.v2` (§17). Il commence par :
 
 - séries officielles déjà cartographiées dans le projet ;
 - benchmarks de marché explicitement désignés comme macro, distincts de
@@ -799,6 +805,10 @@ Après implémentation — pas au stade RFC — consolider :
 - `docs/how-to/operate-world-model-shadow.md` : commandes et flags vérifiés ;
 - D19 : uniquement si son résumé d'implémentation doit être complété.
 
+La lignée registre/adapter `v2` et le handoff de plan de collecte sont
+figés dans la présente RFC (§17) ; les pages explanation / how-to portent
+le runtime live, sans réécrire les exemples `v1` des §5–9.
+
 ## 16. Décisions à figer par `MACRO-CONFIG` avant MACRO-4
 
 1. liste exacte des providers initiaux et cadence par provider ;
@@ -811,3 +821,108 @@ Ces choix sont gelés dans les trois artefacts de `MACRO-CONFIG`, puis référen
 par hash dans le registre et les versions de transformation. Ils ne remettent
 pas en cause la frontière source-only et ne peuvent pas être inventés par un
 lot d'implémentation.
+
+## 17. Lignée registre / adapter v2 (gelée)
+
+Cette section fige la migration revue du registre et des adapters. Elle ne
+change pas les schémas payload (`macro_source_fact.v1`,
+`macro_world_observation.v1`, `macro_source_registry.v1`,
+`macro_collection_plan.v1`). Autorité inchangée : `shadow_only` /
+`decision_effect=none` / `NO_GO`.
+
+### 17.1 Identité explicite
+
+| Identité | Valeur live |
+|---|---|
+| `registry_version` | `macro_sources.v2` |
+| adapters DBnomics | `dbnomics_series.v2` |
+| adapters Yahoo | `yahoo_commodity.v2` |
+| `producer_version` | `macro_source_only.v2` |
+| `lane_identity` | `context.v2.macro_source.v2` |
+| plan de collecte | `macro_collection_plan:v1:32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d` |
+
+`MACRO_ADMITTED_PRODUCER_VERSIONS` n'admet que `macro_source_only.v2`.
+`committed_macro_collection_plan` est fail-closed si le dérivé n'égale
+pas exactement `WORLD_MACRO_COLLECTION_PLAN_ID` /
+`WORLD_MACRO_COLLECTION_PLAN_SHA256`. Un changement d'`adapter_version`
+change le `content_sha256` du registre, donc le hash du plan ; ce n'est
+pas un changement de `schema_version` du plan.
+
+### 17.2 `valid_until` déterministe
+
+`derive_macro_source_fact_valid_until` = `published_at` plus le TTL
+opérateur figé (`series_point_daily_h=72`, `series_point_monthly_d=40`,
+`market_benchmark_daily_h=72`). `observed_at`, `ingested_at` et l'horloge
+de collecte n'y participent pas : les mêmes données provider rejouent le
+même `valid_until`. Un fetch tardif d'une série déjà hors TTL reste
+`stale` ; il ne rajeunit pas la vintage.
+
+Même `MacroSourceFactVersionId` + `valid_until` différent = conflit
+explicite, jamais une mutation silencieuse.
+
+### 17.3 `source_ref` canonique vs transport
+
+`source_ref` est `macro_source_resource_ref` : base provider +
+`provider_entity_id`, sans query. Les paramètres de fetch
+(`observations=1`, `metadata=0`, `range`, `interval`) n'existent que sur
+`macro_source_fetch_url`. Changer un budget de transport ne crée pas une
+nouvelle `MacroSourceFactVersionId` et ne doit pas apparaître dans la
+provenance.
+
+### 17.4 Hydratation au boot
+
+`WorldMacroStore.list_facts()` ne rend que les faits **reçus-prouvés**
+(sujet joint au reçu, `subject_id` = `fact_version_id`).
+`compatible_macro_source_leaves` retient, par `source_id` du registre
+live, la feuille `supersedes` dont provider, `adapter_version`,
+`fact_kind`, `metric_key`, scope canonique et préfixe
+`source_record_id` matchent l'entrée. `wire_world_macro_runtime` appelle
+`seed_compatible_leaf` au compose.
+
+Sans cette hydratation, un restart rejouerait la même valeur provider
+comme une nouvelle version sans `supersedes` : conflit, lignée de
+correction perdue. Les vintages d'adapter étrangers sont ignorés, pas
+réécrits.
+
+### 17.5 Lignes v1 lisibles et immuables
+
+Les faits `adapter_version=*.v1` et les observations
+`macro_source_only.v1` restent parseables. Même `MacroFactKey`, nouveau
+`MacroSourceFactVersionId` (l'adapter entre dans le hash de version).
+Ils ne sont ni mutés, ni rétro-jointés, ni hydratés comme feuille live,
+ni admis dans l'ombre. Réécrire un `valid_until` v1 à identité constante
+est un conflit.
+
+### 17.6 Pont graphe : migration de plan append-only
+
+`classify_macro_graph_bridge` n'admet que les couples gelés de
+`committed_macro_graph_bridge_migrations()`. Les callers ne peuvent pas
+injecter un couple. Deux lignées, même successeur live :
+
+1. mapping/ontologie `v1` → successeur `v2` (plan et producteur absents
+   sur le prédécesseur) ;
+2. même mapping/ontologie `v2` + `macro_source_only.v2`, plan
+   `74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5`
+   → `32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d`.
+
+Run `active` dont la spec diffère = `drifted_active` (block, pas de
+handoff). Run `blocked` + couple exact = `drifted_blocked_admitted` :
+retraite append-only des `OBSERVES` possédés, puis
+`MacroGraphBridgeRunHandedOff` (curseur conservé, un propriétaire, pas
+de backfill). Crash au milieu : retry idempotent. Tout autre bit =
+`unknown_drift`. Voir aussi la [RFC graphe](2026-08-23-world-model-graph-pattern-hypotheses-design.md)
+§6.3.
+
+### 17.7 Point-in-time : staging puis publication, stale honnête
+
+Un premier cutoff peut persister le fait et son reçu (`ready_at` après
+le cutoff) et terminer `failed` / `no_admissible_observation` : l'évidence
+est **stagée**, aucune fausse observation. Un cutoff ultérieur qui
+satisfait `effective_ready_at <= cutoff_at` et `cutoff_at < valid_until`
+peut publier ; le reçu d'observation porte alors *ce* cutoff, distinct
+du `ready_at` du fait.
+
+Une série amont déjà hors TTL reste `stale` / inadmissible, même
+re-fetchée après le cutoff. `published_at <= cutoff_at` ne suffit
+jamais. `availability_unproven` et `stale` ne sont pas projetés comme
+fresh.

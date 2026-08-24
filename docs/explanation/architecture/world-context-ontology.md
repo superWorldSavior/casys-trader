@@ -129,9 +129,18 @@ compatibilité : ce n'est **pas** une source modèle. GDELT continue d'alimenter
 l'analyste Univers ; ça ne le réintroduit pas dans le World Context.
 
 Allowlist macro actuelle : DBnomics (taux, CPI, chômage) et Yahoo Finance
-(brent, or). Exclus aussi : FRED, ecbdata, OECD. Gaps déclarés (USD large,
-taux/CPI Taiwan, séries de croissance) restent des missingness honnêtes,
-jamais une valeur nulle inventée.
+(brent, or), registre `macro_sources.v2` / adapters
+`dbnomics_series.v2` et `yahoo_commodity.v2`. Exclus aussi : FRED,
+ecbdata, OECD. Gaps déclarés (USD large, taux/CPI Taiwan, séries de
+croissance) restent des missingness honnêtes, jamais une valeur nulle
+inventée. `valid_until` = `published_at` + TTL figé ; `source_ref` est
+la ressource canonique, distincte des query de transport
+(`observations=1`, `metadata=0`). Un premier cutoff peut stager le
+fait (reçu après cutoff, run `no_admissible_observation`) ; un cutoff
+ultérieur peut le publier. Une série amont déjà hors TTL reste
+`stale`. Au boot, la feuille `supersedes` est hydratée depuis les
+faits reçus-prouvés compatibles. Voir
+[RFC macro §17](../../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md).
 
 Deny-list de politique (parcours récursif) : candidate, hotlist, mandat,
 Brain, ordre, fill, PnL, company_brief, mémoire, etc. Une clé interdite

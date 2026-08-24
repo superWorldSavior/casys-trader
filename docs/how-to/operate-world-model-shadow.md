@@ -142,9 +142,15 @@ Après déploiement du commit, **un redémarrage volontaire** du daemon :
    `market_ontology.v1` **et** le hash mapping prédécesseur est exact, il
    la **supersède** (append-only), il ne mute pas le hash `v1` ;
 3. si le pont est `blocked=config_drift` **et** le couple durable/désiré
-   est exactement le lignage v1→v2 gelé : retraite append-only des
+   est exactement une lignée gelée — mapping/ontologie `v1`→`v2`, **ou**
+   plan de collecte
+   `74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5` →
+   `32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d` à
+   mapping/ontologie `v2` constants : retraite append-only des
    `OBSERVES` possédés, puis **handoff** (curseur conservé, un seul
-   propriétaire, pas de backfill). Crash au milieu : retry idempotent ;
+   propriétaire, pas de backfill). Un run `active` dérivé reste bloqué.
+   Crash au milieu : retry idempotent. Détail :
+   [RFC macro §17](../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md) ;
 4. `world graph status` / `world cohort status` doivent montrer les têtes
    `world_scope_mapping.v2` / `market_ontology.v2` ;
 5. un symbole sans ligne exacte reste `unmapped` : snapshot V3
