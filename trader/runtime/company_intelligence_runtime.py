@@ -33,6 +33,7 @@ from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeS
 from trader.infrastructure.state_db.company_analysis_run_store import CompanyAnalysisRunStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
 from trader.infrastructure.state_db.fundamental_item_store import FundamentalItemStore
+from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.market.radar_config import load_radar_params
 from trader.market.rotation.schedule import load_sessions, preopen_venues
 from trader.market.rotation.wiring import venue_of
@@ -40,6 +41,7 @@ from trader.runtime.protocols import LoggerLike
 
 COMPANY_TASK_KIND = "company_micro"
 COMPANY_RESOURCE = "company-research"
+COMPANY_SCAN_STATUS_FILENAME = "company_scan_status.json"
 VENUES = ("TW", "EU", "US")
 DEFAULT_CONCURRENCY = 2
 DEFAULT_WAIT_TIMEOUT_S = 600.0
@@ -201,11 +203,7 @@ def build_company_evidence_provider(
     for symbol, raw in entities.items():
         if isinstance(raw, Mapping) and raw.get("issuer_name"):
             names[str(symbol)] = str(raw["issuer_name"])
-    entity_mappings = {
-        str(symbol): dict(raw)
-        for symbol, raw in entities.items()
-        if isinstance(raw, Mapping)
-    }
+    entity_mappings = {str(symbol): dict(raw) for symbol, raw in entities.items() if isinstance(raw, Mapping)}
     return CompositeCompanyEvidenceProvider(
         (
             SecEdgarCompanyEvidenceProvider(),
@@ -440,20 +438,50 @@ class CompanyIntelligenceRuntime:
         if self._workers_started:
             self.pool.stop(timeout_s=1.0)
 
+    def _persist_scan_status(self, *, status: str, started_at: str) -> None:
+        try:
+            write_json_atomic(
+                self.state_dir / COMPANY_SCAN_STATUS_FILENAME,
+                {
+                    "pid": os.getpid(),
+                    "status": status,
+                    "started_at": started_at,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - observational status must never kill the scan
+            self.log.warning("company scan status write failed: %s", exc)
+
     def _scan_loop(self, *, initial_kwargs: dict[str, Any]) -> None:
+        started_at = datetime.now(timezone.utc).isoformat()
+        self._persist_scan_status(status="running", started_at=started_at)
         kwargs = initial_kwargs
-        while True:
-            try:
-                self.refresh(**kwargs)
-            except Exception as exc:  # noqa: BLE001 - background research is fail-open
-                self.log.warning("company intelligence scan failed: %s", exc)
-            with self._lock:
-                if self._stopping or self._pending_scan is None:
+        status_cleared = False
+        try:
+            while True:
+                try:
+                    self.refresh(**kwargs)
+                except Exception as exc:  # noqa: BLE001 - background research is fail-open
+                    self.log.warning("company intelligence scan failed: %s", exc)
+                with self._lock:
+                    if self._stopping or self._pending_scan is None:
+                        # Keep the scan claimed until the idle receipt is on
+                        # disk so an immediate retrigger cannot be hidden by a
+                        # late idle write from this thread.
+                        self._persist_scan_status(status="idle", started_at=started_at)
+                        status_cleared = True
+                        if self._scan_thread is threading.current_thread():
+                            self._scan_thread = None
+                        return
+                    kwargs = self._pending_scan
+                    self._pending_scan = None
+                self._persist_scan_status(status="running", started_at=started_at)
+        finally:
+            if not status_cleared:
+                with self._lock:
+                    self._persist_scan_status(status="idle", started_at=started_at)
                     if self._scan_thread is threading.current_thread():
                         self._scan_thread = None
-                    return
-                kwargs = self._pending_scan
-                self._pending_scan = None
 
     def _collect_and_enqueue(
         self,
@@ -470,9 +498,7 @@ class CompanyIntelligenceRuntime:
         # config_dir points at <root>/config; load_sessions wants the root.
         radar = load_radar_params(self.config_dir)
         sessions = load_sessions(str(self.config_dir.parent))
-        preopen_now = set(
-            preopen_venues(as_of.isoformat(), sessions, window_minutes=radar.preopen_window_minutes)
-        )
+        preopen_now = set(preopen_venues(as_of.isoformat(), sessions, window_minutes=radar.preopen_window_minutes))
         preopen_window = timedelta(minutes=radar.preopen_window_minutes)
         cooldown = timedelta(hours=self.refresh_cooldown_hours)
         enqueued: list[dict[str, Any]] = []
@@ -514,9 +540,7 @@ class CompanyIntelligenceRuntime:
                         preopen_window=preopen_window,
                     )
                     if not due:
-                        skipped.append(
-                            {"symbol": symbol, "reason": f"unchanged:{reason}", "brief_ref": current.ref()}
-                        )
+                        skipped.append({"symbol": symbol, "reason": f"unchanged:{reason}", "brief_ref": current.ref()})
                         # This is a scanner observation, not an LLM attempt.
                         # Persisting one row per unchanged symbol and daemon
                         # tick created tens of thousands of no-op run rows and
@@ -740,9 +764,7 @@ def _enabled(config_dir: Path) -> bool:
 
 
 def _configured_concurrency(config_dir: Path) -> int:
-    raw = _load_yaml_mapping(config_dir / "company_intelligence.yaml").get(
-        "research_concurrency", DEFAULT_CONCURRENCY
-    )
+    raw = _load_yaml_mapping(config_dir / "company_intelligence.yaml").get("research_concurrency", DEFAULT_CONCURRENCY)
     try:
         return max(1, int(raw))
     except (TypeError, ValueError):

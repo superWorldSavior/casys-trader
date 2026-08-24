@@ -1,4 +1,6 @@
 import json
+import os
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -19,37 +21,52 @@ _CD_WINDOW = timedelta(minutes=90)
 
 def test_decide_company_refresh_bootstrap_when_no_brief() -> None:
     assert decide_company_refresh(
-        now=_CD_NOW, last_as_of=None, venue_in_preopen=False,
-        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+        now=_CD_NOW,
+        last_as_of=None,
+        venue_in_preopen=False,
+        cooldown=_CD_COOLDOWN,
+        preopen_window=_CD_WINDOW,
     ) == (True, "bootstrap")
 
 
 def test_decide_company_refresh_preopen_forces_once_then_reuses() -> None:
     stale = (_CD_NOW - timedelta(hours=3)).isoformat()
     assert decide_company_refresh(
-        now=_CD_NOW, last_as_of=stale, venue_in_preopen=True,
-        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+        now=_CD_NOW,
+        last_as_of=stale,
+        venue_in_preopen=True,
+        cooldown=_CD_COOLDOWN,
+        preopen_window=_CD_WINDOW,
     ) == (True, "preopen")
     fresh = (_CD_NOW - timedelta(minutes=10)).isoformat()
     assert decide_company_refresh(
-        now=_CD_NOW, last_as_of=fresh, venue_in_preopen=True,
-        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+        now=_CD_NOW,
+        last_as_of=fresh,
+        venue_in_preopen=True,
+        cooldown=_CD_COOLDOWN,
+        preopen_window=_CD_WINDOW,
     ) == (False, "fresh")
 
 
 def test_decide_company_refresh_cooldown_floor_outside_preopen() -> None:
     old = (_CD_NOW - timedelta(hours=25)).isoformat()
     assert decide_company_refresh(
-        now=_CD_NOW, last_as_of=old, venue_in_preopen=False,
-        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+        now=_CD_NOW,
+        last_as_of=old,
+        venue_in_preopen=False,
+        cooldown=_CD_COOLDOWN,
+        preopen_window=_CD_WINDOW,
     ) == (True, "cooldown")
 
 
 def test_decide_company_refresh_reuses_when_fresh_and_not_preopen() -> None:
     recent = (_CD_NOW - timedelta(hours=2)).isoformat()
     assert decide_company_refresh(
-        now=_CD_NOW, last_as_of=recent, venue_in_preopen=False,
-        cooldown=_CD_COOLDOWN, preopen_window=_CD_WINDOW,
+        now=_CD_NOW,
+        last_as_of=recent,
+        venue_in_preopen=False,
+        cooldown=_CD_COOLDOWN,
+        preopen_window=_CD_WINDOW,
     ) == (False, "fresh")
 
 
@@ -265,9 +282,7 @@ def test_discover_active_scope_returns_universe(tmp_path) -> None:
     config_dir.mkdir()
     (config_dir / "universe.yaml").write_text("symbols: [ACTIVE, DUP]\n")
 
-    symbols, metadata = discover_company_symbols(
-        config_dir=config_dir, state_dir=state_dir, scope="active"
-    )
+    symbols, metadata = discover_company_symbols(config_dir=config_dir, state_dir=state_dir, scope="active")
 
     assert set(symbols) == {"ACTIVE", "DUP"}
     assert metadata["scope"] == "active"
@@ -289,5 +304,95 @@ def test_status_only_runtime_does_not_start_queue_workers(tmp_path, monkeypatch)
     try:
         assert runtime.status()["enabled"] is True
         assert runtime.pool._threads == []
+    finally:
+        runtime.stop()
+
+
+def _scan_status(state_dir):
+    path = state_dir / "company_scan_status.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_company_scan_status_covers_one_coalesced_lifetime(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_COMPANY_MICRO_ANALYST_ENABLED", "1")
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    (config_dir / "company_intelligence.yaml").write_text("enabled: true\n")
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[dict] = []
+
+    runtime = CompanyIntelligenceRuntime(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        provider=_Provider(),
+        analyst=_Analyst(),
+        start_workers=False,
+    )
+
+    def fake_refresh(**kwargs):
+        calls.append(kwargs)
+        started.set()
+        assert release.wait(timeout=2.0)
+        return {"enqueued": [], "skipped": [], "errors": []}
+
+    runtime.refresh = fake_refresh
+    try:
+        first = runtime.trigger(scope="current", depth="screen", trigger="daemon_boot")
+        assert first["triggered"] is True
+        assert started.wait(timeout=1.0)
+        running = _scan_status(state_dir)
+        assert running is not None
+        assert running["status"] == "running"
+        assert running["pid"] == os.getpid()
+        assert running["started_at"]
+        assert running["updated_at"]
+
+        queued = runtime.trigger(scope="active", depth="deep", trigger="daemon_boot_deep")
+        assert queued == {"triggered": False, "reason": "queued_latest"}
+        coalesced = _scan_status(state_dir)
+        assert coalesced["status"] == "running"
+        assert coalesced["started_at"] == running["started_at"]
+        assert coalesced["pid"] == running["pid"]
+
+        release.set()
+        first["_thread"].join(timeout=1.0)
+        idle = _scan_status(state_dir)
+        assert idle["status"] == "idle"
+        assert idle["pid"] == os.getpid()
+        assert len(calls) == 2
+    finally:
+        runtime.stop()
+
+
+def test_company_scan_status_clears_after_scan_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_COMPANY_MICRO_ANALYST_ENABLED", "1")
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    config_dir.mkdir()
+    (config_dir / "company_intelligence.yaml").write_text("enabled: true\n")
+
+    runtime = CompanyIntelligenceRuntime(
+        config_dir=config_dir,
+        state_dir=state_dir,
+        provider=_Provider(),
+        analyst=_Analyst(),
+        start_workers=False,
+    )
+
+    def fake_refresh(**kwargs):
+        raise RuntimeError("source scan failed")
+
+    runtime.refresh = fake_refresh
+    try:
+        first = runtime.trigger(scope="current")
+        assert first["triggered"] is True
+        first["_thread"].join(timeout=1.0)
+        idle = _scan_status(state_dir)
+        assert idle["status"] == "idle"
+        assert idle["pid"] == os.getpid()
     finally:
         runtime.stop()

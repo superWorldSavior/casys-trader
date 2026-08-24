@@ -19,6 +19,7 @@ from trader.infrastructure.market_sources import commodity_prices
 from trader.infrastructure.market_sources import macro_series as macro_series_source
 from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
+from trader.infrastructure.state_db.shadow import write_json_atomic
 from trader.infrastructure.state_db.situation_brief_store import NewsMacroBriefStore
 from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
 from trader.market import macro_calendar
@@ -51,18 +52,16 @@ DEFAULT_MAX_MACRO_SERIES = 30
 DEFAULT_MACRO_SERIES_STALE_DAYS = 90
 DEFAULT_ASYNC_STOP_TIMEOUT_S = 1.0
 DEFAULT_MAX_GDELT_EVENTS = 60
+NEWS_MACRO_RUNNER_STATUS_FILENAME = "news_macro_runner_status.json"
 
 # The collectors are the canonical registry of series which may feed the
 # analyst.  Historical JSONL files and rows deliberately remain on disk after
 # a source replacement, so admission must bind both the output label and the
 # current collector-owned series identifier.
 _ACTIVE_MACRO_SERIES_IDS_BY_LABEL = {
-    str(item.get("label") or "").strip(): str(
-        item.get("series_id") or item.get("id") or ""
-    ).strip()
+    str(item.get("label") or "").strip(): str(item.get("series_id") or item.get("id") or "").strip()
     for item in (*macro_series_source.SERIES, *commodity_prices.COMMODITIES)
-    if str(item.get("label") or "").strip()
-    and str(item.get("series_id") or item.get("id") or "").strip()
+    if str(item.get("label") or "").strip() and str(item.get("series_id") or item.get("id") or "").strip()
 }
 
 
@@ -234,14 +233,10 @@ def tick_news_macro_analysis(
             # refresh will consume the newest refs; only an explicit force or
             # a new candidate scope may bypass this success cooldown.
             if _success_refresh_cooldown_active(venue_status, now=now):
-                skipped.append(
-                    {"venue": venue, "reason": "active_brief_changed_inputs_cooldown"}
-                )
+                skipped.append({"venue": venue, "reason": "active_brief_changed_inputs_cooldown"})
                 continue
         try:
-            situation_feedback = _situation_feedback_for_venue(
-                state_path, venue, store=memory
-            )
+            situation_feedback = _situation_feedback_for_venue(state_path, venue, store=memory)
         except Exception:  # noqa: BLE001 - digest must never block an analysis
             situation_feedback = {}
         request = NewsMacroAnalysisRequest(
@@ -318,11 +313,9 @@ def tick_news_macro_analysis(
                 "global_news_count": len(global_news_items),
                 "macro_series_labels": [str(item.get("label")) for item in macro_series if item.get("label")],
                 "geopolitical_event_count": len(geopolitical_events),
-                "geopolitical_event_urls": [
-                    str(ev.get("url") or "")
-                    for ev in geopolitical_events
-                    if ev.get("url")
-                ][:60],
+                "geopolitical_event_urls": [str(ev.get("url") or "") for ev in geopolitical_events if ev.get("url")][
+                    :60
+                ],
             }
             global_success_signature = _input_signature(
                 venue="GLOBAL",
@@ -332,11 +325,7 @@ def tick_news_macro_analysis(
             )
             global_status = status.get("GLOBAL")
             global_retry_lineage = _global_retry_lineage_key(
-                last_brief_ref=(
-                    global_status.get("last_brief_ref")
-                    if isinstance(global_status, Mapping)
-                    else None
-                )
+                last_brief_ref=(global_status.get("last_brief_ref") if isinstance(global_status, Mapping) else None)
             )
             if not force and _last_success_matches_signature(global_status, global_success_signature):
                 skipped.append({"venue": "GLOBAL", "reason": "active_brief_same_inputs"})
@@ -366,9 +355,7 @@ def tick_news_macro_analysis(
                     skipped.append({"venue": "GLOBAL", "reason": "active_brief_changed_inputs_cooldown"})
                 else:
                     try:
-                        global_feedback = _situation_feedback_for_venue(
-                            state_path, "GLOBAL", store=memory
-                        )
+                        global_feedback = _situation_feedback_for_venue(state_path, "GLOBAL", store=memory)
                     except Exception:  # noqa: BLE001 - digest must never block an analysis
                         global_feedback = {}
                     global_request = NewsMacroAnalysisRequest(
@@ -436,6 +423,38 @@ def tick_news_macro_analysis(
             memory.close()
 
 
+def _state_dir_from_kwargs(kwargs: Mapping[str, Any]) -> Path | None:
+    raw = kwargs.get("state_dir")
+    if raw in (None, ""):
+        return None
+    try:
+        return Path(raw)
+    except TypeError:
+        return None
+
+
+def _persist_news_macro_runner_status(
+    state_dir: Path | None,
+    *,
+    status: str,
+    started_at: str,
+) -> None:
+    if state_dir is None:
+        return
+    try:
+        write_json_atomic(
+            Path(state_dir) / NEWS_MACRO_RUNNER_STATUS_FILENAME,
+            {
+                "pid": os.getpid(),
+                "status": status,
+                "started_at": started_at,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - observational status must never kill analysis
+        _default_logger().warning("news macro runner status write failed: %s", exc)
+
+
 class NewsMacroAnalysisRunner:
     """Single-flight background runner owned by one daemon process."""
 
@@ -488,27 +507,52 @@ class NewsMacroAnalysisRunner:
         return {"triggered": True, "_thread": thread}
 
     def _run(self, *, initial_kwargs: dict[str, Any]) -> None:
+        state_dir = _state_dir_from_kwargs(initial_kwargs)
+        started_at = datetime.now(timezone.utc).isoformat()
+        _persist_news_macro_runner_status(state_dir, status="running", started_at=started_at)
         kwargs = initial_kwargs
-        while True:
-            logger = kwargs.get("logger") or _default_logger()
-            result: dict[str, Any] | None = None
-            try:
-                result = self._tick_fn(**kwargs, stop_requested=self._stop_event.is_set)
-            except Exception as exc:  # noqa: BLE001 - background analysis is best-effort
-                logger.warning("news macro analyst background failure: %s", exc)
-            written = tuple(result.get("triggered") or ()) if isinstance(result, Mapping) else ()
-            if written and self.on_briefs_written is not None:
+        status_cleared = False
+        try:
+            while True:
+                logger = kwargs.get("logger") or _default_logger()
+                result: dict[str, Any] | None = None
                 try:
-                    self.on_briefs_written(written)
-                except Exception as exc:  # noqa: BLE001 - callback must not kill the runner
-                    logger.warning("news macro brief callback failed: %s", exc)
-            with self._lock:
-                if self._stopping or self._pending_kwargs is None:
+                    result = self._tick_fn(**kwargs, stop_requested=self._stop_event.is_set)
+                except Exception as exc:  # noqa: BLE001 - background analysis is best-effort
+                    logger.warning("news macro analyst background failure: %s", exc)
+                written = tuple(result.get("triggered") or ()) if isinstance(result, Mapping) else ()
+                if written and self.on_briefs_written is not None:
+                    try:
+                        self.on_briefs_written(written)
+                    except Exception as exc:  # noqa: BLE001 - callback must not kill the runner
+                        logger.warning("news macro brief callback failed: %s", exc)
+                with self._lock:
+                    if self._stopping or self._pending_kwargs is None:
+                        # Keep the runner claimed until the idle receipt is on
+                        # disk. Otherwise a concurrent trigger can start a new
+                        # thread whose running receipt is overwritten here.
+                        _persist_news_macro_runner_status(
+                            state_dir,
+                            status="idle",
+                            started_at=started_at,
+                        )
+                        status_cleared = True
+                        if self._thread is threading.current_thread():
+                            self._thread = None
+                        return
+                    kwargs = self._pending_kwargs
+                    self._pending_kwargs = None
+                _persist_news_macro_runner_status(state_dir, status="running", started_at=started_at)
+        finally:
+            if not status_cleared:
+                with self._lock:
+                    _persist_news_macro_runner_status(
+                        state_dir,
+                        status="idle",
+                        started_at=started_at,
+                    )
                     if self._thread is threading.current_thread():
                         self._thread = None
-                    return
-                kwargs = self._pending_kwargs
-                self._pending_kwargs = None
 
     def stop(self) -> None:
         """Prevent new ticks and wait briefly for the current daemon thread."""
@@ -839,18 +883,14 @@ def _candidate_scope_for_venue(
     if isinstance(current, dict):
         return {
             "candidates": [
-                dict(item)
-                for item in current.get("candidates") or []
-                if isinstance(item, dict) and item.get("symbol")
+                dict(item) for item in current.get("candidates") or [] if isinstance(item, dict) and item.get("symbol")
             ],
             "default_hotlist": list(current.get("default_hotlist") or []),
             "candidate_scope_id": str(current.get("candidate_scope_id") or "").strip(),
             "as_of": str(current.get("as_of") or "").strip(),
             "candidate_run_ids": list(current.get("candidate_run_ids") or []),
             "scope_phase": str(current.get("scope_phase") or "").strip(),
-            "parent_candidate_scope_id": str(
-                current.get("parent_candidate_scope_id") or ""
-            ).strip(),
+            "parent_candidate_scope_id": str(current.get("parent_candidate_scope_id") or "").strip(),
         }
 
     try:
@@ -865,11 +905,7 @@ def _candidate_scope_for_venue(
         for symbol in venue_state.get("default_hotlist") or venue_state.get("hotlist") or []
         if str(symbol).strip()
     ]
-    scope_as_of = str(
-        venue_state.get("candidate_scope_as_of")
-        or venue_state.get("last_close_at")
-        or "legacy"
-    ).strip()
+    scope_as_of = str(venue_state.get("candidate_scope_as_of") or venue_state.get("last_close_at") or "legacy").strip()
     scope_id = str(venue_state.get("candidate_scope_id") or "").strip()
     if not records or not scope_id:
         return {
@@ -894,9 +930,7 @@ def _candidate_scope_for_venue(
         "as_of": scope_as_of,
         "candidate_run_ids": list(venue_state.get("candidate_run_ids") or []),
         "scope_phase": str(venue_state.get("scope_phase") or "").strip(),
-        "parent_candidate_scope_id": str(
-            venue_state.get("parent_candidate_scope_id") or ""
-        ).strip(),
+        "parent_candidate_scope_id": str(venue_state.get("parent_candidate_scope_id") or "").strip(),
         "venue": venue,
     }
     try:
@@ -989,15 +1023,11 @@ def _filter_news_for_venue(
             uid = str(raw_evidence.get("uuid") or raw_evidence.get("source_ref") or "").strip()
             if not uid or uid in seen_uuids:
                 continue
-            evidence_row = _compact_news_item(
-                {**raw_evidence, "uuid": uid, "symbol": attributed_symbol}
-            )
+            evidence_row = _compact_news_item({**raw_evidence, "uuid": uid, "symbol": attributed_symbol})
             evidence_row["candidate_source"] = "fresh_news"
             candidate_sources = candidate.get("candidate_sources")
             if isinstance(candidate_sources, (list, tuple, set)):
-                evidence_row["candidate_sources"] = _unique_nonempty(
-                    str(source) for source in candidate_sources
-                )
+                evidence_row["candidate_sources"] = _unique_nonempty(str(source) for source in candidate_sources)
             rows.append(evidence_row)
             seen_uuids.add(uid)
             if len(rows) >= DEFAULT_MAX_VENUE_NEWS_ITEMS:
@@ -1182,10 +1212,7 @@ def _input_signature(
         "venue": venue,
         # ``in_h`` changes every loop without new information. Only stable event
         # identity belongs in a material-input signature.
-        "macro_next": [
-            {"event": item.get("event"), "at": item.get("at")}
-            for item in macro_next
-        ],
+        "macro_next": [{"event": item.get("event"), "at": item.get("at")} for item in macro_next],
         "macro_series": list(macro_series),
         "input_refs": input_refs,
     }
@@ -1217,6 +1244,8 @@ _NON_MATERIAL_TEMPORAL_FIELDS = frozenset(
         "timestamp_ms",
     }
 )
+
+
 def _request_signature(payload: Any) -> str:
     blob = json.dumps(
         payload,
@@ -1289,11 +1318,7 @@ def _global_retry_lineage_key(*, last_brief_ref: Any) -> str:
 
 
 def _last_success_matches_signature(raw: Any, signature: str) -> bool:
-    return bool(
-        isinstance(raw, Mapping)
-        and raw.get("last_success_at")
-        and _last_success_signature(raw) == signature
-    )
+    return bool(isinstance(raw, Mapping) and raw.get("last_success_at") and _last_success_signature(raw) == signature)
 
 
 def _last_success_signature(raw: Mapping[str, Any]) -> Any:

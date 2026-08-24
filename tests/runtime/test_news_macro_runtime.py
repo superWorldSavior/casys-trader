@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -69,11 +70,20 @@ class BrokenAnalyst:
         raise RuntimeError("llm down")
 
 
-def test_news_macro_runner_is_non_blocking_single_flight_and_stoppable(caplog) -> None:
+def _runner_status(state_dir):
+    path = state_dir / "news_macro_runner_status.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_news_macro_runner_is_non_blocking_single_flight_and_stoppable(tmp_path, caplog) -> None:
     caplog.set_level(logging.INFO, logger="casys-trader")
     started = threading.Event()
     release = threading.Event()
     calls: list[dict] = []
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
 
     def tick_fn(**kwargs):
         calls.append(kwargs)
@@ -83,10 +93,10 @@ def test_news_macro_runner_is_non_blocking_single_flight_and_stoppable(caplog) -
 
     runner = news_macro_runtime.NewsMacroAnalysisRunner(tick_fn=tick_fn, stop_timeout_s=0.1)
 
-    first = runner.trigger(state_dir="state", venues=("EU",))
+    first = runner.trigger(state_dir=state_dir, venues=("EU",))
     assert first["triggered"] is True
     assert started.wait(timeout=1.0)
-    assert runner.trigger(state_dir="state", venues=("EU",)) == {
+    assert runner.trigger(state_dir=state_dir, venues=("EU",)) == {
         "triggered": False,
         "reason": "queued_latest",
     }
@@ -94,17 +104,19 @@ def test_news_macro_runner_is_non_blocking_single_flight_and_stoppable(caplog) -
     release.set()
     first["_thread"].join(timeout=1.0)
     assert len(calls) == 2
-    assert calls[0]["state_dir"] == "state"
+    assert calls[0]["state_dir"] == state_dir
     assert callable(calls[0]["stop_requested"])
     assert "news macro trigger coalesced pending_replaced=False venues=('EU',)" in caplog.text
 
     runner.stop()
-    assert runner.trigger(state_dir="state") == {"triggered": False, "reason": "stopping"}
+    assert runner.trigger(state_dir=state_dir) == {"triggered": False, "reason": "stopping"}
 
 
-def test_news_macro_runner_notifies_when_briefs_are_written() -> None:
+def test_news_macro_runner_notifies_when_briefs_are_written(tmp_path) -> None:
     seen: list[tuple] = []
     started = threading.Event()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
 
     def tick_fn(**kwargs):
         started.set()
@@ -119,13 +131,67 @@ def test_news_macro_runner_notifies_when_briefs_are_written() -> None:
         stop_timeout_s=0.1,
         on_briefs_written=seen.append,
     )
-    first = runner.trigger(state_dir="state", venues=("EU",))
+    first = runner.trigger(state_dir=state_dir, venues=("EU",))
     assert first["triggered"] is True
     first["_thread"].join(timeout=1.0)
     runner.stop()
 
     assert started.is_set()
     assert seen == [({"venue": "EU", "brief_ref": {"brief_id": "brief-eu"}},)]
+
+
+def test_news_macro_runner_status_covers_one_coalesced_lifetime(tmp_path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    def tick_fn(**kwargs):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return {"triggered": [], "skipped": [], "errors": []}
+
+    runner = news_macro_runtime.NewsMacroAnalysisRunner(tick_fn=tick_fn, stop_timeout_s=0.1)
+    first = runner.trigger(state_dir=state_dir, venues=("EU",))
+    assert first["triggered"] is True
+    assert started.wait(timeout=1.0)
+    running = _runner_status(state_dir)
+    assert running is not None
+    assert running["status"] == "running"
+    assert running["pid"] == os.getpid()
+    assert running["started_at"]
+    assert running["updated_at"]
+
+    queued = runner.trigger(state_dir=state_dir, venues=("US",))
+    assert queued["reason"] == "queued_latest"
+    coalesced = _runner_status(state_dir)
+    assert coalesced["status"] == "running"
+    assert coalesced["started_at"] == running["started_at"]
+    assert coalesced["pid"] == running["pid"]
+
+    release.set()
+    first["_thread"].join(timeout=1.0)
+    idle = _runner_status(state_dir)
+    assert idle["status"] == "idle"
+    assert idle["pid"] == os.getpid()
+    runner.stop()
+
+
+def test_news_macro_runner_status_clears_after_tick_failure(tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    def tick_fn(**kwargs):
+        raise RuntimeError("llm down")
+
+    runner = news_macro_runtime.NewsMacroAnalysisRunner(tick_fn=tick_fn, stop_timeout_s=0.1)
+    first = runner.trigger(state_dir=state_dir)
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=1.0)
+    idle = _runner_status(state_dir)
+    assert idle["status"] == "idle"
+    assert idle["pid"] == os.getpid()
+    runner.stop()
 
 
 def _write_jsonl(path, rows) -> None:
@@ -246,13 +312,9 @@ def test_tick_news_macro_analysis_writes_jsonl_and_indexes_memory(tmp_path) -> N
     assert analyst.requests[0].candidate_symbols == ("AIR.PA",)
     assert [item["uuid"] for item in analyst.requests[0].news_items] == ["u-eu"]
     assert result["triggered"][0]["venue"] == "EU"
-    assert second["skipped"] == [
-        {"venue": "EU", "reason": "active_brief_same_scope_and_inputs"}
-    ]
+    assert second["skipped"] == [{"venue": "EU", "reason": "active_brief_same_scope_and_inputs"}]
     assert rows[0]["venue"] == "EU"
-    assert analyst.requests[0].input_refs["candidate_scope_id"].startswith(
-        "candidate_scope:v1:EU:"
-    )
+    assert analyst.requests[0].input_refs["candidate_scope_id"].startswith("candidate_scope:v1:EU:")
     assert latest_file.exists()
     assert SituationMemoryStore(state_dir / "situation_memory.db").count() == 1
 
@@ -467,9 +529,7 @@ def test_tick_news_macro_analysis_waits_for_preopen_child_scope(tmp_path) -> Non
 
     assert analyst.requests == []
     assert result["triggered"] == []
-    assert result["skipped"] == [
-        {"venue": "EU", "reason": "awaiting_preopen_scope"}
-    ]
+    assert result["skipped"] == [{"venue": "EU", "reason": "awaiting_preopen_scope"}]
 
 
 def test_tick_news_macro_analysis_refreshes_active_brief_when_candidate_scope_changes(tmp_path) -> None:
@@ -562,9 +622,7 @@ def test_tick_news_macro_analysis_refreshes_changed_inputs_after_cooldown(tmp_pa
         venues=("EU",),
     )
 
-    assert cooldown["skipped"] == [
-        {"venue": "EU", "reason": "active_brief_changed_inputs_cooldown"}
-    ]
+    assert cooldown["skipped"] == [{"venue": "EU", "reason": "active_brief_changed_inputs_cooldown"}]
     assert refreshed["triggered"][0]["venue"] == "EU"
     assert len(analyst.requests) == 2
     assert {item["uuid"] for item in analyst.requests[1].news_items} == {
@@ -610,9 +668,7 @@ def test_new_company_brief_waits_for_regional_refresh_and_keeps_provenance(tmp_p
         venues=("EU",),
     )
 
-    assert deferred["skipped"] == [
-        {"venue": "EU", "reason": "active_brief_changed_inputs_cooldown"}
-    ]
+    assert deferred["skipped"] == [{"venue": "EU", "reason": "active_brief_changed_inputs_cooldown"}]
     assert refreshed["triggered"][0]["venue"] == "EU"
     assert len(analyst.requests) == 2
     assert analyst.requests[1].company_anchors["AIR.PA"]["brief_ref"]["input_signature"] == "sig-2"
@@ -943,8 +999,7 @@ def test_tick_news_macro_analysis_keeps_all_candidates_and_attributed_challenger
     config_dir.mkdir()
     now = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
     radar_candidates = [
-        {"symbol": f"EU{idx}.PA", "attractiveness": 1.0 - idx / 100, "bias": "long"}
-        for idx in range(60)
+        {"symbol": f"EU{idx}.PA", "attractiveness": 1.0 - idx / 100, "bias": "long"} for idx in range(60)
     ]
     challenger = {
         "symbol": "SAP.DE",
@@ -1028,10 +1083,7 @@ def test_tick_news_macro_analysis_large_raw_volume_does_not_hide_later_venue_new
     _write_jsonl(
         state_dir / "news_items" / "2026-07-10.jsonl",
         [
-            *[
-                {"uuid": f"u-air-{idx}", "symbol": "AIR.PA", "title": f"Airbus item {idx}"}
-                for idx in range(2_100)
-            ],
+            *[{"uuid": f"u-air-{idx}", "symbol": "AIR.PA", "title": f"Airbus item {idx}"} for idx in range(2_100)],
             {"uuid": "u-spy", "symbol": "SPY", "title": "SPY macro note"},
         ],
     )
@@ -1573,9 +1625,7 @@ def test_global_retry_lineage_is_anchored_to_last_successful_brief() -> None:
             "input_signature": "changed-material-input",
         }
     )
-    next_success = news_macro_runtime._global_retry_lineage_key(
-        last_brief_ref={"brief_id": "global-brief-2"}
-    )
+    next_success = news_macro_runtime._global_retry_lineage_key(last_brief_ref={"brief_id": "global-brief-2"})
 
     assert bootstrap == same_bootstrap
     assert first_success == same_success
@@ -1775,8 +1825,7 @@ def test_read_recent_gdelt_events_reads_and_caps(tmp_path) -> None:
 def test_read_recent_gdelt_events_caps_at_max(tmp_path) -> None:
     state_dir = tmp_path / "state"
     events = [
-        {"ts_collected": "2026-07-10T09:00:00+00:00", "url": f"https://x.com/{i}", "title": f"E{i}"}
-        for i in range(80)
+        {"ts_collected": "2026-07-10T09:00:00+00:00", "url": f"https://x.com/{i}", "title": f"E{i}"} for i in range(80)
     ]
     _write_gdelt_events(state_dir, events)
     now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
