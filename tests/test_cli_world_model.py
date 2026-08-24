@@ -664,7 +664,7 @@ def test_world_status_json_nests_graph_budgets_without_causal_or_pnl(
 def test_world_graph_status_reads_collecting_graph_cohort_not_not_started(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    from tests.read_models.test_world_graph import GRAPH_COHORT_ID, _graph_manifest, _persist
+    from tests.read_models.test_world_graph_report import GRAPH_COHORT_ID, _graph_manifest, _persist
 
     _persist(tmp_path, _manifest(), phase="collecting")
     _persist(tmp_path, _graph_manifest(), phase="collecting")
@@ -682,7 +682,7 @@ def test_world_graph_status_reads_collecting_graph_cohort_not_not_started(
 def test_world_graph_report_and_nested_status_keep_c1_collecting_off_graph_activation(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    from tests.read_models.test_world_graph import _persist
+    from tests.read_models.test_world_graph_report import _persist
 
     _persist(tmp_path, _manifest(), phase="collecting")
 

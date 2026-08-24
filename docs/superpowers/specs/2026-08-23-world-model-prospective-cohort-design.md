@@ -811,10 +811,10 @@ restart/kill daemon, push, fichier non listé dans `allowed_edits`, et
   `trader/infrastructure/state_db/world_model_query.py`.
 - **allowed_edits** : `trader/reporting/read_models/world_cohort.py`,
   `trader/infrastructure/state_db/world_model_query.py`,
-  `tests/read_models/test_world_cohort.py`.
+  `tests/read_models/test_world_cohort_report.py`.
 - **sortie** : matched sets, contrastes, métriques, bootstrap, gates, report
   reconstructible et vérification completion evidence.
-- **tests** : `uv run pytest -q tests/read_models/test_world_cohort.py
+- **tests** : `uv run pytest -q tests/read_models/test_world_cohort_report.py
   tests/application/test_world_context_ablation.py`.
 - **exit** : report déterministe, DB absente read-only, claims bornés.
 

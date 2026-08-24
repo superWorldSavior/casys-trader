@@ -1165,7 +1165,7 @@ def test_graph_v3_status_overlay_is_wiring_only_and_does_not_claim_ledger_activa
 
 def test_wired_runner_overlay_does_not_mirror_persisted_graph_collecting(tmp_path) -> None:
     from tests.application.test_world_graph_capture import _unpublished_config
-    from tests.read_models.test_world_graph import _graph_manifest, _persist
+    from tests.read_models.test_world_graph_report import _graph_manifest, _persist
     from trader.reporting.read_models.world_graph import read_world_graph_status
     from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
 

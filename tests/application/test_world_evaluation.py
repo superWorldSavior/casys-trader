@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from trader.reporting.read_models.world_evaluation import evaluate_shadow
+from trader.reporting.read_models.world_evaluation import (
+    BASELINE_MODEL_ID,
+    GRU_MODEL_ID,
+    evaluate_shadow,
+)
 
 
 def _prediction(**overrides):
@@ -240,6 +244,79 @@ def test_paired_comparison_withholds_metrics_below_explicit_support() -> None:
     assert comparison["baseline"] is None
     assert comparison["gru"] is None
     assert comparison["gru_minus_baseline"] is None
+
+
+_CAUSAL_IDENTITY = {
+    "predicted_at": "2026-08-20T10:00:00+00:00",
+    "ready_at": "2026-08-20T10:00:00+00:00",
+    "training_cutoff": "2026-08-19T00:00:00+00:00",
+    "comparison_batch_id": "batch:v1:shared",
+    "comparison_cohort_fingerprint": "1" * 64,
+    "study_cohort_id": "world_cohort:v1:" + "a" * 64,
+    "manifest_sha256": "b" * 64,
+}
+
+
+def _causal_pair(*, gru_overrides: dict | None = None) -> tuple[dict, dict]:
+    baseline = _prediction(
+        prediction_id="baseline-causal",
+        model_id=BASELINE_MODEL_ID,
+        **_CAUSAL_IDENTITY,
+    )
+    gru_payload = {**_CAUSAL_IDENTITY, **(gru_overrides or {})}
+    gru = _prediction(
+        prediction_id="gru-causal",
+        model_id=GRU_MODEL_ID,
+        probabilities={"DOWN": 0.1, "FLAT": 0.1, "UP": 0.8},
+        **gru_payload,
+    )
+    return baseline, gru
+
+
+def test_paired_comparison_excludes_mismatched_causal_identity_with_reasons() -> None:
+    cases = (
+        (
+            {"predicted_at": "2026-08-20T11:00:00+00:00", "ready_at": "2026-08-20T11:00:00+00:00"},
+            "predicted_at_mismatch",
+        ),
+        ({"training_cutoff": "2026-08-18T00:00:00+00:00"}, "training_cutoff_mismatch"),
+        ({"comparison_batch_id": "batch:other"}, "comparison_batch_id_mismatch"),
+        ({"comparison_cohort_fingerprint": "2" * 64}, "training_lineage_mismatch"),
+        ({"study_cohort_id": "world_cohort:v1:" + "c" * 64}, "study_cohort_id_mismatch"),
+        ({"manifest_sha256": "d" * 64}, "manifest_sha256_mismatch"),
+    )
+    for mutation, reason in cases:
+        baseline, gru = _causal_pair(gru_overrides=mutation)
+        result = evaluate_shadow([baseline, gru], [_outcome()], minimum_paired_support=1)
+
+        assert result["status"] == "ready"
+        assert [(group["model_id"], group["matched"]) for group in result["groups"]] == [
+            (BASELINE_MODEL_ID, 1),
+            (GRU_MODEL_ID, 1),
+        ]
+        comparison = result["comparisons"][0]
+        assert comparison["matched_pairs"] == 0
+        assert comparison["status"] == "insufficient_support"
+        assert comparison["baseline"] is None
+        assert comparison["gru"] is None
+        assert comparison["gru_minus_baseline"] is None
+        assert result["excluded"][reason] == 1
+        assert comparison["excluded"][reason] == 1
+
+
+def test_paired_comparison_accepts_exact_causal_identity() -> None:
+    baseline, gru = _causal_pair()
+    result = evaluate_shadow([baseline, gru], [_outcome()], minimum_paired_support=1)
+
+    comparison = result["comparisons"][0]
+    assert result["status"] == "ready"
+    assert comparison["status"] == "ready"
+    assert comparison["matched_pairs"] == 1
+    assert comparison["excluded"] == {}
+    assert "predicted_at_mismatch" not in result["excluded"]
+    assert "training_cutoff_mismatch" not in result["excluded"]
+    assert "comparison_batch_id_mismatch" not in result["excluded"]
+    assert "training_lineage_mismatch" not in result["excluded"]
 
 
 def test_directional_shadow_drawdown_is_explicitly_not_a_portfolio_metric() -> None:

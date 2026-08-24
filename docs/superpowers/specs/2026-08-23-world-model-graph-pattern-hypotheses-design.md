@@ -1148,7 +1148,7 @@ aucune valeur ; champ/hash manquant =
 - **sortie** : matched sets V2/V3, assessments, permutations, contre-exemples et
   multiplicité.
 - **tests** : `uv run pytest -q tests/read_models/test_world_patterns.py
-  tests/read_models/test_world_cohort.py`.
+  tests/read_models/test_world_cohort_report.py`.
 - **exit** : report reproductible ; outcome canonique vérifié ; aucun claim
   causal/PnL.
 

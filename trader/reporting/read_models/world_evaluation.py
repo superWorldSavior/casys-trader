@@ -36,6 +36,34 @@ DIRECTIONAL_SHADOW_DRAWDOWN_CAVEAT = (
 MARKET_MODEL_VERSION = "v1"
 CONTEXT_MODEL_VERSION = "context.v2"
 
+# Same causal identity the strict cohort report requires before a matched pair.
+_COMPARISON_PROOF_FIELDS = (
+    ("study_cohort_id", "study_cohort_id_mismatch"),
+    ("manifest_sha256", "manifest_sha256_mismatch"),
+    ("comparison_batch_id", "comparison_batch_id_mismatch"),
+    ("predicted_at", "predicted_at_mismatch"),
+    ("training_cutoff", "training_cutoff_mismatch"),
+    ("training_lineage", "training_lineage_mismatch"),
+    ("label_move_class", "label_move_class_mismatch"),
+    ("label_target_at", "label_target_at_mismatch"),
+    ("label_evidence_digest", "label_evidence_digest_mismatch"),
+)
+
+
+@dataclass(frozen=True)
+class _ComparisonProof:
+    """Frozen causal identity required to pair GRU and baseline forecasts."""
+
+    study_cohort_id: str | None
+    manifest_sha256: str | None
+    comparison_batch_id: str | None
+    predicted_at: datetime
+    training_cutoff: datetime | None
+    training_lineage: str | None
+    label_move_class: str | None
+    label_target_at: datetime | None
+    label_evidence_digest: str | None
+
 
 @dataclass(frozen=True)
 class _ScoredPrediction:
@@ -57,10 +85,29 @@ class _ScoredPrediction:
     comparison_batch_id: str | None = None
     comparison_cohort_fingerprint: str | None = None
     training_cutoff: datetime | None = None
+    study_cohort_id: str | None = None
+    manifest_sha256: str | None = None
+    label_move_class: str | None = None
+    label_target_at: datetime | None = None
+    label_evidence_digest: str | None = None
 
     @property
-    def slot(self) -> tuple[str, str]:
+    def candidate_slot(self) -> tuple[str, str]:
         return (self.episode_id, self.horizon_id)
+
+    @property
+    def slot(self) -> _ComparisonProof:
+        return _ComparisonProof(
+            study_cohort_id=self.study_cohort_id,
+            manifest_sha256=self.manifest_sha256,
+            comparison_batch_id=self.comparison_batch_id,
+            predicted_at=self.predicted_at,
+            training_cutoff=self.training_cutoff,
+            training_lineage=self.comparison_cohort_fingerprint,
+            label_move_class=self.label_move_class,
+            label_target_at=self.label_target_at,
+            label_evidence_digest=self.label_evidence_digest,
+        )
 
     @property
     def ablation_slot(self) -> tuple[str, str, str, str, str] | None:
@@ -85,8 +132,12 @@ def evaluate_shadow(
     silently improving a model's apparent sample size. Corrected outcomes are
     treated with the same leaf-only rule as before.
 
-    The GRU comparison is paired: each metric uses only slots for which both
-    named model identities issued a causal prediction. Its deltas are withheld
+    The GRU comparison is paired: each metric uses only candidate
+    ``(episode, horizon)`` slots whose typed comparison proof matches. The
+    proof is the same causal identity the strict cohort report requires:
+    frozen prediction time, training cutoff, label proof, and
+    batch/lineage/fingerprints when present. Mismatches are excluded with
+    named counts rather than treated as a matched pair. Deltas are withheld
     below ``minimum_paired_support`` so a handful of lucky forecasts cannot be
     presented as a challenger win.
 
@@ -94,6 +145,8 @@ def evaluate_shadow(
     (``predicted_at``) and the actual wall-clock availability
     (``ready_at``/``recorded_at``) to be strictly before the outcome label.
     The asynchronous worker makes the logical cutoff alone insufficient.
+    Scoring groups stay ``ready`` whenever any prequential pair is scorable;
+    comparison-proof mismatches do not flip that into a false ``warming_up``.
     """
 
     if isinstance(minimum_paired_support, bool) or not isinstance(minimum_paired_support, int):
@@ -161,6 +214,11 @@ def evaluate_shadow(
                 comparison_batch_id=_comparison_batch_id(prediction),
                 comparison_cohort_fingerprint=_comparison_cohort_fingerprint(prediction),
                 training_cutoff=_training_cutoff(prediction),
+                study_cohort_id=_envelope_text(prediction, "study_cohort_id"),
+                manifest_sha256=_envelope_text(prediction, "manifest_sha256"),
+                label_move_class=CLASSES[target_index],
+                label_target_at=_label_target_at(outcome),
+                label_evidence_digest=_label_evidence_digest(outcome),
             )
         )
 
@@ -180,6 +238,7 @@ def evaluate_shadow(
         baseline_model_id=baseline_model_id,
         gru_model_id=gru_model_id,
         minimum_paired_support=minimum_paired_support,
+        excluded=excluded,
     )
     return {
         "schema_version": "world_shadow_evaluation.v2",
@@ -529,6 +588,7 @@ def _paired_comparisons(
     baseline_model_id: str,
     gru_model_id: str,
     minimum_paired_support: int,
+    excluded: defaultdict[str, int],
 ) -> list[dict[str, Any]]:
     """Return paired GRU-vs-baseline comparisons, separated by horizon/version."""
 
@@ -544,15 +604,25 @@ def _paired_comparisons(
     ]
     comparisons: list[dict[str, Any]] = []
     for baseline_version, horizon_id, baseline_rows in sorted(baseline_groups):
-        baseline_by_slot = {row.slot: row for row in baseline_rows}
+        baseline_by_slot = {row.candidate_slot: row for row in baseline_rows}
         for gru_version, gru_horizon_id, gru_rows in sorted(gru_groups):
             if gru_horizon_id != horizon_id:
                 continue
-            gru_by_slot = {row.slot: row for row in gru_rows}
-            paired_slots = sorted(set(baseline_by_slot).intersection(gru_by_slot))
-            paired_baseline = [baseline_by_slot[slot] for slot in paired_slots]
-            paired_gru = [gru_by_slot[slot] for slot in paired_slots]
-            matched_pairs = len(paired_slots)
+            gru_by_slot = {row.candidate_slot: row for row in gru_rows}
+            paired_baseline: list[_ScoredPrediction] = []
+            paired_gru: list[_ScoredPrediction] = []
+            comparison_excluded: defaultdict[str, int] = defaultdict(int)
+            for slot in sorted(set(baseline_by_slot).intersection(gru_by_slot)):
+                baseline_row = baseline_by_slot[slot]
+                gru_row = gru_by_slot[slot]
+                mismatch = _comparison_proof_mismatch(baseline_row, gru_row)
+                if mismatch is not None:
+                    comparison_excluded[mismatch] += 1
+                    excluded[mismatch] += 1
+                    continue
+                paired_baseline.append(baseline_row)
+                paired_gru.append(gru_row)
+            matched_pairs = len(paired_baseline)
             comparison: dict[str, Any] = {
                 "baseline_model_id": baseline_model_id,
                 "baseline_model_version": baseline_version,
@@ -561,6 +631,7 @@ def _paired_comparisons(
                 "horizon_id": horizon_id,
                 "matched_pairs": matched_pairs,
                 "minimum_paired_support": minimum_paired_support,
+                "excluded": dict(sorted(comparison_excluded.items())),
                 "delta_semantics": (
                     "gru_minus_baseline; lower is better for brier, log_loss, and ece_5_bins, "
                     "higher is better for accuracy"
@@ -591,6 +662,15 @@ def _paired_comparisons(
                 )
             comparisons.append(comparison)
     return comparisons
+
+
+def _comparison_proof_mismatch(left: _ScoredPrediction, right: _ScoredPrediction) -> str | None:
+    left_proof = left.slot
+    right_proof = right.slot
+    for field, reason in _COMPARISON_PROOF_FIELDS:
+        if getattr(left_proof, field) != getattr(right_proof, field):
+            return reason
+    return None
 
 
 def _comparison_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
@@ -895,19 +975,30 @@ def _prediction_ready_at(prediction: object) -> datetime | None:
 
 
 def _comparison_batch_id(prediction: object) -> str | None:
-    for envelope in _prediction_envelopes(prediction):
-        text = _text(_field(envelope, "comparison_batch_id"))
-        if text is not None:
-            return text
-    return None
+    return _envelope_text(prediction, "comparison_batch_id")
 
 
 def _comparison_cohort_fingerprint(prediction: object) -> str | None:
+    return _envelope_text(prediction, "comparison_cohort_fingerprint")
+
+
+def _envelope_text(prediction: object, name: str) -> str | None:
     for envelope in _prediction_envelopes(prediction):
-        text = _text(_field(envelope, "comparison_cohort_fingerprint"))
+        text = _text(_field(envelope, name))
         if text is not None:
             return text
     return None
+
+
+def _label_target_at(outcome: object) -> datetime | None:
+    raw = _search_outcome_field(outcome, "target_at")
+    if raw is None:
+        return None
+    return _event_time({"target_at": raw}, "target_at")
+
+
+def _label_evidence_digest(outcome: object) -> str | None:
+    return _text(_search_outcome_field(outcome, "evidence_sha256"))
 
 
 def _training_cutoff(prediction: object) -> datetime | None:
