@@ -368,6 +368,64 @@ def test_empty_or_unparsable_payload_is_explicit_missing_not_a_zero() -> None:
         _ports(transport)["unemployment_rate_us"].read_facts(RUN_SCOPE, OBSERVED_AT)
 
 
+def test_retry_after_cannot_exceed_provider_timeout() -> None:
+    from trader.infrastructure.market_sources.world_macro.series import (
+        MacroHttpResponse,
+        MacroSourceFetchError,
+    )
+
+    sleeps: list[float] = []
+    transport = ScriptedTransport(
+        [
+            MacroHttpResponse(status=429, body="rate limited", headers={"Retry-After": "86400"}),
+            MacroHttpResponse(status=429, body="still limited", headers={"Retry-After": "86400"}),
+        ]
+    )
+    with pytest.raises(MacroSourceFetchError, match="429"):
+        _ports(transport, sleeper=sleeps.append)["fed_funds_effective"].read_facts(RUN_SCOPE, OBSERVED_AT)
+    assert sleeps
+    assert all(delay <= 5.0 for delay in sleeps)
+
+
+def test_provider_get_cannot_keep_coalescing_worker_alive_past_timeout() -> None:
+    from trader.infrastructure.market_sources.world_macro.series import (
+        MacroSourceFetchError,
+        ProviderRateLimiter,
+    )
+
+    class Hang:
+        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> object:
+            del url, timeout_s, headers
+            threading.Event().wait()
+            raise AssertionError("hanging transport resumed")
+
+    limiter = ProviderRateLimiter(
+        min_interval_s=0.0,
+        retry_max=0,
+        honor_retry_after=True,
+        timeout_s=0.2,
+        transport=Hang(),  # type: ignore[arg-type]
+        clock=lambda: OBSERVED_AT,
+        sleeper=lambda _seconds: None,
+    )
+    result: list[object] = []
+
+    def _run() -> None:
+        try:
+            limiter.get("https://example.test/hang")
+            result.append("returned")
+        except Exception as exc:  # noqa: BLE001
+            result.append(exc)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(1.0)
+    assert not thread.is_alive()
+    assert result
+    assert isinstance(result[0], MacroSourceFetchError)
+    assert "timeout" in str(result[0]).lower()
+
+
 def test_http_429_honors_retry_after_retries_once_then_missing() -> None:
     from trader.infrastructure.market_sources.world_macro.series import (
         MacroHttpResponse,
@@ -384,7 +442,7 @@ def test_http_429_honors_retry_after_retries_once_then_missing() -> None:
     )
     with pytest.raises(MacroSourceFetchError, match="429"):
         _ports(transport, sleeper=sleeps.append)["fed_funds_effective"].read_facts(RUN_SCOPE, OBSERVED_AT)
-    assert sleeps == [7.0]
+    assert sleeps == [5.0]
     assert len(transport.calls) == 2
 
 

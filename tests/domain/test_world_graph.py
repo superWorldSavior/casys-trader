@@ -875,6 +875,42 @@ def test_unmapped_snapshot_never_selects_a_world_entity_root_or_topology() -> No
     assert "mic:" not in dumped
 
 
+def test_observation_graph_snapshot_projects_unmapped_fabricated_root_without_selecting_it() -> None:
+    from trader.domain.world_graph import observation_graph_snapshot
+
+    fabricated = WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:1440.TW")
+    with pytest.raises(ValueError, match="unmapped|root"):
+        _unmapped_snapshot(root_entity=fabricated)
+    honest = _unmapped_snapshot()
+    contaminated = honest.to_dict()
+    contaminated["root_entity"] = fabricated.to_dict()
+    contaminated["entity_revision_refs"] = [
+        WorldEntityAsserted(
+            entity=fabricated,
+            source_refs=("provider:listing",),
+            effective_from=T0,
+        )
+        .as_ref()
+        .to_dict()
+    ]
+    projected = observation_graph_snapshot(contaminated)
+    assert projected.root_entity is None
+    assert projected.status == "missing"
+    assert projected.missingness["scope"] == "unmapped"
+    assert projected.entity_revision_refs == ()
+    assert projected.identity_link_refs == ()
+    assert projected.structural_relation_refs == frozenset()
+    assert projected.knowledge_relation_refs == frozenset()
+    assert projected.artifact_refs == ()
+    dumped = json.dumps(projected.to_dict())
+    assert "XTAI" not in dumped
+    assert "mic:" not in dumped
+    assert "1440.TW" not in dumped
+    replayed = observation_graph_snapshot(json.loads(json.dumps(contaminated)))
+    assert replayed.root_entity is None
+    assert WorldGraphSnapshot.from_mapping(honest.to_dict()) == honest
+
+
 def test_historical_instrument_root_snapshot_payload_remains_parseable() -> None:
     complete = _snapshot()
     payload = complete.to_dict()

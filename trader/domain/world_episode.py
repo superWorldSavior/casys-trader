@@ -679,13 +679,6 @@ def _immutable_graph_features(value: Mapping[str, Any] | None) -> Mapping[str, A
 
 
 def _graph_snapshot_id(graph: Any, graph_features: Mapping[str, Any] | None) -> str | None:
-    snapshot_id = getattr(graph, "snapshot_id", None)
-    if isinstance(snapshot_id, str) and snapshot_id.strip():
-        return snapshot_id.strip()
-    if isinstance(graph, Mapping):
-        raw = graph.get("snapshot_id")
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
     if isinstance(graph_features, Mapping):
         nested = graph_features.get("snapshot")
         if isinstance(nested, Mapping):
@@ -693,6 +686,13 @@ def _graph_snapshot_id(graph: Any, graph_features: Mapping[str, Any] | None) -> 
             if isinstance(raw, str) and raw.strip():
                 return raw.strip()
         raw = graph_features.get("snapshot_id")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    snapshot_id = getattr(graph, "snapshot_id", None)
+    if isinstance(snapshot_id, str) and snapshot_id.strip():
+        return snapshot_id.strip()
+    if isinstance(graph, Mapping):
+        raw = graph.get("snapshot_id")
         if isinstance(raw, str) and raw.strip():
             return raw.strip()
     return None
@@ -793,7 +793,7 @@ class WorldObservation:
             object.__setattr__(self, "context", None)
         else:
             object.__setattr__(self, "context", freeze_context_mapping(self.context))
-        from trader.domain.world_graph import WorldGraphSnapshot
+        from trader.domain.world_graph import observation_graph_snapshot
 
         raw_graph = self.graph
         if raw_graph is None and isinstance(self.graph_features, Mapping):
@@ -801,7 +801,7 @@ class WorldObservation:
         if raw_graph is None:
             object.__setattr__(self, "graph", None)
         else:
-            object.__setattr__(self, "graph", WorldGraphSnapshot.from_mapping(raw_graph))
+            object.__setattr__(self, "graph", observation_graph_snapshot(raw_graph))
         object.__setattr__(self, "graph_features", _immutable_graph_features(self.graph_features))
         contract = self.feature_contract_version
         if contract == MARKET_FEATURE_CONTRACT_VERSION:

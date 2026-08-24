@@ -366,7 +366,10 @@ class ProviderRateLimiter:
                 self._inflight[url] = future
                 owner = True
         if not owner:
-            return future.result()
+            try:
+                return future.result(timeout=self._timeout_s)
+            except TimeoutError as exc:
+                raise MacroSourceFetchError("timeout", "timeout") from exc
         try:
             with self._gate:
                 self._respect_min_interval()
@@ -396,7 +399,7 @@ class ProviderRateLimiter:
         last_timeout: TimeoutError | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                response = self._transport.get(url, timeout_s=self._timeout_s, headers=headers)
+                response = self._bounded_transport_get(url, headers)
             except TimeoutError as exc:
                 last_timeout = TimeoutError("timeout")
                 last_timeout.__cause__ = exc
@@ -412,7 +415,7 @@ class ProviderRateLimiter:
                     if self._honor_retry_after
                     else self._min_interval_s
                 )
-                self._sleeper(delay)
+                self._sleeper(min(delay, self._timeout_s))
                 continue
             if response.status >= 400:
                 raise MacroSourceFetchError("unavailable", f"HTTP {response.status}")
@@ -420,6 +423,28 @@ class ProviderRateLimiter:
         if last_timeout is not None:
             raise MacroSourceFetchError("timeout", "timeout") from last_timeout
         raise MacroSourceFetchError("unavailable", "unavailable")
+
+    def _bounded_transport_get(self, url: str, headers: dict[str, str]) -> MacroHttpResponse:
+        box: dict[str, object] = {}
+
+        def _run() -> None:
+            try:
+                box["response"] = self._transport.get(url, timeout_s=self._timeout_s, headers=headers)
+            except Exception as exc:  # noqa: BLE001 - preserve provider failure
+                box["error"] = exc
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        thread.join(timeout=self._timeout_s)
+        if thread.is_alive():
+            raise MacroSourceFetchError("timeout", "timeout")
+        error = box.get("error")
+        if isinstance(error, Exception):
+            raise error
+        response = box.get("response")
+        if not isinstance(response, MacroHttpResponse):
+            raise MacroSourceFetchError("timeout", "timeout")
+        return response
 
 
 def _parse_dbnomics(body: str) -> tuple[str, float, datetime | None] | None:

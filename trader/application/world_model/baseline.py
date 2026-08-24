@@ -49,6 +49,7 @@ from trader.application.world_model.encoding import (
     outcome_move_class,
     bound_encoder_profile,
     revalidate_context_observation,
+    revalidate_graph_observation,
     training_event_signature,
     world_encoder_profile_for_include_context,
 )
@@ -58,7 +59,7 @@ from trader.domain.world_episode import (
     WorldEpisode,
     WorldPrediction,
 )
-from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeatureMask
+from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION, WorldFeatureContract, WorldFeatureMask
 
 
 MODEL_ID = "hierarchical_dirichlet_world_baseline"
@@ -255,6 +256,8 @@ class HierarchicalDirichletWorldBaseline:
         if self._profile is not None:
             if self._profile.include_context:
                 revalidate_context_observation(observation)
+            elif self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
+                revalidate_graph_observation(observation)
             return build_feature_state(
                 observation,
                 feature_contract=self._profile.contract,

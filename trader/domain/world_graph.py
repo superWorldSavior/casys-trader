@@ -2542,6 +2542,38 @@ class WorldGraphSnapshot:
         )
 
 
+def observation_graph_snapshot(value: Mapping[str, Any] | WorldGraphSnapshot) -> WorldGraphSnapshot:
+    """Hydrate a snapshot for observation. Unmapped/ambiguous never select a root.
+
+    Canonical construction stays fail-closed: ``from_mapping`` still rejects a
+    fabricated root. Observation replay projects that contamination to honest
+    missingness instead of raising or borrowing another MIC.
+    """
+
+    if isinstance(value, WorldGraphSnapshot):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("graph snapshot must be WorldGraphSnapshot or a mapping")
+    missingness = value.get("missingness") or {}
+    scope = missingness.get("scope") if isinstance(missingness, Mapping) else None
+    if scope not in {"unmapped", "ambiguous"}:
+        return WorldGraphSnapshot.from_mapping(value)
+    projected = dict(value)
+    projected["root_entity"] = None
+    projected["entity_revision_refs"] = ()
+    projected["identity_link_refs"] = ()
+    projected["structural_relation_refs"] = ()
+    projected["knowledge_relation_refs"] = ()
+    projected["artifact_refs"] = ()
+    projected["status"] = "missing"
+    frozen_missing = dict(missingness)
+    frozen_missing["scope"] = scope
+    projected["missingness"] = frozen_missing
+    projected.pop("snapshot_id", None)
+    projected.pop("content_sha256", None)
+    return WorldGraphSnapshot.from_mapping(projected)
+
+
 def reconcile_world_graph_snapshot(existing: WorldGraphSnapshot, incoming: WorldGraphSnapshot) -> WorldGraphSnapshot:
     if existing.snapshot_id != incoming.snapshot_id or existing.content_sha256 != incoming.content_sha256:
         raise ValueError("conflict: graph snapshot identity/content mismatch")
@@ -4039,6 +4071,7 @@ __all__ = [
     "parse_world_relation_event",
     "reconcile_world_graph_snapshot",
     "reconcile_world_ontology_revision",
+    "observation_graph_snapshot",
     "world_instrument_root_for_resolution",
     "world_observation_ref_for_observation_id",
 ]

@@ -62,6 +62,7 @@ from trader.application.world_model.encoding import (
     outcome_horizon_id,
     outcome_move_class,
     revalidate_context_observation,
+    revalidate_graph_observation,
     training_event_signature,
     world_encoder_profile_for_include_context,
 )
@@ -439,6 +440,8 @@ class OnlineGRUWorldChallenger:
         if self._profile is not None:
             if self._profile.include_context:
                 revalidate_context_observation(observation)
+            elif self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
+                revalidate_graph_observation(observation)
             return build_feature_state(
                 observation,
                 feature_contract=self._profile.contract,

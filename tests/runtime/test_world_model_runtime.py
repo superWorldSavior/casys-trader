@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
 from trader.application.world_model.gru import OnlineGRUWorldChallenger
@@ -1382,4 +1385,162 @@ def test_compose_local_graph_injects_study_cohort_id_when_capture_is_composed(tm
         assert enricher.config.study_cohort_id == cohort_id
         assert store.counts()["episodes"] == 0
     finally:
+        store.close()
+
+
+def _persist_historical_unmapped_v3(store: WorldModelStore, payload: dict[str, object]) -> None:
+    from trader.domain.world_episode import canonical_json, canonical_sha256
+
+    observation = payload["observation"]
+    assert isinstance(observation, dict)
+    snapshot = observation["graph_features"]["snapshot"]
+    assert isinstance(snapshot, dict)
+    root = snapshot.get("root_entity") or {}
+    recorded_at = str(observation.get("captured_at") or observation.get("available_at"))
+    payload_json = canonical_json(payload)
+    snapshot_json = canonical_json(snapshot)
+    source = {
+        key: observation[key]
+        for key in ("anchor", "freshness", "available_at", "captured_at", "graph_features")
+        if key in observation
+    }
+    source_json = canonical_json(source)
+    with store._db.transaction() as cur:
+        cur.execute(
+            """
+            INSERT INTO world_graph_snapshots(
+                snapshot_id, root_episode_id, root_entity_kind, root_entity_id, cutoff_at,
+                ontology_revision, ontology_hash, identity_map_hash, scope_mapping_id,
+                scope_mapping_hash, status, payload_json, payload_sha256, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot["snapshot_id"],
+                snapshot["root_episode_id"],
+                root.get("kind") or "",
+                root.get("entity_id") or "",
+                snapshot["cutoff_at"],
+                snapshot["ontology_revision"],
+                snapshot["ontology_hash"],
+                snapshot["identity_map_hash"],
+                snapshot["scope_mapping_id"],
+                snapshot["scope_mapping_hash"],
+                snapshot["status"],
+                snapshot_json,
+                canonical_sha256(snapshot),
+                recorded_at,
+            ),
+        )
+        cur.execute(
+            """
+            INSERT INTO world_episodes(
+                episode_id, capture_id, venue, symbol, observed_at, available_at, as_of_bar_ts,
+                bar_interval, feature_contract_version, sampling_policy_version, training_eligible,
+                training_reason, payload_json, payload_sha256, source_evidence_json,
+                source_evidence_sha256, recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["episode_id"],
+                None,
+                observation["venue"],
+                observation["symbol"],
+                observation["as_of_bar_ts"],
+                observation["available_at"],
+                observation["as_of_bar_ts"],
+                observation["bar_interval"],
+                observation["feature_contract_version"],
+                observation["sampling_policy_version"],
+                1,
+                None,
+                payload_json,
+                canonical_sha256(payload),
+                source_json,
+                canonical_sha256(source),
+                recorded_at,
+            ),
+        )
+
+
+def test_gru_replay_observes_historical_unmapped_v3_without_selecting_a_root(tmp_path) -> None:
+    from tests.application.test_world_graph_capture import _attach, _us_aaa_episode, _us_gm_published_config
+    from trader.application.world_model.encoding import world_lane_encoder_profile
+    from trader.application.world_model.gru import OnlineGRUWorldChallenger
+    from trader.domain.world_feature_contract import (
+        GRAPH_FEATURE_CONTRACT_VERSION,
+        WORLD_V3_GRU_MODEL_IDENTITY,
+        WORLD_V3_MARKOV_MODEL_IDENTITY,
+        WORLD_V3_MODEL_VERSION,
+    )
+    from trader.domain.world_graph import WorldGraphSnapshot
+
+    v3 = _attach((_us_aaa_episode(),), _us_gm_published_config())[0]
+    payload = v3.to_dict()
+    snapshot = payload["observation"]["graph_features"]["snapshot"]
+    snapshot["root_entity"] = {
+        "kind": "instrument",
+        "entity_id": "mic:XNYS:symbol:AAA",
+        "node_kind": "world_entity",
+    }
+    with pytest.raises(ValueError, match="unmapped|root"):
+        WorldGraphSnapshot.from_mapping(snapshot)
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    runner = None
+    try:
+        _persist_historical_unmapped_v3(store, payload)
+        status_profile = world_lane_encoder_profile("topology_status_only")
+        content_profile = world_lane_encoder_profile("graph_content")
+        markov = HierarchicalDirichletWorldBaseline(
+            model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
+            model_version=WORLD_V3_MODEL_VERSION,
+            feature_contract=status_profile.contract,
+            feature_mask=status_profile.mask,
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+        )
+        gru = OnlineGRUWorldChallenger(
+            model_id=WORLD_V3_GRU_MODEL_IDENTITY,
+            model_version=WORLD_V3_MODEL_VERSION,
+            feature_contract=content_profile.contract,
+            feature_mask=content_profile.mask,
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+        )
+        runtime = WorldModelRuntime(
+            store=store,
+            predictor=markov,
+            predictors=(gru,),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+        )
+        runner = WorldModelBackgroundRunner(runtime=runtime)
+        result = runner.trigger(episodes=(), now=NOW, reason="hydrate")
+        assert result["triggered"] is True
+        result["_thread"].join(timeout=5)
+        assert result["_thread"].is_alive() is False
+        status = runner.status()
+        errors = status.get("errors") or []
+        assert not any("unmapped/ambiguous snapshot must not select a world entity root" in str(item) for item in errors)
+        observed = gru.observe_episode(store.list_eligible_episodes()[0]["episode"])
+        assert observed == payload["episode_id"]
+        again = gru.observe_episode(store.list_eligible_episodes()[0]["episode"])
+        assert again == observed
+        canonical = WorldEpisode.from_dict(store.list_eligible_episodes()[0]["episode"])
+        assert canonical.observation.graph is not None
+        assert canonical.observation.graph.root_entity is None
+        dumped = json.dumps(canonical.observation.graph.to_dict())
+        assert "XNYS" not in dumped
+        assert "mic:" not in dumped
+        features = canonical.observation.graph_features["categorical_features"]
+        assert features["graph_scope_status"] == "unmapped"
+        assert features["graph_missingness_status"] == "unmapped"
+        forecast = markov.predict(canonical, horizon_id="elapsed_4h.v1", prediction_at=NOW)
+        assert forecast.status in {"warming_up", "shadow_only"}
+        assert forecast.model_id == WORLD_V3_MARKOV_MODEL_IDENTITY
+        gru_forecast = gru.predict(canonical, horizon_id="elapsed_4h.v1", prediction_at=NOW)
+        assert gru_forecast.status in {"warming_up", "shadow_only"}
+        assert gru_forecast.model_id == WORLD_V3_GRU_MODEL_IDENTITY
+    finally:
+        if runner is not None:
+            runner.stop()
         store.close()

@@ -10,6 +10,7 @@ runtime, and reporting stay behind the ports.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -97,6 +98,38 @@ def _source_failure_reason(exc: BaseException) -> str:
     if isinstance(exc, (TypeError, ValueError)):
         return "invalid_payload"
     return "unavailable"
+
+
+def _read_facts_bounded(
+    port: MacroSourcePort | None,
+    scope: MacroScope,
+    observed_at: datetime,
+    timeout_s: float | None,
+) -> tuple[MacroSourceFact, ...]:
+    if port is None:
+        raise ValueError("missing")
+    if timeout_s is None or timeout_s <= 0:
+        return tuple(port.read_facts(scope, observed_at))
+    box: dict[str, object] = {}
+
+    def _run() -> None:
+        try:
+            box["facts"] = tuple(port.read_facts(scope, observed_at))
+        except Exception as exc:  # noqa: BLE001 - preserve source-specific failure
+            box["error"] = exc
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=float(timeout_s))
+    if thread.is_alive():
+        raise TimeoutError("timeout")
+    error = box.get("error")
+    if isinstance(error, Exception):
+        raise error
+    facts = box.get("facts")
+    if not isinstance(facts, tuple):
+        raise TimeoutError("timeout")
+    return facts
 
 
 def project_macro_world_observation(
@@ -191,6 +224,7 @@ class MacroWorldPipeline:
     policy: MacroDerivationPolicy
     eligibility: PointInTimeEligibilityPolicy = PointInTimeEligibilityPolicy()
     project: MacroObservationProjector = project_macro_world_observation
+    source_timeouts: Mapping[str, float] | None = None
 
     def collect(
         self,
@@ -318,8 +352,9 @@ class MacroWorldPipeline:
         if port is None:
             failed = MacroSourceFailed(run_id=run.run_id, source_id=source_id, reason="missing")
             return self._advance(run, run.record_source_result(failed)), ()
+        timeout_s = None if self.source_timeouts is None else self.source_timeouts.get(source_id)
         try:
-            raw = tuple(port.read_facts(scope, observed_at))
+            raw = _read_facts_bounded(port, scope, observed_at, timeout_s)
             entry = registry.entry_for(source_id)
             seen: set[str] = set()
             validated: list[MacroSourceFact] = []

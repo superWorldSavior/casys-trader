@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ast
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from tests.application.test_world_context_capture import V1_EPISODE_ID, _FakeSource, _v1_episode
 from tests.application.test_world_graph_snapshot import (
@@ -14,6 +17,7 @@ from tests.application.test_world_graph_snapshot import (
     _service,
 )
 from tests.package_layout._helpers import REPO_ROOT
+from trader.application.world_model.capture import capture_world_episodes
 from trader.application.world_model.context_capture import attach_world_context
 from trader.application.world_model.graph_snapshot import WorldGraphSnapshotService
 from trader.domain.world_context import SensorEvidence
@@ -374,6 +378,122 @@ def test_unmapped_us_aaa_never_selects_sole_us_mic_or_world_entity_root() -> Non
     features = _graph_features(v3.observation)["categorical_features"]
     assert features["graph_scope_status"] == "unmapped"
     assert features["graph_missingness_status"] == "unmapped"
+
+
+def test_rotated_tw_universe_keeps_unmapped_symbol_missing_without_xtai_fallback() -> None:
+    mapping = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(
+            WorldScopeMappingEntry(
+                anchor=WorldMarketAnchorRef(market_venue="TW", instrument="2330.TW"),
+                venue={"kind": "venue", "entity_id": "mic:XTAI"},
+                country={"kind": "country", "entity_id": "iso-3166:TW"},
+                region={"kind": "region", "entity_id": "iso-un-m49:030"},
+                world={"kind": "world", "entity_id": "market"},
+                provider_proofs=("provider:world-scope:xtai",),
+                taxonomy_version="sessions_mic.v1",
+            ),
+        ),
+    )
+    ledger = _InMemoryWorldGraphLedger()
+    _seed_mapping_heads(ledger, mapping)
+    v1 = capture_world_episodes(
+        active_symbols=("1440.TW",),
+        tradable_symbols=("1440.TW",),
+        bars_by_symbol={
+            "1440.TW": [
+                {
+                    "ts": "2026-08-24T05:30:00+00:00",
+                    "open": 13.6,
+                    "high": 13.6,
+                    "low": 13.6,
+                    "close": 13.6,
+                    "volume": 0.0,
+                    "available_at": "2026-08-24T05:52:39+00:00",
+                    "source": "yfinance",
+                    "interval": "15m",
+                    "timestamp_semantics": "bar_start",
+                }
+            ]
+        },
+        market_metadata_by_symbol={
+            "1440.TW": {
+                "venue": "TW",
+                "asset_family": "equity",
+                "session_phase": "regular",
+                "market_regime": "quiet",
+                "family_regime": "risk_on",
+                "freshness": {"status": "fresh", "data_age_minutes": 21.5},
+                "available_at": "2026-08-24T05:52:39+00:00",
+            }
+        },
+        source="yfinance",
+        interval="15m",
+        timestamp_semantics="bar_start",
+        captured_at="2026-08-24T05:52:39+00:00",
+    )[0]
+    resolution = mapping.resolve(WorldMarketAnchorRef(market_venue="TW", instrument="1440.TW"))
+    assert resolution.status == "unmapped"
+    v3 = _attach((v1,), _capture_config(ledger=ledger, mapping=mapping))[0]
+    snapshot = _graph_snapshot(v3.observation)
+    assert snapshot is not None
+    assert snapshot.root_entity is None
+    assert snapshot.status == "missing"
+    assert snapshot.missingness["scope"] == "unmapped"
+    dumped = json.dumps(snapshot.to_dict())
+    assert "XTAI" not in dumped
+    assert "mic:" not in dumped
+    features = _graph_features(v3.observation)["categorical_features"]
+    assert features["graph_scope_status"] == "unmapped"
+    assert features["graph_missingness_status"] == "unmapped"
+
+
+def test_contaminated_unmapped_snapshot_hydrates_for_observation_without_selecting_a_root() -> None:
+    from trader.domain.world_graph import WorldGraphSnapshot, observation_graph_snapshot
+
+    v1 = _us_aaa_episode()
+    v3 = _attach((v1,), _us_gm_published_config())[0]
+    payload = v3.to_dict()
+    snapshot = payload["observation"]["graph_features"]["snapshot"]
+    assert snapshot["root_entity"] is None
+    snapshot["root_entity"] = {
+        "kind": "instrument",
+        "entity_id": "mic:XNYS:symbol:AAA",
+        "node_kind": "world_entity",
+    }
+    with pytest.raises(ValueError, match="unmapped|root"):
+        WorldGraphSnapshot.from_mapping(snapshot)
+    episode = WorldEpisode.from_dict(payload)
+    assert episode.episode_id == payload["episode_id"]
+    assert episode.observation.graph is not None
+    assert episode.observation.graph.root_entity is None
+    assert episode.observation.graph.missingness["scope"] == "unmapped"
+    dumped = json.dumps(episode.observation.graph.to_dict())
+    assert "XNYS" not in dumped
+    assert "mic:" not in dumped
+    features = episode.observation.graph_features["categorical_features"]
+    assert features["graph_scope_status"] == "unmapped"
+    replayed = WorldEpisode.from_dict(json.loads(json.dumps(payload)))
+    assert replayed.episode_id == episode.episode_id
+    assert replayed.observation.graph.root_entity is None
+    projected = observation_graph_snapshot(snapshot)
+    assert projected.root_entity is None
+    from trader.application.world_model.graph_features import encode_world_graph_features
+    from trader.application.world_model.graph_ports import WorldGraphPathSet
+    from trader.application.world_model.graph_snapshot import WorldGraphSnapshotBundle
+    from trader.domain.world_graph import GRAPH_TRAVERSAL_POLICY_VERSION
+
+    encoded = encode_world_graph_features(
+        WorldGraphSnapshotBundle(
+            snapshot=episode.observation.graph,
+            paths=WorldGraphPathSet(paths=(), status="complete", policy_version=GRAPH_TRAVERSAL_POLICY_VERSION),
+            structural_relations=(),
+            knowledge_relations=(),
+        )
+    )
+    assert encoded.categorical_features["graph_scope_status"] == "unmapped"
+    assert encoded.categorical_features["graph_missingness_status"] == "unmapped"
+    assert "mic:" not in json.dumps(dict(encoded.categorical_features))
 
 
 def test_exact_known_anchor_still_emits_normal_graph_v3() -> None:

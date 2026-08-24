@@ -284,17 +284,22 @@ def _pipeline(
     policy: MacroDerivationPolicy | None = None,
     eligibility: PointInTimeEligibilityPolicy | None = None,
     project=None,
+    source_timeouts=None,
 ):
     from trader.application.world_model.macro_pipeline import MacroWorldPipeline
 
-    return MacroWorldPipeline(
-        history=history if history is not None else _History(),
-        ledger=ledger if ledger is not None else _Ledger(),
-        reader=reader if reader is not None else _Reader(),
-        policy=policy if policy is not None else _policy(),
-        eligibility=eligibility if eligibility is not None else PointInTimeEligibilityPolicy(),
-        **({} if project is None else {"project": project}),
-    )
+    values = {
+        "history": history if history is not None else _History(),
+        "ledger": ledger if ledger is not None else _Ledger(),
+        "reader": reader if reader is not None else _Reader(),
+        "policy": policy if policy is not None else _policy(),
+        "eligibility": eligibility if eligibility is not None else PointInTimeEligibilityPolicy(),
+    }
+    if project is not None:
+        values["project"] = project
+    if source_timeouts is not None:
+        values["source_timeouts"] = source_timeouts
+    return MacroWorldPipeline(**values)
 
 
 def _plan(registry: MacroSourceRegistry | None = None) -> MacroCollectionPlan:
@@ -998,3 +1003,62 @@ def test_foreign_scope_or_provenance_mismatch_is_typed_failure_not_a_mixed_obser
     assert mixed_history.observations == []
     mixed_failed = next(event for event in mixed_run.events if isinstance(event, MacroSourceFailed))
     assert mixed_failed.reason == "scope_mismatch"
+
+
+def test_hanging_source_is_target_local_timeout_and_does_not_block_sibling_sources() -> None:
+    import threading
+
+    hang = threading.Event()
+
+    class _Hang:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def read_facts(self, scope, observed_at):
+            del scope, observed_at
+            self.calls += 1
+            hang.wait()
+            raise AssertionError("hanging source resumed")
+
+    registry = _registry()
+    us_target = _plan(registry).target_for(_scope(kind="country", entity_id="iso-3166:US"))
+    world_target = _plan(registry).target_for(_scope(kind="world", entity_id="market"))
+    hanging = _Hang()
+    brent = _Source((_brent_fact(),))
+    usd = _Source()
+    pipeline = _pipeline(source_timeouts={"fed_policy_rate": 0.2, "brent": 0.2, "broad_usd_index": 0.2})
+    done = threading.Event()
+    runs: list[object] = []
+
+    def _run() -> None:
+        try:
+            us_run = pipeline.collect(
+                target=us_target,
+                cutoff_at=CUTOFF,
+                registry=registry,
+                sources={"fed_policy_rate": hanging},
+                observed_at=CUTOFF,
+            )
+            world_run = pipeline.collect(
+                target=world_target,
+                cutoff_at=CUTOFF,
+                registry=registry,
+                sources={"brent": brent, "broad_usd_index": usd},
+                observed_at=CUTOFF,
+            )
+            runs.extend((us_run, world_run))
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    assert done.wait(2.0)
+    assert len(runs) == 2
+    us_run, world_run = runs
+    assert us_run.status == "failed"
+    failed = next(event for event in us_run.events if isinstance(event, MacroSourceFailed))
+    assert failed.source_id == "fed_policy_rate"
+    assert failed.reason == "timeout"
+    assert world_run.expected_source_ids == ("brent", "broad_usd_index")
+    assert brent.calls == [(world_target.scope, CUTOFF)]
+    assert usd.calls == [(world_target.scope, CUTOFF)]

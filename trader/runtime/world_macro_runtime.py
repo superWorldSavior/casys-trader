@@ -280,9 +280,23 @@ def collect_world_macro(
             )
         except Exception as exc:  # noqa: BLE001 - one target cannot abort the worker
             errors.append({"scope": target.scope.to_dict(), "error": f"{type(exc).__name__}:{exc}"})
-    if errors:
-        report["status"] = "partial"
+    report["status"] = _collection_report_status(runs, errors)
     return report
+
+
+def _collection_report_status(runs: list[object], errors: list[object]) -> str:
+    statuses = []
+    for item in runs:
+        if isinstance(item, Mapping):
+            statuses.append(str(item.get("status") or ""))
+    has_success = any(status in {"completed", "completed_partial", "ok"} for status in statuses)
+    has_failed = any(status == "failed" for status in statuses) or bool(errors)
+    has_partial = any(status in {"completed_partial", "partial"} for status in statuses)
+    if has_failed and not has_success:
+        return "failed"
+    if has_failed or has_partial or errors:
+        return "partial"
+    return "ok"
 
 
 def wire_world_macro_runtime(
@@ -320,11 +334,17 @@ def wire_world_macro_runtime(
         sleeper=sleeper,
     )
     store = WorldMacroStore(Path(state_dir) / "world_macro", clock=resolved_clock)
+    source_timeouts = {
+        entry.source_id: operator.budgets.providers[entry.provider_id].timeout_s
+        for entry in operator.registry.entries
+        if entry.provider_id in operator.budgets.providers
+    }
     pipeline = MacroWorldPipeline(
         history=store,
         ledger=store,
         reader=store,
         policy=operator.policy,
+        source_timeouts=source_timeouts,
     )
     plan = collection_plan(operator)
     targets = plan.targets
@@ -336,6 +356,26 @@ def wire_world_macro_runtime(
         graph_store = WorldGraphStore(Path(state_dir) / "world_model.db", clock=resolved_clock)
 
     def collect_fn(*, now: datetime, reason: str) -> dict[str, object]:
+        from trader.domain.world_graph_bridge_lifecycle import UnknownMacroGraphBridgeDrift
+
+        graph_report: dict[str, object] | None = None
+        graph_error: dict[str, object] | None = None
+        fail_closed = False
+        if graph_store is not None:
+            try:
+                graph_report = _align_macro_graph_bridge(
+                    now=now,
+                    macro_store=store,
+                    graph_store=graph_store,
+                    mapping=operator.scope_mapping,
+                    collection_plan=plan,
+                )
+            except UnknownMacroGraphBridgeDrift as exc:
+                fail_closed = True
+                graph_error = {"stage": "graph_bridge", "error": f"{type(exc).__name__}:{exc}"}
+                graph_report = {"status": "unknown_drift", "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 - alignment stays in the shadow lane
+                graph_error = {"stage": "graph_bridge", "error": f"{type(exc).__name__}:{exc}"}
         report = collect_world_macro(
             now=now,
             reason=reason,
@@ -345,7 +385,17 @@ def wire_world_macro_runtime(
             targets=targets,
             budgets=operator.budgets,
         )
-        if graph_store is None:
+        if graph_report is not None:
+            report["graph_bridge"] = graph_report
+        if graph_error is not None:
+            errors = report.get("errors")
+            if isinstance(errors, list):
+                errors.append(graph_error)
+            report["status"] = "failed" if fail_closed else _collection_report_status(
+                list(report.get("runs") or []),
+                list(errors) if isinstance(errors, list) else [graph_error],
+            )
+        if graph_store is None or graph_report is None or fail_closed:
             return report
         try:
             _reconcile_macro_graph_bridge(
@@ -360,7 +410,8 @@ def wire_world_macro_runtime(
             errors = report.get("errors")
             if isinstance(errors, list):
                 errors.append({"stage": "graph_bridge", "error": f"{type(exc).__name__}:{exc}"})
-            report["status"] = "partial"
+            if report.get("status") == "ok":
+                report["status"] = "partial"
         return report
 
     runner = WorldMacroBackgroundRunner(
@@ -377,6 +428,69 @@ def wire_world_macro_runtime(
     )
 
 
+def _macro_graph_bridge_use_case(
+    *,
+    now: datetime,
+    macro_store: object,
+    graph_store: object,
+    mapping: object,
+    collection_plan: MacroCollectionPlan,
+):
+    from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
+    from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
+    from trader.domain.world_graph_bridge_lifecycle import require_committed_live_bridge_lineage
+    from trader.domain.world_scope import WorldScopeMapping
+
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("graph bridge requires WorldScopeMapping")
+    if not isinstance(collection_plan, MacroCollectionPlan):
+        raise TypeError("graph bridge requires MacroCollectionPlan")
+    bootstrap = WorldOntologyBootstrapService(graph_store, mapping)
+    bootstrap.ensure_published(now=now)
+    revision = bootstrap.expected_revision()
+    require_committed_live_bridge_lineage(
+        mapping=mapping,
+        ontology=revision,
+        collection_plan=collection_plan,
+    )
+    return RegisterMacroObservationKnowledge(
+        scan=macro_store,
+        graph=graph_store,
+        bridge=graph_store,
+        scope_mapping=mapping,
+        structural_revision=revision,
+        collection_plan=collection_plan,
+        bridge_key=_BRIDGE_KEY,
+    )
+
+
+def _align_macro_graph_bridge(
+    *,
+    now: datetime,
+    macro_store: object,
+    graph_store: object,
+    mapping: object,
+    collection_plan: MacroCollectionPlan,
+) -> dict[str, object]:
+    from trader.domain.world_episode import canonical_sha256
+
+    use_case = _macro_graph_bridge_use_case(
+        now=now,
+        macro_store=macro_store,
+        graph_store=graph_store,
+        mapping=mapping,
+        collection_plan=collection_plan,
+    )
+    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256({"bridge_key": _BRIDGE_KEY, "intent": "align"})
+    registry = use_case.align(request_id)
+    run = getattr(registry, "active_run", None)
+    return {
+        "status": None if run is None else getattr(run, "status", None),
+        "version": getattr(registry, "version", None),
+        "stage": "aligned",
+    }
+
+
 def _reconcile_macro_graph_bridge(
     *,
     now: datetime,
@@ -386,36 +500,13 @@ def _reconcile_macro_graph_bridge(
     collection_plan: MacroCollectionPlan,
     report: dict[str, object],
 ) -> None:
-    from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
-    from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
-    from trader.domain.world_episode import canonical_sha256
-    from trader.domain.world_scope import WorldScopeMapping
-
-    if not isinstance(mapping, WorldScopeMapping):
-        raise TypeError("graph bridge requires WorldScopeMapping")
-    if not isinstance(collection_plan, MacroCollectionPlan):
-        raise TypeError("graph bridge requires MacroCollectionPlan")
-    from trader.domain.world_graph_bridge_lifecycle import require_committed_live_bridge_lineage
-
-    bootstrap = WorldOntologyBootstrapService(graph_store, mapping)
-    bootstrap.ensure_published(now=now)
-    revision = bootstrap.expected_revision()
-    require_committed_live_bridge_lineage(
+    use_case = _macro_graph_bridge_use_case(
+        now=now,
+        macro_store=macro_store,
+        graph_store=graph_store,
         mapping=mapping,
-        ontology=revision,
         collection_plan=collection_plan,
     )
-    use_case = RegisterMacroObservationKnowledge(
-        scan=macro_store,
-        graph=graph_store,
-        bridge=graph_store,
-        scope_mapping=mapping,
-        structural_revision=revision,
-        collection_plan=collection_plan,
-        bridge_key=_BRIDGE_KEY,
-    )
-    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256({"bridge_key": _BRIDGE_KEY, "intent": "align"})
-    registry = use_case.ensure(request_id)
     registry = use_case.reconcile(limit=32)
     run = getattr(registry, "active_run", None)
     report["graph_bridge"] = {

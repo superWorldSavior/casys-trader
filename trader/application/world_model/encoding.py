@@ -707,6 +707,34 @@ def revalidate_context_observation(observation: object) -> None:
     WorldObservation.from_dict(payload)
 
 
+def revalidate_graph_observation(observation: object) -> None:
+    """Replay V3 mappings through the domain snapshot before encoding/training.
+
+    Unmapped/ambiguous missingness is a valid observation: hydrate projects it
+    to a rootless snapshot instead of selecting another entity. A V3 contract
+    without a graph payload stays valid status-only evidence.
+    """
+
+    if isinstance(observation, (WorldEpisode, WorldObservation)):
+        return
+    if not isinstance(observation, Mapping):
+        return
+    payload = {str(key): item for key, item in observation.items()}
+    nested = payload.get("observation") if "observation" in payload else payload
+    if not isinstance(nested, Mapping):
+        return
+    features = nested.get("graph_features")
+    has_snapshot = nested.get("graph") is not None or (
+        isinstance(features, Mapping) and features.get("snapshot") is not None
+    )
+    if not has_snapshot:
+        return
+    if "observation" in payload:
+        WorldEpisode.from_dict(payload)
+        return
+    WorldObservation.from_dict(payload)
+
+
 def _feature_contract_text(source: object) -> str:
     raw = _read_field(source, "feature_contract_version")
     if raw is _MISSING or raw is None:
@@ -1251,6 +1279,7 @@ __all__ = [
     "parse_model_timestamp",
     "resolve_encoder_profile",
     "revalidate_context_observation",
+    "revalidate_graph_observation",
     "training_event_signature",
     "world_encoder_profile_for_include_context",
     "world_lane_encoder_profile",

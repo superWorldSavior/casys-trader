@@ -86,6 +86,11 @@ class RegisterMacroObservationKnowledge:
         self._bridge.append_event(event, expected_registry_version=registry.version - 1, fence=fence)
         return self._load()
 
+    def align(self, request_id: str) -> MacroGraphBridgeRegistry:
+        """Pre-collection lifecycle alignment. No observation scan and no provider I/O."""
+
+        return self.ensure(request_id)
+
     def ensure(self, request_id: str) -> MacroGraphBridgeRegistry:
         """Classify durable state, then reserve/activate only when the generation is missing."""
 

@@ -249,6 +249,80 @@ def test_target_failure_does_not_abort_remaining_targets_or_raise() -> None:
     assert report["runs"][0]["scope"]["kind"] == "world"
 
 
+def test_failed_us_target_does_not_abort_remaining_typed_targets_and_report_is_honest() -> None:
+    from trader.runtime.world_macro_runtime import collect_world_macro
+
+    targets = (
+        MacroCollectionTarget(
+            scope=MacroScope(kind="country", entity_id="iso-3166:US"),
+            source_ids=("cpi_us_imf", "fed_funds_effective", "unemployment_rate_us"),
+        ),
+        MacroCollectionTarget(
+            scope=MacroScope(kind="region", entity_id="iso-un-m49:150"),
+            source_ids=("ecb_deposit_rate", "hicp_euro_area"),
+        ),
+        MacroCollectionTarget(
+            scope=MacroScope(kind="world", entity_id="market"),
+            source_ids=("brent_crude_usd", "gold_usd"),
+        ),
+    )
+    calls: list[tuple[str, str]] = []
+
+    class Pipeline:
+        def collect(self, **kwargs: object) -> SimpleNamespace:
+            target = kwargs["target"]
+            assert isinstance(target, MacroCollectionTarget)
+            calls.append((target.scope.kind, target.scope.entity_id))
+            if target.scope.kind == "country":
+                return SimpleNamespace(status="failed", run_id="run-us", reason="no_admissible_observation")
+            return SimpleNamespace(status="completed", run_id=f"run:{target.scope.kind}")
+
+    report = collect_world_macro(
+        now=NOW,
+        reason="post_cycle",
+        pipeline=Pipeline(),  # type: ignore[arg-type]
+        registry=object(),
+        sources={},
+        targets=targets,
+    )
+    assert calls == [
+        ("country", "iso-3166:US"),
+        ("region", "iso-un-m49:150"),
+        ("world", "market"),
+    ]
+    assert len(report["runs"]) == 3
+    assert report["runs"][0]["status"] == "failed"
+    assert report["runs"][1]["status"] == "completed"
+    assert report["runs"][2]["status"] == "completed"
+    assert report["status"] == "partial"
+
+
+def test_all_failed_targets_report_failed_without_restamping() -> None:
+    from trader.runtime.world_macro_runtime import collect_world_macro
+
+    targets = (
+        MacroCollectionTarget(scope=MacroScope(kind="country", entity_id="iso-3166:US"), source_ids=("cpi_us_imf",)),
+        MacroCollectionTarget(scope=MacroScope(kind="world", entity_id="market"), source_ids=("gold_usd",)),
+    )
+
+    class Pipeline:
+        def collect(self, **kwargs: object) -> SimpleNamespace:
+            target = kwargs["target"]
+            assert isinstance(target, MacroCollectionTarget)
+            return SimpleNamespace(status="failed", run_id=f"run:{target.scope.kind}")
+
+    report = collect_world_macro(
+        now=NOW,
+        reason="post_cycle",
+        pipeline=Pipeline(),  # type: ignore[arg-type]
+        registry=object(),
+        sources={},
+        targets=targets,
+    )
+    assert len(report["runs"]) == 2
+    assert report["status"] == "failed"
+
+
 def test_runtime_module_excludes_gdelt_news_macro_brief_and_run_cycle_fetch() -> None:
     from trader.runtime import world_macro_runtime
 
@@ -599,6 +673,9 @@ def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
     calls: list[str] = []
 
     class _Bridge:
+        def align(self, request_id: str) -> object:
+            return self.ensure(request_id)
+
         def ensure(self, request_id: str) -> object:
             calls.append(f"ensure:{request_id}")
             return SimpleNamespace(events=(), active_run=None)
@@ -747,6 +824,9 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(tmp_path: Path, monkeypat
     calls: list[str] = []
 
     class _Bridge:
+        def align(self, request_id: str) -> object:
+            return self.ensure(request_id)
+
         def ensure(self, request_id: str) -> object:
             calls.append(f"ensure:{request_id}")
             return SimpleNamespace(events=(), active_run=None)
@@ -792,6 +872,9 @@ def test_graph_bridge_ensure_then_reconcile_never_activates_every_tick(
     class _Bridge:
         def __init__(self, **kwargs: object) -> None:
             captured.append(kwargs)
+
+        def align(self, request_id: str) -> object:
+            return self.ensure(request_id)
 
         def ensure(self, request_id: str) -> object:
             calls.append(f"ensure:{request_id}")
@@ -840,9 +923,101 @@ def test_graph_bridge_ensure_then_reconcile_never_activates_every_tick(
     assert captured
     assert captured[0]["collection_plan"].__class__.__name__ == "MacroCollectionPlan"
     runtime_source = (REPO_ROOT / "trader" / "runtime" / "world_macro_runtime.py").read_text(encoding="utf-8")
-    assert "use_case.ensure(" in runtime_source
+    assert "use_case.align(" in runtime_source
     assert "use_case.activate(" not in runtime_source
     assert "collection_plan=collection_plan" in runtime_source
+
+
+def test_bridge_lifecycle_aligns_before_collection_even_when_every_provider_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    _stub_ontology_bootstrap(monkeypatch)
+    calls: list[str] = []
+
+    class _Bridge:
+        def align(self, request_id: str) -> object:
+            return self.ensure(request_id)
+
+        def ensure(self, request_id: str) -> object:
+            calls.append("ensure")
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="active", block_reason=None),
+                version=2,
+            )
+
+        def reconcile(self, *, limit: int) -> object:
+            calls.append(f"reconcile:{limit}")
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="active", block_reason=None),
+                version=2,
+            )
+
+        def activate(self, request_id: str) -> object:
+            calls.append(f"activate:{request_id}")
+            return SimpleNamespace(events=(), active_run=None)
+
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
+        lambda **_kwargs: _Bridge(),
+    )
+
+    class FailAll:
+        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> object:
+            del timeout_s, headers
+            calls.append(f"http:{url}")
+            raise ValueError("invalid series payload")
+
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=FailAll(),
+        clock=FakeClock(NOW),
+        sleeper=lambda _seconds: None,
+        graph_v3_enabled=True,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="post_cycle")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=15.0)
+    assert first["_thread"].is_alive() is False
+    assert calls[0] == "ensure"
+    http_calls = [item for item in calls if item.startswith("http:")]
+    assert len(http_calls) == 7
+    assert "reconcile:32" in calls
+    events = _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
+    registered = [row for row in events if row.get("event_type") == "macro_collection_registered"]
+    source_results = [
+        row for row in events if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
+    ]
+    assert len(registered) == 3
+    assert len(source_results) == 7
+    assert {row.get("reason") for row in source_results if row.get("event_type") == "macro_source_failed"} <= {
+        "invalid_payload",
+        "unavailable",
+        "timeout",
+    }
+    replay = bundle.runner.trigger(now=NOW, reason="replay")
+    assert replay["triggered"] is True
+    replay["_thread"].join(timeout=15.0)
+    bundle.runner.stop()
+    replay_events = _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
+    replay_registered = [row for row in replay_events if row.get("event_type") == "macro_collection_registered"]
+    replay_results = [
+        row for row in replay_events if row.get("event_type") in {"macro_source_completed", "macro_source_failed"}
+    ]
+    assert len(replay_registered) == 3
+    assert len(replay_results) == 7
+    status = bundle.runner.status()
+    assert status["status"] in {"partial", "failed"}
+    runtime_source = (REPO_ROOT / "trader" / "runtime" / "world_macro_runtime.py").read_text(encoding="utf-8")
+    start = runtime_source.index("def collect_fn")
+    body = runtime_source[start : runtime_source.index("runner = WorldMacroBackgroundRunner", start)]
+    assert "_align_macro_graph_bridge(" in body
+    assert body.index("_align_macro_graph_bridge(") < body.index("collect_world_macro(")
+    assert body.index("collect_world_macro(") < body.index("_reconcile_macro_graph_bridge(")
 
 
 def test_typed_graph_flag_false_does_not_reread_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
