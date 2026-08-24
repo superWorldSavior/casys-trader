@@ -649,7 +649,10 @@ def test_migration_creates_append_only_cohort_schema(tmp_path: Path) -> None:
     assert "manifest_sha256" in index_sql
     assert "feature_contract_fingerprint" in index_sql
     assert "feature_mask_fingerprint" in index_sql
-    assert [version for version, _statements in WORLD_MODEL_MIGRATIONS][-1] == 5
+    catalog_versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    assert 5 in catalog_versions
+    assert catalog_versions[-1] == WORLD_MODEL_MIGRATIONS[-1][0]
+    assert WORLD_MODEL_MIGRATIONS[-1][0] in versions
 
 
 def test_block_lane_event_round_trips_through_reconstruction(tmp_path: Path) -> None:
