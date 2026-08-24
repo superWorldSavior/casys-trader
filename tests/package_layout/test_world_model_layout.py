@@ -193,6 +193,8 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     from trader.domain.world_graph_bridge_lifecycle import (
         classify_macro_graph_bridge,
         committed_macro_graph_bridge_migration,
+        committed_macro_graph_bridge_predecessor_spec,
+        committed_macro_graph_bridge_successor_spec,
     )
 
     assert WorldAvailabilityReceipt.__module__ == "trader.domain.world_availability"
@@ -208,6 +210,8 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert plan_world_ontology_publication.__module__ == "trader.domain.world_ontology_lifecycle"
     assert classify_macro_graph_bridge.__module__ == "trader.domain.world_graph_bridge_lifecycle"
     assert committed_macro_graph_bridge_migration.__module__ == "trader.domain.world_graph_bridge_lifecycle"
+    assert committed_macro_graph_bridge_predecessor_spec.__module__ == "trader.domain.world_graph_bridge_lifecycle"
+    assert committed_macro_graph_bridge_successor_spec.__module__ == "trader.domain.world_graph_bridge_lifecycle"
     assert "trader.infrastructure" not in availability_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in scope_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in lifecycle_path.read_text(encoding="utf-8")

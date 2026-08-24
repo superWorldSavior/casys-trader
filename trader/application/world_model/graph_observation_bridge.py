@@ -25,10 +25,8 @@ from trader.domain.world_graph import (
     WorldOntologyRevision,
 )
 from trader.domain.world_graph_bridge_lifecycle import (
-    MacroGraphBridgeMigration,
     UnknownMacroGraphBridgeDrift,
     classify_macro_graph_bridge,
-    committed_macro_graph_bridge_migration,
     observes_retirement,
     predecessor_owned_observes,
     remaining_owned_observes,
@@ -49,7 +47,6 @@ class RegisterMacroObservationKnowledge:
         scope_mapping: WorldScopeMapping,
         structural_revision: WorldOntologyRevision,
         collection_plan: MacroCollectionPlan,
-        migration: MacroGraphBridgeMigration | None = None,
         bridge_key: str = "macro_graph_bridge.v1",
     ) -> None:
         if not isinstance(scope_mapping, WorldScopeMapping):
@@ -58,15 +55,12 @@ class RegisterMacroObservationKnowledge:
             raise TypeError("structural_revision must be WorldOntologyRevision")
         if not isinstance(collection_plan, MacroCollectionPlan):
             raise TypeError("collection_plan must be MacroCollectionPlan")
-        if migration is not None and not isinstance(migration, MacroGraphBridgeMigration):
-            raise TypeError("migration must be MacroGraphBridgeMigration or None")
         self._scan = scan
         self._graph = graph
         self._bridge = bridge
         self._scope_mapping = scope_mapping
         self._structural_revision = structural_revision
         self._collection_plan = collection_plan
-        self._migration = migration
         self._bridge_key = str(bridge_key).strip()
 
     def _key(self) -> MacroGraphBridgeKey:
@@ -92,25 +86,12 @@ class RegisterMacroObservationKnowledge:
         self._bridge.append_event(event, expected_registry_version=registry.version - 1, fence=fence)
         return self._load()
 
-    def _resolve_migration(self, registry: MacroGraphBridgeRegistry) -> MacroGraphBridgeMigration | None:
-        if self._migration is not None:
-            return self._migration
-        run = registry.active_run
-        if run is None:
-            return None
-        try:
-            return committed_macro_graph_bridge_migration(predecessor_spec=run.spec, successor_spec=self._spec())
-        except (TypeError, ValueError):
-            return None
-
     def ensure(self, request_id: str) -> MacroGraphBridgeRegistry:
         """Classify durable state, then reserve/activate only when the generation is missing."""
 
         desired = self._spec()
         registry = self._load()
-        decision = classify_macro_graph_bridge(
-            registry, desired=desired, migration=self._resolve_migration(registry)
-        )
+        decision = classify_macro_graph_bridge(registry, desired=desired)
         if decision.status == "missing":
             return self.activate(request_id)
         if decision.status == "matched_active":
@@ -196,9 +177,7 @@ class RegisterMacroObservationKnowledge:
 
     def _remediate_then_handoff(self, registry: MacroGraphBridgeRegistry) -> MacroGraphBridgeRegistry:
         desired = self._spec()
-        decision = classify_macro_graph_bridge(
-            registry, desired=desired, migration=self._resolve_migration(registry)
-        )
+        decision = classify_macro_graph_bridge(registry, desired=desired)
         if decision.status == "unknown_drift":
             raise UnknownMacroGraphBridgeDrift(
                 decision.reason,

@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.application.test_world_graph_observation_bridge import _envelope, _observation, _scope
+from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
+from trader.application.world_model.ontology_bootstrap import derive_market_ontology
+from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_graph import (
@@ -31,8 +35,9 @@ from trader.domain.world_graph import (
     parse_macro_graph_bridge_event,
 )
 from trader.domain.world_graph_bridge_lifecycle import (
-    MacroGraphBridgeMigration,
     UnknownMacroGraphBridgeDrift,
+    committed_macro_graph_bridge_predecessor_spec,
+    committed_macro_graph_bridge_successor_spec,
 )
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
@@ -46,6 +51,7 @@ from trader.domain.world_scope import (
     WorldScopeMapping,
     WorldScopeMappingEntry,
 )
+from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
 from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
 
 
@@ -164,6 +170,7 @@ class _Scan:
     def __init__(self) -> None:
         self.reserve_calls = 0
         self.envelopes: list[tuple[MacroObservationCursor, object]] = []
+        self.listed_after: list[MacroObservationCursor] = []
 
     def reserve_activation_cursor(self, bridge_key, request_id) -> MacroObservationCursorReservation:
         del bridge_key
@@ -175,6 +182,7 @@ class _Scan:
         )
 
     def list_available_after(self, cursor: MacroObservationCursor, limit: int):
+        self.listed_after.append(cursor)
         items = [envelope for item_cursor, envelope in self.envelopes if item_cursor.ordinal > cursor.ordinal]
         return tuple(items[:limit])
 
@@ -189,8 +197,34 @@ def _store(tmp_path: Path) -> WorldGraphStore:
     return WorldGraphStore(tmp_path / "world_model.db", clock=lambda: READY)
 
 
-def _persist_v1_contaminated(store: WorldGraphStore, *, mapping: WorldScopeMapping, revision: WorldOntologyRevision):
-    spec = _v1_spec(mapping, revision)
+def _live_successor() -> tuple[WorldScopeMapping, WorldOntologyRevision, MacroCollectionPlan]:
+    config = REPO_ROOT / "config"
+    mapping = WorldScopeResolver.load(config / "world_scope_mapping.yaml").mapping
+    _, _, revision = derive_market_ontology(mapping)
+    bundle = load_world_macro_operator_configs(config_dir=config)
+    plan = MacroCollectionPlan.from_registry(bundle.registry)
+    spec = MacroGraphBridgeRunSpec(
+        scope_mapping_id=mapping.mapping_id,
+        scope_mapping_hash=mapping.content_sha256,
+        ontology_revision_id=revision.revision_id,
+        ontology_revision_hash=revision.content_sha256,
+        schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+        collection_plan_id=plan.plan_id,
+        collection_plan_hash=plan.content_sha256,
+        producer_version=MACRO_PRODUCER_VERSION,
+    )
+    assert spec == committed_macro_graph_bridge_successor_spec()
+    return mapping, revision, plan
+
+
+def _persist_v1_contaminated(
+    store: WorldGraphStore,
+    *,
+    mapping: WorldScopeMapping,
+    revision: WorldOntologyRevision,
+    spec: MacroGraphBridgeRunSpec | None = None,
+):
+    spec = spec if spec is not None else _v1_spec(mapping, revision)
     registry = store.load(BRIDGE_KEY)
     activated = registry.activate(reservation=_reservation(), spec=spec, expected_version=0)
     store.append_event(activated.events[-1], expected_registry_version=0, fence=None)
@@ -243,15 +277,21 @@ def _persist_v1_contaminated(store: WorldGraphStore, *, mapping: WorldScopeMappi
     return store.load(BRIDGE_KEY), owned_ids, about.relation.relation_id, last_cursor, skip_cursor
 
 
-def _use_case(store: WorldGraphStore, scan: _Scan, mapping: WorldScopeMapping, plan: MacroCollectionPlan, migration=None):
+def _use_case(
+    store: WorldGraphStore,
+    scan: _Scan,
+    mapping: WorldScopeMapping,
+    plan: MacroCollectionPlan,
+    *,
+    structural_revision: WorldOntologyRevision | None = None,
+):
     return RegisterMacroObservationKnowledge(
         scan=scan,
         graph=store,
         bridge=store,
         scope_mapping=mapping,
-        structural_revision=_revision(mapping),
+        structural_revision=structural_revision if structural_revision is not None else _revision(mapping),
         collection_plan=plan,
-        migration=migration,
         bridge_key=BRIDGE_KEY,
     )
 
@@ -302,23 +342,22 @@ def test_crash_retry_retires_only_owned_observes_then_handoffs(tmp_path: Path) -
     store = _store(tmp_path)
     mapping = _mapping()
     revision = _revision(mapping)
+    successor_mapping, successor_revision, successor_plan = _live_successor()
+    successor_spec = committed_macro_graph_bridge_successor_spec()
     persisted, owned_ids, about_id, _last, skip_cursor = _persist_v1_contaminated(
-        store, mapping=mapping, revision=revision
+        store,
+        mapping=mapping,
+        revision=revision,
+        spec=committed_macro_graph_bridge_predecessor_spec(),
     )
-    plan = _plan()
-    successor_spec = MacroGraphBridgeRunSpec(
-        scope_mapping_id=mapping.mapping_id,
-        scope_mapping_hash=mapping.content_sha256,
-        ontology_revision_id=revision.revision_id,
-        ontology_revision_hash=revision.content_sha256,
-        schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
-        collection_plan_id=plan.plan_id,
-        collection_plan_hash=plan.content_sha256,
-        producer_version=MACRO_PRODUCER_VERSION,
-    )
-    migration = MacroGraphBridgeMigration(predecessor_spec=_v1_spec(mapping, revision), successor_spec=successor_spec)
     scan = _Scan()
-    use_case = _use_case(store, scan, mapping, plan, migration=migration)
+    use_case = _use_case(
+        store,
+        scan,
+        successor_mapping,
+        successor_plan,
+        structural_revision=successor_revision,
+    )
     original = store.append_knowledge_relation_event
     seen = {"retired": 0}
 
@@ -362,4 +401,94 @@ def test_crash_retry_retires_only_owned_observes_then_handoffs(tmp_path: Path) -
     assert scan.reserve_calls == 0
     replayed_first = parse_macro_graph_bridge_event(persisted.events[0].to_dict())
     assert replayed_first.spec.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1
+    assert replayed_first.spec == committed_macro_graph_bridge_predecessor_spec()
     store.close()
+
+
+def test_handoff_inherits_ordinal_16_and_reconcile_consumes_only_17(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    mapping = _mapping()
+    revision = _revision(mapping)
+    successor_mapping, successor_revision, successor_plan = _live_successor()
+    _persisted, owned_ids, about_id, _last, skip_cursor = _persist_v1_contaminated(
+        store,
+        mapping=mapping,
+        revision=revision,
+        spec=committed_macro_graph_bridge_predecessor_spec(),
+    )
+    scan = _Scan()
+    use_case = _use_case(
+        store,
+        scan,
+        successor_mapping,
+        successor_plan,
+        structural_revision=successor_revision,
+    )
+    handed = use_case.ensure(REQUEST_ID)
+    assert handed.active_run is not None
+    assert handed.active_run.status == "active"
+    assert handed.active_run.epoch == 2
+    assert handed.active_run.cursor == skip_cursor
+    assert handed.active_run.cursor.ordinal == 16
+    assert handed.active_run.spec == committed_macro_graph_bridge_successor_spec()
+    assert not any(
+        isinstance(event, MacroGraphObservationLinked) and event.run_id == handed.active_run.run_id
+        for event in handed.events
+    )
+
+    trap = _envelope(_observation(scope=_scope(kind="country", entity_id="iso-3166:TW")))
+    newer = _envelope(_observation(scope=_scope(kind="country", entity_id="iso-3166:US")))
+    scan.envelopes.append((_cursor(5, trap.observation.observation_id), trap))
+    scan.envelopes.append((_cursor(17, newer.observation.observation_id), newer))
+    scan.listed_after.clear()
+    reconciled = use_case.reconcile(limit=32)
+    assert scan.listed_after
+    assert scan.listed_after[0].ordinal == 16
+    assert reconciled.active_run is not None
+    assert reconciled.active_run.cursor.ordinal == 17
+    successor_links = [
+        event
+        for event in reconciled.events
+        if isinstance(event, MacroGraphObservationLinked) and event.run_id == reconciled.active_run.run_id
+    ]
+    assert len(successor_links) == 1
+    assert successor_links[0].observation_id == newer.observation.observation_id
+    assert successor_links[0].cursor.ordinal == 17
+    assert trap.observation.observation_id not in {event.observation_id for event in successor_links}
+    events = [envelope.event for envelope in store.list_knowledge_relation_events_available_through(LATER)]
+    retired = [event for event in events if isinstance(event, KnowledgeWorldRelationRetired)]
+    asserted = [event for event in events if isinstance(event, KnowledgeWorldRelationAsserted)]
+    assert {event.relation_id for event in retired} == set(owned_ids)
+    assert about_id not in {event.relation_id for event in retired}
+    new_observes = [
+        event
+        for event in asserted
+        if event.relation.kind == "OBSERVES" and event.relation.relation_id == successor_links[0].relation_id
+    ]
+    assert len(new_observes) == 1
+
+    store.close()
+    restarted = _store(tmp_path)
+    scan_again = _Scan()
+    scan_again.envelopes = list(scan.envelopes)
+    again = _use_case(
+        restarted,
+        scan_again,
+        successor_mapping,
+        successor_plan,
+        structural_revision=successor_revision,
+    )
+    ensured = again.ensure(REQUEST_ID)
+    assert ensured.events == reconciled.events
+    assert scan_again.reserve_calls == 0
+    replayed = again.reconcile(limit=32)
+    assert replayed.events == reconciled.events
+    assert replayed.active_run is not None
+    assert replayed.active_run.cursor.ordinal == 17
+    replay_links = [
+        event
+        for event in replayed.events
+        if isinstance(event, MacroGraphObservationLinked) and event.run_id == replayed.active_run.run_id
+    ]
+    assert replay_links == successor_links
+    restarted.close()
