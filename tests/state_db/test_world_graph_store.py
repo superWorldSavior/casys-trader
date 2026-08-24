@@ -52,6 +52,12 @@ from trader.domain.world_graph import (
     WorldOntologyRevisionSuperseded,
     WorldStructuralRelationRef,
 )
+from trader.domain.world_macro import (
+    MACRO_PRODUCER_VERSION,
+    MacroCollectionPlan,
+    MacroCollectionTarget,
+    MacroScope,
+)
 from trader.infrastructure.state_db.world_graph_store import (
     WORLD_GRAPH_TABLES,
     WorldGraphStore,
@@ -478,10 +484,7 @@ def test_identity_relation_revision_events_round_trip_and_split_families(tmp_pat
     assert isinstance(revisions[0], WorldOntologyRevisionEventEnvelope)
     assert revisions[0].event.event_type == "world_ontology_revision_published"
     assert asserted.receipt.subject.kind == "world_entity_event"
-    families = {
-        row["family"]
-        for row in store._db.query_all("SELECT family FROM world_relation_events")
-    }
+    families = {row["family"] for row in store._db.query_all("SELECT family FROM world_relation_events")}
     assert families == {"structural", "knowledge"}
     for envelope in (*structural_events, *knowledge_events):
         assert canonical_sha256(envelope.event.to_dict()) == envelope.evidence.receipt.subject.content_sha256
@@ -724,10 +727,7 @@ def test_concurrent_new_insertions_cas_on_sequence_and_both_distinct_events_pers
     verifier = WorldGraphStore(path, clock=lambda: READY)
     try:
         assert verifier._db.query_one("SELECT COUNT(*) FROM world_entity_events")[0] == 2
-        sequences = {
-            int(row["sequence"])
-            for row in verifier._db.query_all("SELECT sequence FROM world_entity_events")
-        }
+        sequences = {int(row["sequence"]) for row in verifier._db.query_all("SELECT sequence FROM world_entity_events")}
         assert sequences == {1, 2}
         listed = verifier.list_entity_events_available_through(LATER)
         assert {item.event.event_id for item in listed} == {first.event_id, second.event_id}
@@ -767,19 +767,38 @@ def _reservation() -> MacroObservationCursorReservation:
     )
 
 
+def _bridge_plan() -> MacroCollectionPlan:
+    return MacroCollectionPlan(
+        registry_version="world_macro_sources.v1",
+        registry_content_sha256="b" * 64,
+        targets=(
+            MacroCollectionTarget(
+                scope=MacroScope(kind="venue", entity_id="mic:XTAI"),
+                source_ids=("fed_policy_rate",),
+            ),
+        ),
+    )
+
+
 def _bridge_spec(revision: WorldOntologyRevision | None = None) -> MacroGraphBridgeRunSpec:
     resolved = revision if revision is not None else _revision()
+    plan = _bridge_plan()
     return MacroGraphBridgeRunSpec(
         scope_mapping_id=resolved.scope_mapping_id,
         scope_mapping_hash=resolved.scope_mapping_hash,
         ontology_revision_id=resolved.revision_id,
         ontology_revision_hash=resolved.content_sha256,
+        collection_plan_id=plan.plan_id,
+        collection_plan_hash=plan.content_sha256,
+        producer_version=MACRO_PRODUCER_VERSION,
     )
 
 
 def _activate(store: WorldGraphStore, spec: MacroGraphBridgeRunSpec | None = None) -> MacroGraphBridgeRegistry:
     registry = store.load(BRIDGE_KEY)
-    updated = registry.activate(reservation=_reservation(), spec=spec or _bridge_spec(), expected_version=registry.version)
+    updated = registry.activate(
+        reservation=_reservation(), spec=spec or _bridge_spec(), expected_version=registry.version
+    )
     if updated.version != registry.version:
         store.append_event(updated.events[-1], expected_registry_version=registry.version, fence=None)
         return store.load(BRIDGE_KEY)
@@ -859,11 +878,24 @@ def test_fenced_knowledge_append_and_old_worker_is_rejected_after_handoff(tmp_pa
     assert len(visible) == 1
     blocked = registry.block(reason="config_drift", expected_version=registry.version)
     store.append_event(blocked.events[-1], expected_registry_version=registry.version, fence=fence)
+    next_plan = MacroCollectionPlan(
+        registry_version="world_macro_sources.v1",
+        registry_content_sha256="c" * 64,
+        targets=(
+            MacroCollectionTarget(
+                scope=MacroScope(kind="venue", entity_id="mic:XTAI"),
+                source_ids=("fed_policy_rate",),
+            ),
+        ),
+    )
     next_spec = MacroGraphBridgeRunSpec(
         scope_mapping_id="world_scope_mapping.v2",
         scope_mapping_hash="b" * 64,
         ontology_revision_id="market_ontology.v2",
         ontology_revision_hash="c" * 64,
+        collection_plan_id=next_plan.plan_id,
+        collection_plan_hash=next_plan.content_sha256,
+        producer_version=MACRO_PRODUCER_VERSION,
     )
     handed = store.load(BRIDGE_KEY).handoff(
         active_run_id=blocked.active_run.run_id,

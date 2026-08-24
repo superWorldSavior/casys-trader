@@ -115,16 +115,16 @@ par `canonical_scope` du registre ; un run n'invoque que les sources de
 sa cible. Le plan live est `committed_macro_collection_plan` : le
 dérivé runtime doit égaler `WORLD_MACRO_COLLECTION_PLAN_ID` /
 `SHA256`
-(`32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d`),
-sinon fail-closed. Le registre live est `macro_sources.v2`
-(`dbnomics_series.v2` / `yahoo_commodity.v2`). Le producteur live est
-`macro_source_only.v2` / lane `context.v2.macro_source.v2` ; les
-faits et observations `v1` restent lisibles et immuables pour l'audit
-mais ne sont pas admis dans l'ombre. `valid_until` = `published_at` +
-TTL figé ; `source_ref` est la ressource canonique, distincte des
-query de transport (`observations=1`, `metadata=0`). Au boot, les
-adapters hydratent la feuille `supersedes` depuis les faits
-reçus-prouvés compatibles. Détail :
+(`7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83`),
+sinon fail-closed. Le registre live est `world_macro_sources.v1`
+(`world_dbnomics_series.v1` / `world_yahoo_commodity.v1`). Le producteur
+live est `world_macro_source.v1` / lane `world.context.macro`. Un store
+préexistant d'une autre lignée s'archive hors ligne ; le runtime
+démarre un store frais. `valid_until` = `published_at` + TTL figé ;
+`source_ref` est la ressource canonique, distincte des query de
+transport (`observations=1`, `metadata=0`). Au boot, les adapters
+hydratent la feuille `supersedes` depuis les faits reçus-prouvés
+compatibles. Détail :
 [RFC macro §17](../../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md).
 Le consommateur cherche l'ancestry marché du
 plus proche au plus large (`MacroContextSearchPlan`) et sélectionne la
@@ -157,13 +157,9 @@ n'est pas inventée à la collecte.
 
 Le pont macro→graphe est append-only : classify avant réserve ;
 activation à froid ; restart no-op ; resume bloqué identique ; drift
-actif = block ; remediation seulement pour les couples gelés
-(mapping/ontologie `v1`→`v2`, **ou** plan de collecte
-`74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5` →
-`32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d` à
-mapping/ontologie `v2` constants) puis handoff ; curseur monotone ;
-pas de wildcard d'ownership. Génération 5 = shadow-only, aucune
-autorité Trader.
+actif = block ; drift bloqué = erreur. Pas de handoff, pas de
+remediation de lignée. Curseur monotone ; pas de wildcard
+d'ownership. Génération 5 = shadow-only, aucune autorité Trader.
 
 ## Deux cohortes, lanes Markov et GRU froid
 
@@ -176,7 +172,7 @@ Le YAML pilote matérialise deux `pipeline_pilot` distinctes. C1 ne porte
 | `gru.market` | GRU froid | `secondary_challenger` | idem, `sequence_length=4` |
 | `markov.status_only` / `gru.status_only` | Markov / GRU | process / challenger | contexte V2, masque status |
 | `markov.company` / `gru.company` | Markov / GRU | process / challenger | company sidecar-prouvé |
-| `markov.macro` / `gru.macro` | Markov / GRU | process / challenger | `macro_source_only.v2` |
+| `markov.macro` / `gru.macro` | Markov / GRU | process / challenger | `world_macro_source.v1` |
 | `markov.joint` / `gru.joint` | Markov / GRU | `pilot_treatment` / challenger | status + company + macro |
 | `markov.graph` | Markov | `primary_control` de la cohorte V3 | `topology_status_only.v1` |
 | `gru.graph` | GRU froid | `pilot_treatment` V3 | `graph_content.v1` |

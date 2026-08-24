@@ -72,8 +72,8 @@ def _scope(*, kind: str = "country", entity_id: str = "iso-3166:US") -> MacroSco
 
 def _source(**overrides: object) -> MacroFactSource:
     values: dict[str, object] = {
-        "provider_id": "official_provider",
-        "adapter_version": "official_provider.v1",
+        "provider_id": "dbnomics",
+        "adapter_version": "world_dbnomics_series.v1",
         "source_record_id": "stable-provider-id",
         "source_ref": "https://source.example/record",
     }
@@ -104,28 +104,28 @@ def _registry() -> MacroSourceRegistry:
         entries=(
             MacroSourceRegistryEntry(
                 source_id="fed_policy_rate",
-                provider_id="official_provider",
+                provider_id="dbnomics",
                 provider_entity_id="FED/H15",
                 canonical_scope=_scope(kind="country", entity_id="iso-3166:US"),
-                adapter_version="official_provider.v1",
+                adapter_version="world_dbnomics_series.v1",
                 fact_kind="series_point",
                 metric_key="policy_rate",
             ),
             MacroSourceRegistryEntry(
                 source_id="brent",
-                provider_id="market_benchmark",
+                provider_id="yahoo_finance",
                 provider_entity_id="BRN",
                 canonical_scope=_scope(kind="world", entity_id="market"),
-                adapter_version="commodities.v1",
+                adapter_version="world_yahoo_commodity.v1",
                 fact_kind="market_benchmark",
                 metric_key="brent",
             ),
             MacroSourceRegistryEntry(
                 source_id="broad_usd_index",
-                provider_id="official_provider",
+                provider_id="dbnomics",
                 provider_entity_id="USD/BROAD",
                 canonical_scope=_scope(kind="world", entity_id="market"),
-                adapter_version="official_provider.v1",
+                adapter_version="world_dbnomics_series.v1",
                 fact_kind="series_point",
                 metric_key="usd_index",
             ),
@@ -171,7 +171,9 @@ def _attested_receipt(
     )
 
 
-def _persist(identity: object, *, subject_kind: str, subject_id: str, content_sha256: str, scope: str, ready: datetime = READY):
+def _persist(
+    identity: object, *, subject_kind: str, subject_id: str, content_sha256: str, scope: str, ready: datetime = READY
+):
     receipt = _attested_receipt(
         subject_kind=subject_kind,
         subject_id=subject_id,
@@ -336,7 +338,7 @@ def _brent_fact() -> MacroSourceFact:
         scope=_scope(kind="world", entity_id="market"),
         value=MacroNumericValue(number=80.0, unit="usd_per_barrel"),
         period="2026-08-22",
-        source=_source(provider_id="market_benchmark", adapter_version="commodities.v1", source_record_id="BRN"),
+        source=_source(provider_id="yahoo_finance", adapter_version="world_yahoo_commodity.v1", source_record_id="BRN"),
     )
 
 
@@ -440,9 +442,15 @@ def test_application_macro_modules_do_not_import_infrastructure_runtime_or_repor
                         violations.append(f"{path.name}: import {alias.name}")
         text = path.read_text(encoding="utf-8")
         assert "NewsMacroBrief" not in text
-        assert "ready_at" not in inspect.signature(
-            getattr(__import__("trader.application.world_model.macro_pipeline", fromlist=["MacroWorldPipeline"]), "MacroWorldPipeline")
-        ).parameters
+        assert (
+            "ready_at"
+            not in inspect.signature(
+                getattr(
+                    __import__("trader.application.world_model.macro_pipeline", fromlist=["MacroWorldPipeline"]),
+                    "MacroWorldPipeline",
+                )
+            ).parameters
+        )
     assert violations == []
 
 
@@ -636,11 +644,7 @@ def test_no_admissible_facts_fails_the_run_without_a_fake_observation() -> None:
     assert run.terminal_result.observation_id is None
     assert run.terminal_result.reason == "no_admissible_observation"
     assert history.observations == []
-    reasons = {
-        event.source_id: event.reason
-        for event in run.events
-        if isinstance(event, MacroSourceFailed)
-    }
+    reasons = {event.source_id: event.reason for event in run.events if isinstance(event, MacroSourceFailed)}
     assert reasons == {"fed_policy_rate": "http_429"}
 
 
@@ -730,14 +734,18 @@ def test_select_applies_point_in_time_policy_and_picks_the_last_admissible_obser
                 )
                 for name in MACRO_FEATURE_KEYS
             ),
-            coverage=MacroCoverage(status="partial", required_sources=3, fresh_sources=1, missing_source_ids=("brent", "broad_usd_index")),
+            coverage=MacroCoverage(
+                status="partial", required_sources=3, fresh_sources=1, missing_source_ids=("brent", "broad_usd_index")
+            ),
             producer_version=MACRO_PRODUCER_VERSION,
             transform_version=transform_version,
             source_registry_version=MACRO_SOURCE_REGISTRY_VERSION,
             valid_until=VALID_UNTIL,
         )
 
-    def _envelope(observation: MacroWorldObservation, *, ready: datetime, first_seen: datetime) -> MacroObservationEnvelope:
+    def _envelope(
+        observation: MacroWorldObservation, *, ready: datetime, first_seen: datetime
+    ) -> MacroObservationEnvelope:
         persisted = _persist(
             MacroObservationId(observation.observation_id),
             subject_kind=MACRO_WORLD_OBSERVATION_SUBJECT_KIND,
@@ -819,7 +827,9 @@ def test_select_does_not_treat_reader_order_or_unmapped_scope_as_latest() -> Non
             )
             for name in MACRO_FEATURE_KEYS
         ),
-        coverage=MacroCoverage(status="partial", required_sources=3, fresh_sources=1, missing_source_ids=("brent", "broad_usd_index")),
+        coverage=MacroCoverage(
+            status="partial", required_sources=3, fresh_sources=1, missing_source_ids=("brent", "broad_usd_index")
+        ),
         valid_until=VALID_UNTIL,
     )
     persisted = _persist(
@@ -947,7 +957,11 @@ def test_collect_rejects_unsourced_or_mismatched_target_before_registering() -> 
         scope=_scope(kind="country", entity_id="iso-3166:US"),
         source_ids=("fed_policy_rate", "brent", "broad_usd_index"),
     )
-    sources = {"fed_policy_rate": _Source((_fed_fact(),)), "brent": _Source((_brent_fact(),)), "broad_usd_index": _Source()}
+    sources = {
+        "fed_policy_rate": _Source((_fed_fact(),)),
+        "brent": _Source((_brent_fact(),)),
+        "broad_usd_index": _Source(),
+    }
     with pytest.raises(ValueError, match="collection target"):
         pipeline.collect(target=xtai, cutoff_at=CUTOFF, registry=registry, sources=sources)
     with pytest.raises(ValueError, match="bound registry plan"):
@@ -975,7 +989,7 @@ def test_foreign_scope_or_provenance_mismatch_is_typed_failure_not_a_mixed_obser
     assert failed.source_id == "fed_policy_rate"
     assert failed.reason == "scope_mismatch"
 
-    poisoned = _fed_fact(source=_source(provider_id="other_provider"))
+    poisoned = _fed_fact(source=_source(provider_id="yahoo_finance", adapter_version="world_yahoo_commodity.v1"))
     provenance_history = _History()
     provenance_run = _collect(
         _pipeline(history=provenance_history),
@@ -1170,9 +1184,7 @@ def test_first_cutoff_can_stage_receipt_and_later_cutoff_publishes_after_adapter
     fact_receipt = parse_world_availability_receipt(fact_receipts[0])
     assert fact_receipt is not None
     assert fact_receipt.ready_at == staged_ready
-    observation_receipts = load_receipts(
-        tmp_path / "observations" / "availability_receipts" / "2026-08-23.jsonl"
-    )
+    observation_receipts = load_receipts(tmp_path / "observations" / "availability_receipts" / "2026-08-23.jsonl")
     assert len(observation_receipts) == 1
     observation_receipt = parse_world_availability_receipt(observation_receipts[0])
     assert observation_receipt is not None

@@ -1,10 +1,10 @@
 schema_version: macro_source_registry.v1
-registry_version: macro_sources.v2
+registry_version: world_macro_sources.v1
 authority: shadow_only
 decision_effect: none
-producer_version: macro_source_only.v2
-content_sha256: "fc7ba7167069893e71f4fcc38508aad9978c8ccd86d6711035e0b39773954b4a"
-operator_config_sha256: "8ba66b20bddbadfbfbf5b0d80de126421335064dc433a69d9ce6aa66c0d9237e"
+producer_version: world_macro_source.v1
+content_sha256: "5707728d3f71a190783802add3179b329fe87c7ad055b8548439b8004e47876b"
+operator_config_sha256: "5f5306aeeaebb5a3611496427b3dbd23fd1111ea29adec750fe24f61361d3f2e"
 
 budgets:
   worker: single_flight
@@ -56,48 +56,48 @@ entries:
     provider_id: dbnomics
     provider_entity_id: FED/H15/RIFSPFF_N.D
     canonical_scope: {kind: country, entity_id: "iso-3166:US"}
-    adapter_version: dbnomics_series.v2
+    adapter_version: world_dbnomics_series.v1
     fact_kind: series_point
     metric_key: policy_rate
   - source_id: cpi_us_imf
     provider_id: dbnomics
     provider_entity_id: IMF/CPI/M.US.PCPI_IX
     canonical_scope: {kind: country, entity_id: "iso-3166:US"}
-    adapter_version: dbnomics_series.v2
+    adapter_version: world_dbnomics_series.v1
     fact_kind: series_point
     metric_key: cpi_index
   - source_id: ecb_deposit_rate
     provider_id: dbnomics
     provider_entity_id: ECB/FM/B.U2.EUR.4F.KR.DFR.LEV
     canonical_scope: {kind: region, entity_id: "iso-un-m49:150"}
-    adapter_version: dbnomics_series.v2
+    adapter_version: world_dbnomics_series.v1
     fact_kind: series_point
     metric_key: policy_rate
   - source_id: hicp_euro_area
     provider_id: dbnomics
     provider_entity_id: Eurostat/prc_hicp_midx/M.I15.CP00.EA20
     canonical_scope: {kind: region, entity_id: "iso-un-m49:150"}
-    adapter_version: dbnomics_series.v2
+    adapter_version: world_dbnomics_series.v1
     fact_kind: series_point
     metric_key: cpi_index
   - source_id: unemployment_rate_us
     provider_id: dbnomics
     provider_entity_id: BLS/ln/LNS14000000
     canonical_scope: {kind: country, entity_id: "iso-3166:US"}
-    adapter_version: dbnomics_series.v2
+    adapter_version: world_dbnomics_series.v1
     fact_kind: series_point
     metric_key: unemployment_rate
   - source_id: brent_crude_usd
     provider_id: yahoo_finance
     provider_entity_id: BZ=F
     canonical_scope: {kind: world, entity_id: market}
-    adapter_version: yahoo_commodity.v2
+    adapter_version: world_yahoo_commodity.v1
     fact_kind: market_benchmark
     metric_key: brent_front_month_usd
   - source_id: gold_usd
     provider_id: yahoo_finance
     provider_entity_id: GC=F
     canonical_scope: {kind: world, entity_id: market}
-    adapter_version: yahoo_commodity.v2
+    adapter_version: world_yahoo_commodity.v1
     fact_kind: market_benchmark
     metric_key: gold_front_month_usd

@@ -279,18 +279,18 @@ def test_admitted_versions_are_enforced_without_forging_ready_at() -> None:
         WorldAvailabilityReceipt.from_mapping(forged)
     assert receipt.ready_at == READY
 
-    policy = PointInTimeEligibilityPolicy(admitted_versions=frozenset({"macro_source_only.v1"}))
+    policy = PointInTimeEligibilityPolicy(admitted_versions=frozenset({"admitted.v1"}))
     evidence = AvailabilityEvidence(receipt=receipt, first_seen_at=FIRST_SEEN)
     denied = policy.evaluate(
         evidence=evidence,
         cutoff_at=CUTOFF,
-        version="macro_source_only.v0",
+        version="admitted.v0",
     )
     assert denied.status == "availability_unproven"
     admitted = policy.evaluate(
         evidence=evidence,
         cutoff_at=CUTOFF,
-        version="macro_source_only.v1",
+        version="admitted.v1",
     )
     assert admitted.status == "eligible"
 

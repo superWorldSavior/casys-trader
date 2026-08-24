@@ -1,5 +1,5 @@
 schema_version: world_shadow_pilot.v2
-content_sha256: "4e757b5469d4ef2e668bc723ae4b2203dcd63b53ae4233bd5c73a6864fe1ae70"
+content_sha256: "d9b55eab824a923b4469c8b290b1c2c5a62701ddd7bf4420aaf1dbce756dacc2"
 pilot_id: world_shadow_pilot.v2
 supersedes_pilot_id: world_shadow_pilot.v1
 lifecycle_generation: 5
@@ -32,10 +32,10 @@ scope_mapping:
   mapping_sha256: "e1289a4a86e5cb07600cb3ac45122b170f1a0bb249db2fbb6e5c093a4a8a501b"
 
 macro_producer:
-  producer_version: macro_source_only.v2
-  lane_identity: context.v2.macro_source.v2
-  collection_plan_id: "macro_collection_plan:v1:32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d"
-  collection_plan_sha256: "32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d"
+  producer_version: world_macro_source.v1
+  lane_identity: world.context.macro
+  collection_plan_id: "macro_collection_plan:v1:7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83"
+  collection_plan_sha256: "7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83"
 
 runtime_identity_intent:
   schema_version: world_runtime_identity_intent.v1

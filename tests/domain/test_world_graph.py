@@ -90,10 +90,11 @@ from trader.domain.world_graph import (
 )
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
-    MACRO_PRODUCER_VERSION_V1,
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
     MACRO_WORLD_OBSERVATION_SUBJECT_KIND,
+    MacroCollectionPlan,
+    MacroCollectionTarget,
     MacroCoverage,
     MacroDimensionState,
     MacroFactSource,
@@ -287,7 +288,7 @@ def test_namespaced_entity_ids_are_closed_immutable_and_hashed() -> None:
     with pytest.raises(ValueError, match="iso-3166:"):
         WorldEntityRef(kind="country", entity_id="TW")
     with pytest.raises(ValueError, match="one of"):
-        WorldEntityRef(kind="sensor", entity_id="macro_source_only.v1")
+        WorldEntityRef(kind="sensor", entity_id="world_macro_source.v1")
     world = WorldEntityRef(kind="world", entity_id="market")
     assert world.node_id == "world:market"
     assert WORLD_ENTITY_KINDS.isdisjoint({"sensor", "knowledge_artifact"})
@@ -333,7 +334,7 @@ def test_company_requires_verified_namespaced_id_and_may_issue_many_instruments(
 def test_node_ref_union_does_not_treat_artifacts_as_world_entities() -> None:
     artifact = _artifact_ref()
     observation = _observation_ref()
-    sensor = SensorRef(sensor_id="macro_source_only.v1")
+    sensor = SensorRef(sensor_id="world_macro_source.v1")
     snapshot_ref = WorldGraphSnapshotRef(snapshot_id=f"world_graph_snapshot:v1:{SHA}")
     hypothesis = PatternHypothesisRef(hypothesis_id=f"pattern_hypothesis:v1:{SHA}")
     fact = MacroSourceFactVersionRef(fact_version_id=f"macro_source_fact_version:v1:{SHA}")
@@ -1116,8 +1117,8 @@ def _macro_scope(*, kind: str = "venue", entity_id: str = "mic:XTAI") -> MacroSc
 
 def _macro_source() -> MacroFactSource:
     return MacroFactSource(
-        provider_id="official_provider",
-        adapter_version="official_provider.v1",
+        provider_id="dbnomics",
+        adapter_version="world_dbnomics_series.v1",
         source_record_id="stable-provider-id",
         source_ref="https://source.example/record",
     )
@@ -1267,16 +1268,33 @@ def _reservation(
     )
 
 
+def _collection_plan() -> MacroCollectionPlan:
+    return MacroCollectionPlan(
+        registry_version="world_macro_sources.v1",
+        registry_content_sha256="b" * 64,
+        targets=(
+            MacroCollectionTarget(
+                scope=MacroScope(kind="venue", entity_id="mic:XTAI"),
+                source_ids=("fed_policy_rate",),
+            ),
+        ),
+    )
+
+
 def _run_spec(
     mapping: WorldScopeMapping | None = None, revision: WorldOntologyRevision | None = None
 ) -> MacroGraphBridgeRunSpec:
     resolved_mapping = mapping if mapping is not None else _scope_mapping()
     resolved_revision = revision if revision is not None else _revision_for_mapping(resolved_mapping)
+    plan = _collection_plan()
     return MacroGraphBridgeRunSpec(
         scope_mapping_id=resolved_mapping.mapping_id,
         scope_mapping_hash=resolved_mapping.content_sha256,
         ontology_revision_id=resolved_revision.revision_id,
         ontology_revision_hash=resolved_revision.content_sha256,
+        collection_plan_id=plan.plan_id,
+        collection_plan_hash=plan.content_sha256,
+        producer_version=MACRO_PRODUCER_VERSION,
     )
 
 
@@ -1389,11 +1407,16 @@ def test_unregistered_or_invalid_scope_is_terminal_skip_never_an_invented_relati
     assert invalid.status == "skipped"
     assert invalid.skip_reason == "invalid_envelope"
     assert invalid.relation is None
-    legacy = MacroObservationKnowledgeLink.from_envelope(
-        _observation_envelope(_macro_observation(producer_version=MACRO_PRODUCER_VERSION_V1)),
-        mapping,
-        revision,
-    )
+    with pytest.raises(ValueError, match="producer"):
+        _macro_observation(producer_version="not_admitted")
+    admitted = _macro_observation()
+    bypassed = object.__new__(type(admitted))
+    for name in admitted.__dataclass_fields__:
+        object.__setattr__(bypassed, name, getattr(admitted, name))
+    object.__setattr__(bypassed, "producer_version", "not_admitted")
+    envelope = _observation_envelope(admitted)
+    object.__setattr__(envelope, "observation", bypassed)
+    legacy = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, revision)
     assert legacy.status == "skipped"
     assert legacy.skip_reason == "producer_not_admitted"
     assert legacy.relation is None
@@ -1535,6 +1558,9 @@ def test_config_drift_blocks_without_skipping_or_advancing_and_resume_requires_s
         scope_mapping_hash="f" * 64,
         ontology_revision_id=spec.ontology_revision_id,
         ontology_revision_hash=spec.ontology_revision_hash,
+        collection_plan_id=spec.collection_plan_id,
+        collection_plan_hash=spec.collection_plan_hash,
+        producer_version=spec.producer_version,
     )
     with pytest.raises(ValueError, match="hash|spec"):
         blocked.resume(spec=other, expected_version=2)

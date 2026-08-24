@@ -73,8 +73,8 @@ def _scope(*, kind: str = "venue", entity_id: str = "mic:XTAI") -> MacroScope:
 
 def _source(**overrides: object) -> MacroFactSource:
     values: dict[str, object] = {
-        "provider_id": "official_provider",
-        "adapter_version": "official_provider.v1",
+        "provider_id": "dbnomics",
+        "adapter_version": "world_dbnomics_series.v1",
         "source_record_id": "stable-provider-id",
         "source_ref": "https://source.example/record",
     }
@@ -393,7 +393,7 @@ def test_list_candidates_is_exact_scope_and_keeps_explicit_composition(tmp_path:
         scope=_scope(kind="world", entity_id="market"),
         value=MacroNumericValue(number=80.0, unit="usd_per_barrel"),
         period="2026-08-22",
-        source=_source(provider_id="market_benchmark", adapter_version="commodities.v1", source_record_id="BRN"),
+        source=_source(provider_id="yahoo_finance", adapter_version="world_yahoo_commodity.v1", source_record_id="BRN"),
     )
     store.append_fact(country_fact)
     store.append_fact(world_fact)

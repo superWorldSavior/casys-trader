@@ -32,17 +32,20 @@ MACRO_WORLD_OBSERVATION_SUBJECT_KIND = "macro_world_observation"
 MACRO_SOURCE_REGISTRY_SCHEMA = "macro_source_registry.v1"
 MACRO_COLLECTION_PLAN_SCHEMA = "macro_collection_plan.v1"
 MACRO_COLLECTION_EVENT_SCHEMA = "macro_collection_event.v1"
-MACRO_PRODUCER_VERSION_V1 = "macro_source_only.v1"
-MACRO_PRODUCER_VERSION = "macro_source_only.v2"
-MACRO_LANE_IDENTITY_V1 = "context.v2.macro_source.v1"
-MACRO_LANE_IDENTITY = "context.v2.macro_source.v2"
-MACRO_ADMITTED_PRODUCER_VERSIONS = frozenset({MACRO_PRODUCER_VERSION})
+MACRO_PRODUCER_VERSION = "world_macro_source.v1"
+MACRO_LANE_IDENTITY = "world.context.macro"
 MACRO_TRANSFORM_VERSION = "macro_regimes.v1"
-MACRO_SOURCE_REGISTRY_VERSION = "macro_sources.v2"
-WORLD_MACRO_COLLECTION_PLAN_SHA256 = "32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d"
+MACRO_SOURCE_REGISTRY_VERSION = "world_macro_sources.v1"
+MACRO_DBNOMICS_ADAPTER_VERSION = "world_dbnomics_series.v1"
+MACRO_YAHOO_COMMODITY_ADAPTER_VERSION = "world_yahoo_commodity.v1"
+MACRO_ADAPTER_VERSIONS_BY_PROVIDER = MappingProxyType(
+    {
+        "dbnomics": MACRO_DBNOMICS_ADAPTER_VERSION,
+        "yahoo_finance": MACRO_YAHOO_COMMODITY_ADAPTER_VERSION,
+    }
+)
+WORLD_MACRO_COLLECTION_PLAN_SHA256 = "7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83"
 WORLD_MACRO_COLLECTION_PLAN_ID = "macro_collection_plan:v1:" + WORLD_MACRO_COLLECTION_PLAN_SHA256
-WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256 = "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
-WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID = "macro_collection_plan:v1:" + WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
 
 MACRO_FACT_KINDS = frozenset({"series_point", "market_benchmark"})
 MACRO_SCOPE_KINDS = frozenset({"world", "region", "country", "venue"})
@@ -160,15 +163,35 @@ def assert_source_only_payload(value: Any, field_name: str = "payload") -> None:
 
 
 def macro_observes_producer_ref(producer_version: str) -> str:
-    """Canonical OBSERVES provenance token bound to one admitted producer contract."""
+    """Canonical OBSERVES provenance token bound to the live producer contract."""
 
-    return f"producer:{_required_text(producer_version, 'producer_version')}"
+    return f"producer:{require_admitted_macro_producer(producer_version)}"
 
 
 def is_admitted_macro_producer(producer_version: str | None) -> bool:
     if producer_version is None:
         return False
-    return _required_text(producer_version, "producer_version") in MACRO_ADMITTED_PRODUCER_VERSIONS
+    try:
+        require_admitted_macro_producer(producer_version)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def require_admitted_macro_producer(producer_version: str | None) -> str:
+    producer = _required_text(producer_version, "producer_version")
+    if producer != MACRO_PRODUCER_VERSION:
+        raise ValueError(f"producer_version must be {MACRO_PRODUCER_VERSION}")
+    return producer
+
+
+def require_admitted_macro_adapter(*, provider_id: str, adapter_version: str) -> str:
+    provider = _required_text(provider_id, "provider_id")
+    adapter = _required_text(adapter_version, "adapter_version")
+    expected = MACRO_ADAPTER_VERSIONS_BY_PROVIDER.get(provider)
+    if expected is None or adapter != expected:
+        raise ValueError("adapter_version is not the live adapter for this provider")
+    return adapter
 
 
 _ORIGIN_SCOPE_REF_PREFIX = "origin_scope:"
@@ -424,8 +447,12 @@ class MacroFactSource:
     source_ref: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "provider_id", _required_text(self.provider_id, "provider_id"))
-        object.__setattr__(self, "adapter_version", _required_text(self.adapter_version, "adapter_version"))
+        provider_id = _required_text(self.provider_id, "provider_id")
+        adapter_version = require_admitted_macro_adapter(
+            provider_id=provider_id, adapter_version=self.adapter_version
+        )
+        object.__setattr__(self, "provider_id", provider_id)
+        object.__setattr__(self, "adapter_version", adapter_version)
         object.__setattr__(self, "source_record_id", _required_text(self.source_record_id, "source_record_id"))
         object.__setattr__(self, "source_ref", _required_text(self.source_ref, "source_ref"))
 
@@ -754,11 +781,15 @@ class MacroSourceRegistryEntry:
         if fact_kind not in MACRO_FACT_KINDS:
             allowed = ", ".join(sorted(MACRO_FACT_KINDS))
             raise ValueError(f"fact_kind must be one of: {allowed}")
+        provider_id = _required_text(self.provider_id, "provider_id")
+        adapter_version = require_admitted_macro_adapter(
+            provider_id=provider_id, adapter_version=self.adapter_version
+        )
         object.__setattr__(self, "source_id", _required_text(self.source_id, "source_id"))
-        object.__setattr__(self, "provider_id", _required_text(self.provider_id, "provider_id"))
+        object.__setattr__(self, "provider_id", provider_id)
         object.__setattr__(self, "provider_entity_id", _required_text(self.provider_entity_id, "provider_entity_id"))
         object.__setattr__(self, "canonical_scope", MacroScope.from_mapping(self.canonical_scope))
-        object.__setattr__(self, "adapter_version", _required_text(self.adapter_version, "adapter_version"))
+        object.__setattr__(self, "adapter_version", adapter_version)
         object.__setattr__(self, "fact_kind", fact_kind)
         object.__setattr__(self, "metric_key", _required_text(self.metric_key, "metric_key"))
 
@@ -1155,7 +1186,7 @@ class MacroDerivationPolicy:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "transform_version", _required_text(self.transform_version, "transform_version"))
-        object.__setattr__(self, "producer_version", _required_text(self.producer_version, "producer_version"))
+        object.__setattr__(self, "producer_version", require_admitted_macro_producer(self.producer_version))
         for values in MACRO_FEATURE_VALUES.values():
             if "unknown" not in values:
                 raise ValueError("every macro feature vocabulary must include unknown")
@@ -1317,9 +1348,11 @@ class MacroWorldObservation:
         valid_until = _optional_utc(self.valid_until, "valid_until")
         if valid_until is not None and cutoff_at >= valid_until:
             raise ValueError("cutoff_at must be earlier than valid_until")
-        producer_version = _required_text(self.producer_version, "producer_version")
+        producer_version = require_admitted_macro_producer(self.producer_version)
         transform_version = _required_text(self.transform_version, "transform_version")
         source_registry_version = _required_text(self.source_registry_version, "source_registry_version")
+        if source_registry_version != MACRO_SOURCE_REGISTRY_VERSION:
+            raise ValueError(f"source_registry_version must be {MACRO_SOURCE_REGISTRY_VERSION}")
         fact_refs = _unique_sorted_texts(self.fact_refs, "fact_refs")
         for ref in fact_refs:
             _validate_prefixed_id(ref, _FACT_VERSION_PREFIX, "fact_refs[]")
@@ -1505,9 +1538,7 @@ class MacroContextSearchPlan:
 
     def __post_init__(self) -> None:
         resolution = WorldScopeResolution.from_mapping(self.resolution)
-        admitted = _required_text(self.admitted_producer_version, "admitted_producer_version")
-        if admitted not in MACRO_ADMITTED_PRODUCER_VERSIONS:
-            raise ValueError("search plan admitted_producer_version is not the live producer contract")
+        admitted = require_admitted_macro_producer(self.admitted_producer_version)
         ancestry = tuple(MacroScope(kind=scope.kind, entity_id=scope.entity_id) for scope in resolution.scopes)
         object.__setattr__(self, "resolution", resolution)
         object.__setattr__(self, "admitted_producer_version", admitted)
@@ -1599,8 +1630,7 @@ class MacroContextSelection:
         origin = MacroScope.from_mapping(self.origin_scope)
         if self.envelope.observation.scope != origin:
             raise ValueError("selection origin_scope must equal the observation scope")
-        if not is_admitted_macro_producer(self.envelope.observation.producer_version):
-            raise ValueError("selection cannot admit a producer outside the live contract")
+        require_admitted_macro_producer(self.envelope.observation.producer_version)
         if self.envelope.observation.producer_version != self.search_plan.admitted_producer_version:
             raise ValueError("selection producer_version must match the search plan")
         distance = _non_negative_int(self.distance, "distance")
@@ -1646,7 +1676,7 @@ class MacroObservationProvenance:
     mapping_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        producer_version = _required_text(self.producer_version, "producer_version")
+        producer_version = require_admitted_macro_producer(self.producer_version)
         origin = MacroScope.from_mapping(self.origin_scope)
         observation_id = _validate_prefixed_id(self.observation_id, _OBSERVATION_ID_PREFIX, "observation_id")
         observation_sha256 = _required_text(self.observation_sha256, "observation_sha256")
@@ -1839,9 +1869,11 @@ class MacroCollectionRegistered:
         if len(set(expected)) != len(expected):
             raise ValueError("expected_source_ids must be unique")
         expected = tuple(sorted(expected))
-        producer_version = _required_text(self.producer_version, "producer_version")
+        producer_version = require_admitted_macro_producer(self.producer_version)
         transform_version = _required_text(self.transform_version, "transform_version")
         source_registry_version = _required_text(self.source_registry_version, "source_registry_version")
+        if source_registry_version != MACRO_SOURCE_REGISTRY_VERSION:
+            raise ValueError(f"source_registry_version must be {MACRO_SOURCE_REGISTRY_VERSION}")
         run_id = _prefixed_id(
             _RUN_ID_PREFIX,
             _run_id_payload(
@@ -2616,20 +2648,18 @@ __all__ = [
     "MACRO_FACT_KINDS",
     "MACRO_FEATURE_KEYS",
     "MACRO_FEATURE_VALUES",
-    "MACRO_ADMITTED_PRODUCER_VERSIONS",
+    "MACRO_ADAPTER_VERSIONS_BY_PROVIDER",
+    "MACRO_DBNOMICS_ADAPTER_VERSION",
     "MACRO_LANE_IDENTITY",
-    "MACRO_LANE_IDENTITY_V1",
     "MACRO_POLICY_DENYLIST",
     "MACRO_PRODUCER_VERSION",
-    "MACRO_PRODUCER_VERSION_V1",
     "MACRO_REGIME_VALUES",
     "MACRO_SOURCE_REGISTRY_VERSION",
     "MACRO_TERMINAL_STATUSES",
     "MACRO_TRANSFORM_VERSION",
     "MACRO_WORLD_OBSERVATION_SUBJECT_KIND",
+    "MACRO_YAHOO_COMMODITY_ADAPTER_VERSION",
     "WORLD_MACRO_COLLECTION_PLAN_ID",
-    "WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID",
-    "WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256",
     "WORLD_MACRO_COLLECTION_PLAN_SHA256",
     "MacroObservationProvenance",
     "committed_macro_collection_plan",
@@ -2677,6 +2707,8 @@ __all__ = [
     "is_admitted_macro_producer",
     "latest_compatible_macro_source_leaf",
     "macro_observes_producer_ref",
+    "require_admitted_macro_adapter",
+    "require_admitted_macro_producer",
     "macro_source_fact_matches_registry_entry",
     "parse_macro_collection_event",
     "parse_macro_value",

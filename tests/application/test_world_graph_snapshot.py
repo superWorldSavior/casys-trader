@@ -53,7 +53,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevision,
     WorldStructuralRelationRef,
 )
-from trader.domain.world_macro import MACRO_PRODUCER_VERSION, MACRO_PRODUCER_VERSION_V1, macro_observes_producer_ref
+from trader.domain.world_macro import MACRO_PRODUCER_VERSION, macro_observes_producer_ref
 from trader.domain.world_scope import (
     WorldMarketAnchorRef,
     WorldScopeMapping,
@@ -681,7 +681,7 @@ def test_unmapped_and_ambiguous_slots_are_valid_members_without_fabricated_obser
     assert amb.snapshot.knowledge_relation_refs == frozenset()
 
 
-def test_legacy_v1_observes_are_excluded_even_when_effective_until_is_in_the_future() -> None:
+def test_observes_without_live_producer_token_are_excluded_even_when_effective_until_is_in_the_future() -> None:
     mapping = _mapping()
     ledger = _InMemoryWorldGraphLedger()
     _seed_rfc_graph(ledger, mapping, knowledge=())
@@ -690,7 +690,7 @@ def test_legacy_v1_observes_are_excluded_even_when_effective_until_is_in_the_fut
         effective_until=future_until,
         source_refs=(
             f"macro_world_observation:v1:{OBS_SHA}",
-            macro_observes_producer_ref(MACRO_PRODUCER_VERSION_V1),
+            "producer:not_admitted",
         ),
     )
     WorldOntologyService(ledger).assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=legacy))

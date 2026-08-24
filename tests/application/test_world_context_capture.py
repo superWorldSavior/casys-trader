@@ -475,7 +475,7 @@ def test_described_by_uses_honest_country_subject_not_logical_venue() -> None:
                 "features": {"macro_regime": "mixed", "rates_regime": "stable", "usd_regime": "unknown"},
                 "origin_scope": {"kind": "country", "entity_id": "iso-3166:US"},
                 "ancestry_distance": 1,
-                "producer_version": "macro_source_only.v2",
+                "producer_version": "world_macro_source.v1",
                 "scope_resolution": {
                     "mapping_id": "world_scope_mapping.v2",
                     "mapping_sha256": "b" * 64,

@@ -117,7 +117,7 @@ mot `causal` ne qualifie jamais un résultat live.
 | Capteur | Source | Statut actuel |
 |---|---|---|
 | Marché OHLCV | capture V1 déjà gelée | contrôle, toujours émis si ancre valide |
-| Macro source-only | `MacroWorldObservation` (`macro_source_only.v2`) | éligible si envelope + reçu PIT **et** producteur admis `v2` ; worker opt-in / OR YAML. `v1` reste parseable, hors ombre. |
+| Macro source-only | `MacroWorldObservation` (`world_macro_source.v1`) | éligible si envelope + reçu PIT **et** producteur admis live ; worker opt-in / OR YAML. Store frais uniquement. |
 | Macro Univers | `NewsMacroBrief` | **exclu** comme source modèle World Context (`policy_contaminated`) |
 | Événements GDELT | `state/gdelt/` | **exclu** du registre macro source-only |
 | Company micro | `CompanyIntelligenceBrief` | éligible seulement si sidecar-prouvé **et** action-free |
@@ -129,8 +129,8 @@ compatibilité : ce n'est **pas** une source modèle. GDELT continue d'alimenter
 l'analyste Univers ; ça ne le réintroduit pas dans le World Context.
 
 Allowlist macro actuelle : DBnomics (taux, CPI, chômage) et Yahoo Finance
-(brent, or), registre `macro_sources.v2` / adapters
-`dbnomics_series.v2` et `yahoo_commodity.v2`. Exclus aussi : FRED,
+(brent, or), registre `world_macro_sources.v1` / adapters
+`world_dbnomics_series.v1` et `world_yahoo_commodity.v1`. Exclus aussi : FRED,
 ecbdata, OECD. Gaps déclarés (USD large, taux/CPI Taiwan, séries de
 croissance) restent des missingness honnêtes, jamais une valeur nulle
 inventée. `valid_until` = `published_at` + TTL figé ; `source_ref` est

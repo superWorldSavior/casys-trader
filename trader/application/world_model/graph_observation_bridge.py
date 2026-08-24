@@ -8,12 +8,10 @@ from trader.application.world_model.graph_ports import (
     MacroGraphBridgeLedger,
     MacroObservationScanPort,
     WorldGraphLedger,
-    WorldRelationEventId,
 )
 from trader.domain.world_graph import (
-    MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+    MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
     KnowledgeWorldRelationAsserted,
-    KnowledgeWorldRelationEvent,
     MacroGraphBridgeFence,
     MacroGraphBridgeRegistry,
     MacroGraphBridgeRunSpec,
@@ -27,16 +25,13 @@ from trader.domain.world_graph import (
 from trader.domain.world_graph_bridge_lifecycle import (
     UnknownMacroGraphBridgeDrift,
     classify_macro_graph_bridge,
-    observes_retirement,
-    predecessor_owned_observes,
-    remaining_owned_observes,
 )
 from trader.domain.world_macro import MACRO_PRODUCER_VERSION, MacroCollectionPlan
 from trader.domain.world_scope import WorldScopeMapping
 
 
 class RegisterMacroObservationKnowledge:
-    """Align, reconcile, and remediate a single-active macro graph bridge."""
+    """Align and reconcile a single-active macro graph bridge."""
 
     def __init__(
         self,
@@ -72,7 +67,7 @@ class RegisterMacroObservationKnowledge:
             scope_mapping_hash=self._scope_mapping.content_sha256,
             ontology_revision_id=self._structural_revision.revision_id,
             ontology_revision_hash=self._structural_revision.content_sha256,
-            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
             collection_plan_id=self._collection_plan.plan_id,
             collection_plan_hash=self._collection_plan.content_sha256,
             producer_version=MACRO_PRODUCER_VERSION,
@@ -109,7 +104,13 @@ class RegisterMacroObservationKnowledge:
         if decision.status == "drifted_active":
             updated = registry.block(reason="config_drift", expected_version=registry.version)
             registry = self._append(updated, fence=registry.fence)
-        return self._remediate_then_handoff(registry)
+        raise UnknownMacroGraphBridgeDrift(
+            "unknown_config_drift",
+            context={
+                "durable_spec": None if registry.active_run is None else registry.active_run.spec.to_dict(),
+                "desired_spec": desired.to_dict(),
+            },
+        )
 
     def activate(self, request_id: str) -> MacroGraphBridgeRegistry:
         reservation = self._scan.reserve_activation_cursor(self._key(), BridgeRequestId(str(request_id)))
@@ -149,95 +150,6 @@ class RegisterMacroObservationKnowledge:
             except OSError:
                 break
         return self._advance_if_needed(registry, completed, fence)
-
-    def handoff(
-        self,
-        *,
-        scope_mapping: WorldScopeMapping | None = None,
-        structural_revision: WorldOntologyRevision | None = None,
-    ) -> MacroGraphBridgeRegistry:
-        if scope_mapping is not None:
-            if not isinstance(scope_mapping, WorldScopeMapping):
-                raise TypeError("scope_mapping must be WorldScopeMapping")
-            if scope_mapping != self._scope_mapping:
-                raise ValueError("handoff scope_mapping must match the bound mapping")
-        if structural_revision is not None:
-            if not isinstance(structural_revision, WorldOntologyRevision):
-                raise TypeError("structural_revision must be WorldOntologyRevision")
-            if structural_revision != self._structural_revision:
-                raise ValueError("handoff structural_revision must match the bound revision")
-        registry = self._load()
-        return self._handoff(registry)
-
-    def _handoff(self, registry: MacroGraphBridgeRegistry) -> MacroGraphBridgeRegistry:
-        run = registry.active_run
-        if run is None:
-            raise ValueError("handoff requires a blocked active run")
-        updated = registry.handoff(
-            active_run_id=run.run_id,
-            next_run_spec=self._spec(),
-            expected_version=registry.version,
-        )
-        return self._append(updated, fence=None)
-
-    def _remediate_then_handoff(self, registry: MacroGraphBridgeRegistry) -> MacroGraphBridgeRegistry:
-        desired = self._spec()
-        decision = classify_macro_graph_bridge(registry, desired=desired)
-        if decision.status == "unknown_drift":
-            raise UnknownMacroGraphBridgeDrift(
-                decision.reason,
-                context={
-                    "durable_spec": None if registry.active_run is None else registry.active_run.spec.to_dict(),
-                    "desired_spec": desired.to_dict(),
-                },
-            )
-        if decision.status != "drifted_blocked_admitted":
-            return registry
-        registry = self._retire_owned_observes(registry)
-        run = registry.active_run
-        if run is None:
-            raise UnknownMacroGraphBridgeDrift("blocked_run_missing_after_remediation")
-        owned = predecessor_owned_observes(registry, run.run_id)
-        found: list[KnowledgeWorldRelationEvent] = []
-        for link in owned:
-            asserted = self._graph.get_knowledge_relation_event(WorldRelationEventId(link.relation_event_id))
-            if not isinstance(asserted, KnowledgeWorldRelationAsserted):
-                continue
-            expected = observes_retirement(relation=asserted.relation, linked=link, run_id=run.run_id)
-            existing = self._graph.get_knowledge_relation_event(WorldRelationEventId(expected.event_id))
-            if existing is not None:
-                found.append(existing)
-        if remaining_owned_observes(owned, found):
-            return registry
-        return self._handoff(registry)
-
-    def _retire_owned_observes(self, registry: MacroGraphBridgeRegistry) -> MacroGraphBridgeRegistry:
-        run = registry.active_run
-        if run is None or run.status != "blocked":
-            raise UnknownMacroGraphBridgeDrift("remediation_requires_blocked_predecessor")
-        fence = registry.fence
-        for link in predecessor_owned_observes(registry, run.run_id):
-            asserted = self._graph.get_knowledge_relation_event(WorldRelationEventId(link.relation_event_id))
-            if not isinstance(asserted, KnowledgeWorldRelationAsserted):
-                raise UnknownMacroGraphBridgeDrift(
-                    "missing_owned_observes_assertion",
-                    context={"relation_event_id": link.relation_event_id, "relation_id": link.relation_id},
-                )
-            retired = observes_retirement(relation=asserted.relation, linked=link, run_id=run.run_id)
-            existing = self._graph.get_knowledge_relation_event(WorldRelationEventId(retired.event_id))
-            if existing is not None:
-                if existing != retired:
-                    raise UnknownMacroGraphBridgeDrift(
-                        "retirement_identity_conflict",
-                        context={"relation_id": link.relation_id, "event_id": retired.event_id},
-                    )
-                continue
-            self._graph.append_knowledge_relation_event(
-                retired,
-                fence=fence,
-                expected_registry_version=registry.version,
-            )
-        return self._load()
 
     def _reconcile_one(
         self,

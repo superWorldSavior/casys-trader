@@ -13,9 +13,11 @@
 - **Supersède** : aucun
 - **RFCs sœurs** : [cohorte prospective](2026-08-23-world-model-prospective-cohort-design.md),
   [graphe et hypothèses de patterns](2026-08-23-world-model-graph-pattern-hypotheses-design.md)
-- **Lignée live gelée** : registre/adapters `v2` et plan de collecte
-  `32757eeb…` — voir §17 ; les contrats payload restent `macro_source_fact.v1`
-  / `macro_world_observation.v1`
+- **Contrat live unique** : producteur `world_macro_source.v1`, registre
+  `world_macro_sources.v1`, plan
+  `7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83` —
+  voir §17 ; les contrats payload restent `macro_source_fact.v1`
+  / `macro_world_observation.v1`. Cutover = archive hors ligne + store frais.
 
 ## 1. Résumé et décision proposée
 
@@ -216,9 +218,9 @@ L'observation est une projection déterministe des faits admissibles :
   "observation_id": "macro_world_observation:v1:<sha256>",
   "scope": {"kind": "venue", "entity_id": "mic:XTAI"},
   "cutoff_at": "2026-08-23T13:00:00Z",
-  "producer_version": "macro_source_only.v1",
+  "producer_version": "world_macro_source.v1",
   "transform_version": "macro_regimes.v1",
-  "source_registry_version": "macro_sources.v1",
+  "source_registry_version": "world_macro_sources.v1",
   "fact_refs": ["macro_source_fact_version:v1:<sha256>"],
   "features": {
     "macro_regime": "mixed",
@@ -488,8 +490,8 @@ Une preuve invalide est visible en reporting mais exclue du modèle.
 
 ## 9. Sources, cadence et budgets
 
-Le registre est versionné et configuré. Le contrat initial était
-`macro_sources.v1` ; la lignée live est `macro_sources.v2` (§17). Il commence par :
+Le registre est versionné et configuré. Le contrat live est
+`world_macro_sources.v1` (§17). Il commence par :
 
 - séries officielles déjà cartographiées dans le projet ;
 - benchmarks de marché explicitement désignés comme macro, distincts de
@@ -805,9 +807,9 @@ Après implémentation — pas au stade RFC — consolider :
 - `docs/how-to/operate-world-model-shadow.md` : commandes et flags vérifiés ;
 - D19 : uniquement si son résumé d'implémentation doit être complété.
 
-La lignée registre/adapter `v2` et le handoff de plan de collecte sont
-figés dans la présente RFC (§17) ; les pages explanation / how-to portent
-le runtime live, sans réécrire les exemples `v1` des §5–9.
+Le contrat live unique et le cutover store frais sont figés dans la
+présente RFC (§17) ; les pages explanation / how-to portent le runtime
+courant.
 
 ## 16. Décisions à figer par `MACRO-CONFIG` avant MACRO-4
 
@@ -822,26 +824,28 @@ par hash dans le registre et les versions de transformation. Ils ne remettent
 pas en cause la frontière source-only et ne peuvent pas être inventés par un
 lot d'implémentation.
 
-## 17. Lignée registre / adapter v2 (gelée)
+## 17. Contrat live unique (archive hors ligne, store frais)
 
-Cette section fige la migration revue du registre et des adapters. Elle ne
-change pas les schémas payload (`macro_source_fact.v1`,
-`macro_world_observation.v1`, `macro_source_registry.v1`,
-`macro_collection_plan.v1`). Autorité inchangée : `shadow_only` /
+Un seul contrat runtime. Pas de parser héritage, pas de handoff, pas de
+supersession ontologie. Cutover = archiver l'ancien store hors ligne et
+démarrer un store frais. Les schémas payload restent
+`macro_source_fact.v1`, `macro_world_observation.v1`,
+`macro_source_registry.v1`, `macro_collection_plan.v1` et
+`macro_graph_bridge_run_spec.v1`. Autorité inchangée : `shadow_only` /
 `decision_effect=none` / `NO_GO`.
 
 ### 17.1 Identité explicite
 
 | Identité | Valeur live |
 |---|---|
-| `registry_version` | `macro_sources.v2` |
-| adapters DBnomics | `dbnomics_series.v2` |
-| adapters Yahoo | `yahoo_commodity.v2` |
-| `producer_version` | `macro_source_only.v2` |
-| `lane_identity` | `context.v2.macro_source.v2` |
-| plan de collecte | `macro_collection_plan:v1:32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d` |
+| `registry_version` | `world_macro_sources.v1` |
+| adapters DBnomics | `world_dbnomics_series.v1` |
+| adapters Yahoo | `world_yahoo_commodity.v1` |
+| `producer_version` | `world_macro_source.v1` |
+| `lane_identity` | `world.context.macro` |
+| plan de collecte | `macro_collection_plan:v1:7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83` |
 
-`MACRO_ADMITTED_PRODUCER_VERSIONS` n'admet que `macro_source_only.v2`.
+`require_admitted_macro_producer` n'admet que `world_macro_source.v1`.
 `committed_macro_collection_plan` est fail-closed si le dérivé n'égale
 pas exactement `WORLD_MACRO_COLLECTION_PLAN_ID` /
 `WORLD_MACRO_COLLECTION_PLAN_SHA256`. Un changement d'`adapter_version`
@@ -881,39 +885,19 @@ live, la feuille `supersedes` dont provider, `adapter_version`,
 
 Sans cette hydratation, un restart rejouerait la même valeur provider
 comme une nouvelle version sans `supersedes` : conflit, lignée de
-correction perdue. Les vintages d'adapter étrangers sont ignorés, pas
-réécrits.
+correction perdue.
 
-### 17.5 Lignes v1 lisibles et immuables
+### 17.5 Pont graphe : classify fail-closed
 
-Les faits `adapter_version=*.v1` et les observations
-`macro_source_only.v1` restent parseables. Même `MacroFactKey`, nouveau
-`MacroSourceFactVersionId` (l'adapter entre dans le hash de version).
-Ils ne sont ni mutés, ni rétro-jointés, ni hydratés comme feuille live,
-ni admis dans l'ombre. Réécrire un `valid_until` v1 à identité constante
-est un conflit.
-
-### 17.6 Pont graphe : migration de plan append-only
-
-`classify_macro_graph_bridge` n'admet que les couples gelés de
-`committed_macro_graph_bridge_migrations()`. Les callers ne peuvent pas
-injecter un couple. Deux lignées, même successeur live :
-
-1. mapping/ontologie `v1` → successeur `v2` (plan et producteur absents
-   sur le prédécesseur) ;
-2. même mapping/ontologie `v2` + `macro_source_only.v2`, plan
-   `74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5`
-   → `32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d`.
-
-Run `active` dont la spec diffère = `drifted_active` (block, pas de
-handoff). Run `blocked` + couple exact = `drifted_blocked_admitted` :
-retraite append-only des `OBSERVES` possédés, puis
-`MacroGraphBridgeRunHandedOff` (curseur conservé, un propriétaire, pas
-de backfill). Crash au milieu : retry idempotent. Tout autre bit =
-`unknown_drift`. Voir aussi la [RFC graphe](2026-08-23-world-model-graph-pattern-hypotheses-design.md)
+`classify_macro_graph_bridge` compare la spec durable à la spec désirée.
+Cold start = `missing`. Spec identique active = `matched_active`. Spec
+identique bloquée = `matched_blocked`. Spec différente et run `active` =
+`drifted_active` (block). Tout autre écart = `unknown_drift`. Aucune
+lignée prédécesseur/successeur, aucun handoff applicatif. Voir aussi la
+[RFC graphe](2026-08-23-world-model-graph-pattern-hypotheses-design.md)
 §6.3.
 
-### 17.7 Point-in-time : staging puis publication, stale honnête
+### 17.6 Point-in-time : staging puis publication, stale honnête
 
 Un premier cutoff peut persister le fait et son reçu (`ready_at` après
 le cutoff) et terminer `failed` / `no_admissible_observation` : l'évidence

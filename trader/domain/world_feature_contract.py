@@ -46,15 +46,11 @@ WORLD_V3_MARKOV_MODEL_IDENTITY = "hierarchical_dirichlet_world_baseline@graph.v3
 WORLD_V3_GRU_MODEL_IDENTITY = "online_gru_world_challenger@graph.v3"
 WORLD_V3_MODEL_VERSION = "graph.v3"
 WORLD_GRAPH_V3_ONTOLOGY_REVISION = "market_ontology.v2"
-WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION = "market_ontology.v1"
 WORLD_GRAPH_V3_ONTOLOGY_SHA256 = "fbeb05628eb2f8e0b6fc7723f4b731c99b3e0be6532aad524a2f98c6b4fb5542"
-WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_SHA256 = "15d647955a7490ea08c8327b9c195225962dfa5e4efe27d47c4f37eddf954517"
 WORLD_GRAPH_V3_PATH_RULE_VERSION = "graph_traversal.v1"
 WORLD_GRAPH_V3_CONFIG_SHA256 = "e8d1df0df1badfdd9c2004ae4cf9eacb9605347abacbd63563a844dcfe16ab84"
 WORLD_SCOPE_MAPPING_ID = "world_scope_mapping.v2"
-WORLD_SCOPE_MAPPING_PREDECESSOR_ID = "world_scope_mapping.v1"
 WORLD_SCOPE_MAPPING_SHA256 = "e1289a4a86e5cb07600cb3ac45122b170f1a0bb249db2fbb6e5c093a4a8a501b"
-WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256 = "b2393ea7d1812e4d3d82e37858b71c3cac19079ef35a23212b16914f1f8661c6"
 WORLD_GRAPH_V3_WINDOWS_AND_DECAY: Mapping[str, object] = MappingProxyType(
     {
         "windows": ("0-4h", "4-24h", "1-7d", "older"),
@@ -208,7 +204,9 @@ def _group_tuple(value: Sequence[Any] | None) -> tuple[WorldFeatureGroup, ...]:
         return ()
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise TypeError("groups must be a sequence of WorldFeatureGroup")
-    return tuple(item if isinstance(item, WorldFeatureGroup) else WorldFeatureGroup.from_mapping(item) for item in value)
+    return tuple(
+        item if isinstance(item, WorldFeatureGroup) else WorldFeatureGroup.from_mapping(item) for item in value
+    )
 
 
 def _canonical_groups(groups: Sequence[WorldFeatureGroup]) -> tuple[WorldFeatureGroup, ...]:
@@ -264,9 +262,10 @@ class WorldFeatureContract:
         path_rule_version = _optional_text(self.path_rule_version, "path_rule_version")
         windows_and_decay = _freeze_windows_and_decay(self.windows_and_decay)
         vocabulary_fingerprint = canonical_sha256(_vocabulary_payload(groups))
-        if self.vocabulary_fingerprint is not None and _required_text(
-            self.vocabulary_fingerprint, "vocabulary_fingerprint"
-        ) != vocabulary_fingerprint:
+        if (
+            self.vocabulary_fingerprint is not None
+            and _required_text(self.vocabulary_fingerprint, "vocabulary_fingerprint") != vocabulary_fingerprint
+        ):
             raise ValueError("vocabulary_fingerprint does not match the canonical WorldFeatureContract")
         object.__setattr__(self, "contract_id", contract_id)
         object.__setattr__(self, "accepted_episode_contract", accepted_episode_contract)
@@ -599,15 +598,11 @@ __all__ = [
     "WORLD_FEATURE_CONTRACT_SCHEMA",
     "WORLD_FEATURE_MASK_SCHEMA",
     "WORLD_GRAPH_V3_CONFIG_SHA256",
-    "WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION",
-    "WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_SHA256",
     "WORLD_GRAPH_V3_ONTOLOGY_REVISION",
     "WORLD_GRAPH_V3_ONTOLOGY_SHA256",
     "WORLD_GRAPH_V3_PATH_RULE_VERSION",
     "WORLD_GRAPH_V3_WINDOWS_AND_DECAY",
     "WORLD_SCOPE_MAPPING_ID",
-    "WORLD_SCOPE_MAPPING_PREDECESSOR_ID",
-    "WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256",
     "WORLD_SCOPE_MAPPING_SHA256",
     "WORLD_V1_ENCODER_IDENTITY",
     "WORLD_V2_ENCODER_IDENTITY",

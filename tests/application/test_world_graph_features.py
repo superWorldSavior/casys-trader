@@ -138,7 +138,7 @@ def test_window_counts_and_macro_agreement_use_only_snapshot_members() -> None:
     ledger = _InMemoryWorldGraphLedger()
     extra = _knowledge(
         source={"node_kind": "world_observation", "observation_id": "world_observation:v1:" + "e" * 64},
-        source_refs=("macro_world_observation:v1:" + "e" * 64, "producer:macro_source_only.v2"),
+        source_refs=("macro_world_observation:v1:" + "e" * 64, "producer:world_macro_source.v1"),
     )
     _seed_rfc_graph(ledger, mapping, knowledge=(_knowledge(), extra))
     bundle = _service(ledger).build(_request(mapping))

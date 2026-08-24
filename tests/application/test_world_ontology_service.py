@@ -102,7 +102,7 @@ def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
         "target": _country(),
         "effective_from": T0,
         "ontology_revision": "market_ontology.v1",
-        "source_refs": ("macro_world_observation:v1:" + SHA, "producer:macro_source_only.v2"),
+        "source_refs": ("macro_world_observation:v1:" + SHA, "producer:world_macro_source.v1"),
     }
     values.update(overrides)
     return KnowledgeWorldRelation(**values)  # type: ignore[arg-type]
@@ -585,7 +585,7 @@ def test_knowledge_overlay_does_not_enter_structural_heads_or_foreign_revisions(
     service.assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=_knowledge()))
     foreign = _knowledge(
         ontology_revision="market_ontology.v2",
-        source_refs=("macro_world_observation:v1:" + "c" * 64, "producer:macro_source_only.v2"),
+        source_refs=("macro_world_observation:v1:" + "c" * 64, "producer:world_macro_source.v1"),
         source=WorldObservationRef(observation_id=f"world_observation:v1:{'c' * 64}"),
     )
     service.assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=foreign))

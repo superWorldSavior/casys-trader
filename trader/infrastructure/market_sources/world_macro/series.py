@@ -20,8 +20,11 @@ import yaml
 
 from trader.domain.world_episode import canonical_sha256, parse_utc_timestamp
 from trader.domain.world_macro import (
+    MACRO_DBNOMICS_ADAPTER_VERSION,
     MACRO_FACT_KINDS,
     MACRO_FEATURE_VALUES,
+    MACRO_SOURCE_REGISTRY_VERSION,
+    MACRO_YAHOO_COMMODITY_ADAPTER_VERSION,
     MacroDerivationPolicy,
     MacroNumericValue,
     MacroScope,
@@ -30,6 +33,8 @@ from trader.domain.world_macro import (
     MacroSourceRegistryEntry,
     derive_macro_source_fact_valid_until,
     latest_compatible_macro_source_leaf,
+    require_admitted_macro_adapter,
+    require_admitted_macro_producer,
 )
 from trader.domain.world_scope import WorldScopeMapping
 from trader.infrastructure.market_sources.commodity_prices import parse_yahoo_last_close
@@ -200,6 +205,9 @@ def load_world_macro_operator_configs(*, config_dir: Path) -> WorldMacroOperator
         transform_version=policy_raw.get("transform_version"),
         producer_version=policy_raw.get("producer_version"),
     )
+    require_admitted_macro_producer(sources.get("producer_version"))
+    if sources.get("registry_version") != MACRO_SOURCE_REGISTRY_VERSION:
+        raise ValueError(f"registry_version must be {MACRO_SOURCE_REGISTRY_VERSION}")
     if sources.get("authority") != "shadow_only" or sources.get("decision_effect") != "none":
         raise ValueError("registry authority must stay shadow_only with decision_effect none")
     if policy_raw.get("authority") != "shadow_only" or policy_raw.get("decision_effect") != "none":
@@ -225,6 +233,7 @@ def load_world_macro_operator_configs(*, config_dir: Path) -> WorldMacroOperator
             raise ValueError("registry entry uses an excluded provider")
         if entry.fact_kind not in MACRO_FACT_KINDS:
             raise ValueError("registry entry fact_kind is not admitted")
+        require_admitted_macro_adapter(provider_id=entry.provider_id, adapter_version=entry.adapter_version)
 
     budgets_raw = sources.get("budgets") or {}
     if not isinstance(budgets_raw, Mapping):
@@ -621,6 +630,8 @@ class DBnomicsSeriesAdapter(BoundMacroSourceAdapter):
         entry: MacroSourceRegistryEntry = kwargs["entry"]
         if entry.provider_id != "dbnomics":
             raise ValueError("DBnomicsSeriesAdapter requires provider_id dbnomics")
+        if entry.adapter_version != MACRO_DBNOMICS_ADAPTER_VERSION:
+            raise ValueError(f"DBnomicsSeriesAdapter requires adapter_version {MACRO_DBNOMICS_ADAPTER_VERSION}")
         super().__init__(**kwargs)
 
 
@@ -629,6 +640,10 @@ class YahooCommodityAdapter(BoundMacroSourceAdapter):
         entry: MacroSourceRegistryEntry = kwargs["entry"]
         if entry.provider_id != "yahoo_finance":
             raise ValueError("YahooCommodityAdapter requires provider_id yahoo_finance")
+        if entry.adapter_version != MACRO_YAHOO_COMMODITY_ADAPTER_VERSION:
+            raise ValueError(
+                f"YahooCommodityAdapter requires adapter_version {MACRO_YAHOO_COMMODITY_ADAPTER_VERSION}"
+            )
         super().__init__(**kwargs)
 
 

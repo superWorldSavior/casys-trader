@@ -158,7 +158,7 @@ def test_committed_registry_domain_and_operator_hashes_match() -> None:
     assert canonical_sha256(operator_payload) == claimed_operator
     assert bundle.registry.content_sha256 == raw["content_sha256"]
     assert bundle.registry_operator_config_sha256 == claimed_operator
-    assert bundle.registry.registry_version == "macro_sources.v2"
+    assert bundle.registry.registry_version == "world_macro_sources.v1"
 
 
 def test_committed_policy_full_content_hash_matches() -> None:
@@ -171,7 +171,7 @@ def test_committed_policy_full_content_hash_matches() -> None:
     assert canonical_sha256(payload) == claimed
     assert bundle.policy_content_sha256 == claimed
     assert bundle.policy.transform_version == "macro_regimes.v1"
-    assert bundle.policy.producer_version == "macro_source_only.v2"
+    assert bundle.policy.producer_version == "world_macro_source.v1"
     for dimension, values in raw["vocabularies"].items():
         assert "unknown" in values
         assert frozenset(values) == MACRO_FEATURE_VALUES[dimension]
@@ -269,7 +269,7 @@ def test_dbnomics_adapter_emits_typed_fact_for_canonical_scope_not_run_scope() -
     assert fact.period == "2026-08-22"
     assert fact.value == MacroNumericValue(number=4.33, unit="percent")
     assert fact.source.provider_id == "dbnomics"
-    assert fact.source.adapter_version == "dbnomics_series.v2"
+    assert fact.source.adapter_version == "world_dbnomics_series.v1"
     published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
     assert fact.published_at == published
     assert fact.valid_until == published + timedelta(hours=72)
@@ -330,7 +330,7 @@ def test_yahoo_commodity_adapter_emits_front_month_benchmark() -> None:
     assert fact.period == "2026-08-21"
     assert fact.value == MacroNumericValue(number=91.22, unit="usd")
     assert fact.source.provider_id == "yahoo_finance"
-    assert fact.source.adapter_version == "yahoo_commodity.v2"
+    assert fact.source.adapter_version == "world_yahoo_commodity.v1"
     published = datetime(2026, 8, 21, tzinfo=UTC)
     assert fact.published_at == published
     assert fact.valid_until == published + timedelta(hours=72)
@@ -441,75 +441,6 @@ def test_fetch_optimization_params_are_not_part_of_stable_source_ref() -> None:
     assert "interval=1d" in macro_source_fetch_url(yahoo_entry, yahoo_budget)
     assert "range=1mo" in macro_source_fetch_url(yahoo_entry, yahoo_alt)
     assert "interval=1wk" in macro_source_fetch_url(yahoo_entry, yahoo_alt)
-
-
-def _preexisting_v1_dbnomics_fact(
-    *,
-    observed_at: datetime,
-    period: str = "2026-08-22",
-    value: float = 4.33,
-    published_at: datetime | None = None,
-) -> MacroSourceFact:
-    published = published_at or datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
-    return MacroSourceFact(
-        fact_kind="series_point",
-        metric_key="policy_rate",
-        scope=MacroScope(kind="country", entity_id="iso-3166:US"),
-        value=MacroNumericValue(number=value, unit="percent"),
-        period=period,
-        occurred_at=datetime.fromisoformat(period).replace(tzinfo=UTC),
-        published_at=published,
-        ingested_at=observed_at,
-        source={
-            "provider_id": "dbnomics",
-            "adapter_version": "dbnomics_series.v1",
-            "source_record_id": f"FED/H15/RIFSPFF_N.D:{period}",
-            "source_ref": "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1",
-        },
-        valid_until=observed_at + timedelta(hours=72),
-    )
-
-
-def test_preexisting_v1_fact_appends_v2_collection_without_identity_collision(tmp_path: Path) -> None:
-    from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
-
-    observed = OBSERVED_AT
-    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
-    v1 = _preexisting_v1_dbnomics_fact(observed_at=observed, published_at=published)
-    store = WorldMacroStore(tmp_path, clock=lambda: observed)
-    store.append_fact(v1)
-    body = _dbnomics_body("2026-08-22", 4.33, indexed_at="2026-08-23T12:30:00Z")
-    v2 = _ports(ScriptedTransport([body]))["fed_funds_effective"].read_facts(RUN_SCOPE, observed)[0]
-    assert v1.source.adapter_version == "dbnomics_series.v1"
-    assert v2.source.adapter_version == "dbnomics_series.v2"
-    assert v1.fact_key == v2.fact_key
-    assert v2.fact_version_id != v1.fact_version_id
-    assert v2.content_sha256 != v1.content_sha256
-    assert v2.valid_until == published + timedelta(hours=72)
-    assert v2.valid_until != v1.valid_until
-    assert "metadata=" not in v2.source.source_ref
-    assert "?" not in v2.source.source_ref
-    replayed = store.append_fact(v2)
-    assert replayed.identity == v2.fact_version_id
-    rows = [
-        json.loads(line)
-        for line in (tmp_path / "facts" / "2026-08-23.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    assert len(rows) == 2
-    loaded = [MacroSourceFact.from_mapping(row) for row in rows]
-    assert {item.source.adapter_version for item in loaded} == {"dbnomics_series.v1", "dbnomics_series.v2"}
-    drifted_v1 = _preexisting_v1_dbnomics_fact(
-        observed_at=observed,
-        published_at=published,
-    )
-    drifted_v1 = MacroSourceFact.from_mapping(
-        {**v1.to_dict(), "valid_until": (published + timedelta(hours=72)).isoformat(), "content_sha256": None}
-    )
-    assert drifted_v1.fact_version_id == v1.fact_version_id
-    assert drifted_v1.content_sha256 != v1.content_sha256
-    with pytest.raises(ValueError, match="conflict"):
-        store.append_fact(drifted_v1)
 
 
 def test_hydrated_correction_replays_then_extends_chain(tmp_path: Path) -> None:

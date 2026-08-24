@@ -30,7 +30,6 @@ from trader.domain.world_feature_contract import (
     WORLD_FEATURE_CONTRACT_SCHEMA,
     WORLD_FEATURE_MASK_SCHEMA,
     WORLD_GRAPH_V3_CONFIG_SHA256,
-    WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_SHA256,
     WORLD_GRAPH_V3_ONTOLOGY_REVISION,
     WORLD_GRAPH_V3_ONTOLOGY_SHA256,
     WORLD_GRAPH_V3_PATH_RULE_VERSION,
@@ -411,8 +410,6 @@ def test_v3_contract_is_isolated_from_v1_v2_and_binds_committed_graph_config() -
     assert v3.vocabulary_version == GRAPH_FEATURE_CONTRACT_VERSION
     assert v3.ontology_revision == WORLD_GRAPH_V3_ONTOLOGY_REVISION == config["ontology_revision"] == "market_ontology.v2"
     assert len(WORLD_GRAPH_V3_ONTOLOGY_SHA256) == 64
-    assert len(WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_SHA256) == 64
-    assert WORLD_GRAPH_V3_ONTOLOGY_SHA256 != WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_SHA256
     assert v3.path_rule_version == WORLD_GRAPH_V3_PATH_RULE_VERSION == config["traversal_policy_version"] == "graph_traversal.v1"
     assert v3.to_dict()["windows_and_decay"] == config["windows_and_decay"]
     assert canonical_payload(WORLD_GRAPH_V3_WINDOWS_AND_DECAY) == config["windows_and_decay"]

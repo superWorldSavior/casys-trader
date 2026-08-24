@@ -27,16 +27,12 @@ from trader.domain.world_macro import (
     MACRO_COLLECTION_PLAN_SCHEMA,
     MACRO_FACT_KINDS,
     MACRO_LANE_IDENTITY,
-    MACRO_LANE_IDENTITY_V1,
     MACRO_POLICY_DENYLIST,
     MACRO_PRODUCER_VERSION,
-    MACRO_PRODUCER_VERSION_V1,
     MACRO_REGIME_VALUES,
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
     WORLD_MACRO_COLLECTION_PLAN_ID,
-    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID,
-    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256,
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroObservationProvenance,
     committed_macro_collection_plan,
@@ -54,7 +50,6 @@ from trader.domain.world_macro import (
     MacroCollectionStarted,
     MacroCollectionTerminalResult,
     MacroContextSearchPlan,
-    MacroContextSelection,
     MacroCoverage,
     MacroDerivationPolicy,
     MacroDimensionState,
@@ -96,8 +91,8 @@ def _scope(*, kind: str = "country", entity_id: str = "iso-3166:US") -> MacroSco
 
 def _source(**overrides: object) -> MacroFactSource:
     values: dict[str, object] = {
-        "provider_id": "official_provider",
-        "adapter_version": "official_provider.v1",
+        "provider_id": "dbnomics",
+        "adapter_version": "world_dbnomics_series.v1",
         "source_record_id": "stable-provider-id",
         "source_ref": "https://source.example/record",
     }
@@ -228,28 +223,28 @@ def _registry() -> MacroSourceRegistry:
         entries=(
             MacroSourceRegistryEntry(
                 source_id="fed_policy_rate",
-                provider_id="official_provider",
+                provider_id="dbnomics",
                 provider_entity_id="FED/H15",
                 canonical_scope=_scope(),
-                adapter_version="official_provider.v1",
+                adapter_version="world_dbnomics_series.v1",
                 fact_kind="series_point",
                 metric_key="policy_rate",
             ),
             MacroSourceRegistryEntry(
                 source_id="brent",
-                provider_id="market_benchmark",
+                provider_id="yahoo_finance",
                 provider_entity_id="BRN",
                 canonical_scope=_scope(kind="world", entity_id="market"),
-                adapter_version="commodities.v1",
+                adapter_version="world_yahoo_commodity.v1",
                 fact_kind="market_benchmark",
                 metric_key="brent",
             ),
             MacroSourceRegistryEntry(
                 source_id="broad_usd_index",
-                provider_id="official_provider",
+                provider_id="dbnomics",
                 provider_entity_id="USD/BROAD",
                 canonical_scope=_scope(kind="world", entity_id="market"),
-                adapter_version="official_provider.v1",
+                adapter_version="world_dbnomics_series.v1",
                 fact_kind="series_point",
                 metric_key="usd_index",
             ),
@@ -286,7 +281,7 @@ def test_source_registry_is_hashed_and_has_no_implicit_provider_crosswalk() -> N
     replayed = MacroSourceRegistry.from_mapping(registry.to_dict())
     assert replayed == registry
     assert replayed.content_sha256 == registry.content_sha256
-    resolved = registry.resolve_canonical_scope(provider_id="official_provider", provider_entity_id="FED/H15")
+    resolved = registry.resolve_canonical_scope(provider_id="dbnomics", provider_entity_id="FED/H15")
     assert resolved.status == "resolved"
     assert resolved.scope == _scope()
     missing = registry.resolve_canonical_scope(provider_id="twse", provider_entity_id="TW")
@@ -332,7 +327,7 @@ def test_collection_plan_owns_typed_targets_bound_to_registry_identity() -> None
     plan.bind_registry(registry)
     with pytest.raises(ValueError, match="bound registry plan"):
         plan.require_target(MacroCollectionTarget(scope=us, source_ids=("brent",)))
-    drifted = MacroSourceRegistry(registry_version="macro_sources.v2-test", entries=registry.entries)
+    drifted = MacroSourceRegistry(registry_version="world_macro_sources.v1-test", entries=registry.entries)
     with pytest.raises(ValueError, match="exact source registry"):
         plan.bind_registry(drifted)
     with pytest.raises(ValueError, match="committed identity"):
@@ -367,10 +362,10 @@ def test_collection_plan_owns_typed_targets_bound_to_registry_identity() -> None
                 fed,
                 MacroSourceRegistryEntry(
                     source_id="other",
-                    provider_id="official_provider",
+                    provider_id="dbnomics",
                     provider_entity_id="FED/H15",
                     canonical_scope=_scope(kind="country", entity_id="iso-3166:TW"),
-                    adapter_version="official_provider.v1",
+                    adapter_version="world_dbnomics_series.v1",
                     fact_kind="series_point",
                     metric_key="policy_rate",
                 ),
@@ -455,19 +450,18 @@ def test_fact_kind_and_value_vocabularies_are_closed() -> None:
         MacroSourceFact.from_mapping({**_fact().to_dict(), "value": {"number": 4.25}})
 
 
-def test_latest_compatible_leaf_ignores_other_adapter_and_follows_supersedes() -> None:
+def test_latest_compatible_leaf_follows_supersedes_on_live_adapter() -> None:
     entry = MacroSourceRegistryEntry(
         source_id="fed_policy_rate",
-        provider_id="official_provider",
+        provider_id="dbnomics",
         provider_entity_id="FED/H15",
         canonical_scope=_scope(),
-        adapter_version="official_provider.v2",
+        adapter_version="world_dbnomics_series.v1",
         fact_kind="series_point",
         metric_key="policy_rate",
     )
-    v1 = _fact(source=_source(adapter_version="official_provider.v1", source_record_id="FED/H15:2026-08"))
     first = _fact(
-        source=_source(adapter_version="official_provider.v2", source_record_id="FED/H15:2026-08"),
+        source=_source(adapter_version="world_dbnomics_series.v1", source_record_id="FED/H15:2026-08"),
         value=MacroNumericValue(number=4.25, unit="percent"),
     )
     correction = first.corrected(
@@ -475,19 +469,19 @@ def test_latest_compatible_leaf_ignores_other_adapter_and_follows_supersedes() -
         published_at="2026-08-23T18:00:00Z",
         ingested_at="2026-08-23T18:01:00Z",
         valid_until=datetime(2026, 9, 2, 18, 0, tzinfo=UTC),
-        source=_source(adapter_version="official_provider.v2", source_record_id="FED/H15:2026-08"),
+        source=_source(adapter_version="world_dbnomics_series.v1", source_record_id="FED/H15:2026-08"),
     )
     older_period = _fact(
         period="2026-07",
         occurred_at="2026-07-01T00:00:00Z",
-        source=_source(adapter_version="official_provider.v2", source_record_id="FED/H15:2026-07"),
+        source=_source(adapter_version="world_dbnomics_series.v1", source_record_id="FED/H15:2026-07"),
         value=MacroNumericValue(number=4.10, unit="percent"),
     )
-    assert latest_compatible_macro_source_leaf(entry, (v1,)) is None
-    assert latest_compatible_macro_source_leaf(entry, (v1, first, correction, older_period)) == correction
+    assert latest_compatible_macro_source_leaf(entry, (first,)) == first
+    assert latest_compatible_macro_source_leaf(entry, (first, correction, older_period)) == correction
     leaves = compatible_macro_source_leaves(
         MacroSourceRegistry(registry_version=MACRO_SOURCE_REGISTRY_VERSION, entries=(entry,)),
-        (v1, first, correction, older_period),
+        (first, correction, older_period),
     )
     assert leaves == {"fed_policy_rate": correction}
 
@@ -507,15 +501,15 @@ def test_correction_keeps_fact_key_and_supersedes_previous_leaf() -> None:
         value=MacroNumericValue(number=4.5, unit="percent"),
         published_at="2026-08-23T18:00:00Z",
         ingested_at="2026-08-23T18:01:00Z",
-        source=_source(adapter_version="official_provider.v2", source_ref="https://source.example/revised"),
+        source=_source(source_ref="https://source.example/revised"),
     )
     assert revised_pointer.fact_key == original.fact_key
-    with pytest.raises(ValueError, match="MacroFactKey"):
+    with pytest.raises(ValueError, match="MacroFactKey|adapter_version"):
         original.corrected(
             value=MacroNumericValue(number=4.5, unit="percent"),
             published_at="2026-08-23T18:00:00Z",
             ingested_at="2026-08-23T18:01:00Z",
-            source=_source(provider_id="other_provider"),
+            source=_source(provider_id="yahoo_finance", adapter_version="world_yahoo_commodity.v1"),
         )
     with pytest.raises(ValueError, match="conflict"):
         reconcile_macro_source_fact(
@@ -529,7 +523,7 @@ def test_observation_id_is_order_insensitive_and_round_trips() -> None:
     fact_b = _fact(
         metric_key="brent",
         period="2026-08-22",
-        source=_source(provider_id="market_benchmark", source_record_id="BRN", adapter_version="commodities.v1"),
+        source=_source(provider_id="yahoo_finance", source_record_id="BRN", adapter_version="world_yahoo_commodity.v1"),
         value=MacroNumericValue(number=80.0, unit="usd_per_barrel"),
         scope=_scope(kind="world", entity_id="market"),
         fact_kind="market_benchmark",
@@ -1090,34 +1084,23 @@ def _resolution(
     )
 
 
-def test_live_producer_contract_is_v2_and_keeps_v1_parseable() -> None:
-    assert MACRO_PRODUCER_VERSION == "macro_source_only.v2"
-    assert MACRO_PRODUCER_VERSION_V1 == "macro_source_only.v1"
-    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v2"
-    assert MACRO_LANE_IDENTITY_V1 == "context.v2.macro_source.v1"
-    assert MACRO_LANE_IDENTITY != MACRO_LANE_IDENTITY_V1
+def test_live_producer_contract_is_the_current_identity() -> None:
+    assert MACRO_PRODUCER_VERSION == "world_macro_source.v1"
+    assert MACRO_LANE_IDENTITY == "world.context.macro"
+    assert MACRO_SOURCE_REGISTRY_VERSION == "world_macro_sources.v1"
     assert is_admitted_macro_producer(MACRO_PRODUCER_VERSION) is True
-    assert is_admitted_macro_producer(MACRO_PRODUCER_VERSION_V1) is False
-    assert macro_observes_producer_ref(MACRO_PRODUCER_VERSION) == "producer:macro_source_only.v2"
+    assert is_admitted_macro_producer("not_admitted") is False
+    assert macro_observes_producer_ref(MACRO_PRODUCER_VERSION) == f"producer:{MACRO_PRODUCER_VERSION}"
     assert WORLD_MACRO_COLLECTION_PLAN_ID == f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_SHA256}"
-    assert WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID == (
-        f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256}"
-    )
-    assert WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256 != WORLD_MACRO_COLLECTION_PLAN_SHA256
-    assert (
-        WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
-        == "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
-    )
-    v1 = _observation(producer_version=MACRO_PRODUCER_VERSION_V1)
-    replayed = MacroWorldObservation.from_mapping(v1.to_dict())
-    assert replayed.producer_version == MACRO_PRODUCER_VERSION_V1
-    assert replayed.observation_id == v1.observation_id
-    v2 = _observation()
-    assert v2.producer_version == MACRO_PRODUCER_VERSION
-    assert v2.observation_id != v1.observation_id
+    current = _observation()
+    replayed = MacroWorldObservation.from_mapping(current.to_dict())
+    assert replayed.producer_version == MACRO_PRODUCER_VERSION
+    assert replayed.observation_id == current.observation_id
+    with pytest.raises(ValueError, match="producer"):
+        _observation(producer_version="not_admitted")
 
 
-def test_search_plan_walks_resolved_ancestry_and_ignores_v1_venue_contamination() -> None:
+def test_search_plan_walks_resolved_ancestry_and_prefers_closer_scope() -> None:
     tw = MacroContextSearchPlan.from_resolution(_resolution())
     assert [scope.to_dict() for scope in tw.ancestry] == [
         {"kind": "venue", "entity_id": "mic:XTAI"},
@@ -1125,24 +1108,19 @@ def test_search_plan_walks_resolved_ancestry_and_ignores_v1_venue_contamination(
         {"kind": "region", "entity_id": "iso-un-m49:030"},
         {"kind": "world", "entity_id": "market"},
     ]
-    venue_v1 = _envelope(
-        _observation(scope=_scope(kind="venue", entity_id="mic:XTAI"), producer_version=MACRO_PRODUCER_VERSION_V1)
-    )
+    venue = _envelope(_observation(scope=_scope(kind="venue", entity_id="mic:XTAI")))
     world = _envelope(_observation(scope=_scope(kind="world", entity_id="market")))
-    selected = tw.select((venue_v1, world), cutoff_at=CUTOFF)
+    selected = tw.select((venue, world), cutoff_at=CUTOFF)
     assert selected is not None
-    assert selected.origin_scope == world.observation.scope
-    assert selected.distance == 3
-    assert selected.envelope.observation.observation_id == world.observation.observation_id
+    assert selected.origin_scope == venue.observation.scope
+    assert selected.distance == 0
+    assert selected.envelope.observation.observation_id == venue.observation.observation_id
     assert selected.eligibility_status == "eligible"
-    assert selected.to_dict()["origin_scope"] == {"kind": "world", "entity_id": "market"}
-    with pytest.raises(ValueError, match="producer"):
-        MacroContextSelection(
-            envelope=venue_v1,
-            origin_scope=venue_v1.observation.scope,
-            distance=0,
-            search_plan=tw,
-        )
+    assert selected.to_dict()["origin_scope"] == {"kind": "venue", "entity_id": "mic:XTAI"}
+    world_only = tw.select((world,), cutoff_at=CUTOFF)
+    assert world_only is not None
+    assert world_only.origin_scope == world.observation.scope
+    assert world_only.distance == 3
 
 
 def test_search_plan_selects_eu_region_then_us_country_before_world() -> None:

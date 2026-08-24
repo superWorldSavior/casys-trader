@@ -162,7 +162,7 @@ company:lei:549300...
 instrument:mic:XTAI:symbol:2330
 macro_indicator:dbnomics:FED/H15/RIFSPFF_N.D
 event:provider:event-id
-sensor:macro_source_only.v1
+sensor:world_macro_source.v1
 ```
 
 Les nœuds de connaissance ne sont pas tous des entités du monde. Le domaine
@@ -329,16 +329,12 @@ Le scan ne lit jamais un cursor antérieur à celui gelé par l'activation et ne
 modifie jamais les horloges de l'observation ou de la relation. Seule la preuve
 de disponibilité de la relation autorise sa visibilité point-in-time.
 
-`classify_macro_graph_bridge` n'admet que les couples gelés. Le successeur
-live porte `collection_plan_hash =
-32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d` et
-`producer_version = macro_source_only.v2`. Un run déjà activé sur le plan
-prédécesseur
-`74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5`
-(mapping/ontologie `v2` inchangés) est une `MacroGraphBridgeMigration`
-distincte du handoff mapping/ontologie `v1`→`v2`. Run `active` dérivé =
-block ; run `blocked` + couple exact = retraite des `OBSERVES` possédés
-puis handoff append-only. Tout autre bit = `unknown_drift`. Détail :
+`classify_macro_graph_bridge` compare la spec durable à la spec live
+courante (`collection_plan_hash =
+7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83`,
+`producer_version = world_macro_source.v1`). Run `active` dérivé = block ;
+run `blocked` dont la spec diffère = `unknown_drift`. Pas de couple
+prédécesseur/successeur, pas de handoff applicatif. Détail :
 [RFC macro §17](2026-08-23-world-model-macro-source-only-design.md).
 
 ### 6.4 Contrat minimal d'une relation

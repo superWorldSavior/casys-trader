@@ -3,7 +3,8 @@
 Derives instrument/venue/country/region/world entities and TRADED_ON /
 LOCATED_IN / PART_OF_WORLD heads solely from the versioned WorldScopeMapping.
 No issuer/company inference, no causal edges, no silent suffix fallback.
-A persisted predecessor revision is superseded, never rewritten in place.
+Fresh state publishes the current mapping and ontology. Existing different
+identity or hash is drift and fails closed.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from trader.application.world_model.ontology_service import (
     AssertStructuralWorldRelation,
     AssertWorldEntity,
     PublishWorldOntologyRevision,
-    SupersedeWorldOntologyRevision,
     WorldOntologyProofService,
     WorldOntologyService,
 )
@@ -240,8 +240,7 @@ class WorldOntologyBootstrapService:
             return _readiness(status="drifted", mapping=self._mapping, revision=published, reason="revision_drift")
         if plan.action == "ready":
             return _readiness(status="ready", mapping=self._mapping, revision=published, reason="attested")
-        reason = "predecessor_published" if plan.action == "supersede_and_publish" else "unpublished"
-        return _readiness(status="unpublished", mapping=self._mapping, revision=expected, reason=reason)
+        return _readiness(status="unpublished", mapping=self._mapping, revision=expected, reason="unpublished")
 
     def ensure_published(self, *, now: datetime | str | None = None) -> WorldOntologyReadiness:
         cutoff = _utc(now, "now")
@@ -250,7 +249,9 @@ class WorldOntologyBootstrapService:
             return current
         if current.status == "drifted":
             raise ValueError("conflict: committed ontology heads do not match the published revision")
-        plan, published, revision = self._plan(cutoff)
+        plan, _published, revision = self._plan(cutoff)
+        if plan.action != "publish":
+            raise ValueError("conflict: committed ontology heads do not match the published revision")
         entities, relations, expected = derive_market_ontology(
             self._mapping,
             revision_id=self._revision_id,
@@ -258,15 +259,6 @@ class WorldOntologyBootstrapService:
         )
         if expected.content_sha256 != revision.content_sha256:
             raise ValueError("conflict: derived ontology revision drifted during publish")
-        if plan.action == "supersede_and_publish":
-            if published is None:
-                raise ValueError("supersede_and_publish requires a published predecessor")
-            self._service.supersede_revision(
-                SupersedeWorldOntologyRevision(
-                    revision_id=published.revision_id,
-                    successor_revision_id=expected.revision_id,
-                )
-            )
         view = self._service.ontology.at_cutoff(cutoff)
         existing_nodes = {entity.node_id for entity in view.entities}
         proofs: dict[str, tuple[str, ...]] = {}

@@ -100,7 +100,7 @@ class ScriptedTransport:
 def test_macro_lane_identity_is_distinct_from_v1_and_context_v2() -> None:
     from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY, MACRO_THREAD_NAME
 
-    assert MACRO_LANE_IDENTITY == "context.v2.macro_source.v2"
+    assert MACRO_LANE_IDENTITY == "world.context.macro"
     assert MACRO_LANE_IDENTITY != "context.v2"
     assert MACRO_THREAD_NAME != "world-model-shadow"
     assert "macro" in MACRO_THREAD_NAME
@@ -207,7 +207,7 @@ def test_collect_runs_each_target_once_sequentially_without_worker_retries() -> 
     )
     assert calls == list(targets)
     assert report["status"] == "ok"
-    assert report["lane_identity"] == "context.v2.macro_source.v2"
+    assert report["lane_identity"] == "world.context.macro"
     assert report["authority"] == "shadow_only"
     assert report["decision_effect"] == "none"
     assert len(report["runs"]) == 2
@@ -390,10 +390,10 @@ def test_collection_plan_fails_closed_when_registry_drifts_from_committed_identi
     bundle = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
     extra = MacroSourceRegistryEntry(
         source_id="drifted_extra",
-        provider_id="official_provider",
+        provider_id="dbnomics",
         provider_entity_id="DRIFT/EXTRA",
         canonical_scope=MacroScope(kind="world", entity_id="market"),
-        adapter_version="official_provider.v1",
+        adapter_version="world_dbnomics_series.v1",
         fact_kind="series_point",
         metric_key="policy_rate",
     )
@@ -414,7 +414,7 @@ def test_collection_plan_fails_closed_when_registry_drifts_from_committed_identi
 def test_live_bridge_lineage_binds_derived_ontology_and_collection_plan() -> None:
     from trader.application.world_model.ontology_bootstrap import derive_market_ontology
     from trader.domain.world_graph_bridge_lifecycle import (
-        committed_macro_graph_bridge_successor_spec,
+        committed_macro_graph_bridge_spec,
         require_committed_live_bridge_lineage,
     )
     from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
@@ -428,7 +428,7 @@ def test_live_bridge_lineage_binds_derived_ontology_and_collection_plan() -> Non
         ontology=revision,
         collection_plan=plan,
     )
-    assert spec == committed_macro_graph_bridge_successor_spec()
+    assert spec == committed_macro_graph_bridge_spec()
 
 
 def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
@@ -605,7 +605,7 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     bundle.runner.stop()
     status = bundle.runner.status()
     assert status["status"] in {"ok", "partial"}
-    assert status.get("lane_identity") == "context.v2.macro_source.v2"
+    assert status.get("lane_identity") == "world.context.macro"
     assert not any(thread.name == MACRO_THREAD_NAME and thread.is_alive() for thread in threading.enumerate())
 
 

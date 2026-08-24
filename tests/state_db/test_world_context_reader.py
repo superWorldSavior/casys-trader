@@ -13,7 +13,6 @@ from trader.domain.situation import NewsMacroBrief
 from trader.domain.world_context import NO_PROVEN_ARTIFACT_REASON, SCOPE_UNMAPPED_REASON
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
-    MACRO_PRODUCER_VERSION_V1,
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
     MacroCoverage,
@@ -91,8 +90,8 @@ def _fact(**overrides: object) -> MacroSourceFact:
         "published_at": "2026-08-23T11:30:00Z",
         "ingested_at": "2026-08-23T11:31:10Z",
         "source": MacroFactSource(
-            provider_id="official_provider",
-            adapter_version="official_provider.v1",
+            provider_id="dbnomics",
+            adapter_version="world_dbnomics_series.v1",
             source_record_id="stable-provider-id",
             source_ref="https://source.example/record",
         ),
@@ -415,22 +414,20 @@ def test_receipt_primed_before_later_cutoff_becomes_eligible(tmp_path: Path) -> 
 def _fact_with_record(record_id: str) -> MacroSourceFact:
     return _fact(
         source=MacroFactSource(
-            provider_id="official_provider",
-            adapter_version="official_provider.v1",
+            provider_id="dbnomics",
+            adapter_version="world_dbnomics_series.v1",
             source_record_id=record_id,
             source_ref="https://source.example/record",
         )
     )
 
 
-def test_two_suffix_ignores_future_valid_v1_venue_and_keeps_country_subject(tmp_path: Path) -> None:
+def test_two_suffix_ignores_unrelated_venue_and_keeps_country_subject(tmp_path: Path) -> None:
     store = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
-    store.append_observation(_observation(producer_version=MACRO_PRODUCER_VERSION_V1))
     eu_fact = _fact_with_record("eu-rate")
     other = _observation(
         fact=eu_fact,
         scope=MacroScope(kind="venue", entity_id="mic:XPAR"),
-        producer_version=MACRO_PRODUCER_VERSION_V1,
         features={"macro_regime": "tightening", "rates_regime": "rising", "usd_regime": "unknown"},
         dimensions=(
             MacroDimensionState(
@@ -583,7 +580,6 @@ def _scoped_observation(scope: MacroScope, *, record_id: str, regime: str) -> Ma
 
 def test_tw_resolves_to_available_world_when_country_is_absent(tmp_path: Path) -> None:
     store = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
-    store.append_observation(_observation(producer_version=MACRO_PRODUCER_VERSION_V1))
     world = _scoped_observation(MacroScope(kind="world", entity_id="market"), record_id="brent", regime="mixed")
     store.append_observation(world)
     reader = _reader(tmp_path, store=store, clock=_clock_at(BOOT))
@@ -623,16 +619,18 @@ def test_eu_selects_region_150_and_us_selects_country_before_world(tmp_path: Pat
     assert us_ev.payload["ancestry_distance"] == 1
 
 
-def test_restart_still_parses_v1_but_does_not_admit_it_into_the_shadow(tmp_path: Path) -> None:
+def test_restart_still_parses_the_current_observation_and_admits_it(tmp_path: Path) -> None:
     writer = WorldMacroStore(tmp_path / "world_macro", clock=lambda: READY)
-    writer.append_observation(_observation(producer_version=MACRO_PRODUCER_VERSION_V1))
+    written = _observation()
+    writer.append_observation(written)
     restarted = WorldMacroStore(tmp_path / "world_macro", clock=_clock_at(BOOT))
     listed = restarted.list_candidates_available_through(MacroScope(kind="venue", entity_id="mic:XTAI"), CUTOFF)
     assert len(listed) == 1
-    assert listed[0].observation.producer_version == MACRO_PRODUCER_VERSION_V1
+    assert listed[0].observation.producer_version == MACRO_PRODUCER_VERSION
+    assert listed[0].observation.observation_id == written.observation_id
     reader = _reader(tmp_path, store=restarted, clock=_clock_at(BOOT))
     evidence = reader.lookup_macro(venue="TW", symbol="2301.TW", cutoff_at=CUTOFF)
-    assert evidence.status == "missing"
-    assert evidence.reason == NO_PROVEN_ARTIFACT_REASON
-    assert evidence.proven is False
-    assert evidence.artifact is None
+    assert evidence.proven is True
+    assert evidence.artifact is not None
+    assert evidence.payload is not None
+    assert evidence.payload["producer_version"] == MACRO_PRODUCER_VERSION

@@ -7,7 +7,6 @@ from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 from trader.domain.world_feature_contract import (
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
 from trader.domain.world_scope import WorldMarketAnchorRef
@@ -62,7 +61,7 @@ def _resolver() -> WorldScopeResolver:
 def test_committed_universe_anchors_are_exactly_mapped_without_suffix_fallback() -> None:
     payload = yaml.safe_load(MAPPING_PATH.read_text(encoding="utf-8"))
     assert payload["mapping_id"] == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
-    assert payload["supersedes_mapping_id"] == WORLD_SCOPE_MAPPING_PREDECESSOR_ID
+    assert "supersedes_mapping_id" not in payload
     assert payload["no_logical_venue_mic_fallback"] is True
     resolver = _resolver()
     assert resolver.mapping.mapping_id == WORLD_SCOPE_MAPPING_ID

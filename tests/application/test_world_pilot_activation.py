@@ -130,8 +130,8 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     )
 
     macro = payload["macro_producer"]
-    assert macro["producer_version"] == MACRO_PRODUCER_VERSION == "macro_source_only.v2"
-    assert macro["lane_identity"] == MACRO_LANE_IDENTITY == "context.v2.macro_source.v2"
+    assert macro["producer_version"] == MACRO_PRODUCER_VERSION == "world_macro_source.v1"
+    assert macro["lane_identity"] == MACRO_LANE_IDENTITY == "world.context.macro"
     assert macro["collection_plan_id"] == WORLD_MACRO_COLLECTION_PLAN_ID
     assert macro["collection_plan_sha256"] == WORLD_MACRO_COLLECTION_PLAN_SHA256
     source = CONFIG_PATH.read_text(encoding="utf-8")

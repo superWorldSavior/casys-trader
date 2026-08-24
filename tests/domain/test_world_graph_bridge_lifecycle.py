@@ -9,63 +9,35 @@ import pytest
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_context import EntityRef
 from trader.domain.world_feature_contract import (
-    WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION,
-    WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_SHA256,
     WORLD_GRAPH_V3_ONTOLOGY_REVISION,
     WORLD_GRAPH_V3_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
-    WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
     WORLD_SCOPE_MAPPING_SHA256,
 )
 from trader.domain.world_graph import (
-    KnowledgeArtifactRef,
-    KnowledgeWorldRelation,
-    KnowledgeWorldRelationAsserted,
     MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
-    MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1,
-    MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
     MacroGraphBridgeRegistry,
     MacroGraphBridgeRunSpec,
     MacroObservationCursor,
     MacroObservationCursorReservation,
     WorldEntityIdentityLink,
     WorldEntityRef,
-    WorldObservationRef,
     WorldOntologyRevision,
     WorldStructuralRelationRef,
     StructuralWorldRelation,
-    fold_knowledge_relation_events_at_cutoff,
-    parse_macro_graph_bridge_event,
 )
 from trader.domain.world_graph_bridge_lifecycle import (
-    COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION,
-    COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC,
-    COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATION,
-    COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATIONS,
-    COMMITTED_MACRO_GRAPH_BRIDGE_PREDECESSOR_SPEC,
-    COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC,
+    COMMITTED_MACRO_GRAPH_BRIDGE_SPEC,
     MACRO_GRAPH_BRIDGE_LIFECYCLE_STATUSES,
     MacroGraphBridgeLifecycleDecision,
-    MacroGraphBridgeMigration,
     UnknownMacroGraphBridgeDrift,
     classify_macro_graph_bridge,
-    committed_macro_graph_bridge_collection_plan_predecessor_spec,
-    committed_macro_graph_bridge_migration,
-    committed_macro_graph_bridge_migrations,
-    committed_macro_graph_bridge_predecessor_spec,
-    committed_macro_graph_bridge_successor_spec,
+    committed_macro_graph_bridge_spec,
     require_committed_live_bridge_lineage,
-    observes_retirement,
-    predecessor_owned_observes,
-    remaining_owned_observes,
 )
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
-    MACRO_PRODUCER_VERSION_V1,
     WORLD_MACRO_COLLECTION_PLAN_ID,
-    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID,
-    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256,
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroCollectionPlan,
     MacroCollectionTarget,
@@ -81,11 +53,8 @@ from trader.domain.world_scope import (
 
 UTC = timezone.utc
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
-CUTOFF = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
-VALID_UNTIL = datetime(2026, 8, 23, 17, 0, tzinfo=UTC)
 BRIDGE_KEY = "macro_graph_bridge.v1"
 REQUEST_ID = "macro_graph_bridge_request:v1:" + "c" * 64
-SHA = "a" * 64
 MODULE_PATH = REPO_ROOT / "trader" / "domain" / "world_graph_bridge_lifecycle.py"
 
 
@@ -135,32 +104,18 @@ def _revision(mapping: WorldScopeMapping, *, revision_id: str = "market_ontology
 
 def _plan(*, digest: str = "b" * 64) -> MacroCollectionPlan:
     return MacroCollectionPlan(
-        registry_version="macro_sources.v1",
+        registry_version="world_macro_sources.v1",
         registry_content_sha256=digest,
         targets=(
             MacroCollectionTarget(
                 scope=MacroScope(kind="venue", entity_id="mic:XTAI"),
-                source_ids=("official_provider",),
+                source_ids=("fed_policy_rate",),
             ),
         ),
     )
 
 
-def _v1_spec(
-    mapping: WorldScopeMapping | None = None,
-    revision: WorldOntologyRevision | None = None,
-) -> MacroGraphBridgeRunSpec:
-    resolved_mapping = mapping if mapping is not None else _mapping()
-    resolved_revision = revision if revision is not None else _revision(resolved_mapping)
-    return MacroGraphBridgeRunSpec(
-        scope_mapping_id=resolved_mapping.mapping_id,
-        scope_mapping_hash=resolved_mapping.content_sha256,
-        ontology_revision_id=resolved_revision.revision_id,
-        ontology_revision_hash=resolved_revision.content_sha256,
-    )
-
-
-def _v2_spec(
+def _spec(
     mapping: WorldScopeMapping | None = None,
     revision: WorldOntologyRevision | None = None,
     plan: MacroCollectionPlan | None = None,
@@ -173,7 +128,7 @@ def _v2_spec(
         scope_mapping_hash=resolved_mapping.content_sha256,
         ontology_revision_id=resolved_revision.revision_id,
         ontology_revision_hash=resolved_revision.content_sha256,
-        schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+        schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
         collection_plan_id=resolved_plan.plan_id,
         collection_plan_hash=resolved_plan.content_sha256,
         producer_version=MACRO_PRODUCER_VERSION,
@@ -191,7 +146,7 @@ def _reservation() -> MacroObservationCursorReservation:
 def _activated(spec: MacroGraphBridgeRunSpec | None = None) -> MacroGraphBridgeRegistry:
     return MacroGraphBridgeRegistry.empty(BRIDGE_KEY).activate(
         reservation=_reservation(),
-        spec=spec if spec is not None else _v1_spec(),
+        spec=spec if spec is not None else _spec(),
         expected_version=0,
     )
 
@@ -203,63 +158,41 @@ def test_lifecycle_module_is_stdlib_domain() -> None:
     assert "trader.runtime" not in source
     assert "trader.infrastructure" not in source
     assert "trader.application" not in source
+    assert "def handoff" not in source
+    assert "committed_macro_graph_bridge_predecessor" not in source
+    assert "committed_macro_graph_bridge_successor" not in source
 
 
-def test_v1_run_spec_still_parses_and_omits_collection_plan() -> None:
-    spec = _v1_spec()
-    assert spec.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1 == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
-    payload = spec.to_dict()
-    assert "collection_plan_id" not in payload
-    assert "collection_plan_hash" not in payload
-    assert "producer_version" not in payload
-    replayed = MacroGraphBridgeRunSpec.from_mapping(payload)
-    assert replayed == spec
-    assert replayed.collection_plan_id is None
-    assert replayed.collection_plan_hash is None
-    assert replayed.producer_version is None
-    with pytest.raises(ValueError, match="producer"):
-        MacroGraphBridgeRunSpec(
-            scope_mapping_id=spec.scope_mapping_id,
-            scope_mapping_hash=spec.scope_mapping_hash,
-            ontology_revision_id=spec.ontology_revision_id,
-            ontology_revision_hash=spec.ontology_revision_hash,
-            producer_version=MACRO_PRODUCER_VERSION,
-        )
-
-
-def test_v2_run_spec_binds_collection_plan_identity_and_differs_from_v1() -> None:
+def test_current_run_spec_binds_collection_plan_identity() -> None:
     mapping = _mapping()
     revision = _revision(mapping)
     plan = _plan()
-    v1 = _v1_spec(mapping, revision)
-    v2 = _v2_spec(mapping, revision, plan)
-    assert v2.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2
-    assert v2.collection_plan_id == plan.plan_id
-    assert v2.collection_plan_hash == plan.content_sha256
-    assert v2.producer_version == MACRO_PRODUCER_VERSION
-    assert v1 != v2
-    assert v1.scope_mapping_hash == v2.scope_mapping_hash
-    assert v1.ontology_revision_hash == v2.ontology_revision_hash
-    payload = v2.to_dict()
+    spec = _spec(mapping, revision, plan)
+    assert spec.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA == "macro_graph_bridge_run_spec.v1"
+    assert spec.collection_plan_id == plan.plan_id
+    assert spec.collection_plan_hash == plan.content_sha256
+    assert spec.producer_version == MACRO_PRODUCER_VERSION == "world_macro_source.v1"
+    payload = spec.to_dict()
     assert payload["collection_plan_id"] == plan.plan_id
     assert payload["collection_plan_hash"] == plan.content_sha256
     assert payload["producer_version"] == MACRO_PRODUCER_VERSION
-    assert MacroGraphBridgeRunSpec.from_mapping(payload) == v2
-    with pytest.raises(ValueError, match="collection_plan"):
+    assert payload["schema_version"] == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
+    assert MacroGraphBridgeRunSpec.from_mapping(payload) == spec
+    with pytest.raises((TypeError, ValueError), match="collection_plan"):
         MacroGraphBridgeRunSpec(
             scope_mapping_id=mapping.mapping_id,
             scope_mapping_hash=mapping.content_sha256,
             ontology_revision_id=revision.revision_id,
             ontology_revision_hash=revision.content_sha256,
-            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
         )
-    with pytest.raises(ValueError, match="producer_version"):
+    with pytest.raises((TypeError, ValueError), match="producer_version"):
         MacroGraphBridgeRunSpec(
             scope_mapping_id=mapping.mapping_id,
             scope_mapping_hash=mapping.content_sha256,
             ontology_revision_id=revision.revision_id,
             ontology_revision_hash=revision.content_sha256,
-            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
             collection_plan_id=plan.plan_id,
             collection_plan_hash=plan.content_sha256,
         )
@@ -269,62 +202,61 @@ def test_v2_run_spec_binds_collection_plan_identity_and_differs_from_v1() -> Non
             scope_mapping_hash=mapping.content_sha256,
             ontology_revision_id=revision.revision_id,
             ontology_revision_hash=revision.content_sha256,
-            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+            schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
             collection_plan_id=plan.plan_id,
             collection_plan_hash=plan.content_sha256,
-            producer_version=MACRO_PRODUCER_VERSION_V1,
+            producer_version="not_admitted",
+        )
+    with pytest.raises(ValueError, match="schema_version"):
+        MacroGraphBridgeRunSpec(
+            scope_mapping_id=mapping.mapping_id,
+            scope_mapping_hash=mapping.content_sha256,
+            ontology_revision_id=revision.revision_id,
+            ontology_revision_hash=revision.content_sha256,
+            schema_version="macro_graph_bridge_run_spec.v2",
+            collection_plan_id=plan.plan_id,
+            collection_plan_hash=plan.content_sha256,
+            producer_version=MACRO_PRODUCER_VERSION,
         )
     with pytest.raises(FrozenInstanceError):
-        v2.collection_plan_id = "other"  # type: ignore[misc]
+        spec.collection_plan_id = "other"  # type: ignore[misc]
 
 
-def test_persisted_v1_activated_event_still_parses() -> None:
-    registry = _activated(_v1_spec())
+def test_persisted_activated_event_round_trips_current_spec() -> None:
+    registry = _activated()
     event = registry.events[0]
     payload = event.to_dict()
-    assert payload["spec"]["schema_version"] == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1
-    assert "collection_plan_id" not in payload["spec"]
-    assert "producer_version" not in payload["spec"]
+    assert payload["spec"]["schema_version"] == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
+    assert payload["spec"]["collection_plan_id"] == _plan().plan_id
+    assert payload["spec"]["producer_version"] == MACRO_PRODUCER_VERSION
+    from trader.domain.world_graph import parse_macro_graph_bridge_event
+
     replay = parse_macro_graph_bridge_event(payload)
     assert replay == event
-    assert replay.spec.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1
+    assert replay.spec == _spec()
 
 
 def test_classify_missing_matched_and_unknown_drift() -> None:
-    desired = _v2_spec()
+    desired = _spec()
     empty = MacroGraphBridgeRegistry.empty(BRIDGE_KEY)
     missing = classify_macro_graph_bridge(empty, desired=desired)
     assert missing.status == "missing"
     assert missing.status in MACRO_GRAPH_BRIDGE_LIFECYCLE_STATUSES
     assert isinstance(missing, MacroGraphBridgeLifecycleDecision)
 
-    v1 = _v1_spec()
-    active = _activated(v1)
-    matched = classify_macro_graph_bridge(active, desired=v1)
+    active = _activated(desired)
+    matched = classify_macro_graph_bridge(active, desired=desired)
     assert matched.status == "matched_active"
     blocked = active.block(reason="config_drift", expected_version=1)
-    matched_blocked = classify_macro_graph_bridge(blocked, desired=v1)
+    matched_blocked = classify_macro_graph_bridge(blocked, desired=desired)
     assert matched_blocked.status == "matched_blocked"
 
-    drifted_active = classify_macro_graph_bridge(active, desired=desired)
+    other = _spec(plan=_plan(digest="c" * 64))
+    drifted_active = classify_macro_graph_bridge(active, desired=other)
     assert drifted_active.status == "drifted_active"
-    unknown = classify_macro_graph_bridge(blocked, desired=desired)
+    unknown = classify_macro_graph_bridge(blocked, desired=other)
     assert unknown.status == "unknown_drift"
-    assert "unknown" in unknown.reason or "drift" in unknown.reason
-
-
-def test_classify_admits_only_exact_predecessor_successor_migration() -> None:
-    predecessor = _v1_spec()
-    successor = _v2_spec()
-    other = _v2_spec(plan=_plan(digest="c" * 64))
-    migration = MacroGraphBridgeMigration(predecessor_spec=predecessor, successor_spec=successor)
-    assert migration.admits(durable=predecessor, desired=successor)
-    assert not migration.admits(durable=predecessor, desired=other)
-    blocked = _activated(predecessor).block(reason="config_drift", expected_version=1)
-    rejected = classify_macro_graph_bridge(blocked, desired=successor)
-    assert rejected.status == "unknown_drift"
-    with pytest.raises(ValueError, match="differ|successor"):
-        MacroGraphBridgeMigration(predecessor_spec=predecessor, successor_spec=predecessor)
+    assert unknown.reason == "unknown_config_drift"
     assert "migration" not in inspect.signature(classify_macro_graph_bridge).parameters
 
 
@@ -337,7 +269,6 @@ def _flip_identity(value: str) -> str:
 
 
 def _replace_run_spec(spec: MacroGraphBridgeRunSpec, **changes: str) -> MacroGraphBridgeRunSpec:
-    # v2 construction admits only MACRO_PRODUCER_VERSION; one-bit producer drift bypasses it.
     try:
         return replace(spec, **changes)
     except ValueError:
@@ -347,11 +278,7 @@ def _replace_run_spec(spec: MacroGraphBridgeRunSpec, **changes: str) -> MacroGra
         return instance
 
 
-def _collection_plan_predecessor_spec() -> MacroGraphBridgeRunSpec:
-    return committed_macro_graph_bridge_collection_plan_predecessor_spec()
-
-
-def _v2_identity_fields() -> tuple[str, ...]:
+def _identity_fields() -> tuple[str, ...]:
     return (
         "scope_mapping_id",
         "scope_mapping_hash",
@@ -376,74 +303,27 @@ def _flip_spec_field(spec: MacroGraphBridgeRunSpec, field: str) -> MacroGraphBri
 
 
 def _drifted_committed_specs() -> list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]]:
-    predecessor = committed_macro_graph_bridge_predecessor_spec()
-    successor = committed_macro_graph_bridge_successor_spec()
-    plan_predecessor = _collection_plan_predecessor_spec()
+    current = committed_macro_graph_bridge_spec()
     cases: list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]] = []
-    for field in ("scope_mapping_id", "scope_mapping_hash", "ontology_revision_id", "ontology_revision_hash"):
-        cases.append(("predecessor", field, _flip_spec_field(predecessor, field), successor))
-    for field in _v2_identity_fields():
-        cases.append(("successor", field, predecessor, _flip_spec_field(successor, field)))
-        cases.append(("collection_plan_predecessor", field, _flip_spec_field(plan_predecessor, field), successor))
+    for field in _identity_fields():
+        cases.append(("durable", field, _flip_spec_field(current, field), current))
+        cases.append(("desired", field, current, _flip_spec_field(current, field)))
     return cases
 
 
-def test_committed_migration_is_the_frozen_live_lineage() -> None:
-    assert inspect.signature(committed_macro_graph_bridge_migration).parameters == {}
-    predecessor = committed_macro_graph_bridge_predecessor_spec()
-    successor = committed_macro_graph_bridge_successor_spec()
-    migration = committed_macro_graph_bridge_migration()
-    assert predecessor == COMMITTED_MACRO_GRAPH_BRIDGE_PREDECESSOR_SPEC
-    assert successor == COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC
-    assert migration == COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATION
-    assert predecessor.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1
-    assert predecessor.scope_mapping_id == WORLD_SCOPE_MAPPING_PREDECESSOR_ID == "world_scope_mapping.v1"
-    assert predecessor.scope_mapping_hash == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
-    assert predecessor.ontology_revision_id == WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION == "market_ontology.v1"
-    assert predecessor.ontology_revision_hash == WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_SHA256
-    assert predecessor.collection_plan_id is None
-    assert predecessor.collection_plan_hash is None
-    assert predecessor.producer_version is None
-    assert successor.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2
-    assert successor.scope_mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
-    assert successor.scope_mapping_hash == WORLD_SCOPE_MAPPING_SHA256
-    assert successor.ontology_revision_id == WORLD_GRAPH_V3_ONTOLOGY_REVISION == "market_ontology.v2"
-    assert successor.ontology_revision_hash == WORLD_GRAPH_V3_ONTOLOGY_SHA256
-    assert successor.collection_plan_id == WORLD_MACRO_COLLECTION_PLAN_ID
-    assert successor.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_SHA256
-    assert successor.collection_plan_id == f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_SHA256}"
-    assert successor.producer_version == MACRO_PRODUCER_VERSION == "macro_source_only.v2"
-    assert migration.predecessor_spec == predecessor
-    assert migration.successor_spec == successor
-    plan_predecessor = committed_macro_graph_bridge_collection_plan_predecessor_spec()
-    plan_migration = COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION
-    assert inspect.signature(committed_macro_graph_bridge_migrations).parameters == {}
-    assert inspect.signature(committed_macro_graph_bridge_collection_plan_predecessor_spec).parameters == {}
-    assert plan_predecessor == COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC
-    assert plan_predecessor.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2
-    assert plan_predecessor.scope_mapping_id == successor.scope_mapping_id
-    assert plan_predecessor.scope_mapping_hash == successor.scope_mapping_hash
-    assert plan_predecessor.ontology_revision_id == successor.ontology_revision_id
-    assert plan_predecessor.ontology_revision_hash == successor.ontology_revision_hash
-    assert plan_predecessor.producer_version == successor.producer_version
-    assert plan_predecessor.collection_plan_id == WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID
-    assert plan_predecessor.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
-    assert (
-        WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
-        == "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
-    )
-    assert plan_predecessor.collection_plan_id == (
-        f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256}"
-    )
-    assert plan_predecessor != successor
-    assert plan_migration.predecessor_spec == plan_predecessor
-    assert plan_migration.successor_spec == successor
-    assert committed_macro_graph_bridge_migrations() == COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATIONS
-    assert committed_macro_graph_bridge_migrations() == (migration, plan_migration)
-    with pytest.raises(TypeError):
-        committed_macro_graph_bridge_migration(predecessor_spec=predecessor, successor_spec=successor)
-    with pytest.raises(TypeError):
-        committed_macro_graph_bridge_migrations(predecessor_spec=plan_predecessor, successor_spec=successor)
+def test_committed_spec_is_the_frozen_live_lineage() -> None:
+    assert inspect.signature(committed_macro_graph_bridge_spec).parameters == {}
+    spec = committed_macro_graph_bridge_spec()
+    assert spec == COMMITTED_MACRO_GRAPH_BRIDGE_SPEC
+    assert spec.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
+    assert spec.scope_mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
+    assert spec.scope_mapping_hash == WORLD_SCOPE_MAPPING_SHA256
+    assert spec.ontology_revision_id == WORLD_GRAPH_V3_ONTOLOGY_REVISION == "market_ontology.v2"
+    assert spec.ontology_revision_hash == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    assert spec.collection_plan_id == WORLD_MACRO_COLLECTION_PLAN_ID
+    assert spec.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_SHA256
+    assert spec.collection_plan_id == f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_SHA256}"
+    assert spec.producer_version == MACRO_PRODUCER_VERSION == "world_macro_source.v1"
     with pytest.raises(ValueError, match="drifted from committed"):
         require_committed_live_bridge_lineage(
             mapping=_mapping(),
@@ -452,39 +332,14 @@ def test_committed_migration_is_the_frozen_live_lineage() -> None:
         )
 
 
-def test_classify_admits_only_the_committed_live_lineage() -> None:
-    predecessor = committed_macro_graph_bridge_predecessor_spec()
-    successor = committed_macro_graph_bridge_successor_spec()
-    blocked = _activated(predecessor).block(reason="config_drift", expected_version=1)
-    admitted = classify_macro_graph_bridge(blocked, desired=successor)
-    assert admitted.status == "drifted_blocked_admitted"
-    assert admitted.migration == committed_macro_graph_bridge_migration()
-    rejected = classify_macro_graph_bridge(blocked, desired=_v2_spec())
-    assert rejected.status == "unknown_drift"
-
-
-def test_classify_admits_activated_collection_plan_predecessor_to_committed_successor() -> None:
-    predecessor = _collection_plan_predecessor_spec()
-    successor = committed_macro_graph_bridge_successor_spec()
-    assert predecessor != successor
-    assert predecessor.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2
-    assert predecessor.scope_mapping_id == successor.scope_mapping_id
-    assert predecessor.ontology_revision_id == successor.ontology_revision_id
-    assert predecessor.producer_version == successor.producer_version
-    assert predecessor.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
-    assert predecessor.collection_plan_hash != successor.collection_plan_hash
-    active = classify_macro_graph_bridge(_activated(predecessor), desired=successor)
+def test_classify_does_not_admit_a_blocked_different_spec() -> None:
+    current = committed_macro_graph_bridge_spec()
+    other = _spec()
+    blocked = _activated(other).block(reason="config_drift", expected_version=1)
+    unknown = classify_macro_graph_bridge(blocked, desired=current)
+    assert unknown.status == "unknown_drift"
+    active = classify_macro_graph_bridge(_activated(other), desired=current)
     assert active.status == "drifted_active"
-    blocked = _activated(predecessor).block(reason="config_drift", expected_version=1)
-    admitted = classify_macro_graph_bridge(blocked, desired=successor)
-    assert admitted.status == "drifted_blocked_admitted"
-    assert admitted.reason == "admitted_predecessor_successor_migration"
-    assert admitted.migration is not None
-    assert admitted.migration.admits(durable=predecessor, desired=successor)
-    assert admitted.migration.predecessor_spec == predecessor
-    assert admitted.migration.successor_spec == successor
-    assert admitted.migration == COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION
-    assert admitted.migration != committed_macro_graph_bridge_migration()
 
 
 @pytest.mark.parametrize("side,field,durable,desired", _drifted_committed_specs())
@@ -498,71 +353,9 @@ def test_one_bit_identity_drift_stays_unknown(
     blocked = _activated(durable).block(reason="config_drift", expected_version=1)
     decision = classify_macro_graph_bridge(blocked, desired=desired)
     assert decision.status == "unknown_drift"
-    assert decision.migration is None
     assert blocked.active_run is not None
     assert blocked.active_run.status == "blocked"
     assert not any(event.event_type == "macro_graph_bridge_run_handed_off" for event in blocked.events)
-
-
-def test_owned_observes_and_deterministic_retirement_are_retry_idempotent() -> None:
-    mapping = _mapping()
-    revision = _revision(mapping)
-    spec = _v1_spec(mapping, revision)
-    registry = _activated(spec)
-    observation_id = "macro_world_observation:v1:" + "1" * 64
-    relation = KnowledgeWorldRelation(
-        kind="OBSERVES",
-        source=WorldObservationRef(observation_id="world_observation:v1:" + "2" * 64),
-        target=WorldEntityRef(kind="venue", entity_id="mic:XTAI"),
-        effective_from=CUTOFF,
-        effective_until=VALID_UNTIL,
-        ontology_revision=revision.revision_id,
-        source_refs=(f"{observation_id}/{'e' * 64}",),
-    )
-    asserted = KnowledgeWorldRelationAsserted(relation=relation)
-    cursor = MacroObservationCursor(
-        receipt_log_generation=1,
-        ordinal=1,
-        receipt_id="world-availability-receipt:v1:" + "3" * 64,
-        observation_id=observation_id,
-    )
-    linked = registry.link_observation(
-        observation_id=observation_id,
-        relation=relation,
-        relation_event_id=asserted.event_id,
-        cursor=cursor,
-        expected_version=1,
-    )
-    owned = predecessor_owned_observes(linked, linked.active_run.run_id)
-    assert len(owned) == 1
-    assert owned[0].relation_id == relation.relation_id
-    first = observes_retirement(relation=relation, linked=owned[0], run_id=linked.active_run.run_id)
-    second = observes_retirement(relation=relation, linked=owned[0], run_id=linked.active_run.run_id)
-    assert first == second
-    assert first.event_id == second.event_id
-    assert first.relation_id == relation.relation_id
-    assert first.retired_at > relation.effective_from
-    folded = fold_knowledge_relation_events_at_cutoff(
-        (asserted, first),
-        cutoff_at=datetime(2026, 8, 24, tzinfo=UTC),
-    )
-    assert folded == ()
-    remaining = remaining_owned_observes(owned, (asserted,))
-    assert remaining == owned
-    assert remaining_owned_observes(owned, (asserted, first)) == ()
-    about = KnowledgeWorldRelation(
-        kind="ABOUT",
-        source=KnowledgeArtifactRef(
-            artifact_id="knowledge_artifact:v1:" + "4" * 64,
-            content_sha256="f" * 64,
-        ),
-        target=WorldEntityRef(kind="venue", entity_id="mic:XTAI"),
-        effective_from=CUTOFF,
-        ontology_revision=revision.revision_id,
-        source_refs=("artifact:proof",),
-    )
-    with pytest.raises(ValueError, match="OBSERVES"):
-        observes_retirement(relation=about, linked=owned[0], run_id=linked.active_run.run_id)
 
 
 def test_unknown_drift_error_is_auditable() -> None:

@@ -115,52 +115,47 @@ Un second boot est idempotent : il **ne décale pas** la fenêtre, ne
 ré-écrit pas d'épisode, et répare au plus les reçus d'availability. Relire
 `world cohort status` : `phase=collecting` et les deux timestamps gelés.
 
-## Mapping / ontologie v2 (rollout, pas de backfill)
+## Contrat live unique (cutover store frais)
 
-Le hot-set live n'est plus couvert par les 8 ancres exactes de
-`world_scope_mapping.v1`. Le YAML committe `world_scope_mapping.v2` +
-`market_ontology.v2` (table exacte `(market_venue, instrument)`, preuves
-suffixe/`sessions` existantes, **aucun** fallback runtime).
-`lifecycle_generation` du pilote passe à **5** : nouvelles identités de
-cohorte, le contrat producteur/lane/plan de collecte `macro_source_only.v2`
-est gelé dans le YAML. Les identités des générations 3/4 ne sont pas
-réutilisées ; les cohortes déjà terminales ne sont pas ranimées.
+Le YAML committe un seul contrat : mapping `world_scope_mapping.v2`,
+ontologie `market_ontology.v2`, producteur `world_macro_source.v1`,
+lane `world.context.macro`, registre `world_macro_sources.v1`, adapters
+`world_dbnomics_series.v1` / `world_yahoo_commodity.v1`, plan
+`WORLD_MACRO_COLLECTION_PLAN_ID` /
+`7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83`.
+Les schémas payload restent `macro_source_fact.v1`,
+`macro_world_observation.v1`, `macro_source_registry.v1`,
+`macro_collection_plan.v1` et `macro_graph_bridge_run_spec.v1`.
+Table exacte `(market_venue, instrument)`, **aucun** fallback runtime.
 
-Le runtime **fail-close** si le dérivé ne reproduit pas les identités
-gelées : `WORLD_SCOPE_MAPPING_SHA256`, `WORLD_GRAPH_V3_ONTOLOGY_SHA256`,
-`WORLD_MACRO_COLLECTION_PLAN_SHA256`, plus `macro_source_only.v2`. Un bit
-de dérive bloque le boot du worker shadow ; le cycle Trader reste
-fail-open.
+Le runtime **fail-close** si le dérivé ne reproduit pas ces identités
+gelées. Un bit de dérive bloque le boot du worker shadow ; le cycle
+Trader reste fail-open. Il n'existe plus de migration runtime, de
+handoff pont, ni de supersession ontologie.
 
-Après déploiement du commit, **un redémarrage volontaire** du daemon :
+Cutover : archiver hors ligne l'ancien `state/world_model.db` /
+`state/world_macro/`, démarrer un store **frais**, puis redémarrer le
+daemon.
 
 1. le boot **classifie** l'état durable du pont **avant** toute réservation
    de curseur. Cold start = `missing` → activate. Restart identique =
    no-op. Spec bloquée identique = resume no-op. Drift actif = block.
-   Drift bloqué hors lignée gelée = erreur, pas de wildcard ;
-2. le boot publie `market_ontology.v2` ; si `world_model.db` a déjà
-   `market_ontology.v1` **et** le hash mapping prédécesseur est exact, il
-   la **supersède** (append-only), il ne mute pas le hash `v1` ;
-3. si le pont est `blocked=config_drift` **et** le couple durable/désiré
-   est exactement une lignée gelée — mapping/ontologie `v1`→`v2`, **ou**
-   plan de collecte
-   `74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5` →
-   `32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d` à
-   mapping/ontologie `v2` constants : retraite append-only des
-   `OBSERVES` possédés, puis **handoff** (curseur conservé, un seul
-   propriétaire, pas de backfill). Un run `active` dérivé reste bloqué.
-   Crash au milieu : retry idempotent. Détail :
-   [RFC macro §17](../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md) ;
-4. `world graph status` / `world cohort status` doivent montrer les têtes
+   Drift bloqué = erreur, pas de wildcard ;
+2. le boot publie `market_ontology.v2` seulement si le store est vide.
+   Une révision déjà publiée d'une autre identité ou d'un autre hash
+   est un conflit ;
+3. `world graph status` / `world cohort status` doivent montrer les têtes
    `world_scope_mapping.v2` / `market_ontology.v2` ;
-5. un symbole sans ligne exacte reste `unmapped` : snapshot V3
+4. un symbole sans ligne exacte reste `unmapped` : snapshot V3
    `missing` **sans racine**, sans membres, sans MIC inventé. Le schéma
    reste `world_graph_snapshot.v1` (null = missingness, payload
    canonique ; les colonnes SQL vides ne sont pas une entité).
 
-Pas de `DELETE`/`VACUUM` du ledger. `shadow_only` / `decision_effect=none`
-/ `causal_claim=false` / `pnl_claim=false` inchangés. Si le YAML mapping
-change à mapping_id constant, le boot **conflit** — bump d'id obligatoire.
+Pas de `DELETE`/`VACUUM` du ledger live. `shadow_only` /
+`decision_effect=none` / `causal_claim=false` / `pnl_claim=false`
+inchangés. Si le YAML mapping change à mapping_id constant, le boot
+**conflit** — bump d'id obligatoire. Détail :
+[RFC macro §17](../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md).
 
 ## Claims autorisés après une semaine
 
