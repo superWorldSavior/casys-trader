@@ -23,6 +23,7 @@ from trader.domain.world_macro import (
     MacroCollectionTarget,
     MacroScope,
     MacroSourceRegistry,
+    committed_macro_collection_plan,
 )
 
 
@@ -218,7 +219,7 @@ def collection_plan(bundle: object) -> MacroCollectionPlan:
     registry = getattr(bundle, "registry", None)
     if not isinstance(registry, MacroSourceRegistry):
         raise TypeError("collection plan requires MacroSourceRegistry")
-    return MacroCollectionPlan.from_registry(registry)
+    return committed_macro_collection_plan(registry)
 
 
 def collection_scopes(bundle: object) -> tuple[MacroScope, ...]:
@@ -394,9 +395,16 @@ def _reconcile_macro_graph_bridge(
         raise TypeError("graph bridge requires WorldScopeMapping")
     if not isinstance(collection_plan, MacroCollectionPlan):
         raise TypeError("graph bridge requires MacroCollectionPlan")
+    from trader.domain.world_graph_bridge_lifecycle import require_committed_live_bridge_lineage
+
     bootstrap = WorldOntologyBootstrapService(graph_store, mapping)
     bootstrap.ensure_published(now=now)
     revision = bootstrap.expected_revision()
+    require_committed_live_bridge_lineage(
+        mapping=mapping,
+        ontology=revision,
+        collection_plan=collection_plan,
+    )
     use_case = RegisterMacroObservationKnowledge(
         scan=macro_store,
         graph=graph_store,
@@ -406,9 +414,7 @@ def _reconcile_macro_graph_bridge(
         collection_plan=collection_plan,
         bridge_key=_BRIDGE_KEY,
     )
-    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256(
-        {"bridge_key": _BRIDGE_KEY, "intent": "align"}
-    )
+    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256({"bridge_key": _BRIDGE_KEY, "intent": "align"})
     registry = use_case.ensure(request_id)
     registry = use_case.reconcile(limit=32)
     run = getattr(registry, "active_run", None)

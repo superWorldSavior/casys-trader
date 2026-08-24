@@ -30,6 +30,9 @@ from trader.domain.world_graph import (
     KNOWLEDGE_RELATION_KINDS,
     STRUCTURAL_RELATION_KINDS,
     WORLD_ENTITY_KINDS,
+    WORLD_GRAPH_SNAPSHOT_SCHEMA,
+    ancestry_distance_from_instrument_root,
+    reconstruct_macro_observes_provenance,
     KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
@@ -101,7 +104,6 @@ from trader.domain.world_macro import (
     MacroSourceFact,
     MacroSourceFactVersionId,
     MacroWorldObservation,
-    macro_observes_producer_ref,
 )
 from trader.domain.world_scope import (
     WorldCanonicalScopeRef,
@@ -867,6 +869,7 @@ def test_unmapped_snapshot_never_selects_a_world_entity_root_or_topology() -> No
     assert snapshot.knowledge_relation_refs == frozenset()
     payload = snapshot.to_dict()
     assert payload["root_entity"] is None
+    assert payload["schema_version"] == WORLD_GRAPH_SNAPSHOT_SCHEMA == "world_graph_snapshot.v1"
     dumped = json.dumps(payload)
     assert "XNYS" not in dumped
     assert "mic:" not in dumped
@@ -1262,12 +1265,21 @@ def test_macro_observation_knowledge_link_is_deterministic_for_mapping_outputs()
     assert first.relation.target == WorldEntityRef(kind="venue", entity_id="mic:XTAI")
     observation = envelope.observation
     receipt = envelope.persisted.receipt
-    assert first.relation.source_refs == (
-        f"{observation.observation_id}/{observation.content_sha256}",
-        f"{receipt.receipt_id}/{receipt.receipt_sha256}",
-        f"{mapping.mapping_id}/{mapping.content_sha256}",
-        macro_observes_producer_ref(observation.producer_version),
-    )
+    from trader.domain.world_macro import MacroObservationProvenance
+
+    provenance = MacroObservationProvenance.from_source_refs(first.relation.source_refs)
+    assert provenance.producer_version == observation.producer_version
+    assert provenance.origin_scope == observation.scope
+    assert provenance.observation_id == observation.observation_id
+    assert provenance.observation_sha256 == observation.content_sha256
+    assert provenance.fact_refs == observation.fact_refs
+    assert provenance.mapping_id == mapping.mapping_id
+    assert provenance.mapping_sha256 == mapping.content_sha256
+    assert provenance.ancestry_distance is None
+    assert f"{receipt.receipt_id}/{receipt.receipt_sha256}" in first.relation.source_refs
+    reconstructed = reconstruct_macro_observes_provenance(first.relation)
+    assert reconstructed.origin_scope == observation.scope
+    assert reconstructed.ancestry_distance is None
     world = MacroObservationKnowledgeLink.from_envelope(
         _observation_envelope(_macro_observation(scope=_macro_scope(kind="world", entity_id="market"))),
         mapping,
@@ -1288,6 +1300,40 @@ def test_macro_observation_knowledge_link_does_not_resolve_market_anchors() -> N
     assert link.relation.target.kind == "country"
     assert link.relation.target.entity_id == "iso-3166:TW"
     assert mapping.resolve(WorldMarketAnchorRef(market_venue="TW", instrument="2330")).status == "resolved"
+
+
+def test_observes_provenance_reconstructs_ancestry_distance_from_unique_heads() -> None:
+    mapping = _scope_mapping()
+    revision = _revision_for_mapping(mapping)
+    envelope = _observation_envelope(_macro_observation(scope=_macro_scope(kind="country", entity_id="iso-3166:TW")))
+    link = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, revision)
+    assert link.relation is not None
+    root = WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330")
+    venue = WorldEntityRef(kind="venue", entity_id="mic:XTAI")
+    country = WorldEntityRef(kind="country", entity_id="iso-3166:TW")
+    region = WorldEntityRef(kind="region", entity_id="iso-un-m49:030")
+    world = WorldEntityRef(kind="world", entity_id="market")
+    structural = (
+        _structural(source=root, target=venue),
+        _structural(kind="LOCATED_IN", source=venue, target=country),
+        _structural(kind="LOCATED_IN", source=country, target=region),
+        _structural(kind="PART_OF_WORLD", source=region, target=world),
+    )
+    assert ancestry_distance_from_instrument_root(root=root, origin=venue, relations=structural) == 0
+    assert ancestry_distance_from_instrument_root(root=root, origin=country, relations=structural) == 1
+    assert ancestry_distance_from_instrument_root(root=root, origin=region, relations=structural) == 2
+    assert ancestry_distance_from_instrument_root(root=root, origin=world, relations=structural) == 3
+    reconstructed = reconstruct_macro_observes_provenance(
+        link.relation,
+        root=root,
+        structural_relations=structural,
+    )
+    assert reconstructed.origin_scope.kind == "country"
+    assert reconstructed.origin_scope.entity_id == "iso-3166:TW"
+    assert reconstructed.ancestry_distance == 1
+    assert reconstructed.producer_version == envelope.observation.producer_version
+    unknown = WorldEntityRef(kind="country", entity_id="iso-3166:US")
+    assert ancestry_distance_from_instrument_root(root=root, origin=unknown, relations=structural) is None
 
 
 def test_unregistered_or_invalid_scope_is_terminal_skip_never_an_invented_relation() -> None:

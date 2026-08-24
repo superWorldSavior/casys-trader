@@ -8,9 +8,11 @@ from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_feature_contract import (
     WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION,
     WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    WORLD_GRAPH_V3_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
     WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
+    WORLD_SCOPE_MAPPING_SHA256,
 )
 from trader.domain.world_graph import WorldEntityRef, WorldOntologyRevision
 from trader.domain.world_ontology_lifecycle import (
@@ -18,6 +20,7 @@ from trader.domain.world_ontology_lifecycle import (
     WorldOntologyLifecycleSpec,
     committed_world_ontology_lifecycle_spec,
     plan_world_ontology_publication,
+    require_committed_ontology_revision,
 )
 
 
@@ -32,6 +35,24 @@ def _revision(*, revision_id: str, mapping_id: str, mapping_hash: str = "a" * 64
         identity_link_refs=(),
         scope_mapping_id=mapping_id,
         scope_mapping_hash=mapping_hash,
+    )
+
+
+def _spec_for(
+    expected: WorldOntologyRevision,
+    *,
+    predecessor_revision_id: str = WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION,
+    predecessor_mapping_id: str = WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
+    predecessor_mapping_sha256: str = WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
+) -> WorldOntologyLifecycleSpec:
+    return WorldOntologyLifecycleSpec(
+        successor_revision_id=expected.revision_id,
+        predecessor_revision_id=predecessor_revision_id,
+        successor_mapping_id=expected.scope_mapping_id,
+        predecessor_mapping_id=predecessor_mapping_id,
+        predecessor_mapping_sha256=predecessor_mapping_sha256,
+        successor_revision_hash=expected.content_sha256,
+        successor_mapping_sha256=expected.scope_mapping_hash,
     )
 
 
@@ -51,6 +72,8 @@ def test_committed_spec_is_a_forward_successor_pair() -> None:
     assert spec.successor_mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
     assert spec.predecessor_mapping_id == WORLD_SCOPE_MAPPING_PREDECESSOR_ID == "world_scope_mapping.v1"
     assert spec.predecessor_mapping_sha256 == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
+    assert spec.successor_revision_hash == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    assert spec.successor_mapping_sha256 == WORLD_SCOPE_MAPPING_SHA256
     assert spec.successor_revision_id != spec.predecessor_revision_id
     assert spec.successor_mapping_id != spec.predecessor_mapping_id
     with pytest.raises(ValueError, match="differ"):
@@ -60,29 +83,38 @@ def test_committed_spec_is_a_forward_successor_pair() -> None:
             successor_mapping_id="world_scope_mapping.v2",
             predecessor_mapping_id="world_scope_mapping.v1",
             predecessor_mapping_sha256=WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
+            successor_revision_hash="a" * 64,
+            successor_mapping_sha256="b" * 64,
         )
     with pytest.raises(FrozenInstanceError):
         spec.successor_revision_id = "other"  # type: ignore[misc]
 
 
 def test_empty_store_publishes_successor_without_requiring_predecessor() -> None:
-    spec = committed_world_ontology_lifecycle_spec()
-    expected = _revision(revision_id=spec.successor_revision_id, mapping_id=spec.successor_mapping_id)
+    expected = _revision(revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION, mapping_id=WORLD_SCOPE_MAPPING_ID)
+    spec = _spec_for(expected)
     plan = plan_world_ontology_publication(published=None, expected=expected, spec=spec)
     assert plan.action == "publish"
     assert plan.published_revision_id is None
     assert plan.expected_revision_id == spec.successor_revision_id
     assert "publish" in ONTOLOGY_PUBLICATION_ACTIONS
+    committed = committed_world_ontology_lifecycle_spec()
+    with pytest.raises(ValueError, match="hash drifted"):
+        plan_world_ontology_publication(published=None, expected=expected, spec=committed)
 
 
 def test_persisted_predecessor_plans_deterministic_supersession() -> None:
-    spec = committed_world_ontology_lifecycle_spec()
+    expected = _revision(
+        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash="b" * 64,
+    )
+    spec = _spec_for(expected)
     published = _revision(
         revision_id=spec.predecessor_revision_id,
         mapping_id=spec.predecessor_mapping_id,
         mapping_hash=spec.predecessor_mapping_sha256,
     )
-    expected = _revision(revision_id=spec.successor_revision_id, mapping_id=spec.successor_mapping_id, mapping_hash="b" * 64)
     plan = plan_world_ontology_publication(published=published, expected=expected, spec=spec)
     assert plan.action == "supersede_and_publish"
     assert plan.published_revision_id == spec.predecessor_revision_id
@@ -90,16 +122,17 @@ def test_persisted_predecessor_plans_deterministic_supersession() -> None:
 
 
 def test_predecessor_mapping_sha256_must_match_before_supersede() -> None:
-    spec = committed_world_ontology_lifecycle_spec()
+    expected = _revision(
+        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash="b" * 64,
+    )
+    spec = _spec_for(expected)
     assert spec.predecessor_mapping_sha256 == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
     payload = spec.to_dict()
     assert payload["predecessor_mapping_sha256"] == WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
+    assert payload["successor_revision_hash"] == expected.content_sha256
     assert WorldOntologyLifecycleSpec.from_mapping(payload) == spec
-    expected = _revision(
-        revision_id=spec.successor_revision_id,
-        mapping_id=spec.successor_mapping_id,
-        mapping_hash="b" * 64,
-    )
     matching = _revision(
         revision_id=spec.predecessor_revision_id,
         mapping_id=spec.predecessor_mapping_id,
@@ -120,8 +153,8 @@ def test_predecessor_mapping_sha256_must_match_before_supersede() -> None:
 
 
 def test_matching_successor_is_ready_and_same_id_hash_drift_conflicts() -> None:
-    spec = committed_world_ontology_lifecycle_spec()
-    expected = _revision(revision_id=spec.successor_revision_id, mapping_id=spec.successor_mapping_id)
+    expected = _revision(revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION, mapping_id=WORLD_SCOPE_MAPPING_ID)
+    spec = _spec_for(expected)
     ready = plan_world_ontology_publication(published=expected, expected=expected, spec=spec)
     assert ready.action == "ready"
     drifted = _revision(
@@ -137,3 +170,45 @@ def test_matching_successor_is_ready_and_same_id_hash_drift_conflicts() -> None:
     rollback = _revision(revision_id=spec.predecessor_revision_id, mapping_id=spec.predecessor_mapping_id)
     with pytest.raises(ValueError, match="successor"):
         plan_world_ontology_publication(published=expected, expected=rollback, spec=spec)
+
+
+def test_committed_spec_rejects_expected_hash_drift_on_empty_store() -> None:
+    spec = committed_world_ontology_lifecycle_spec()
+    expected = _revision(
+        revision_id=spec.successor_revision_id,
+        mapping_id=spec.successor_mapping_id,
+        mapping_hash=spec.successor_mapping_sha256,
+    )
+    with pytest.raises(ValueError, match="ontology hash drifted"):
+        plan_world_ontology_publication(published=None, expected=expected, spec=spec)
+
+
+def test_require_committed_ontology_revision_rejects_mapping_id_with_drifted_hash() -> None:
+    from trader.domain.world_scope import (
+        WorldCanonicalScopeRef,
+        WorldMarketAnchorRef,
+        WorldScopeMapping,
+        WorldScopeMappingEntry,
+    )
+
+    mapping = WorldScopeMapping(
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        entries=(
+            WorldScopeMappingEntry(
+                anchor=WorldMarketAnchorRef(market_venue="US", instrument="GM"),
+                venue=WorldCanonicalScopeRef(kind="venue", entity_id="mic:XNYS"),
+                country=WorldCanonicalScopeRef(kind="country", entity_id="iso-3166:US"),
+                region=WorldCanonicalScopeRef(kind="region", entity_id="iso-un-m49:021"),
+                world=WorldCanonicalScopeRef(kind="world", entity_id="market"),
+                provider_proofs=("provider:gm",),
+                taxonomy_version="sessions_mic.v1",
+            ),
+        ),
+    )
+    revision = _revision(
+        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash=mapping.content_sha256,
+    )
+    with pytest.raises(ValueError, match="mapping hash drifted"):
+        require_committed_ontology_revision(revision, mapping)

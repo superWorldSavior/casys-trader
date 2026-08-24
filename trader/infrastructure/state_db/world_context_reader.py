@@ -222,6 +222,7 @@ class WorldContextReader:
         reason: str = "sidecar_ready",
     ) -> SensorEvidence:
         observation = selection.envelope.observation
+        provenance = selection.provenance()
         artifact = KnowledgeArtifact(
             kind="macro_world_observation",
             artifact_id=observation.observation_id,
@@ -232,16 +233,14 @@ class WorldContextReader:
             ready_at=ready_at,
             ingested_at=ready_at,
             valid_until=observation.valid_until,
-            source_refs=observation.fact_refs,
+            source_refs=provenance.to_source_refs(),
         )
         payload = {
             "features": dict(observation.features),
             "dimensions": [item.to_dict() for item in observation.dimensions],
             "coverage": observation.coverage.to_dict(),
             "scope_resolution": _resolution_payload(resolution),
-            "origin_scope": selection.origin_scope.to_dict(),
-            "ancestry_distance": selection.distance,
-            "producer_version": observation.producer_version,
+            **provenance.to_dict(),
         }
         return SensorEvidence(
             status=status,

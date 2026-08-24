@@ -30,12 +30,16 @@ from trader.domain.world_graph import (
     MacroGraphBridgeRun,
     MacroGraphBridgeRunSpec,
     MacroGraphObservationLinked,
+    WorldOntologyRevision,
 )
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
     WORLD_MACRO_COLLECTION_PLAN_ID,
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
+    MacroCollectionPlan,
+    require_committed_macro_collection_plan,
 )
+from trader.domain.world_scope import WorldScopeMapping
 
 
 MACRO_GRAPH_BRIDGE_LIFECYCLE_STATUSES = frozenset(
@@ -136,6 +140,38 @@ def committed_macro_graph_bridge_predecessor_spec() -> MacroGraphBridgeRunSpec:
 
 def committed_macro_graph_bridge_successor_spec() -> MacroGraphBridgeRunSpec:
     return COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC
+
+
+def require_committed_live_bridge_lineage(
+    *,
+    mapping: WorldScopeMapping,
+    ontology: WorldOntologyRevision,
+    collection_plan: MacroCollectionPlan,
+    producer_version: str = MACRO_PRODUCER_VERSION,
+) -> MacroGraphBridgeRunSpec:
+    """Fail closed when derived live identities are not the frozen v2 successor spec."""
+
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("mapping must be WorldScopeMapping")
+    if not isinstance(ontology, WorldOntologyRevision):
+        raise TypeError("ontology must be WorldOntologyRevision")
+    if not isinstance(collection_plan, MacroCollectionPlan):
+        raise TypeError("collection_plan must be MacroCollectionPlan")
+    require_committed_macro_collection_plan(collection_plan)
+    derived = MacroGraphBridgeRunSpec(
+        scope_mapping_id=mapping.mapping_id,
+        scope_mapping_hash=mapping.content_sha256,
+        ontology_revision_id=ontology.revision_id,
+        ontology_revision_hash=ontology.content_sha256,
+        schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+        collection_plan_id=collection_plan.plan_id,
+        collection_plan_hash=collection_plan.content_sha256,
+        producer_version=producer_version,
+    )
+    committed = committed_macro_graph_bridge_successor_spec()
+    if derived != committed:
+        raise ValueError("derived live bridge spec drifted from committed successor lineage")
+    return derived
 
 
 @dataclass(frozen=True)
@@ -244,11 +280,7 @@ def remaining_owned_observes(
     links: Sequence[MacroGraphObservationLinked],
     knowledge_events: Sequence[KnowledgeWorldRelationEvent | Mapping[str, Any]],
 ) -> tuple[MacroGraphObservationLinked, ...]:
-    retired_ids = {
-        event.relation_id
-        for event in knowledge_events
-        if isinstance(event, KnowledgeWorldRelationRetired)
-    }
+    retired_ids = {event.relation_id for event in knowledge_events if isinstance(event, KnowledgeWorldRelationRetired)}
     return tuple(link for link in links if link.relation_id not in retired_ids)
 
 
@@ -264,6 +296,7 @@ __all__ = [
     "committed_macro_graph_bridge_migration",
     "committed_macro_graph_bridge_predecessor_spec",
     "committed_macro_graph_bridge_successor_spec",
+    "require_committed_live_bridge_lineage",
     "observes_retirement",
     "predecessor_owned_observes",
     "remaining_owned_observes",

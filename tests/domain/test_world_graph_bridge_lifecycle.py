@@ -50,6 +50,7 @@ from trader.domain.world_graph_bridge_lifecycle import (
     committed_macro_graph_bridge_migration,
     committed_macro_graph_bridge_predecessor_spec,
     committed_macro_graph_bridge_successor_spec,
+    require_committed_live_bridge_lineage,
     observes_retirement,
     predecessor_owned_observes,
     remaining_owned_observes,
@@ -397,6 +398,12 @@ def test_committed_migration_is_the_frozen_live_lineage() -> None:
     assert migration.successor_spec == successor
     with pytest.raises(TypeError):
         committed_macro_graph_bridge_migration(predecessor_spec=predecessor, successor_spec=successor)
+    with pytest.raises(ValueError, match="drifted from committed"):
+        require_committed_live_bridge_lineage(
+            mapping=_mapping(),
+            ontology=_revision(_mapping()),
+            collection_plan=_plan(),
+        )
 
 
 def test_classify_admits_only_the_committed_live_lineage() -> None:

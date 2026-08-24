@@ -169,9 +169,10 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert scope_path.exists()
     assert lifecycle_path.exists()
     assert bridge_lifecycle_path.exists()
-    assert _domain_import_violations(
-        [availability_path, scope_path, lifecycle_path, bridge_lifecycle_path], REPO_ROOT
-    ) == []
+    assert (
+        _domain_import_violations([availability_path, scope_path, lifecycle_path, bridge_lifecycle_path], REPO_ROOT)
+        == []
+    )
 
     from trader.domain.world_availability import (
         AvailabilityEvidence,
@@ -195,6 +196,7 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
         committed_macro_graph_bridge_migration,
         committed_macro_graph_bridge_predecessor_spec,
         committed_macro_graph_bridge_successor_spec,
+        require_committed_live_bridge_lineage,
     )
 
     assert WorldAvailabilityReceipt.__module__ == "trader.domain.world_availability"
@@ -212,6 +214,7 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert committed_macro_graph_bridge_migration.__module__ == "trader.domain.world_graph_bridge_lifecycle"
     assert committed_macro_graph_bridge_predecessor_spec.__module__ == "trader.domain.world_graph_bridge_lifecycle"
     assert committed_macro_graph_bridge_successor_spec.__module__ == "trader.domain.world_graph_bridge_lifecycle"
+    assert require_committed_live_bridge_lineage.__module__ == "trader.domain.world_graph_bridge_lifecycle"
     assert "trader.infrastructure" not in availability_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in scope_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in lifecycle_path.read_text(encoding="utf-8")

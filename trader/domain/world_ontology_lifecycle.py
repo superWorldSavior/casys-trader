@@ -13,11 +13,14 @@ from typing import Any
 from trader.domain.world_feature_contract import (
     WORLD_GRAPH_V3_ONTOLOGY_PREDECESSOR_REVISION,
     WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    WORLD_GRAPH_V3_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
     WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
+    WORLD_SCOPE_MAPPING_SHA256,
 )
 from trader.domain.world_graph import WorldOntologyRevision
+from trader.domain.world_scope import WorldScopeMapping
 
 
 ONTOLOGY_PUBLICATION_ACTIONS = frozenset({"ready", "publish", "supersede_and_publish"})
@@ -48,6 +51,8 @@ class WorldOntologyLifecycleSpec:
     successor_mapping_id: str
     predecessor_mapping_id: str
     predecessor_mapping_sha256: str
+    successor_revision_hash: str
+    successor_mapping_sha256: str
 
     def __post_init__(self) -> None:
         successor_revision_id = _required_text(self.successor_revision_id, "successor_revision_id")
@@ -55,6 +60,8 @@ class WorldOntologyLifecycleSpec:
         successor_mapping_id = _required_text(self.successor_mapping_id, "successor_mapping_id")
         predecessor_mapping_id = _required_text(self.predecessor_mapping_id, "predecessor_mapping_id")
         predecessor_mapping_sha256 = _sha256_hex(self.predecessor_mapping_sha256, "predecessor_mapping_sha256")
+        successor_revision_hash = _sha256_hex(self.successor_revision_hash, "successor_revision_hash")
+        successor_mapping_sha256 = _sha256_hex(self.successor_mapping_sha256, "successor_mapping_sha256")
         if successor_revision_id == predecessor_revision_id:
             raise ValueError("successor_revision_id must differ from predecessor_revision_id")
         if successor_mapping_id == predecessor_mapping_id:
@@ -64,6 +71,8 @@ class WorldOntologyLifecycleSpec:
         object.__setattr__(self, "successor_mapping_id", successor_mapping_id)
         object.__setattr__(self, "predecessor_mapping_id", predecessor_mapping_id)
         object.__setattr__(self, "predecessor_mapping_sha256", predecessor_mapping_sha256)
+        object.__setattr__(self, "successor_revision_hash", successor_revision_hash)
+        object.__setattr__(self, "successor_mapping_sha256", successor_mapping_sha256)
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -72,6 +81,8 @@ class WorldOntologyLifecycleSpec:
             "successor_mapping_id": self.successor_mapping_id,
             "predecessor_mapping_id": self.predecessor_mapping_id,
             "predecessor_mapping_sha256": self.predecessor_mapping_sha256,
+            "successor_revision_hash": self.successor_revision_hash,
+            "successor_mapping_sha256": self.successor_mapping_sha256,
         }
 
     @classmethod
@@ -86,6 +97,8 @@ class WorldOntologyLifecycleSpec:
             successor_mapping_id=value.get("successor_mapping_id"),
             predecessor_mapping_id=value.get("predecessor_mapping_id"),
             predecessor_mapping_sha256=value.get("predecessor_mapping_sha256"),
+            successor_revision_hash=value.get("successor_revision_hash"),
+            successor_mapping_sha256=value.get("successor_mapping_sha256"),
         )
 
 
@@ -106,7 +119,9 @@ class WorldOntologyPublicationPlan:
         spec = WorldOntologyLifecycleSpec.from_mapping(self.spec)
         expected_revision_id = _required_text(self.expected_revision_id, "expected_revision_id")
         published_revision_id = (
-            None if self.published_revision_id is None else _required_text(self.published_revision_id, "published_revision_id")
+            None
+            if self.published_revision_id is None
+            else _required_text(self.published_revision_id, "published_revision_id")
         )
         if expected_revision_id != spec.successor_revision_id:
             raise ValueError("expected_revision_id must equal successor_revision_id")
@@ -137,7 +152,33 @@ def committed_world_ontology_lifecycle_spec() -> WorldOntologyLifecycleSpec:
         successor_mapping_id=WORLD_SCOPE_MAPPING_ID,
         predecessor_mapping_id=WORLD_SCOPE_MAPPING_PREDECESSOR_ID,
         predecessor_mapping_sha256=WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256,
+        successor_revision_hash=WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+        successor_mapping_sha256=WORLD_SCOPE_MAPPING_SHA256,
     )
+
+
+def require_committed_ontology_revision(
+    revision: WorldOntologyRevision,
+    mapping: WorldScopeMapping,
+) -> WorldOntologyRevision:
+    """Fail closed when a derived revision is not the frozen live ontology identity."""
+
+    if not isinstance(revision, WorldOntologyRevision):
+        raise TypeError("revision must be WorldOntologyRevision")
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("mapping must be WorldScopeMapping")
+    spec = committed_world_ontology_lifecycle_spec()
+    if mapping.mapping_id != spec.successor_mapping_id:
+        raise ValueError("committed ontology requires the live mapping id")
+    if mapping.content_sha256 != spec.successor_mapping_sha256:
+        raise ValueError("committed mapping hash drifted from frozen identity")
+    if revision.revision_id != spec.successor_revision_id:
+        raise ValueError("derived ontology revision_id drifted from frozen identity")
+    if revision.content_sha256 != spec.successor_revision_hash:
+        raise ValueError("derived ontology hash drifted from frozen identity")
+    if revision.scope_mapping_id != mapping.mapping_id or revision.scope_mapping_hash != mapping.content_sha256:
+        raise ValueError("ontology revision mapping identity does not match mapping")
+    return revision
 
 
 def plan_world_ontology_publication(
@@ -151,14 +192,16 @@ def plan_world_ontology_publication(
     if not isinstance(expected, WorldOntologyRevision):
         raise TypeError("expected must be WorldOntologyRevision")
     resolved_spec = (
-        committed_world_ontology_lifecycle_spec()
-        if spec is None
-        else WorldOntologyLifecycleSpec.from_mapping(spec)
+        committed_world_ontology_lifecycle_spec() if spec is None else WorldOntologyLifecycleSpec.from_mapping(spec)
     )
     if expected.revision_id != resolved_spec.successor_revision_id:
         raise ValueError("expected revision_id must equal successor_revision_id")
     if expected.scope_mapping_id != resolved_spec.successor_mapping_id:
         raise ValueError("expected scope_mapping_id must equal successor_mapping_id")
+    if expected.content_sha256 != resolved_spec.successor_revision_hash:
+        raise ValueError("conflict: expected ontology hash drifted from successor identity")
+    if expected.scope_mapping_hash != resolved_spec.successor_mapping_sha256:
+        raise ValueError("conflict: expected mapping hash drifted from successor identity")
     if published is None:
         return WorldOntologyPublicationPlan(
             action="publish",
@@ -201,4 +244,5 @@ __all__ = [
     "WorldOntologyPublicationPlan",
     "committed_world_ontology_lifecycle_spec",
     "plan_world_ontology_publication",
+    "require_committed_ontology_revision",
 ]

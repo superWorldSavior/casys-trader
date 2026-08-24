@@ -18,7 +18,10 @@ l'observation marché V1, éventuellement un émetteur *vérifié par identifian
 externe*, et aux capteurs (macro source-only, company) dont la disponibilité
 est prouvée par un reçu. C'est de la **provenance** et de la **traversée**.
 Ce n'est pas une découverte causale, pas un graphe de message passing, et
-pas un agrégat familial.
+pas un agrégat familial. Producteur, scope d'origine, distance d'ancestry
+et lignée de faits se reconstruisent depuis les `source_refs` typés
+(`MacroObservationProvenance`) ; on n'invente pas un MIC, un scope ou une
+distance.
 
 ## Question à laquelle il ne répond pas
 
@@ -33,9 +36,12 @@ versionné `world_scope_mapping.v2` (hash gelé dans le YAML pilote ; successeur
 append-only de `world_scope_mapping.v1`) résout `(market_venue, instrument)`
 vers les scopes canoniques (`mic`, pays, région). Aucun fallback `TW -> XTAI`
 silencieux. Un scope `unmapped` ou `ambiguous` produit une missingness
-canonique, pas une invention. L'ontologie structurelle commitée est
-`market_ontology.v2` : un ledger qui a déjà publié `market_ontology.v1` la
-supersède, il ne réécrit pas `v1`.
+canonique, pas une invention : snapshot V3 `world_graph_snapshot.v1` sans
+racine ni membres (`root_entity` JSON `null` est un élargissement
+compatible de la missingness, pas un bump de schéma). L'ontologie
+structurelle commitée est `market_ontology.v2` ; son hash dérivé doit
+égaliser `WORLD_GRAPH_V3_ONTOLOGY_SHA256`. Un ledger qui a déjà publié
+`market_ontology.v1` la supersède, il ne réécrit pas `v1`.
 
 ## Horloges point-in-time
 

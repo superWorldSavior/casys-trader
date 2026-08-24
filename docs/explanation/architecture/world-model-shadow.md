@@ -112,12 +112,16 @@ backfill.
 `MacroSourceFact` → `MacroWorldObservation` → envelope + reçu. Plan de
 collecte typé (`MacroCollectionPlan` / `MacroCollectionTarget`) groupé
 par `canonical_scope` du registre ; un run n'invoque que les sources de
-sa cible. Le producteur live est `macro_source_only.v2` / lane
-`context.v2.macro_source.v2` ; les observations `v1` restent lisibles
-pour l'audit mais ne sont pas admises dans l'ombre. Le consommateur
-cherche l'ancestry marché du plus proche au plus large
-(`MacroContextSearchPlan`) et sélectionne la première observation v2
-exact-scope ; un fait pays/région/monde n'est jamais restampé en
+sa cible. Le plan live est `committed_macro_collection_plan` : le
+dérivé runtime doit égaler `WORLD_MACRO_COLLECTION_PLAN_ID` /
+`SHA256`, sinon fail-closed. Le producteur live est
+`macro_source_only.v2` / lane `context.v2.macro_source.v2` ; les
+observations `v1` restent lisibles pour l'audit mais ne sont pas
+admises dans l'ombre. Le consommateur cherche l'ancestry marché du
+plus proche au plus large (`MacroContextSearchPlan`) et sélectionne la
+première observation v2 exact-scope ; `MacroObservationProvenance`
+porte producteur, scope d'origine réel, distance d'ancestry et
+`fact_refs`. Un fait pays/région/monde n'est jamais restampé en
 place. Agrégat `MacroCollectionRun` : register / start / source
 completed|failed / published / completed. Un fait hors scope ou hors
 provenance est un échec de source typé, jamais une observation mixte.
@@ -132,6 +136,21 @@ connaissance, `WorldGraphSnapshot`, `PatternHypothesis` /
 traverser ; aucun objet NetworkX n'est persisté ; aucune arête `CAUSES`.
 `config/world_graph_v3.yaml` a `cohort_id: null` ; l'id d'étude est
 injecté au compose depuis l'activation pilote.
+
+La révision dérivée de `world_scope_mapping.v2` est vérifiée contre
+`WORLD_GRAPH_V3_ONTOLOGY_SHA256` / `market_ontology.v2` ; les adapters
+SQLite projettent, le payload JSON est l'autorité. Snapshot
+`unmapped`/`ambiguous` : `world_graph_snapshot.v1` avec
+`root_entity=null`, zéro membre. Une relation `OBSERVES` porte le
+producteur et le scope natif ; la distance d'ancestry se reconstruit
+depuis les têtes `TRADED_ON` / `LOCATED_IN` / `PART_OF_WORLD`, elle
+n'est pas inventée à la collecte.
+
+Le pont macro→graphe est append-only : classify avant réserve ;
+activation à froid ; restart no-op ; resume bloqué identique ; drift
+actif = block ; remediation exacte v1→v2 puis handoff ; curseur
+monotone ; pas de wildcard d'ownership. Génération 5 = shadow-only,
+aucune autorité Trader.
 
 ## Deux cohortes, lanes Markov et GRU froid
 

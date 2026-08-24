@@ -24,6 +24,8 @@ from trader.domain.world_episode import canonical_payload, canonical_sha256, par
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
     MacroObservationEnvelope,
+    MacroObservationProvenance,
+    MacroScope,
     MacroSourceFactVersionId,
     is_admitted_macro_producer,
     macro_observes_producer_ref,
@@ -2354,6 +2356,11 @@ class WorldGraphSnapshot:
     """Immutable V3 subgraph at a cutoff. Structural and knowledge refs stay two sets.
 
     Unmapped/ambiguous missingness forbids a world-entity root and graph members.
+    ``root_entity=None`` is a backward-compatible widening of
+    ``world_graph_snapshot.v1``: historical instrument-root payloads stay valid,
+    and JSON null is admitted only for unmapped/ambiguous missing snapshots.
+    Persistence adapters project null onto empty TEXT columns; rehydration reads
+    the canonical payload, never those columns.
     """
 
     root_episode_id: str
@@ -2880,6 +2887,15 @@ class MacroObservationKnowledgeLink:
                 return cls(status="skipped", skip_reason="producer_not_admitted")
             observation_ref = world_observation_ref_for_observation_id(observation.observation_id)
             receipt = envelope.persisted.receipt
+            provenance = MacroObservationProvenance(
+                producer_version=observation.producer_version,
+                origin_scope=observation.scope,
+                observation_id=observation.observation_id,
+                observation_sha256=observation.content_sha256,
+                fact_refs=observation.fact_refs,
+                mapping_id=scope_mapping.mapping_id,
+                mapping_sha256=scope_mapping.content_sha256,
+            )
             relation = KnowledgeWorldRelation(
                 kind="OBSERVES",
                 source=observation_ref,
@@ -2888,10 +2904,8 @@ class MacroObservationKnowledgeLink:
                 effective_until=observation.valid_until,
                 ontology_revision=structural_revision.revision_id,
                 source_refs=(
-                    f"{observation.observation_id}/{observation.content_sha256}",
+                    *provenance.to_source_refs(),
                     f"{receipt.receipt_id}/{receipt.receipt_sha256}",
-                    f"{scope_mapping.mapping_id}/{scope_mapping.content_sha256}",
-                    macro_observes_producer_ref(observation.producer_version),
                 ),
             )
             return cls(status="linked", relation=relation, observation_ref=observation_ref)
@@ -2911,6 +2925,77 @@ def admits_macro_observes_relation(
     if relation.kind != "OBSERVES":
         return True
     return macro_observes_producer_ref(admitted_producer_version) in relation.source_refs
+
+
+_ANCESTRY_WALK = (
+    ("TRADED_ON", "venue"),
+    ("LOCATED_IN", "country"),
+    ("LOCATED_IN", "region"),
+    ("PART_OF_WORLD", "world"),
+)
+
+
+def ancestry_distance_from_instrument_root(
+    *,
+    root: WorldEntityRef,
+    origin: WorldEntityRef,
+    relations: Sequence[StructuralWorldRelation],
+) -> int | None:
+    """Venue=0 … world=3 along unique TRADED_ON/LOCATED_IN/PART_OF_WORLD hops.
+
+    Returns None when the origin is not on that unique ancestry. Never invents a hop.
+    """
+
+    if not isinstance(root, WorldEntityRef) or not isinstance(origin, WorldEntityRef):
+        raise TypeError("root and origin must be WorldEntityRef")
+    if root.kind != "instrument":
+        raise ValueError("ancestry distance requires an instrument root")
+    outgoing: dict[str, list[StructuralWorldRelation]] = {}
+    for relation in relations:
+        if not isinstance(relation, StructuralWorldRelation):
+            raise TypeError("relations must be StructuralWorldRelation")
+        outgoing.setdefault(relation.source.node_id, []).append(relation)
+    current = root
+    for distance, (kind, target_kind) in enumerate(_ANCESTRY_WALK):
+        matches = [
+            item for item in outgoing.get(current.node_id, ()) if item.kind == kind and item.target.kind == target_kind
+        ]
+        if len(matches) != 1:
+            return None
+        nxt = matches[0].target
+        if nxt.node_id == origin.node_id:
+            return distance
+        current = nxt
+    return None
+
+
+def reconstruct_macro_observes_provenance(
+    relation: KnowledgeWorldRelation,
+    *,
+    root: WorldEntityRef | None = None,
+    structural_relations: Sequence[StructuralWorldRelation] = (),
+) -> MacroObservationProvenance:
+    """Rebuild producer, origin scope, lineage, and ancestry distance without fabricating them."""
+
+    if not isinstance(relation, KnowledgeWorldRelation):
+        raise TypeError("relation must be KnowledgeWorldRelation")
+    if relation.kind != "OBSERVES":
+        raise ValueError("provenance reconstruction is limited to OBSERVES relations")
+    if not isinstance(relation.target, WorldEntityRef):
+        raise TypeError("OBSERVES target must be WorldEntityRef")
+    origin = MacroScope(kind=relation.target.kind, entity_id=relation.target.entity_id)
+    distance = None
+    if root is not None:
+        distance = ancestry_distance_from_instrument_root(
+            root=root,
+            origin=relation.target,
+            relations=structural_relations,
+        )
+    return MacroObservationProvenance.from_source_refs(
+        relation.source_refs,
+        origin_scope=origin,
+        ancestry_distance=distance,
+    )
 
 
 def _set_bridge_event_id(event: Any, payload: Mapping[str, Any]) -> None:
@@ -3885,6 +3970,8 @@ __all__ = [
     "STRUCTURAL_RELATION_KINDS",
     "WORLD_ENTITY_KINDS",
     "WORLD_GRAPH_SNAPSHOT_SCHEMA",
+    "ancestry_distance_from_instrument_root",
+    "reconstruct_macro_observes_provenance",
     "KnowledgeArtifactRef",
     "KnowledgeWorldRelation",
     "KnowledgeWorldRelationAsserted",

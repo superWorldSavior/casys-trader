@@ -126,18 +126,31 @@ cohorte, le contrat producteur/lane/plan de collecte `macro_source_only.v2`
 est gelé dans le YAML. Les identités des générations 3/4 ne sont pas
 réutilisées ; les cohortes déjà terminales ne sont pas ranimées.
 
+Le runtime **fail-close** si le dérivé ne reproduit pas les identités
+gelées : `WORLD_SCOPE_MAPPING_SHA256`, `WORLD_GRAPH_V3_ONTOLOGY_SHA256`,
+`WORLD_MACRO_COLLECTION_PLAN_SHA256`, plus `macro_source_only.v2`. Un bit
+de dérive bloque le boot du worker shadow ; le cycle Trader reste
+fail-open.
+
 Après déploiement du commit, **un redémarrage volontaire** du daemon :
 
-1. le boot publie `market_ontology.v2` ; si `world_model.db` a déjà
-   `market_ontology.v1`, il la **supersède** (append-only), il ne mute pas
-   le hash `v1` ;
-2. le pont macro→graphe, s'il était `blocked=config_drift`, fait un
-   **handoff** déterministe vers le spec `v2` (curseur conservé, pas de
-   double ownership, pas de backfill) ;
-3. `world graph status` / `world cohort status` doivent montrer les têtes
+1. le boot **classifie** l'état durable du pont **avant** toute réservation
+   de curseur. Cold start = `missing` → activate. Restart identique =
+   no-op. Spec bloquée identique = resume no-op. Drift actif = block.
+   Drift bloqué hors lignée gelée = erreur, pas de wildcard ;
+2. le boot publie `market_ontology.v2` ; si `world_model.db` a déjà
+   `market_ontology.v1` **et** le hash mapping prédécesseur est exact, il
+   la **supersède** (append-only), il ne mute pas le hash `v1` ;
+3. si le pont est `blocked=config_drift` **et** le couple durable/désiré
+   est exactement le lignage v1→v2 gelé : retraite append-only des
+   `OBSERVES` possédés, puis **handoff** (curseur conservé, un seul
+   propriétaire, pas de backfill). Crash au milieu : retry idempotent ;
+4. `world graph status` / `world cohort status` doivent montrer les têtes
    `world_scope_mapping.v2` / `market_ontology.v2` ;
-4. un symbole du hot-set sans ligne exacte reste `unmapped` (missingness),
-   jamais une invention MIC.
+5. un symbole sans ligne exacte reste `unmapped` : snapshot V3
+   `missing` **sans racine**, sans membres, sans MIC inventé. Le schéma
+   reste `world_graph_snapshot.v1` (null = missingness, payload
+   canonique ; les colonnes SQL vides ne sont pas une entité).
 
 Pas de `DELETE`/`VACUUM` du ledger. `shadow_only` / `decision_effect=none`
 / `causal_claim=false` / `pnl_claim=false` inchangés. Si le YAML mapping

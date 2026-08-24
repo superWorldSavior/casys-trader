@@ -498,6 +498,14 @@ def test_two_suffix_ignores_future_valid_v1_venue_and_keeps_country_subject(tmp_
     assert evidence.payload["origin_scope"] == {"kind": "country", "entity_id": "iso-3166:TW"}
     assert evidence.payload["ancestry_distance"] == 1
     assert evidence.payload["producer_version"] == MACRO_PRODUCER_VERSION
+    from trader.domain.world_macro import MacroObservationProvenance
+
+    reconstructed = MacroObservationProvenance.from_source_refs(evidence.artifact.source_refs)
+    assert reconstructed.origin_scope.kind == "country"
+    assert reconstructed.origin_scope.entity_id == "iso-3166:TW"
+    assert reconstructed.ancestry_distance == 1
+    assert reconstructed.producer_version == MACRO_PRODUCER_VERSION
+    assert reconstructed.observation_id == evidence.artifact.artifact_id
 
 
 def test_unmapped_gm_keeps_mapping_identity_and_does_not_fallback(tmp_path: Path) -> None:

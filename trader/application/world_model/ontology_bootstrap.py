@@ -39,6 +39,7 @@ from trader.domain.world_ontology_lifecycle import (
     WorldOntologyPublicationPlan,
     committed_world_ontology_lifecycle_spec,
     plan_world_ontology_publication,
+    require_committed_ontology_revision,
 )
 from trader.domain.world_scope import WorldCanonicalScopeRef, WorldScopeMapping
 
@@ -130,8 +131,7 @@ def derive_market_ontology(
             target=entities[target_id],
             effective_from=when,
             ontology_revision=revision_id,
-            source_refs=tuple(sorted(edge_proofs))
-            or (f"{mapping.mapping_id}:{kind}:{source_id}:{target_id}",),
+            source_refs=tuple(sorted(edge_proofs)) or (f"{mapping.mapping_id}:{kind}:{source_id}:{target_id}",),
         )
         for (kind, source_id, target_id), edge_proofs in sorted(edges.items())
     )
@@ -202,11 +202,14 @@ class WorldOntologyBootstrapService:
         self._service = WorldOntologyService(ledger)
 
     def expected_revision(self) -> WorldOntologyRevision:
-        return derive_market_ontology(
+        revision = derive_market_ontology(
             self._mapping,
             revision_id=self._revision_id,
             effective_from=self._effective_from,
         )[2]
+        if self._lifecycle_spec == committed_world_ontology_lifecycle_spec():
+            return require_committed_ontology_revision(revision, self._mapping)
+        return revision
 
     def _plan(
         self, cutoff_at: datetime
@@ -224,10 +227,10 @@ class WorldOntologyBootstrapService:
         )
 
     def readiness(self, cutoff_at: datetime | str | None = None) -> WorldOntologyReadiness:
-        expected = self.expected_revision()
         cutoff = _utc(cutoff_at, "cutoff_at")
         published = self._service.ontology.at_cutoff(cutoff).published_revision
         try:
+            expected = self.expected_revision()
             plan = plan_world_ontology_publication(
                 published=published,
                 expected=expected,

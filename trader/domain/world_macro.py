@@ -169,6 +169,54 @@ def is_admitted_macro_producer(producer_version: str | None) -> bool:
     return _required_text(producer_version, "producer_version") in MACRO_ADMITTED_PRODUCER_VERSIONS
 
 
+_ORIGIN_SCOPE_REF_PREFIX = "origin_scope:"
+_ANCESTRY_DISTANCE_REF_PREFIX = "ancestry_distance:"
+_PRODUCER_REF_PREFIX = "producer:"
+
+
+def macro_origin_scope_ref(scope: MacroScope | Mapping[str, Any]) -> str:
+    """Canonical provenance token for the observation's actual origin scope."""
+
+    resolved = scope if isinstance(scope, MacroScope) else MacroScope.from_mapping(scope)
+    return f"{_ORIGIN_SCOPE_REF_PREFIX}{resolved.kind}:{resolved.entity_id}"
+
+
+def parse_macro_origin_scope_ref(value: str) -> MacroScope:
+    text = _required_text(value, "origin_scope_ref")
+    if not text.startswith(_ORIGIN_SCOPE_REF_PREFIX):
+        raise ValueError("origin_scope ref is malformed")
+    rest = text[len(_ORIGIN_SCOPE_REF_PREFIX) :]
+    kind, separator, entity_id = rest.partition(":")
+    if not separator:
+        raise ValueError("origin_scope ref is malformed")
+    return MacroScope(kind=kind, entity_id=entity_id)
+
+
+def macro_ancestry_distance_ref(distance: int) -> str:
+    return f"{_ANCESTRY_DISTANCE_REF_PREFIX}{_non_negative_int(distance, 'distance')}"
+
+
+def parse_macro_ancestry_distance_ref(value: str) -> int:
+    text = _required_text(value, "ancestry_distance_ref")
+    if not text.startswith(_ANCESTRY_DISTANCE_REF_PREFIX):
+        raise ValueError("ancestry_distance ref is malformed")
+    raw = text[len(_ANCESTRY_DISTANCE_REF_PREFIX) :]
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ancestry_distance ref is malformed") from exc
+    return _non_negative_int(parsed, "ancestry_distance")
+
+
+def _split_identity_hash(value: str) -> tuple[str, str] | None:
+    if "/" not in value:
+        return None
+    left, _separator, digest = value.rpartition("/")
+    if not left or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        return None
+    return left, digest
+
+
 def _immutable_text_tuple(value: Sequence[str] | None, field_name: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -980,6 +1028,22 @@ class MacroCollectionPlan:
         )
 
 
+def require_committed_macro_collection_plan(plan: MacroCollectionPlan) -> MacroCollectionPlan:
+    """Fail closed when a derived plan is not the frozen live identity."""
+
+    if not isinstance(plan, MacroCollectionPlan):
+        raise TypeError("plan must be MacroCollectionPlan")
+    if plan.plan_id != WORLD_MACRO_COLLECTION_PLAN_ID or plan.content_sha256 != WORLD_MACRO_COLLECTION_PLAN_SHA256:
+        raise ValueError("derived collection plan drifted from committed identity")
+    return plan
+
+
+def committed_macro_collection_plan(registry: MacroSourceRegistry) -> MacroCollectionPlan:
+    """Derive the live plan from the committed registry and refuse any other identity."""
+
+    return require_committed_macro_collection_plan(MacroCollectionPlan.from_registry(registry))
+
+
 @dataclass(frozen=True)
 class MacroDerivationPolicy:
     """Versioned closed vocabularies. Threshold constants live in transform_version, not here."""
@@ -1448,6 +1512,9 @@ class MacroContextSelection:
         object.__setattr__(self, "eligibility_status", status)
         assert_source_only_payload(self.to_dict(), "macro_context_selection")
 
+    def provenance(self) -> MacroObservationProvenance:
+        return MacroObservationProvenance.from_selection(self)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "observation_id": self.envelope.observation.observation_id,
@@ -1457,6 +1524,159 @@ class MacroContextSelection:
             "admitted_producer_version": self.search_plan.admitted_producer_version,
             "producer_version": self.envelope.observation.producer_version,
         }
+
+
+@dataclass(frozen=True)
+class MacroObservationProvenance:
+    """Reconstructible source lineage for a selected or observed macro envelope.
+
+    Ancestry distance is selection-time: collection-time OBSERVES relations carry
+    the native origin scope and producer, never a fabricated distance.
+    """
+
+    producer_version: str
+    origin_scope: MacroScope | Mapping[str, Any]
+    observation_id: str
+    observation_sha256: str
+    fact_refs: Sequence[str] = ()
+    ancestry_distance: int | None = None
+    mapping_id: str | None = None
+    mapping_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        producer_version = _required_text(self.producer_version, "producer_version")
+        origin = MacroScope.from_mapping(self.origin_scope)
+        observation_id = _validate_prefixed_id(self.observation_id, _OBSERVATION_ID_PREFIX, "observation_id")
+        observation_sha256 = _required_text(self.observation_sha256, "observation_sha256")
+        if len(observation_sha256) != 64 or any(char not in "0123456789abcdef" for char in observation_sha256):
+            raise ValueError("observation_sha256 digest must be a sha256 hex digest")
+        fact_refs = _unique_sorted_texts(self.fact_refs, "fact_refs")
+        for ref in fact_refs:
+            _validate_prefixed_id(ref, _FACT_VERSION_PREFIX, "fact_refs[]")
+        distance = (
+            None if self.ancestry_distance is None else _non_negative_int(self.ancestry_distance, "ancestry_distance")
+        )
+        mapping_id = None if self.mapping_id is None else _required_text(self.mapping_id, "mapping_id")
+        mapping_sha256 = None if self.mapping_sha256 is None else _required_text(self.mapping_sha256, "mapping_sha256")
+        if (mapping_id is None) != (mapping_sha256 is None):
+            raise ValueError("mapping_id and mapping_sha256 must be provided together")
+        if mapping_sha256 is not None and (
+            len(mapping_sha256) != 64 or any(char not in "0123456789abcdef" for char in mapping_sha256)
+        ):
+            raise ValueError("mapping_sha256 digest must be a sha256 hex digest")
+        object.__setattr__(self, "producer_version", producer_version)
+        object.__setattr__(self, "origin_scope", origin)
+        object.__setattr__(self, "observation_id", observation_id)
+        object.__setattr__(self, "observation_sha256", observation_sha256)
+        object.__setattr__(self, "fact_refs", fact_refs)
+        object.__setattr__(self, "ancestry_distance", distance)
+        object.__setattr__(self, "mapping_id", mapping_id)
+        object.__setattr__(self, "mapping_sha256", mapping_sha256)
+        assert_source_only_payload(self.to_dict(), "macro_observation_provenance")
+
+    def to_source_refs(self) -> tuple[str, ...]:
+        refs = [
+            f"{self.observation_id}/{self.observation_sha256}",
+            macro_observes_producer_ref(self.producer_version),
+            macro_origin_scope_ref(self.origin_scope),
+        ]
+        if self.ancestry_distance is not None:
+            refs.append(macro_ancestry_distance_ref(self.ancestry_distance))
+        if self.mapping_id is not None and self.mapping_sha256 is not None:
+            refs.append(f"{self.mapping_id}/{self.mapping_sha256}")
+        refs.extend(self.fact_refs)
+        return tuple(refs)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "producer_version": self.producer_version,
+            "origin_scope": self.origin_scope.to_dict(),
+            "observation_id": self.observation_id,
+            "observation_sha256": self.observation_sha256,
+            "fact_refs": list(self.fact_refs),
+        }
+        if self.ancestry_distance is not None:
+            payload["ancestry_distance"] = self.ancestry_distance
+        if self.mapping_id is not None:
+            payload["mapping_id"] = self.mapping_id
+            payload["mapping_sha256"] = self.mapping_sha256
+        return payload
+
+    @classmethod
+    def from_selection(cls, selection: MacroContextSelection) -> MacroObservationProvenance:
+        if not isinstance(selection, MacroContextSelection):
+            raise TypeError("selection must be MacroContextSelection")
+        observation = selection.envelope.observation
+        resolution = selection.search_plan.resolution
+        return cls(
+            producer_version=observation.producer_version,
+            origin_scope=selection.origin_scope,
+            observation_id=observation.observation_id,
+            observation_sha256=observation.content_sha256,
+            fact_refs=observation.fact_refs,
+            ancestry_distance=selection.distance,
+            mapping_id=resolution.mapping_id,
+            mapping_sha256=resolution.mapping_sha256,
+        )
+
+    @classmethod
+    def from_source_refs(
+        cls,
+        refs: Sequence[str],
+        *,
+        origin_scope: MacroScope | Mapping[str, Any] | None = None,
+        ancestry_distance: int | None = None,
+    ) -> MacroObservationProvenance:
+        tokens = _immutable_text_tuple(refs, "source_refs")
+        producer_version: str | None = None
+        observation_id: str | None = None
+        observation_sha256: str | None = None
+        mapping_id: str | None = None
+        mapping_sha256: str | None = None
+        parsed_origin = None if origin_scope is None else MacroScope.from_mapping(origin_scope)
+        parsed_distance = ancestry_distance
+        facts: list[str] = []
+        for token in tokens:
+            if token.startswith(_PRODUCER_REF_PREFIX):
+                producer_version = token[len(_PRODUCER_REF_PREFIX) :]
+                continue
+            if token.startswith(_ORIGIN_SCOPE_REF_PREFIX):
+                token_origin = parse_macro_origin_scope_ref(token)
+                if parsed_origin is not None and token_origin != parsed_origin:
+                    raise ValueError("origin_scope token contradicts the provided origin")
+                parsed_origin = token_origin
+                continue
+            if token.startswith(_ANCESTRY_DISTANCE_REF_PREFIX):
+                token_distance = parse_macro_ancestry_distance_ref(token)
+                if parsed_distance is not None and token_distance != parsed_distance:
+                    raise ValueError("ancestry_distance token contradicts the provided distance")
+                parsed_distance = token_distance
+                continue
+            if token.startswith(f"{_FACT_VERSION_PREFIX}:"):
+                facts.append(token)
+                continue
+            split = _split_identity_hash(token)
+            if split is None:
+                continue
+            left, digest = split
+            if left.startswith(f"{_OBSERVATION_ID_PREFIX}:"):
+                observation_id = left
+                observation_sha256 = digest
+            elif left.startswith("world_scope_mapping."):
+                mapping_id = left
+                mapping_sha256 = digest
+        if producer_version is None or observation_id is None or observation_sha256 is None or parsed_origin is None:
+            raise ValueError("source_refs are insufficient to reconstruct macro provenance")
+        return cls(
+            producer_version=producer_version,
+            origin_scope=parsed_origin,
+            observation_id=observation_id,
+            observation_sha256=observation_sha256,
+            fact_refs=tuple(facts),
+            ancestry_distance=parsed_distance,
+            mapping_id=mapping_id,
+            mapping_sha256=mapping_sha256,
+        )
 
 
 def _event_id_for(payload: Mapping[str, Any]) -> str:
@@ -2307,6 +2527,13 @@ __all__ = [
     "MACRO_WORLD_OBSERVATION_SUBJECT_KIND",
     "WORLD_MACRO_COLLECTION_PLAN_ID",
     "WORLD_MACRO_COLLECTION_PLAN_SHA256",
+    "MacroObservationProvenance",
+    "committed_macro_collection_plan",
+    "macro_ancestry_distance_ref",
+    "macro_origin_scope_ref",
+    "parse_macro_ancestry_distance_ref",
+    "parse_macro_origin_scope_ref",
+    "require_committed_macro_collection_plan",
     "MacroCategoryValue",
     "MacroCollectionCompleted",
     "MacroCollectionEvent",

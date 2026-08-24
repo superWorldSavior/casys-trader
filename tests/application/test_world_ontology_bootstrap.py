@@ -46,11 +46,15 @@ def _import_violations(path: Path) -> list[str]:
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
-            if any(node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+            if any(
+                node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+            ):
                 violations.append(f"{rel_path}: from {node.module} import ...")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if any(alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+                if any(
+                    alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+                ):
                     violations.append(f"{rel_path}: import {alias.name}")
     source = path.read_text(encoding="utf-8")
     if "world_graph_store" in source:
@@ -85,6 +89,11 @@ def test_derive_market_ontology_uses_exact_mapping_heads_without_issuer_or_suffi
     assert revision.revision_id == MARKET_ONTOLOGY_REVISION_ID
     assert revision.scope_mapping_id == mapping.mapping_id
     assert revision.scope_mapping_hash == mapping.content_sha256
+    from trader.domain.world_feature_contract import WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    from trader.domain.world_ontology_lifecycle import require_committed_ontology_revision
+
+    assert revision.content_sha256 == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    require_committed_ontology_revision(revision, mapping)
     assert revision.identity_link_refs == ()
     second = derive_market_ontology(mapping)[2]
     assert second.content_sha256 == revision.content_sha256
@@ -162,12 +171,15 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
     store = WorldGraphStore(path, clock=clock)
     try:
         attestation = WorldOntologyAttestation(store, mapping)
-        assert attestation.proven_heads(
-            revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
-            scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-            scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
-            at=CUTOFF,
-        ) is None
+        assert (
+            attestation.proven_heads(
+                revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+                scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
+                scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+                at=CUTOFF,
+            )
+            is None
+        )
         assert attestation.readiness(CUTOFF).status == "unpublished"
         ready = attestation.ensure_published(now=CUTOFF)
         assert ready.status == "ready"
@@ -182,12 +194,15 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
         assert proof.scope_mapping_id == mapping.mapping_id
         assert proof.scope_mapping_hash == mapping.content_sha256
         assert proof.content_sha256 == ready.ontology_hash
-        assert attestation.proven_heads(
-            revision_id="semantic_catalog.v1",
-            scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-            scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
-            at=CUTOFF,
-        ) is None
+        assert (
+            attestation.proven_heads(
+                revision_id="semantic_catalog.v1",
+                scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
+                scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+                at=CUTOFF,
+            )
+            is None
+        )
         again = attestation.ensure_published(now=CUTOFF)
         assert again.ontology_hash == ready.ontology_hash
         assert len(store.list_revision_events_available_through(CUTOFF)) == 1
@@ -219,21 +234,41 @@ def _entry(*, market_venue: str, instrument: str, venue: str, country: str, regi
     )
 
 
-def _predecessor_spec() -> WorldOntologyLifecycleSpec:
+def _spec_for(
+    mapping: WorldScopeMapping,
+    *,
+    revision_id: str,
+    predecessor_revision_id: str,
+    predecessor_mapping_id: str,
+    predecessor_mapping_sha256: str,
+) -> WorldOntologyLifecycleSpec:
+    _, _, revision = derive_market_ontology(mapping, revision_id=revision_id)
     return WorldOntologyLifecycleSpec(
-        successor_revision_id="market_ontology.v1",
+        successor_revision_id=revision_id,
+        predecessor_revision_id=predecessor_revision_id,
+        successor_mapping_id=mapping.mapping_id,
+        predecessor_mapping_id=predecessor_mapping_id,
+        predecessor_mapping_sha256=predecessor_mapping_sha256,
+        successor_revision_hash=revision.content_sha256,
+        successor_mapping_sha256=mapping.content_sha256,
+    )
+
+
+def _predecessor_spec(mapping: WorldScopeMapping) -> WorldOntologyLifecycleSpec:
+    return _spec_for(
+        mapping,
+        revision_id="market_ontology.v1",
         predecessor_revision_id="market_ontology.v0",
-        successor_mapping_id="world_scope_mapping.v1",
         predecessor_mapping_id="world_scope_mapping.v0",
         predecessor_mapping_sha256="0" * 64,
     )
 
 
-def _successor_spec(*, predecessor_mapping_sha256: str) -> WorldOntologyLifecycleSpec:
-    return WorldOntologyLifecycleSpec(
-        successor_revision_id="market_ontology.v2",
+def _successor_spec(mapping: WorldScopeMapping, *, predecessor_mapping_sha256: str) -> WorldOntologyLifecycleSpec:
+    return _spec_for(
+        mapping,
+        revision_id="market_ontology.v2",
         predecessor_revision_id="market_ontology.v1",
-        successor_mapping_id="world_scope_mapping.v2",
         predecessor_mapping_id="world_scope_mapping.v1",
         predecessor_mapping_sha256=predecessor_mapping_sha256,
     )
@@ -244,13 +279,29 @@ def test_boot_supersedes_persisted_predecessor_without_in_place_conflict(tmp_pat
 
     v1_mapping = WorldScopeMapping(
         mapping_id="world_scope_mapping.v1",
-        entries=(_entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),),
+        entries=(
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+        ),
     )
     v2_mapping = WorldScopeMapping(
         mapping_id="world_scope_mapping.v2",
         entries=(
-            _entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),
-            _entry(market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"),
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+            _entry(
+                market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"
+            ),
         ),
     )
     path = tmp_path / "world_model.db"
@@ -260,7 +311,7 @@ def test_boot_supersedes_persisted_predecessor_without_in_place_conflict(tmp_pat
             store,
             v1_mapping,
             revision_id="market_ontology.v1",
-            lifecycle_spec=_predecessor_spec(),
+            lifecycle_spec=_predecessor_spec(v1_mapping),
         )
         first = predecessor.ensure_published(now=CUTOFF)
         assert first.status == "ready"
@@ -268,7 +319,7 @@ def test_boot_supersedes_persisted_predecessor_without_in_place_conflict(tmp_pat
         successor = WorldOntologyBootstrapService(
             store,
             v2_mapping,
-            lifecycle_spec=_successor_spec(predecessor_mapping_sha256=v1_mapping.content_sha256),
+            lifecycle_spec=_successor_spec(v2_mapping, predecessor_mapping_sha256=v1_mapping.content_sha256),
         )
         pending = successor.readiness(CUTOFF)
         assert pending.status == "unpublished"
@@ -300,13 +351,29 @@ def test_v1_id_with_wrong_mapping_hash_is_drifted_and_never_superseded(tmp_path:
 
     v1_mapping = WorldScopeMapping(
         mapping_id="world_scope_mapping.v1",
-        entries=(_entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),),
+        entries=(
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+        ),
     )
     v2_mapping = WorldScopeMapping(
         mapping_id="world_scope_mapping.v2",
         entries=(
-            _entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),
-            _entry(market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"),
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+            _entry(
+                market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"
+            ),
         ),
     )
     assert v1_mapping.content_sha256 != WORLD_SCOPE_MAPPING_PREDECESSOR_SHA256
@@ -317,7 +384,7 @@ def test_v1_id_with_wrong_mapping_hash_is_drifted_and_never_superseded(tmp_path:
             store,
             v1_mapping,
             revision_id="market_ontology.v1",
-            lifecycle_spec=_predecessor_spec(),
+            lifecycle_spec=_predecessor_spec(v1_mapping),
         )
         first = predecessor.ensure_published(now=CUTOFF)
         assert first.status == "ready"
@@ -341,22 +408,78 @@ def test_v1_id_with_wrong_mapping_hash_is_drifted_and_never_superseded(tmp_path:
 def test_same_revision_id_hash_drift_stays_a_conflict(tmp_path: Path) -> None:
     first_mapping = WorldScopeMapping(
         mapping_id="world_scope_mapping.v2",
-        entries=(_entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),),
+        entries=(
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+        ),
     )
     drifted = WorldScopeMapping(
         mapping_id="world_scope_mapping.v2",
         entries=(
-            _entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),
-            _entry(market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"),
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+            _entry(
+                market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"
+            ),
         ),
     )
     path = tmp_path / "world_model.db"
     store = WorldGraphStore(path, clock=lambda: CUTOFF)
     try:
-        WorldOntologyBootstrapService(store, first_mapping).ensure_published(now=CUTOFF)
-        drifted_service = WorldOntologyBootstrapService(store, drifted)
+        first_spec = _successor_spec(first_mapping, predecessor_mapping_sha256="0" * 64)
+        WorldOntologyBootstrapService(store, first_mapping, lifecycle_spec=first_spec).ensure_published(now=CUTOFF)
+        drifted_service = WorldOntologyBootstrapService(store, drifted, lifecycle_spec=first_spec)
         assert drifted_service.readiness(CUTOFF).status == "drifted"
         with pytest.raises(ValueError, match="conflict"):
             drifted_service.ensure_published(now=CUTOFF)
     finally:
         store.close()
+
+
+def test_committed_bootstrap_binds_frozen_ontology_hash_and_refuses_synthetic_v2(tmp_path: Path) -> None:
+    from trader.domain.world_feature_contract import WORLD_GRAPH_V3_ONTOLOGY_SHA256
+
+    mapping = WorldScopeResolver.load(CONFIG_DIR).mapping
+    path = tmp_path / "world_model.db"
+    store = WorldGraphStore(path, clock=lambda: CUTOFF)
+    try:
+        service = WorldOntologyBootstrapService(store, mapping)
+        expected = service.expected_revision()
+        assert expected.content_sha256 == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+        ready = service.ensure_published(now=CUTOFF)
+        assert ready.status == "ready"
+        assert ready.ontology_hash == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    finally:
+        store.close()
+
+    synthetic = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v2",
+        entries=(
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+        ),
+    )
+    drifted_path = tmp_path / "drifted.db"
+    drifted_store = WorldGraphStore(drifted_path, clock=lambda: CUTOFF)
+    try:
+        drifted = WorldOntologyBootstrapService(drifted_store, synthetic)
+        assert drifted.readiness(CUTOFF).status == "drifted"
+        with pytest.raises(ValueError, match="conflict"):
+            drifted.ensure_published(now=CUTOFF)
+    finally:
+        drifted_store.close()

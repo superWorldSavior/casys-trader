@@ -36,6 +36,9 @@ from trader.domain.world_macro import (
     MACRO_TRANSFORM_VERSION,
     WORLD_MACRO_COLLECTION_PLAN_ID,
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
+    MacroObservationProvenance,
+    committed_macro_collection_plan,
+    require_committed_macro_collection_plan,
     MacroCategoryValue,
     MacroCollectionCompleted,
     MacroCollectionEvent,
@@ -327,6 +330,10 @@ def test_collection_plan_owns_typed_targets_bound_to_registry_identity() -> None
     drifted = MacroSourceRegistry(registry_version="macro_sources.v2-test", entries=registry.entries)
     with pytest.raises(ValueError, match="exact source registry"):
         plan.bind_registry(drifted)
+    with pytest.raises(ValueError, match="committed identity"):
+        require_committed_macro_collection_plan(plan)
+    with pytest.raises(ValueError, match="committed identity"):
+        committed_macro_collection_plan(registry)
     with pytest.raises(FrozenInstanceError):
         plan.targets = ()  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
@@ -1073,3 +1080,20 @@ def test_unmapped_search_fails_closed_and_does_not_borrow_world() -> None:
     )
     assert unmapped.ancestry == ()
     assert unmapped.select((world,), cutoff_at=CUTOFF) is None
+
+
+def test_selection_provenance_round_trips_without_restamping_origin() -> None:
+    world = _envelope(_observation(scope=_scope(kind="world", entity_id="market")))
+    plan = MacroContextSearchPlan.from_resolution(_resolution())
+    selected = plan.select((world,), cutoff_at=CUTOFF)
+    assert selected is not None
+    provenance = selected.provenance()
+    assert provenance.origin_scope == world.observation.scope
+    assert provenance.ancestry_distance == 3
+    assert provenance.producer_version == MACRO_PRODUCER_VERSION
+    assert provenance.observation_id == world.observation.observation_id
+    assert provenance.fact_refs == world.observation.fact_refs
+    replayed = MacroObservationProvenance.from_source_refs(provenance.to_source_refs())
+    assert replayed == provenance
+    assert "ancestry_distance:3" in provenance.to_source_refs()
+    assert "origin_scope:world:market" in provenance.to_source_refs()

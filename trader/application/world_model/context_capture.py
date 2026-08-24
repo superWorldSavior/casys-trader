@@ -39,6 +39,7 @@ from trader.domain.world_episode import (
     completed_bar_cutoff,
     parse_utc_timestamp,
 )
+from trader.domain.world_macro import MacroObservationProvenance
 
 
 class WorldContextSource(Protocol):
@@ -262,28 +263,41 @@ def _proof(kind: str, evidence: SensorEvidence) -> dict[str, object]:
         proof["content_sha256"] = evidence.artifact.content_sha256
         if evidence.artifact.valid_until is not None:
             proof["valid_until"] = evidence.artifact.valid_until.isoformat()
+        try:
+            provenance = MacroObservationProvenance.from_source_refs(evidence.artifact.source_refs)
+        except (TypeError, ValueError):
+            provenance = None
+        else:
+            proof["origin_scope"] = provenance.origin_scope.to_dict()
+            proof["producer_version"] = provenance.producer_version
+            if provenance.ancestry_distance is not None:
+                proof["ancestry_distance"] = provenance.ancestry_distance
+            if provenance.mapping_id is not None:
+                proof["mapping_id"] = provenance.mapping_id
+                proof["mapping_sha256"] = provenance.mapping_sha256
     resolution = None
     payload = evidence.payload
     if payload is not None:
         raw = payload.get("scope_resolution")
         if isinstance(raw, Mapping):
             resolution = raw
-        origin = payload.get("origin_scope")
-        if isinstance(origin, Mapping):
-            proof["origin_scope"] = dict(origin)
-        distance = payload.get("ancestry_distance")
-        if isinstance(distance, int) and not isinstance(distance, bool):
-            proof["ancestry_distance"] = distance
-        producer_version = str(payload.get("producer_version") or "").strip()
-        if producer_version:
-            proof["producer_version"] = producer_version
+        if "origin_scope" not in proof:
+            origin = payload.get("origin_scope")
+            if isinstance(origin, Mapping):
+                proof["origin_scope"] = dict(origin)
+            distance = payload.get("ancestry_distance")
+            if isinstance(distance, int) and not isinstance(distance, bool):
+                proof["ancestry_distance"] = distance
+            producer_version = str(payload.get("producer_version") or "").strip()
+            if producer_version:
+                proof["producer_version"] = producer_version
     if resolution is not None:
         mapping_id = str(resolution.get("mapping_id") or "").strip()
         mapping_sha256 = str(resolution.get("mapping_sha256") or "").strip()
         status = str(resolution.get("resolution_status") or resolution.get("status") or "").strip()
-        if mapping_id:
+        if mapping_id and "mapping_id" not in proof:
             proof["mapping_id"] = mapping_id
-        if mapping_sha256:
+        if mapping_sha256 and "mapping_sha256" not in proof:
             proof["mapping_sha256"] = mapping_sha256
         if status:
             proof["resolution_status"] = status

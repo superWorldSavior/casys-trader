@@ -301,10 +301,60 @@ def test_collection_plan_is_source_backed_deterministic_and_excludes_unsourced_v
     }
     assert ids < mapping_ids
     inspect_source = inspect.getsource(collection_plan)
+    assert "committed_macro_collection_plan" in inspect_source
     assert "control_scopes" not in inspect_source
     assert "WORLD_MARKET_CONTROL_SCOPE" not in inspect_source
     assert "scope_mapping" not in inspect.getsource(collection_scopes)
     assert "mapping_entry" not in inspect.getsource(collection_scopes)
+
+
+def test_collection_plan_fails_closed_when_registry_drifts_from_committed_identity() -> None:
+    from trader.domain.world_macro import MacroSourceRegistry, MacroSourceRegistryEntry, committed_macro_collection_plan
+    from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
+    from trader.runtime.world_macro_runtime import collection_plan
+
+    bundle = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
+    extra = MacroSourceRegistryEntry(
+        source_id="drifted_extra",
+        provider_id="official_provider",
+        provider_entity_id="DRIFT/EXTRA",
+        canonical_scope=MacroScope(kind="world", entity_id="market"),
+        adapter_version="official_provider.v1",
+        fact_kind="series_point",
+        metric_key="policy_rate",
+    )
+    drifted = MacroSourceRegistry(
+        registry_version=bundle.registry.registry_version,
+        entries=(*bundle.registry.entries, extra),
+    )
+    with pytest.raises(ValueError, match="committed identity"):
+        committed_macro_collection_plan(drifted)
+
+    class _Drifted:
+        registry = drifted
+
+    with pytest.raises(ValueError, match="committed identity"):
+        collection_plan(_Drifted())
+
+
+def test_live_bridge_lineage_binds_derived_ontology_and_collection_plan() -> None:
+    from trader.application.world_model.ontology_bootstrap import derive_market_ontology
+    from trader.domain.world_graph_bridge_lifecycle import (
+        committed_macro_graph_bridge_successor_spec,
+        require_committed_live_bridge_lineage,
+    )
+    from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
+    from trader.runtime.world_macro_runtime import collection_plan
+
+    bundle = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
+    plan = collection_plan(bundle)
+    _, _, revision = derive_market_ontology(bundle.scope_mapping)
+    spec = require_committed_live_bridge_lineage(
+        mapping=bundle.scope_mapping,
+        ontology=revision,
+        collection_plan=plan,
+    )
+    assert spec == committed_macro_graph_bridge_successor_spec()
 
 
 def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
@@ -353,7 +403,7 @@ def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
             return SimpleNamespace(status="ready")
 
         def expected_revision(self) -> object:
-            return SimpleNamespace(revision_id="market_ontology.v2")
+            return revision
 
     monkeypatch.setattr(
         "trader.application.world_model.ontology_bootstrap.WorldOntologyBootstrapService",
@@ -526,11 +576,15 @@ def test_graph_v3_flag_defaults_off_and_collect_does_not_create_graph_relations(
 
 
 def _stub_ontology_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    from trader.application.world_model.ontology_bootstrap import derive_market_ontology
+    from trader.infrastructure.market_sources.world_macro import load_world_macro_operator_configs
+
+    revision = derive_market_ontology(load_world_macro_operator_configs(config_dir=CONFIG_DIR).scope_mapping)[2]
     monkeypatch.setattr(
         "trader.application.world_model.ontology_bootstrap.WorldOntologyBootstrapService",
         lambda *_args, **_kwargs: SimpleNamespace(
             ensure_published=lambda **_k: SimpleNamespace(status="ready"),
-            expected_revision=lambda: SimpleNamespace(revision_id="market_ontology.v2"),
+            expected_revision=lambda: revision,
         ),
     )
 
