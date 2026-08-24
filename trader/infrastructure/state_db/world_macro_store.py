@@ -82,6 +82,11 @@ _EVENT_ORDER = {
     "macro_observation_published": 3,
     "macro_collection_completed": 4,
 }
+_SUBJECT_IDENTITY_FIELDS = {
+    MACRO_COLLECTION_EVENT_SUBJECT_KIND: "event_id",
+    MACRO_WORLD_OBSERVATION_SUBJECT_KIND: "observation_id",
+    MACRO_SOURCE_FACT_SUBJECT_KIND: "fact_version_id",
+}
 
 
 def _utc(value: datetime, *, field_name: str = "clock") -> datetime:
@@ -276,11 +281,12 @@ class WorldMacroStore:
     def load(self, run_id: MacroCollectionRunId) -> tuple[MacroCollectionEvent, ...]:
         if not isinstance(run_id, MacroCollectionRunId):
             raise TypeError("run_id must be MacroCollectionRunId")
+        observations = self._proven_observation_index()
         events: list[MacroCollectionEvent] = []
         for payload, receipt in self._iter_proven_event_rows():
             if str(payload.get("run_id") or "") != run_id.value:
                 continue
-            event = self._rehydrate_event(payload, receipt)
+            event = self._rehydrate_event(payload, receipt, observations=observations)
             if event is None:
                 continue
             events.append(event)
@@ -424,12 +430,14 @@ class WorldMacroStore:
         self,
         payload: Mapping[str, Any],
         receipt: WorldAvailabilityReceipt,
+        *,
+        observations: Mapping[str, tuple[MacroWorldObservation, WorldAvailabilityReceipt]] | None = None,
     ) -> MacroCollectionEvent | None:
         event_type = str(payload.get("event_type") or "")
         try:
             if event_type == "macro_observation_published":
                 observation_id = str(payload.get("observation_id") or "")
-                envelope = self._published_envelope(observation_id)
+                envelope = self._published_envelope(observation_id, observations=observations)
                 if envelope is None:
                     return None
                 event = parse_macro_collection_event({**dict(payload), "envelope": envelope})
@@ -443,50 +451,103 @@ class WorldMacroStore:
             return None
         return event
 
-    def _published_envelope(self, observation_id: str) -> MacroObservationEnvelope | None:
+    def _published_envelope(
+        self,
+        observation_id: str,
+        *,
+        observations: Mapping[str, tuple[MacroWorldObservation, WorldAvailabilityReceipt]] | None = None,
+    ) -> MacroObservationEnvelope | None:
         if not observation_id:
             return None
+        index = observations if observations is not None else self._proven_observation_index()
+        pair = index.get(observation_id)
+        if pair is None:
+            return None
+        observation, receipt = pair
+        return self._observation_envelope(
+            observation,
+            receipt,
+            first_seen_at=self._remember_receipt(receipt),
+        )
+
+    def _proven_observation_index(
+        self,
+    ) -> dict[str, tuple[MacroWorldObservation, WorldAvailabilityReceipt]]:
+        index: dict[str, tuple[MacroWorldObservation, WorldAvailabilityReceipt]] = {}
         for observation, receipt in self._iter_proven_observations():
-            if observation.observation_id != observation_id:
-                continue
-            return self._observation_envelope(
-                observation,
-                receipt,
-                first_seen_at=self._remember_receipt(receipt),
-            )
-        return None
+            index[observation.observation_id] = (observation, receipt)
+        return index
 
     def _iter_joined_subjects(
         self, kind: str
     ) -> Iterator[tuple[dict[str, Any], WorldAvailabilityReceipt]]:
         grouped: dict[str, list[WorldAvailabilityReceipt]] = {}
+        locators: dict[str, None] = {}
         for receipt in self._iter_parsed_receipts():
             if receipt.subject.kind != kind:
                 continue
             grouped.setdefault(receipt.subject.subject_id, []).append(receipt)
+            locator = receipt.storage_locator
+            if locator.kind == "jsonl" and locator.store_id == WORLD_MACRO_STORE_ID and locator.path:
+                locators[locator.path] = None
         for receipts in grouped.values():
             if len(receipts) > 1:
                 raise ValueError("multiple availability receipts for the same subject")
-            payload = self._history_payload_for(receipts[0])
+        payloads_by_locator = {
+            locator_path: self._index_history_payloads(locator_path) for locator_path in locators
+        }
+        identity_field = _SUBJECT_IDENTITY_FIELDS.get(kind)
+        for receipts in grouped.values():
+            receipt = receipts[0]
+            payload = self._payload_for_receipt(
+                receipt,
+                payloads_by_locator=payloads_by_locator,
+                identity_field=identity_field,
+            )
             if payload is None:
                 continue
-            yield payload, receipts[0]
+            yield payload, receipt
+
+    def _index_history_payloads(self, locator_path: str) -> dict[str, dict[str, Any]]:
+        history = self._resolve_under_root(locator_path)
+        if history is None or not history.is_file():
+            return {}
+        indexed: dict[str, dict[str, Any]] = {}
+        for row in read_jsonl_objects(history):
+            digest = world_subject_content_sha256(row)
+            indexed.setdefault(digest, dict(row))
+        return indexed
+
+    def _payload_for_receipt(
+        self,
+        receipt: WorldAvailabilityReceipt,
+        *,
+        payloads_by_locator: Mapping[str, Mapping[str, dict[str, Any]]],
+        identity_field: str | None,
+    ) -> dict[str, Any] | None:
+        locator = receipt.storage_locator
+        if locator.kind != "jsonl" or locator.store_id != WORLD_MACRO_STORE_ID or not locator.path:
+            return None
+        indexed = payloads_by_locator.get(locator.path)
+        if indexed is None:
+            return None
+        payload = indexed.get(receipt.subject.content_sha256)
+        if payload is None:
+            return None
+        if identity_field is not None and str(payload.get(identity_field) or "") != receipt.subject.subject_id:
+            return None
+        return dict(payload)
 
     def _history_payload_for(self, receipt: WorldAvailabilityReceipt) -> dict[str, Any] | None:
         locator = receipt.storage_locator
         if locator.kind != "jsonl" or locator.store_id != WORLD_MACRO_STORE_ID or not locator.path:
             return None
-        history = self._resolve_under_root(locator.path)
-        if history is None or not history.is_file():
-            return None
-        matches = [
-            row
-            for row in read_jsonl_objects(history)
-            if world_subject_content_sha256(row) == receipt.subject.content_sha256
-        ]
-        if not matches:
-            return None
-        return dict(matches[0])
+        identity_field = _SUBJECT_IDENTITY_FIELDS.get(receipt.subject.kind)
+        return self._payload_for_receipt(
+            receipt,
+            payloads_by_locator={locator.path: self._index_history_payloads(locator.path)},
+            identity_field=identity_field,
+        )
 
     def _unique_history_row(self, relative_dir: str, identity_field: str, identity: str) -> dict[str, Any] | None:
         found: dict[str, Any] | None = None
@@ -526,7 +587,7 @@ class WorldMacroStore:
         if not self._root.exists():
             return
         for path in sorted(self._root.rglob("*.jsonl")):
-            if not path.is_file():
+            if not path.is_file() or path.parent.name != "availability_receipts":
                 continue
             for row in load_receipts(path):
                 parsed = parse_world_availability_receipt(row)

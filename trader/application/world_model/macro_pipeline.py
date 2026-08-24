@@ -10,7 +10,6 @@ runtime, and reporting stay behind the ports.
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +21,7 @@ from trader.application.world_model.macro_ports import (
     MacroSourcePort,
     WorldMacroObservationReader,
 )
+from trader.application.world_model.source_deadline import source_only_deadline
 from trader.domain.world_availability import (
     AvailabilityEvidence,
     PersistedWorldRef,
@@ -110,26 +110,10 @@ def _read_facts_bounded(
         raise ValueError("missing")
     if timeout_s is None or timeout_s <= 0:
         return tuple(port.read_facts(scope, observed_at))
-    box: dict[str, object] = {}
-
-    def _run() -> None:
-        try:
-            box["facts"] = tuple(port.read_facts(scope, observed_at))
-        except Exception as exc:  # noqa: BLE001 - preserve source-specific failure
-            box["error"] = exc
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    thread.join(timeout=float(timeout_s))
-    if thread.is_alive():
-        raise TimeoutError("timeout")
-    error = box.get("error")
-    if isinstance(error, Exception):
-        raise error
-    facts = box.get("facts")
-    if not isinstance(facts, tuple):
-        raise TimeoutError("timeout")
-    return facts
+    return source_only_deadline().run(
+        lambda: tuple(port.read_facts(scope, observed_at)),
+        timeout_s=float(timeout_s),
+    )
 
 
 def project_macro_world_observation(

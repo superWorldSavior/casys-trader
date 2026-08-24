@@ -387,43 +387,37 @@ def test_retry_after_cannot_exceed_provider_timeout() -> None:
     assert all(delay <= 5.0 for delay in sleeps)
 
 
-def test_provider_get_cannot_keep_coalescing_worker_alive_past_timeout() -> None:
+def test_provider_rate_limiter_uses_transport_timeout_without_extra_threads() -> None:
+    import inspect
+
     from trader.infrastructure.market_sources.world_macro.series import (
-        MacroSourceFetchError,
+        MacroHttpResponse,
         ProviderRateLimiter,
     )
 
-    class Hang:
-        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> object:
-            del url, timeout_s, headers
-            threading.Event().wait()
-            raise AssertionError("hanging transport resumed")
+    seen: dict[str, float] = {}
+
+    class Capture:
+        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> MacroHttpResponse:
+            del url, headers
+            seen["timeout_s"] = timeout_s
+            return MacroHttpResponse(status=200, body="{}", headers={})
 
     limiter = ProviderRateLimiter(
         min_interval_s=0.0,
         retry_max=0,
         honor_retry_after=True,
         timeout_s=0.2,
-        transport=Hang(),  # type: ignore[arg-type]
+        transport=Capture(),  # type: ignore[arg-type]
         clock=lambda: OBSERVED_AT,
         sleeper=lambda _seconds: None,
     )
-    result: list[object] = []
-
-    def _run() -> None:
-        try:
-            limiter.get("https://example.test/hang")
-            result.append("returned")
-        except Exception as exc:  # noqa: BLE001
-            result.append(exc)
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    thread.join(1.0)
-    assert not thread.is_alive()
-    assert result
-    assert isinstance(result[0], MacroSourceFetchError)
-    assert "timeout" in str(result[0]).lower()
+    response = limiter.get("https://example.test/ok")
+    assert response.status == 200
+    assert seen["timeout_s"] == 0.2
+    source = inspect.getsource(ProviderRateLimiter)
+    assert "threading.Thread" not in source
+    assert "_bounded_transport_get" not in source
 
 
 def test_http_429_honors_retry_after_retries_once_then_missing() -> None:

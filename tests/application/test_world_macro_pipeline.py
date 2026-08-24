@@ -1052,13 +1052,28 @@ def test_hanging_source_is_target_local_timeout_and_does_not_block_sibling_sourc
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    assert done.wait(2.0)
-    assert len(runs) == 2
-    us_run, world_run = runs
-    assert us_run.status == "failed"
-    failed = next(event for event in us_run.events if isinstance(event, MacroSourceFailed))
-    assert failed.source_id == "fed_policy_rate"
-    assert failed.reason == "timeout"
-    assert world_run.expected_source_ids == ("brent", "broad_usd_index")
-    assert brent.calls == [(world_target.scope, CUTOFF)]
-    assert usd.calls == [(world_target.scope, CUTOFF)]
+    try:
+        assert done.wait(2.0)
+        assert len(runs) == 2
+        us_run, world_run = runs
+        assert us_run.status == "failed"
+        failed = next(event for event in us_run.events if isinstance(event, MacroSourceFailed))
+        assert failed.source_id == "fed_policy_rate"
+        assert failed.reason == "timeout"
+        assert world_run.expected_source_ids == ("brent", "broad_usd_index")
+        assert brent.calls == [(world_target.scope, CUTOFF)]
+        assert usd.calls == [(world_target.scope, CUTOFF)]
+        from trader.application.world_model import macro_pipeline as pipeline_mod
+        from trader.application.world_model.source_deadline import BoundedSourceDeadline, source_only_deadline
+
+        deadline = source_only_deadline()
+        assert isinstance(deadline, BoundedSourceDeadline)
+        assert deadline.max_workers >= 7
+        bounded_src = inspect.getsource(pipeline_mod._read_facts_bounded)
+        assert "source_only_deadline" in bounded_src
+        assert "threading.Thread(" not in bounded_src
+        owner_src = inspect.getsource(BoundedSourceDeadline)
+        assert "ThreadPoolExecutor" not in owner_src
+        assert "BoundedSemaphore" in owner_src
+    finally:
+        hang.set()

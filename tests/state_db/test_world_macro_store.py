@@ -12,6 +12,8 @@ from trader.domain.world_availability import (
     AvailabilityEvidence,
     PersistedWorldRef,
     PointInTimeEligibilityPolicy,
+    WorldAvailabilitySubjectRef,
+    WorldStorageLocator,
     world_subject_content_sha256,
 )
 from trader.domain.world_macro import (
@@ -42,13 +44,19 @@ from trader.domain.world_macro import (
     reconcile_macro_world_observation,
 )
 from trader.infrastructure.state_db import availability_receipt as receipt_mod
+from trader.infrastructure.state_db._jsonl_store import jsonl_dumps
 from trader.infrastructure.state_db.availability_receipt import (
     WorldAvailabilityJsonlReceiptStore,
+    _seal_world_availability_receipt,
     load_receipts,
     parse_world_availability_receipt,
 )
 from trader.domain.world_graph import MacroObservationCursor
-from trader.infrastructure.state_db.world_macro_store import WORLD_MACRO_STORE_ID, WorldMacroStore
+from trader.infrastructure.state_db.world_macro_store import (
+    MACRO_COLLECTION_EVENT_SUBJECT_KIND,
+    WORLD_MACRO_STORE_ID,
+    WorldMacroStore,
+)
 
 
 UTC = timezone.utc
@@ -727,3 +735,135 @@ def test_cursor_ordinal_is_store_assigned_and_first_seen_cannot_move_it(tmp_path
     assert restarted.cursor_for(replay.observation.observation_id) == cursor
     assert "first_seen_at" not in cursor.to_dict()
     assert "ready_at" not in cursor.to_dict()
+
+
+def _count_jsonl_reads(monkeypatch, path: Path) -> dict[str, int]:
+    import trader.infrastructure.state_db.world_macro_store as store_mod
+
+    reads: dict[str, int] = {}
+    real = store_mod.read_jsonl_objects
+    target = path.resolve()
+
+    def counting(candidate):
+        resolved = Path(candidate).resolve()
+        if resolved == target:
+            reads[str(resolved)] = reads.get(str(resolved), 0) + 1
+        return real(candidate)
+
+    monkeypatch.setattr(store_mod, "read_jsonl_objects", counting)
+    return reads
+
+
+def _bulk_failed_events(root: Path, *, run_id: str, count: int) -> None:
+    history_rel = "runs/events/2026-08-23.jsonl"
+    history = root / history_rel
+    receipt_path = root / "runs" / "availability_receipts" / "2026-08-23.jsonl"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    locator = WorldStorageLocator(kind="jsonl", store_id=WORLD_MACRO_STORE_ID, path=history_rel)
+    history_chunks: list[str] = []
+    receipt_chunks: list[str] = []
+    for index in range(count):
+        event = MacroSourceFailed(run_id=run_id, source_id=f"src{index:04d}", reason="unavailable")
+        payload = event.to_dict()
+        history_chunks.append(jsonl_dumps(payload))
+        subject = WorldAvailabilitySubjectRef(
+            kind=MACRO_COLLECTION_EVENT_SUBJECT_KIND,
+            subject_id=event.event_id,
+            content_sha256=world_subject_content_sha256(payload),
+        )
+        sealed = _seal_world_availability_receipt(
+            subject,
+            scope=run_id,
+            storage_locator=locator,
+            ready_at=READY,
+        )
+        receipt_chunks.append(jsonl_dumps(sealed.to_dict()))
+    with history.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(history_chunks) + "\n")
+    with receipt_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(receipt_chunks) + "\n")
+
+
+def test_load_reads_shared_history_file_a_bounded_constant_times(tmp_path: Path, monkeypatch) -> None:
+    store = _store(tmp_path)
+    registered = MacroCollectionRegistered(
+        scope=_scope(),
+        cutoff_at=CUTOFF,
+        expected_source_ids=("fed_policy_rate",),
+    )
+    store.append_event(registered)
+    store.append_event(MacroCollectionStarted(run_id=registered.run_id))
+    _bulk_failed_events(tmp_path, run_id=registered.run_id, count=2000)
+    history = (tmp_path / "runs" / "events" / "2026-08-23.jsonl").resolve()
+    assert sum(1 for _ in history.open()) >= 2000
+    reads = _count_jsonl_reads(monkeypatch, history)
+    loaded = WorldMacroStore(tmp_path, clock=lambda: READY).load(MacroCollectionRunId(registered.run_id))
+    assert len(loaded) == 2002
+    assert reads.get(str(history), 0) <= 2
+    assert loaded[0].event_type == "macro_collection_registered"
+    assert loaded[1].event_type == "macro_collection_started"
+    assert loaded[-1].event_type == "macro_source_failed"
+
+
+def test_load_published_envelope_does_not_reread_observation_history_per_event(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _store(tmp_path)
+    fact = _fact()
+    observation = _observation(fact=fact)
+    store.append_fact(fact)
+    envelope, run_id = _publish_partial_run(store, fact=fact, observation=observation)
+    for index in range(80):
+        store.append_observation(
+            _observation(fact=fact, scope=_scope(kind="country", entity_id=f"iso-3166:X{index:02d}"))
+        )
+    history = (tmp_path / "observations" / "2026-08-23.jsonl").resolve()
+    reads = _count_jsonl_reads(monkeypatch, history)
+    loaded = WorldMacroStore(tmp_path, clock=lambda: READY).load(MacroCollectionRunId(run_id))
+    published = next(event for event in loaded if event.event_type == "macro_observation_published")
+    assert published.envelope.observation.observation_id == envelope.observation.observation_id
+    assert reads.get(str(history), 0) <= 2
+
+
+def test_duplicate_receipts_fail_closed_on_load(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    registered = MacroCollectionRegistered(
+        scope=_scope(),
+        cutoff_at=CUTOFF,
+        expected_source_ids=("fed_policy_rate",),
+    )
+    store.append_event(registered)
+    receipt_path = tmp_path / "runs" / "availability_receipts" / "2026-08-23.jsonl"
+    rows = load_receipts(receipt_path)
+    assert len(rows) == 1
+    receipt_path.write_text(
+        json.dumps(rows[0], sort_keys=True) + "\n" + json.dumps(rows[0], sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="multiple availability receipts"):
+        WorldMacroStore(tmp_path, clock=lambda: READY).load(MacroCollectionRunId(registered.run_id))
+
+
+def test_tampered_event_history_is_excluded_and_matching_load_stays_equivalent(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    registered = MacroCollectionRegistered(
+        scope=_scope(),
+        cutoff_at=CUTOFF,
+        expected_source_ids=("fed_policy_rate",),
+    )
+    started = MacroCollectionStarted(run_id=registered.run_id)
+    store.append_event(registered)
+    store.append_event(started)
+    honest = WorldMacroStore(tmp_path, clock=lambda: READY).load(MacroCollectionRunId(registered.run_id))
+    assert [event.event_type for event in honest] == ["macro_collection_registered", "macro_collection_started"]
+    history = tmp_path / "runs" / "events" / "2026-08-23.jsonl"
+    rows = _history_rows(history)
+    rows[1]["source_id"] = "forged"
+    history.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    tampered = WorldMacroStore(tmp_path, clock=lambda: READY).load(MacroCollectionRunId(registered.run_id))
+    assert [event.event_type for event in tampered] == ["macro_collection_registered"]
+    assert tampered[0].event_id == honest[0].event_id
