@@ -1,14 +1,14 @@
 schema_version: world_graph_v3.v1
-content_sha256: "f642b3bda5f0985a4d8e27f872b0da5dc904f8c10588e5d0155798f28ec11d6e"
+content_sha256: "e8d1df0df1badfdd9c2004ae4cf9eacb9605347abacbd63563a844dcfe16ab84"
 authority: shadow_only
 decision_effect: none
 causal_claim: false
-ontology_revision: market_ontology.v1
+ontology_revision: market_ontology.v2
 traversal_policy_version: graph_traversal.v1
 
 scope_mapping:
-  mapping_id: world_scope_mapping.v1
-  mapping_sha256: "b2393ea7d1812e4d3d82e37858b71c3cac19079ef35a23212b16914f1f8661c6"
+  mapping_id: world_scope_mapping.v2
+  mapping_sha256: "e1289a4a86e5cb07600cb3ac45122b170f1a0bb249db2fbb6e5c093a4a8a501b"
 
 instrument_id_rule: "mic:<MIC>:symbol:<universe_symbol>"
 issuer_identity:

@@ -4,6 +4,8 @@ import ast
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.graph_ports import WorldOntologyReadinessPort
 from trader.application.world_model.graph_snapshot import expected_scope_heads
@@ -16,6 +18,13 @@ from trader.application.world_model.ontology_bootstrap import (
 from trader.application.world_model.ontology_service import WorldOntologyService
 from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 from trader.domain.world_graph import WorldEntityRef, WorldStructuralRelationRef
+from trader.domain.world_ontology_lifecycle import WorldOntologyLifecycleSpec
+from trader.domain.world_scope import (
+    WorldCanonicalScopeRef,
+    WorldMarketAnchorRef,
+    WorldScopeMapping,
+    WorldScopeMappingEntry,
+)
 from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
 
 
@@ -71,6 +80,7 @@ def test_derive_market_ontology_uses_exact_mapping_heads_without_issuer_or_suffi
     assert actual == expected_scope_heads(mapping)
     instrument_ids = {entity.entity_id for entity in entities if entity.kind == "instrument"}
     assert any(item.endswith(":symbol:2301.TW") for item in instrument_ids)
+    assert any(item.endswith(":symbol:GM") for item in instrument_ids)
     assert not any(item.endswith(":symbol:2301") for item in instrument_ids)
     assert revision.revision_id == MARKET_ONTOLOGY_REVISION_ID
     assert revision.scope_mapping_id == mapping.mapping_id
@@ -191,3 +201,103 @@ def test_unmapped_instrument_is_not_invented_by_bootstrap() -> None:
     unknown = WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:9999")
     assert unknown not in entities
     assert all(not entity.entity_id.endswith(":symbol:9999") for entity in entities)
+
+
+def _scope(kind: str, entity_id: str) -> WorldCanonicalScopeRef:
+    return WorldCanonicalScopeRef(kind=kind, entity_id=entity_id)
+
+
+def _entry(*, market_venue: str, instrument: str, venue: str, country: str, region: str) -> WorldScopeMappingEntry:
+    return WorldScopeMappingEntry(
+        anchor=WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument),
+        venue=_scope("venue", venue),
+        country=_scope("country", country),
+        region=_scope("region", region),
+        world=_scope("world", "market"),
+        provider_proofs=(f"provider:{instrument}",),
+        taxonomy_version="sessions_mic.v1",
+    )
+
+
+def _predecessor_spec() -> WorldOntologyLifecycleSpec:
+    return WorldOntologyLifecycleSpec(
+        successor_revision_id="market_ontology.v1",
+        predecessor_revision_id="market_ontology.v0",
+        successor_mapping_id="world_scope_mapping.v1",
+        predecessor_mapping_id="world_scope_mapping.v0",
+    )
+
+
+def test_boot_supersedes_persisted_predecessor_without_in_place_conflict(tmp_path: Path) -> None:
+    from trader.domain.world_graph import WorldOntologyRevisionPublished, WorldOntologyRevisionSuperseded
+
+    v1_mapping = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(_entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),),
+    )
+    v2_mapping = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v2",
+        entries=(
+            _entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),
+            _entry(market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"),
+        ),
+    )
+    path = tmp_path / "world_model.db"
+    store = WorldGraphStore(path, clock=lambda: CUTOFF)
+    try:
+        predecessor = WorldOntologyBootstrapService(
+            store,
+            v1_mapping,
+            revision_id="market_ontology.v1",
+            lifecycle_spec=_predecessor_spec(),
+        )
+        first = predecessor.ensure_published(now=CUTOFF)
+        assert first.status == "ready"
+        assert first.revision_id == "market_ontology.v1"
+        successor = WorldOntologyBootstrapService(store, v2_mapping)
+        pending = successor.readiness(CUTOFF)
+        assert pending.status == "unpublished"
+        assert pending.reason == "predecessor_published"
+        published = successor.ensure_published(now=CUTOFF)
+        assert published.status == "ready"
+        assert published.revision_id == MARKET_ONTOLOGY_REVISION_ID == "market_ontology.v2"
+        assert published.scope_mapping_id == "world_scope_mapping.v2"
+        events = [envelope.event for envelope in store.list_revision_events_available_through(CUTOFF)]
+        assert any(isinstance(event, WorldOntologyRevisionSuperseded) for event in events)
+        assert isinstance(events[-1], WorldOntologyRevisionPublished)
+        assert events[-1].revision.revision_id == "market_ontology.v2"
+        view = WorldOntologyService(store).ontology.at_cutoff(CUTOFF)
+        assert view.published_revision is not None
+        assert view.published_revision.revision_id == "market_ontology.v2"
+        again = successor.ensure_published(now=CUTOFF)
+        assert again.ontology_hash == published.ontology_hash
+        assert len(store.list_revision_events_available_through(CUTOFF)) == len(events)
+        instrument_ids = {entity.entity_id for entity in view.entities if entity.kind == "instrument"}
+        assert "mic:XTAI:symbol:2301.TW" in instrument_ids
+        assert "mic:XNYS:symbol:GM" in instrument_ids
+    finally:
+        store.close()
+
+
+def test_same_revision_id_hash_drift_stays_a_conflict(tmp_path: Path) -> None:
+    first_mapping = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v2",
+        entries=(_entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),),
+    )
+    drifted = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v2",
+        entries=(
+            _entry(market_venue="TW", instrument="2301.TW", venue="mic:XTAI", country="iso-3166:TW", region="iso-un-m49:030"),
+            _entry(market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"),
+        ),
+    )
+    path = tmp_path / "world_model.db"
+    store = WorldGraphStore(path, clock=lambda: CUTOFF)
+    try:
+        WorldOntologyBootstrapService(store, first_mapping).ensure_published(now=CUTOFF)
+        drifted_service = WorldOntologyBootstrapService(store, drifted)
+        assert drifted_service.readiness(CUTOFF).status == "drifted"
+        with pytest.raises(ValueError, match="conflict"):
+            drifted_service.ensure_published(now=CUTOFF)
+    finally:
+        store.close()

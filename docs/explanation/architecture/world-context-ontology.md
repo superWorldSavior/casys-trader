@@ -29,10 +29,13 @@ portefeuille ni recommandation. Une ablation appariée ne mesure qu'un delta
 prédictif (log-loss, Brier), sans claim économique ni claim causal.
 
 La `venue` V1/V2 est un scope marché logique (`EU`, `TW`, `US`). Le mapping
-versionné `world_scope_mapping.v1` (hash gelé dans le YAML pilote) résout
-`(market_venue, instrument)` vers les scopes canoniques (`mic`, pays,
-région). Aucun fallback `TW -> XTAI` silencieux. Un scope `unmapped` ou
-`ambiguous` produit une missingness canonique, pas une invention.
+versionné `world_scope_mapping.v2` (hash gelé dans le YAML pilote ; successeur
+append-only de `world_scope_mapping.v1`) résout `(market_venue, instrument)`
+vers les scopes canoniques (`mic`, pays, région). Aucun fallback `TW -> XTAI`
+silencieux. Un scope `unmapped` ou `ambiguous` produit une missingness
+canonique, pas une invention. L'ontologie structurelle commitée est
+`market_ontology.v2` : un ledger qui a déjà publié `market_ontology.v1` la
+supersède, il ne réécrit pas `v1`.
 
 ## Horloges point-in-time
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 from trader.domain.company import CompanyIntelligenceBrief
+from trader.domain.world_feature_contract import WORLD_SCOPE_MAPPING_ID
 from trader.domain.situation import NewsMacroBrief
 from trader.domain.world_context import NO_PROVEN_ARTIFACT_REASON, SCOPE_UNMAPPED_REASON
 from trader.domain.world_macro import (
@@ -504,7 +505,7 @@ def test_unmapped_gm_keeps_mapping_identity_and_does_not_fallback(tmp_path: Path
     assert evidence.payload is not None
     resolution = evidence.payload["scope_resolution"]
     assert resolution["status"] == "unmapped" or resolution["resolution_status"] == "unmapped"
-    assert resolution["mapping_id"] == "world_scope_mapping.v1"
+    assert resolution["mapping_id"] == WORLD_SCOPE_MAPPING_ID
     assert len(resolution["mapping_sha256"]) == 64
 
 

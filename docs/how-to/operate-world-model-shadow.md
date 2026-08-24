@@ -113,6 +113,32 @@ Un second boot est idempotent : il **ne décale pas** la fenêtre, ne
 ré-écrit pas d'épisode, et répare au plus les reçus d'availability. Relire
 `world cohort status` : `phase=collecting` et les deux timestamps gelés.
 
+## Mapping / ontologie v2 (rollout, pas de backfill)
+
+Le hot-set live n'est plus couvert par les 8 ancres exactes de
+`world_scope_mapping.v1`. Le YAML committe `world_scope_mapping.v2` +
+`market_ontology.v2` (table exacte `(market_venue, instrument)`, preuves
+suffixe/`sessions` existantes, **aucun** fallback runtime).
+`lifecycle_generation` du pilote passe à **4** : nouvelles identités de
+cohorte, les cohortes `v1` déjà terminales ne sont pas ranimées.
+
+Après déploiement du commit, **un redémarrage volontaire** du daemon :
+
+1. le boot publie `market_ontology.v2` ; si `world_model.db` a déjà
+   `market_ontology.v1`, il la **supersède** (append-only), il ne mute pas
+   le hash `v1` ;
+2. le pont macro→graphe, s'il était `blocked=config_drift`, fait un
+   **handoff** déterministe vers le spec `v2` (curseur conservé, pas de
+   double ownership, pas de backfill) ;
+3. `world graph status` / `world cohort status` doivent montrer les têtes
+   `world_scope_mapping.v2` / `market_ontology.v2` ;
+4. un symbole du hot-set sans ligne exacte reste `unmapped` (missingness),
+   jamais une invention MIC.
+
+Pas de `DELETE`/`VACUUM` du ledger. `shadow_only` / `decision_effect=none`
+/ `causal_claim=false` / `pnl_claim=false` inchangés. Si le YAML mapping
+change à mapping_id constant, le boot **conflit** — bump d'id obligatoire.
+
 ## Claims autorisés après une semaine
 
 Après sept jours de collecte supervisée, on peut dire :

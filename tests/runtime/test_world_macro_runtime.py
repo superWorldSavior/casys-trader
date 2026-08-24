@@ -381,12 +381,23 @@ def test_graph_v3_flag_defaults_off_and_collect_does_not_create_graph_relations(
             graph.close()
 
 
+def _stub_ontology_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "trader.application.world_model.ontology_bootstrap.WorldOntologyBootstrapService",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            ensure_published=lambda **_k: SimpleNamespace(status="ready"),
+            expected_revision=lambda: SimpleNamespace(revision_id="market_ontology.v2"),
+        ),
+    )
+
+
 def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from trader.runtime.world_macro_runtime import collect_world_macro, wire_world_macro_runtime
 
     monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", "1")
+    _stub_ontology_bootstrap(monkeypatch)
     calls: list[str] = []
 
     class _Bridge:
@@ -397,6 +408,10 @@ def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
         def reconcile(self, *, limit: int) -> object:
             calls.append(f"reconcile:{limit}")
             return SimpleNamespace(events=())
+
+        def handoff(self, **_kwargs: object) -> object:
+            calls.append("handoff")
+            return SimpleNamespace(events=(), active_run=None, version=1)
 
     monkeypatch.setattr(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
@@ -531,6 +546,7 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(
     from trader.runtime.world_macro_runtime import wire_world_macro_runtime
 
     monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", raising=False)
+    _stub_ontology_bootstrap(monkeypatch)
     calls: list[str] = []
 
     class _Bridge:
@@ -541,6 +557,10 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(
         def reconcile(self, *, limit: int) -> object:
             calls.append(f"reconcile:{limit}")
             return SimpleNamespace(events=())
+
+        def handoff(self, **_kwargs: object) -> object:
+            calls.append("handoff")
+            return SimpleNamespace(events=(), active_run=None, version=1)
 
     monkeypatch.setattr(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
@@ -560,6 +580,62 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(
     bundle.runner.stop()
     assert any(item.startswith("activate:") for item in calls)
     assert any(item.startswith("reconcile:") for item in calls)
+
+
+def test_graph_bridge_handoff_after_config_drift_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    _stub_ontology_bootstrap(monkeypatch)
+    calls: list[str] = []
+
+    class _Bridge:
+        def activate(self, request_id: str) -> object:
+            calls.append(f"activate:{request_id}")
+            return SimpleNamespace(events=(), active_run=None)
+
+        def reconcile(self, *, limit: int) -> object:
+            calls.append(f"reconcile:{limit}")
+            if "handoff" in calls:
+                return SimpleNamespace(
+                    events=(),
+                    active_run=SimpleNamespace(status="active", block_reason=None),
+                    version=3,
+                )
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="blocked", block_reason="config_drift"),
+                version=2,
+            )
+
+        def handoff(self, **_kwargs: object) -> object:
+            calls.append("handoff")
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="active", block_reason=None),
+                version=3,
+            )
+
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
+        lambda **_kwargs: _Bridge(),
+    )
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=FakeClock(NOW),
+        sleeper=lambda _seconds: None,
+        graph_v3_enabled=True,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="drift-handoff")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=60.0)
+    bundle.runner.stop()
+    assert any(item.startswith("activate:") for item in calls)
+    assert calls.count("handoff") == 1
+    assert calls.count("reconcile:32") == 2
 
 
 def test_typed_graph_flag_false_does_not_reread_env(

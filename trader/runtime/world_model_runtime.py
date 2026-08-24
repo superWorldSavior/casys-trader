@@ -463,7 +463,7 @@ def compose_world_ontology_attestation(
     config_dir: str | Path | None,
     clock: object | None = None,
 ) -> object | None:
-    """Compose the single market_ontology.v1 attestation. Fail-open, no fabricated heads."""
+    """Compose the single committed ontology attestation. Fail-open, no fabricated heads."""
 
     if store is None or config_dir is None:
         return None

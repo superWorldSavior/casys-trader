@@ -1,8 +1,9 @@
-"""Deterministic production bootstrap for committed market_ontology.v1.
+"""Deterministic production bootstrap for the committed market ontology.
 
 Derives instrument/venue/country/region/world entities and TRADED_ON /
 LOCATED_IN / PART_OF_WORLD heads solely from the versioned WorldScopeMapping.
 No issuer/company inference, no causal edges, no silent suffix fallback.
+A persisted predecessor revision is superseded, never rewritten in place.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from trader.application.world_model.ontology_service import (
     AssertStructuralWorldRelation,
     AssertWorldEntity,
     PublishWorldOntologyRevision,
+    SupersedeWorldOntologyRevision,
     WorldOntologyProofService,
     WorldOntologyService,
 )
@@ -31,6 +33,12 @@ from trader.domain.world_graph import (
     WorldEntityRef,
     WorldOntologyRevision,
     WorldStructuralRelationRef,
+)
+from trader.domain.world_ontology_lifecycle import (
+    WorldOntologyLifecycleSpec,
+    WorldOntologyPublicationPlan,
+    committed_world_ontology_lifecycle_spec,
+    plan_world_ontology_publication,
 )
 from trader.domain.world_scope import WorldCanonicalScopeRef, WorldScopeMapping
 
@@ -182,6 +190,7 @@ class WorldOntologyBootstrapService:
         *,
         revision_id: str = MARKET_ONTOLOGY_REVISION_ID,
         effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
+        lifecycle_spec: WorldOntologyLifecycleSpec | None = None,
     ) -> None:
         if not isinstance(mapping, WorldScopeMapping):
             raise TypeError("mapping must be WorldScopeMapping")
@@ -189,6 +198,7 @@ class WorldOntologyBootstrapService:
         self._mapping = mapping
         self._revision_id = str(revision_id).strip() or MARKET_ONTOLOGY_REVISION_ID
         self._effective_from = _utc(effective_from, "effective_from")
+        self._lifecycle_spec = lifecycle_spec or committed_world_ontology_lifecycle_spec()
         self._service = WorldOntologyService(ledger)
 
     def expected_revision(self) -> WorldOntologyRevision:
@@ -198,15 +208,37 @@ class WorldOntologyBootstrapService:
             effective_from=self._effective_from,
         )[2]
 
+    def _plan(
+        self, cutoff_at: datetime
+    ) -> tuple[WorldOntologyPublicationPlan, WorldOntologyRevision | None, WorldOntologyRevision]:
+        expected = self.expected_revision()
+        published = self._service.ontology.at_cutoff(cutoff_at).published_revision
+        return (
+            plan_world_ontology_publication(
+                published=published,
+                expected=expected,
+                spec=self._lifecycle_spec,
+            ),
+            published,
+            expected,
+        )
+
     def readiness(self, cutoff_at: datetime | str | None = None) -> WorldOntologyReadiness:
         expected = self.expected_revision()
         cutoff = _utc(cutoff_at, "cutoff_at")
         published = self._service.ontology.at_cutoff(cutoff).published_revision
-        if published is None:
-            return _readiness(status="unpublished", mapping=self._mapping, revision=expected, reason="unpublished")
-        if published.revision_id != expected.revision_id or published.content_sha256 != expected.content_sha256:
+        try:
+            plan = plan_world_ontology_publication(
+                published=published,
+                expected=expected,
+                spec=self._lifecycle_spec,
+            )
+        except ValueError:
             return _readiness(status="drifted", mapping=self._mapping, revision=published, reason="revision_drift")
-        return _readiness(status="ready", mapping=self._mapping, revision=published, reason="attested")
+        if plan.action == "ready":
+            return _readiness(status="ready", mapping=self._mapping, revision=published, reason="attested")
+        reason = "predecessor_published" if plan.action == "supersede_and_publish" else "unpublished"
+        return _readiness(status="unpublished", mapping=self._mapping, revision=expected, reason=reason)
 
     def ensure_published(self, *, now: datetime | str | None = None) -> WorldOntologyReadiness:
         cutoff = _utc(now, "now")
@@ -214,31 +246,47 @@ class WorldOntologyBootstrapService:
         if current.status == "ready":
             return current
         if current.status == "drifted":
-            raise ValueError("conflict: committed market_ontology.v1 heads do not match the published revision")
-        entities, relations, revision = derive_market_ontology(
+            raise ValueError("conflict: committed ontology heads do not match the published revision")
+        plan, published, revision = self._plan(cutoff)
+        entities, relations, expected = derive_market_ontology(
             self._mapping,
             revision_id=self._revision_id,
             effective_from=self._effective_from,
         )
+        if expected.content_sha256 != revision.content_sha256:
+            raise ValueError("conflict: derived ontology revision drifted during publish")
+        if plan.action == "supersede_and_publish":
+            if published is None:
+                raise ValueError("supersede_and_publish requires a published predecessor")
+            self._service.supersede_revision(
+                SupersedeWorldOntologyRevision(
+                    revision_id=published.revision_id,
+                    successor_revision_id=expected.revision_id,
+                )
+            )
+        view = self._service.ontology.at_cutoff(cutoff)
+        existing_nodes = {entity.node_id for entity in view.entities}
         proofs: dict[str, tuple[str, ...]] = {}
         for relation in relations:
             proofs.setdefault(relation.source.node_id, relation.source_refs)
             proofs.setdefault(relation.target.node_id, relation.source_refs)
         for entity in entities:
+            if entity.node_id in existing_nodes:
+                continue
             source_refs = proofs.get(entity.node_id) or (f"{self._mapping.mapping_id}:{entity.node_id}",)
             self._service.assert_entity(
                 AssertWorldEntity(entity=entity, source_refs=source_refs, effective_from=self._effective_from)
             )
         for relation in relations:
             self._service.assert_structural_relation(AssertStructuralWorldRelation(relation=relation))
-        self._service.publish_revision(PublishWorldOntologyRevision(revision=revision))
+        self._service.publish_revision(PublishWorldOntologyRevision(revision=expected))
         # Receipts are store-stamped at append time; do not require the pre-append cutoff
         # to observe them (ready_at can be a few microseconds later than the captured now).
-        return _readiness(status="ready", mapping=self._mapping, revision=revision, reason="published")
+        return _readiness(status="ready", mapping=self._mapping, revision=expected, reason="published")
 
 
 class WorldOntologyAttestation:
-    """Single application authority for market_ontology.v1 bootstrap and PIT heads proof."""
+    """Single application authority for committed ontology bootstrap and PIT heads proof."""
 
     def __init__(
         self,
@@ -247,6 +295,7 @@ class WorldOntologyAttestation:
         *,
         revision_id: str = MARKET_ONTOLOGY_REVISION_ID,
         effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
+        lifecycle_spec: WorldOntologyLifecycleSpec | None = None,
     ) -> None:
         self._ledger = ledger
         self._mapping = mapping
@@ -255,6 +304,7 @@ class WorldOntologyAttestation:
             mapping,
             revision_id=revision_id,
             effective_from=effective_from,
+            lifecycle_spec=lifecycle_spec,
         )
         self._proof = WorldOntologyProofService(ledger)
 

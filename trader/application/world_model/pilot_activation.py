@@ -209,7 +209,7 @@ def _parse_world_shadow_pilot_config(path: Path) -> WorldShadowPilotConfig:
         raise ValueError("window.collection_stop_kind must be fixed_end")
     scope = _mapping(payload.get("scope_mapping"), "scope_mapping")
     if scope.get("mapping_id") != WORLD_SCOPE_MAPPING_ID:
-        raise ValueError("scope_mapping must reuse the committed world_scope_mapping.v1")
+        raise ValueError(f"scope_mapping must reuse the committed {WORLD_SCOPE_MAPPING_ID}")
     if scope.get("mapping_sha256") != WORLD_SCOPE_MAPPING_SHA256:
         raise ValueError("scope_mapping must reuse the committed world_scope_mapping hash")
     workers_raw = _mapping(payload.get("workers"), "workers")
@@ -437,7 +437,7 @@ def _materialize_manifest(
             "ontology_revision",
         )
         if ontology_revision != WORLD_GRAPH_V3_ONTOLOGY_REVISION:
-            raise ValueError("graph cohort ontology_revision must be market_ontology.v1")
+            raise ValueError(f"graph cohort ontology_revision must be {WORLD_GRAPH_V3_ONTOLOGY_REVISION}")
     else:
         ontology_revision = _required_text(
             spec.get("ontology_revision") or config.payload.get("ontology_revision"),

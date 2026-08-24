@@ -163,9 +163,11 @@ def test_world_evaluation_and_impact_are_reporting_read_model_canonical() -> Non
 def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     availability_path = REPO_ROOT / "trader" / "domain" / "world_availability.py"
     scope_path = REPO_ROOT / "trader" / "domain" / "world_scope.py"
+    lifecycle_path = REPO_ROOT / "trader" / "domain" / "world_ontology_lifecycle.py"
     assert availability_path.exists()
     assert scope_path.exists()
-    assert _domain_import_violations([availability_path, scope_path], REPO_ROOT) == []
+    assert lifecycle_path.exists()
+    assert _domain_import_violations([availability_path, scope_path, lifecycle_path], REPO_ROOT) == []
 
     from trader.domain.world_availability import (
         AvailabilityEvidence,
@@ -180,6 +182,10 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
         WorldScopeMapping,
         WorldScopeResolution,
     )
+    from trader.domain.world_ontology_lifecycle import (
+        WorldOntologyLifecycleSpec,
+        plan_world_ontology_publication,
+    )
 
     assert WorldAvailabilityReceipt.__module__ == "trader.domain.world_availability"
     assert WorldAvailabilitySubjectRef.__module__ == "trader.domain.world_availability"
@@ -190,8 +196,11 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert WorldMarketAnchorRef.__module__ == "trader.domain.world_scope"
     assert WorldScopeMapping.__module__ == "trader.domain.world_scope"
     assert WorldScopeResolution.__module__ == "trader.domain.world_scope"
+    assert WorldOntologyLifecycleSpec.__module__ == "trader.domain.world_ontology_lifecycle"
+    assert plan_world_ontology_publication.__module__ == "trader.domain.world_ontology_lifecycle"
     assert "trader.infrastructure" not in availability_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in scope_path.read_text(encoding="utf-8")
+    assert "trader.infrastructure" not in lifecycle_path.read_text(encoding="utf-8")
     assert "xtai" not in scope_path.read_text(encoding="utf-8").lower()
     assert "xnys" not in scope_path.read_text(encoding="utf-8").lower()
 

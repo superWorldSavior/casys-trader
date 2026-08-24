@@ -18,7 +18,11 @@ from trader.domain.world_cohort import (
     WorldRuntimeIdentity,
 )
 from trader.domain.world_episode import canonical_sha256
-from trader.domain.world_feature_contract import WORLD_SCOPE_MAPPING_ID, WORLD_SCOPE_MAPPING_SHA256
+from trader.domain.world_feature_contract import (
+    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    WORLD_SCOPE_MAPPING_ID,
+    WORLD_SCOPE_MAPPING_SHA256,
+)
 
 
 UTC = timezone.utc
@@ -90,7 +94,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v2"
     assert payload["pilot_id"] == "world_shadow_pilot.v2"
     assert payload["supersedes_pilot_id"] == "world_shadow_pilot.v1"
-    assert payload["lifecycle_generation"] == 3
+    assert payload["lifecycle_generation"] == 4
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -224,7 +228,7 @@ def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_v3_lane() -> No
     assert graph_masks["markov.graph"] == "topology_status_only.v1"
     assert graph_masks["gru.graph"] == "graph_content.v1"
     assert c1.manifest.ontology_revision == "semantic_catalog.v1"
-    assert graph.manifest.ontology_revision == "market_ontology.v1"
+    assert graph.manifest.ontology_revision == WORLD_GRAPH_V3_ONTOLOGY_REVISION
     assert graph.phase is CohortPhase.REGISTERED
 
 

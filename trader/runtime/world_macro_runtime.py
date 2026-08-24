@@ -385,21 +385,13 @@ def _reconcile_macro_graph_bridge(
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
     from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
     from trader.domain.world_episode import canonical_sha256
-    from trader.domain.world_graph import WorldOntologyRevisionPublished
     from trader.domain.world_scope import WorldScopeMapping
 
     if not isinstance(mapping, WorldScopeMapping):
         raise TypeError("graph bridge requires WorldScopeMapping")
-    WorldOntologyBootstrapService(graph_store, mapping).ensure_published(now=now)
-    revision = None
-    list_revisions = getattr(graph_store, "list_revision_events_available_through", None)
-    if callable(list_revisions):
-        for envelope in list_revisions(now):
-            event = getattr(envelope, "event", None)
-            if isinstance(event, WorldOntologyRevisionPublished):
-                revision = event.revision
-    if revision is None:
-        raise ValueError("graph bridge requires an attested market_ontology.v1 revision")
+    bootstrap = WorldOntologyBootstrapService(graph_store, mapping)
+    bootstrap.ensure_published(now=now)
+    revision = bootstrap.expected_revision()
     use_case = RegisterMacroObservationKnowledge(
         scan=macro_store,
         graph=graph_store,
@@ -413,9 +405,14 @@ def _reconcile_macro_graph_bridge(
     )
     use_case.activate(request_id)
     registry = use_case.reconcile(limit=32)
+    run = getattr(registry, "active_run", None)
+    if getattr(run, "status", None) == "blocked" and getattr(run, "block_reason", None) == "config_drift":
+        registry = use_case.handoff(scope_mapping=mapping, structural_revision=revision)
+        registry = use_case.reconcile(limit=32)
+        run = getattr(registry, "active_run", None)
     report["graph_bridge"] = {
-        "status": None if registry.active_run is None else registry.active_run.status,
-        "version": registry.version,
+        "status": None if run is None else getattr(run, "status", None),
+        "version": getattr(registry, "version", None),
     }
 
 

@@ -8,6 +8,7 @@ import pytest
 
 from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+from trader.domain.world_feature_contract import WORLD_SCOPE_MAPPING_ID
 from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping, WorldScopeResolution
 
 
@@ -25,7 +26,7 @@ def test_load_committed_mapping_persists_mapping_id_and_hash() -> None:
     resolved = resolver.resolve(WorldMarketAnchorRef(market_venue="TW", instrument="2301.TW"))
     assert isinstance(resolved, WorldScopeResolution)
     assert resolved.status == "resolved"
-    assert resolved.mapping_id == resolver.mapping.mapping_id == "world_scope_mapping.v1"
+    assert resolved.mapping_id == resolver.mapping.mapping_id == WORLD_SCOPE_MAPPING_ID
     assert resolved.mapping_sha256 == resolver.mapping.content_sha256
     assert len(resolved.mapping_sha256) == 64
     replayed = WorldScopeResolution.from_mapping(resolved.to_dict())
