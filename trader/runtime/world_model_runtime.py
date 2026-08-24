@@ -363,7 +363,7 @@ def graph_v3_status_overlay(*, wired: bool, writes: str = "none_until_due_cycle"
         "flag": "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED",
         "flag_default": 0,
         "budgets": graph_v3_budget_view(),
-        "gaps": {"writes": writes, "cohort_activation": "not_started"},
+        "gaps": {"writes": writes, "cohort_activation": "not_read_from_ledger"},
         "authority": "shadow_only",
         "decision_effect": "none",
         "causal_claim": False,

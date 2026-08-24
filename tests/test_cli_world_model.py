@@ -659,3 +659,48 @@ def test_world_status_json_nests_graph_budgets_without_causal_or_pnl(
     assert graph["pnl_claim"] is False
     assert graph["authority"] == "shadow_only"
     assert not _db_path(tmp_path).exists()
+
+
+def test_world_graph_status_reads_collecting_graph_cohort_not_not_started(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from tests.read_models.test_world_graph import GRAPH_COHORT_ID, _graph_manifest, _persist
+
+    _persist(tmp_path, _manifest(), phase="collecting")
+    _persist(tmp_path, _graph_manifest(), phase="collecting")
+
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, ["world", "graph", "status", "--json"])
+
+    assert code == 0
+    assert payload["schema_version"] == "world_graph_status.v1"
+    assert payload["exists"] is True
+    assert payload["gaps"]["cohort_activation"] == "collecting"
+    assert payload["gaps"]["graph_cohort_id"] == GRAPH_COHORT_ID
+    _assert_claims(payload)
+
+
+def test_world_graph_report_and_nested_status_keep_c1_collecting_off_graph_activation(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from tests.read_models.test_world_graph import _persist
+
+    _persist(tmp_path, _manifest(), phase="collecting")
+
+    status_code, status = _run_json(monkeypatch, capsys, tmp_path, ["world", "graph", "status", "--json"])
+    assert status_code == 0
+    assert status["gaps"]["cohort_activation"] == "no_graph_cohort"
+    _assert_claims(status)
+
+    report_code, report = _run_json(
+        monkeypatch, capsys, tmp_path, ["world", "graph", "report", "--json"]
+    )
+    assert report_code == 0
+    assert report["gaps"]["cohort_activation"] == "no_graph_cohort"
+    _assert_claims(report)
+
+    monkeypatch.setattr(cli.daemon, "STATE_DIR", tmp_path)
+    assert cli.main(["world", "status", "--json"]) == 0
+    nested = json.loads(capsys.readouterr().out)
+    assert nested["graph"]["gaps"]["cohort_activation"] == "no_graph_cohort"
+    assert nested["decision_effect"] == "none"
+    _assert_claims(nested["graph"])

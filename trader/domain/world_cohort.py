@@ -874,6 +874,9 @@ class WorldCohortManifest:
     def lane_by_id(self) -> Mapping[str, WorldLaneDefinition]:
         return MappingProxyType({lane.lane_id: lane for lane in self.lanes})
 
+    def has_graph_lanes(self) -> bool:
+        return any(_lane_logical_name(lane.lane_id) == "graph" for lane in self.lanes)
+
     def content_payload(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,

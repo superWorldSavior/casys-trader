@@ -235,6 +235,64 @@ def read_world_cohort_ledger(db_path: str | Path, cohort_id: str) -> dict[str, A
         }
 
 
+def read_world_cohort_catalog(db_path: str | Path) -> dict[str, Any]:
+    """List reconstructible cohort snapshots without creating or migrating the ledger."""
+
+    path = Path(db_path)
+    if not path.exists():
+        return {"status": "not_started", "exists": False, "cohorts": []}
+
+    try:
+        with _readonly_connection(path) as connection:
+            tables = _table_names(connection)
+            if not _COHORT_TABLES.issubset(tables):
+                return {
+                    "status": "schema_unavailable",
+                    "exists": True,
+                    "missing_tables": sorted(_COHORT_TABLES.difference(tables)),
+                    "cohorts": [],
+                }
+            manifest_rows = connection.execute(
+                "SELECT cohort_id, payload_json FROM world_cohort_manifests ORDER BY cohort_id ASC"
+            ).fetchall()
+            event_rows = connection.execute(
+                "SELECT cohort_id, payload_json FROM world_cohort_events "
+                "ORDER BY cohort_id ASC, sequence ASC, event_id ASC"
+            ).fetchall()
+    except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
+        return {
+            "status": "unavailable",
+            "exists": True,
+            "error": f"{type(exc).__name__}:{exc}",
+            "cohorts": [],
+        }
+
+    try:
+        events_by_cohort: dict[str, list[dict[str, Any]]] = {}
+        for row in event_rows:
+            cohort_id = str(row["cohort_id"])
+            events_by_cohort.setdefault(cohort_id, []).append(_json_object(row["payload_json"]))
+        return {
+            "status": "loaded",
+            "exists": True,
+            "cohorts": [
+                {
+                    "cohort_id": str(row["cohort_id"]),
+                    "manifest": _json_object(row["payload_json"]),
+                    "events": events_by_cohort.get(str(row["cohort_id"]), []),
+                }
+                for row in manifest_rows
+            ],
+        }
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "unavailable",
+            "exists": True,
+            "error": f"{type(exc).__name__}:{exc}",
+            "cohorts": [],
+        }
+
+
 def read_world_pattern_ledger(db_path: str | Path, cohort_id: str) -> dict[str, Any]:
     """Read reconstructible pattern events without creating or migrating the ledger."""
 
@@ -671,4 +729,10 @@ def _as_dict(value: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-__all__ = ["HORIZONS", "read_world_cohort_ledger", "read_world_model_ledger", "read_world_pattern_ledger"]
+__all__ = [
+    "HORIZONS",
+    "read_world_cohort_catalog",
+    "read_world_cohort_ledger",
+    "read_world_model_ledger",
+    "read_world_pattern_ledger",
+]

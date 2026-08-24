@@ -1137,6 +1137,69 @@ def test_runtime_restart_keeps_cohort_fingerprints_and_does_not_backfill_downtim
         store.close()
 
 
+def test_graph_v3_status_overlay_is_wiring_only_and_does_not_claim_ledger_activation() -> None:
+    from pathlib import Path
+
+    from trader.interfaces.cli.world_model import read_world_graph_status as cli_status
+    from trader.reporting.read_models.world_graph import read_world_graph_status
+    from trader.runtime import world_model_runtime
+    from trader.runtime.world_model_runtime import graph_v3_status_overlay
+
+    assert cli_status is read_world_graph_status
+    overlay = graph_v3_status_overlay(wired=True)
+    assert overlay["wired"] is True
+    assert overlay["gaps"]["writes"] == "none_until_due_cycle"
+    assert overlay["gaps"]["cohort_activation"] == "not_read_from_ledger"
+    assert overlay["authority"] == "shadow_only"
+    assert overlay["decision_effect"] == "none"
+    assert overlay["causal_claim"] is False
+    assert overlay["pnl_claim"] is False
+    assert overlay["recommendation"] == "NO_GO"
+    assert "schema_version" not in overlay
+    source = Path(world_model_runtime.__file__).read_text(encoding="utf-8")
+    assert source.count("graph_v3_status_overlay(") == 2
+    assert 'payload["graph"] = graph_v3_status_overlay(wired=True)' in source
+    assert "read_world_graph_status" not in source
+    assert 'cohort_activation": "not_started"' not in source
+
+
+def test_wired_runner_overlay_does_not_mirror_persisted_graph_collecting(tmp_path) -> None:
+    from tests.application.test_world_graph_capture import _unpublished_config
+    from tests.read_models.test_world_graph import _graph_manifest, _persist
+    from trader.reporting.read_models.world_graph import read_world_graph_status
+    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+
+    _persist(tmp_path, _graph_manifest(), phase="collecting")
+    store = WorldModelStore(tmp_path / "world_model.db")
+    try:
+        predictors, enricher = compose_local_graph_v3_lanes(
+            enabled=True,
+            capture=_unpublished_config(),
+        )
+        runner = WorldModelBackgroundRunner(
+            runtime=WorldModelRuntime(
+                store=store,
+                predictor=HierarchicalDirichletWorldBaseline(),
+                predictors=predictors,
+                labeler=None,
+                bar_provider=None,
+                horizons=("elapsed_4h.v1",),
+            ),
+            graph_enricher=enricher,
+        )
+        overlay = runner.status()["graph"]
+        ledger = read_world_graph_status(tmp_path)
+        assert overlay["wired"] is True
+        assert overlay["gaps"]["writes"] == "none_until_due_cycle"
+        assert overlay["gaps"]["cohort_activation"] == "not_read_from_ledger"
+        assert overlay["authority"] == "shadow_only"
+        assert overlay["decision_effect"] == "none"
+        assert ledger["gaps"]["cohort_activation"] == "collecting"
+        assert ledger["schema_version"] == "world_graph_status.v1"
+    finally:
+        store.close()
+
+
 def test_graph_v3_flag_reuses_macro_runtime_name_and_defaults_off() -> None:
     from pathlib import Path
 
