@@ -1,8 +1,8 @@
-"""Shared V1/V2/V3 World feature contract and mask identities.
+"""Current World feature contract and mask identities.
 
-Stdlib-only. Application encoders implement this pair; cohort, macro, and graph
-do not define a concurrent contract type. ``include_context`` is a V1/V2
-compatibility facade, not a field and not a V3 switch.
+Stdlib-only. One serialization schema revision exists per feature capability:
+market, context, and graph. Application encoders implement this pair; cohort,
+macro, and graph do not define a concurrent contract type.
 """
 
 from __future__ import annotations
@@ -15,13 +15,14 @@ from typing import Any
 from trader.domain.world_context import (
     ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
     ALLOWED_CONTEXT_NUMERIC_FEATURES,
-    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_FEATURE_CONTRACT_ID,
     ONTOLOGY_REVISION,
 )
 from trader.domain.world_episode import (
     ALLOWED_CATEGORICAL_FEATURES,
     ALLOWED_NUMERIC_FEATURES,
-    MARKET_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_CONTRACT_ID,
+    MARKET_FEATURE_CONTRACT_ID,
     canonical_payload,
     canonical_sha256,
     validate_action_free_features,
@@ -30,28 +31,27 @@ from trader.domain.world_episode import (
 
 WORLD_FEATURE_CONTRACT_SCHEMA = "world_feature_contract.v1"
 WORLD_FEATURE_MASK_SCHEMA = "world_feature_mask.v1"
-WORLD_V1_ENCODER_IDENTITY = "world_feature_encoder.v1"
-WORLD_V2_ENCODER_IDENTITY = "world_feature_encoder.v2"
-WORLD_V3_ENCODER_IDENTITY = "world_feature_encoder.v3"
-GRAPH_FEATURE_CONTRACT_VERSION = "market_ohlcv_graph.v3"
+MARKET_ENCODER_IDENTITY = "world_feature_encoder.market.v1"
+CONTEXT_ENCODER_IDENTITY = "world_feature_encoder.context.v1"
+GRAPH_ENCODER_IDENTITY = "world_feature_encoder.graph.v1"
 MARKET_FEATURE_GROUP_ID = "market"
 STATUS_FEATURE_GROUP_ID = "status"
 COMPANY_FEATURE_GROUP_ID = "company"
 MACRO_FEATURE_GROUP_ID = "macro"
 GRAPH_STATUS_FEATURE_GROUP_ID = "graph_status"
 GRAPH_FEATURE_GROUP_ID = "graph"
-WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID = "topology_status_only.v1"
-WORLD_V3_GRAPH_CONTENT_MASK_ID = "graph_content.v1"
-WORLD_V3_MARKOV_MODEL_IDENTITY = "hierarchical_dirichlet_world_baseline@graph.v3"
-WORLD_V3_GRU_MODEL_IDENTITY = "online_gru_world_challenger@graph.v3"
-WORLD_V3_MODEL_VERSION = "graph.v3"
-WORLD_GRAPH_V3_ONTOLOGY_REVISION = "market_ontology.v2"
-WORLD_GRAPH_V3_ONTOLOGY_SHA256 = "fbeb05628eb2f8e0b6fc7723f4b731c99b3e0be6532aad524a2f98c6b4fb5542"
-WORLD_GRAPH_V3_PATH_RULE_VERSION = "graph_traversal.v1"
-WORLD_GRAPH_V3_CONFIG_SHA256 = "e8d1df0df1badfdd9c2004ae4cf9eacb9605347abacbd63563a844dcfe16ab84"
-WORLD_SCOPE_MAPPING_ID = "world_scope_mapping.v2"
-WORLD_SCOPE_MAPPING_SHA256 = "e1289a4a86e5cb07600cb3ac45122b170f1a0bb249db2fbb6e5c093a4a8a501b"
-WORLD_GRAPH_V3_WINDOWS_AND_DECAY: Mapping[str, object] = MappingProxyType(
+TOPOLOGY_STATUS_ONLY_MASK_ID = "topology_status_only.v1"
+GRAPH_CONTENT_MASK_ID = "graph_content.v1"
+GRAPH_MARKOV_MODEL_IDENTITY = "hierarchical_dirichlet_world_baseline@graph.v1"
+GRAPH_GRU_MODEL_IDENTITY = "online_gru_world_challenger@graph.v1"
+GRAPH_MODEL_VERSION = "graph.v1"
+MARKET_ONTOLOGY_REVISION = "market_ontology.v1"
+MARKET_ONTOLOGY_SHA256 = "b7335a013c51fd36ce0c109b271104494772ce49807c8f3633dd039094e965b7"
+GRAPH_PATH_RULE_VERSION = "graph_traversal.v1"
+WORLD_GRAPH_CONFIG_SHA256 = "68fedcb7fa12d6b2e7c2467b5e33e5211db60aafe880233a32c20606ba6d29df"
+WORLD_SCOPE_MAPPING_ID = "world_scope_mapping.v1"
+WORLD_SCOPE_MAPPING_SHA256 = "94a7d310d51ad411e04abf9b5e00e9d802e2836138123d2ae1d1b756bda148ee"
+GRAPH_WINDOWS_AND_DECAY: Mapping[str, object] = MappingProxyType(
     {
         "windows": ("0-4h", "4-24h", "1-7d", "older"),
         "decay": "none",
@@ -231,7 +231,7 @@ def _vocabulary_payload(groups: Sequence[WorldFeatureGroup]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class WorldFeatureContract:
-    """Canonical V1/V2/V3 feature contract: identities, allowlists, and fingerprints."""
+    """Canonical capability feature contract: identities, allowlists, and fingerprints."""
 
     contract_id: str
     accepted_episode_contract: str
@@ -293,13 +293,6 @@ class WorldFeatureContract:
             if group.group_id == wanted:
                 return group
         raise ValueError(f"unknown feature group: {wanted}")
-
-    def include_context_compatibility_flag(self) -> bool:
-        if self.contract_id == MARKET_FEATURE_CONTRACT_VERSION:
-            return False
-        if self.contract_id == CONTEXT_FEATURE_CONTRACT_VERSION:
-            return True
-        raise ValueError("include_context is only a V1/V2 compatibility facade")
 
     def assert_identity_compatible(self, other: WorldFeatureContract) -> None:
         if not isinstance(other, WorldFeatureContract):
@@ -469,12 +462,12 @@ class WorldFeatureMask:
         )
 
 
-def world_v1_feature_contract() -> WorldFeatureContract:
+def market_feature_contract() -> WorldFeatureContract:
     return WorldFeatureContract(
-        contract_id=MARKET_FEATURE_CONTRACT_VERSION,
-        accepted_episode_contract=MARKET_FEATURE_CONTRACT_VERSION,
-        projection_version=MARKET_FEATURE_CONTRACT_VERSION,
-        encoder_identity=WORLD_V1_ENCODER_IDENTITY,
+        contract_id=MARKET_FEATURE_CONTRACT_ID,
+        accepted_episode_contract=MARKET_FEATURE_CONTRACT_ID,
+        projection_version=MARKET_FEATURE_CONTRACT_ID,
+        encoder_identity=MARKET_ENCODER_IDENTITY,
         groups=(
             WorldFeatureGroup(
                 group_id=MARKET_FEATURE_GROUP_ID,
@@ -483,20 +476,20 @@ def world_v1_feature_contract() -> WorldFeatureContract:
             ),
         ),
         ontology_revision="market_only.v1",
-        vocabulary_version=MARKET_FEATURE_CONTRACT_VERSION,
+        vocabulary_version=MARKET_FEATURE_CONTRACT_ID,
     )
 
 
-def world_v2_feature_contract() -> WorldFeatureContract:
+def context_feature_contract() -> WorldFeatureContract:
     if _STATUS_CATEGORICAL_FEATURES | _COMPANY_CATEGORICAL_FEATURES | _MACRO_CATEGORICAL_FEATURES != (
         ALLOWED_CONTEXT_CATEGORICAL_FEATURES
     ):
-        raise ValueError("V2 feature groups must partition the context categorical allowlist")
+        raise ValueError("context feature groups must partition the context categorical allowlist")
     return WorldFeatureContract(
-        contract_id=CONTEXT_FEATURE_CONTRACT_VERSION,
-        accepted_episode_contract=CONTEXT_FEATURE_CONTRACT_VERSION,
-        projection_version=CONTEXT_FEATURE_CONTRACT_VERSION,
-        encoder_identity=WORLD_V2_ENCODER_IDENTITY,
+        contract_id=CONTEXT_FEATURE_CONTRACT_ID,
+        accepted_episode_contract=CONTEXT_FEATURE_CONTRACT_ID,
+        projection_version=CONTEXT_FEATURE_CONTRACT_ID,
+        encoder_identity=CONTEXT_ENCODER_IDENTITY,
         groups=(
             WorldFeatureGroup(
                 group_id=MARKET_FEATURE_GROUP_ID,
@@ -518,22 +511,22 @@ def world_v2_feature_contract() -> WorldFeatureContract:
             ),
         ),
         ontology_revision=ONTOLOGY_REVISION,
-        vocabulary_version=CONTEXT_FEATURE_CONTRACT_VERSION,
+        vocabulary_version=CONTEXT_FEATURE_CONTRACT_ID,
     )
 
 
-def world_v3_feature_contract() -> WorldFeatureContract:
+def graph_feature_contract() -> WorldFeatureContract:
     overlap = GRAPH_STATUS_CATEGORICAL_FEATURES & GRAPH_CONTENT_CATEGORICAL_FEATURES
     if overlap:
-        raise ValueError("V3 graph status and content groups must be disjoint")
-    v2 = world_v2_feature_contract()
+        raise ValueError("graph status and content groups must be disjoint")
+    context = context_feature_contract()
     return WorldFeatureContract(
-        contract_id=GRAPH_FEATURE_CONTRACT_VERSION,
-        accepted_episode_contract=GRAPH_FEATURE_CONTRACT_VERSION,
-        projection_version=GRAPH_FEATURE_CONTRACT_VERSION,
-        encoder_identity=WORLD_V3_ENCODER_IDENTITY,
+        contract_id=GRAPH_FEATURE_CONTRACT_ID,
+        accepted_episode_contract=GRAPH_FEATURE_CONTRACT_ID,
+        projection_version=GRAPH_FEATURE_CONTRACT_ID,
+        encoder_identity=GRAPH_ENCODER_IDENTITY,
         groups=(
-            *v2.groups,
+            *context.groups,
             WorldFeatureGroup(
                 group_id=GRAPH_STATUS_FEATURE_GROUP_ID,
                 categorical_features=GRAPH_STATUS_CATEGORICAL_FEATURES,
@@ -543,17 +536,17 @@ def world_v3_feature_contract() -> WorldFeatureContract:
                 categorical_features=GRAPH_CONTENT_CATEGORICAL_FEATURES,
             ),
         ),
-        ontology_revision=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
-        vocabulary_version=GRAPH_FEATURE_CONTRACT_VERSION,
-        path_rule_version=WORLD_GRAPH_V3_PATH_RULE_VERSION,
-        windows_and_decay=WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
+        ontology_revision=MARKET_ONTOLOGY_REVISION,
+        vocabulary_version=GRAPH_FEATURE_CONTRACT_ID,
+        path_rule_version=GRAPH_PATH_RULE_VERSION,
+        windows_and_decay=GRAPH_WINDOWS_AND_DECAY,
     )
 
 
-def world_v3_topology_status_only_mask() -> WorldFeatureMask:
+def topology_status_only_mask() -> WorldFeatureMask:
     return WorldFeatureMask.bind(
-        world_v3_feature_contract(),
-        mask_id=WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID,
+        graph_feature_contract(),
+        mask_id=TOPOLOGY_STATUS_ONLY_MASK_ID,
         selected_groups=(
             MARKET_FEATURE_GROUP_ID,
             STATUS_FEATURE_GROUP_ID,
@@ -564,10 +557,10 @@ def world_v3_topology_status_only_mask() -> WorldFeatureMask:
     )
 
 
-def world_v3_graph_content_mask() -> WorldFeatureMask:
+def graph_content_mask() -> WorldFeatureMask:
     return WorldFeatureMask.bind(
-        world_v3_feature_contract(),
-        mask_id=WORLD_V3_GRAPH_CONTENT_MASK_ID,
+        graph_feature_contract(),
+        mask_id=GRAPH_CONTENT_MASK_ID,
         selected_groups=(
             MARKET_FEATURE_GROUP_ID,
             STATUS_FEATURE_GROUP_ID,
@@ -579,46 +572,39 @@ def world_v3_graph_content_mask() -> WorldFeatureMask:
     )
 
 
-def world_feature_contract_for_include_context(include_context: bool) -> WorldFeatureContract:
-    if include_context:
-        return world_v2_feature_contract()
-    return world_v1_feature_contract()
-
-
 __all__ = [
     "COMPANY_FEATURE_GROUP_ID",
+    "CONTEXT_ENCODER_IDENTITY",
     "GRAPH_CONTENT_CATEGORICAL_FEATURES",
-    "GRAPH_FEATURE_CONTRACT_VERSION",
+    "GRAPH_CONTENT_MASK_ID",
+    "GRAPH_ENCODER_IDENTITY",
+    "GRAPH_FEATURE_CONTRACT_ID",
     "GRAPH_FEATURE_GROUP_ID",
+    "GRAPH_GRU_MODEL_IDENTITY",
+    "GRAPH_MARKOV_MODEL_IDENTITY",
+    "GRAPH_MODEL_VERSION",
+    "GRAPH_PATH_RULE_VERSION",
     "GRAPH_STATUS_CATEGORICAL_FEATURES",
     "GRAPH_STATUS_FEATURE_GROUP_ID",
+    "GRAPH_WINDOWS_AND_DECAY",
     "MACRO_FEATURE_GROUP_ID",
+    "MARKET_ENCODER_IDENTITY",
     "MARKET_FEATURE_GROUP_ID",
+    "MARKET_ONTOLOGY_REVISION",
+    "MARKET_ONTOLOGY_SHA256",
     "STATUS_FEATURE_GROUP_ID",
+    "TOPOLOGY_STATUS_ONLY_MASK_ID",
     "WORLD_FEATURE_CONTRACT_SCHEMA",
     "WORLD_FEATURE_MASK_SCHEMA",
-    "WORLD_GRAPH_V3_CONFIG_SHA256",
-    "WORLD_GRAPH_V3_ONTOLOGY_REVISION",
-    "WORLD_GRAPH_V3_ONTOLOGY_SHA256",
-    "WORLD_GRAPH_V3_PATH_RULE_VERSION",
-    "WORLD_GRAPH_V3_WINDOWS_AND_DECAY",
+    "WORLD_GRAPH_CONFIG_SHA256",
     "WORLD_SCOPE_MAPPING_ID",
     "WORLD_SCOPE_MAPPING_SHA256",
-    "WORLD_V1_ENCODER_IDENTITY",
-    "WORLD_V2_ENCODER_IDENTITY",
-    "WORLD_V3_ENCODER_IDENTITY",
-    "WORLD_V3_GRAPH_CONTENT_MASK_ID",
-    "WORLD_V3_GRU_MODEL_IDENTITY",
-    "WORLD_V3_MARKOV_MODEL_IDENTITY",
-    "WORLD_V3_MODEL_VERSION",
-    "WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID",
     "WorldFeatureContract",
     "WorldFeatureGroup",
     "WorldFeatureMask",
-    "world_feature_contract_for_include_context",
-    "world_v1_feature_contract",
-    "world_v2_feature_contract",
-    "world_v3_feature_contract",
-    "world_v3_graph_content_mask",
-    "world_v3_topology_status_only_mask",
+    "context_feature_contract",
+    "graph_content_mask",
+    "graph_feature_contract",
+    "market_feature_contract",
+    "topology_status_only_mask",
 ]

@@ -23,7 +23,7 @@ from trader.application.world_model.service import (
     _clone,
     _utc,
 )
-from trader.runtime.world_macro_runtime import graph_v3_enabled
+from trader.runtime.world_macro_runtime import graph_enabled
 
 
 @dataclasses.dataclass(frozen=True)
@@ -127,7 +127,7 @@ class WorldModelBackgroundRunner:
                 "stopping": self._stopping,
             }
         if self.graph_enricher is not None:
-            payload["graph"] = graph_v3_status_overlay(wired=True)
+            payload["graph"] = graph_status_overlay(wired=True)
         return payload
 
     def stop(self) -> None:
@@ -168,7 +168,7 @@ class WorldModelBackgroundRunner:
                             self.context_enricher.enrich(tuple(_clone(episode) for episode in current.episodes))
                         )
                         capture_snapshot = dataclasses.replace(current, episodes=enriched)
-                    except Exception as exc:  # noqa: BLE001 - V2 enrichment is fail-open for V1
+                    except Exception as exc:  # noqa: BLE001 - context enrichment is fail-open for market
                         self._background_error(report, stage="context_enrich", error=exc)
                 if self.graph_enricher is not None:
                     try:
@@ -176,7 +176,7 @@ class WorldModelBackgroundRunner:
                             self.graph_enricher.enrich(tuple(_clone(episode) for episode in capture_snapshot.episodes))
                         )
                         capture_snapshot = dataclasses.replace(capture_snapshot, episodes=enriched)
-                    except Exception as exc:  # noqa: BLE001 - V3 enrichment is fail-open for V1/V2
+                    except Exception as exc:  # noqa: BLE001 - graph enrichment is fail-open for market/context
                         self._background_error(report, stage="graph_enrich", error=exc)
                 try:
                     report["capture"] = self._capture_and_predict(capture_snapshot)
@@ -299,7 +299,7 @@ class WorldModelBackgroundRunner:
 
 
 class WorldContextEpisodeEnricher:
-    """Background V2 companion attachment. Local files only; no network or LLM I/O."""
+    """Background context companion attachment. Local files only; no network or LLM I/O."""
 
     def __init__(self, source: object) -> None:
         self.source = source
@@ -323,13 +323,13 @@ class WorldContextEpisodeEnricher:
             if not isinstance(payload, Mapping):
                 raise TypeError("context enricher requires WorldEpisode records")
             canonical.append(WorldEpisode.from_dict(payload))
-        v1 = tuple(canonical)
-        v2 = attach_world_context(v1, self.source)
-        return v1 + tuple(v2)
+        market = tuple(canonical)
+        context = attach_world_context(market, self.source)
+        return market + tuple(context)
 
 
 class WorldGraphEpisodeEnricher:
-    """Background V3 companion attachment. Local files only; no network or LLM I/O."""
+    """Background graph companion attachment. Local files only; no network or LLM I/O."""
 
     def __init__(self, config: object) -> None:
         self.config = config
@@ -354,8 +354,8 @@ class WorldGraphEpisodeEnricher:
                 raise TypeError("graph enricher requires WorldEpisode records")
             canonical.append(WorldEpisode.from_dict(payload))
         attached = tuple(canonical)
-        v3 = attach_world_graph(attached, self.config)
-        return attached + tuple(v3)
+        graph = attach_world_graph(attached, self.config)
+        return attached + tuple(graph)
 
 
 class WorldTemporalTraversalAdapter:
@@ -395,10 +395,10 @@ class WorldTemporalTraversalAdapter:
         )
 
 
-def graph_v3_budget_view() -> dict[str, object]:
+def graph_budget_view() -> dict[str, object]:
     from trader.domain.world_feature_contract import (
-        WORLD_GRAPH_V3_PATH_RULE_VERSION,
-        WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
+        GRAPH_PATH_RULE_VERSION,
+        GRAPH_WINDOWS_AND_DECAY,
     )
     from trader.domain.world_graph import GRAPH_TRAVERSAL_POLICY_VERSION
 
@@ -406,17 +406,17 @@ def graph_v3_budget_view() -> dict[str, object]:
         "max_depth": 4,
         "max_paths_per_root": 32,
         "policy_version": GRAPH_TRAVERSAL_POLICY_VERSION,
-        "path_rule_version": WORLD_GRAPH_V3_PATH_RULE_VERSION,
-        "windows_and_decay": dict(WORLD_GRAPH_V3_WINDOWS_AND_DECAY),
+        "path_rule_version": GRAPH_PATH_RULE_VERSION,
+        "windows_and_decay": dict(GRAPH_WINDOWS_AND_DECAY),
     }
 
 
-def graph_v3_status_overlay(*, wired: bool, writes: str = "none_until_due_cycle") -> dict[str, object]:
+def graph_status_overlay(*, wired: bool, writes: str = "none_until_due_cycle") -> dict[str, object]:
     return {
         "wired": wired,
-        "flag": "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED",
+        "flag": "CASYS_WORLD_MODEL_GRAPH_ENABLED",
         "flag_default": 0,
-        "budgets": graph_v3_budget_view(),
+        "budgets": graph_budget_view(),
         "gaps": {"writes": writes, "cohort_activation": "not_read_from_ledger"},
         "authority": "shadow_only",
         "decision_effect": "none",
@@ -426,33 +426,33 @@ def graph_v3_status_overlay(*, wired: bool, writes: str = "none_until_due_cycle"
     }
 
 
-def _compose_graph_v3_predictors() -> tuple[object, ...]:
+def _compose_graph_predictors() -> tuple[object, ...]:
     from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
     from trader.application.world_model.encoding import world_lane_encoder_profile
     from trader.application.world_model.gru import OnlineGRUWorldChallenger
     from trader.domain.world_feature_contract import (
-        GRAPH_FEATURE_CONTRACT_VERSION,
-        WORLD_V3_GRU_MODEL_IDENTITY,
-        WORLD_V3_MARKOV_MODEL_IDENTITY,
-        WORLD_V3_MODEL_VERSION,
+        GRAPH_FEATURE_CONTRACT_ID,
+        GRAPH_GRU_MODEL_IDENTITY,
+        GRAPH_MARKOV_MODEL_IDENTITY,
+        GRAPH_MODEL_VERSION,
     )
 
     status = world_lane_encoder_profile("topology_status_only")
     content = world_lane_encoder_profile("graph_content")
     return (
         HierarchicalDirichletWorldBaseline(
-            model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
-            model_version=WORLD_V3_MODEL_VERSION,
+            model_id=GRAPH_MARKOV_MODEL_IDENTITY,
+            model_version=GRAPH_MODEL_VERSION,
             feature_contract=status.contract,
             feature_mask=status.mask,
-            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_ID}),
         ),
         OnlineGRUWorldChallenger(
-            model_id=WORLD_V3_GRU_MODEL_IDENTITY,
-            model_version=WORLD_V3_MODEL_VERSION,
+            model_id=GRAPH_GRU_MODEL_IDENTITY,
+            model_version=GRAPH_MODEL_VERSION,
             feature_contract=content.contract,
             feature_mask=content.mask,
-            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_ID}),
         ),
     )
 
@@ -482,11 +482,11 @@ def compose_world_ontology_attestation(
         graph_store = WorldGraphStore(db if db is not None else path, **kwargs)
         mapping = WorldScopeResolver.load(Path(config_dir)).mapping
         return WorldOntologyAttestation(graph_store, mapping)
-    except Exception:  # noqa: BLE001 - missing ontology cannot block V1/Trader
+    except Exception:  # noqa: BLE001 - missing ontology cannot block market/Trader
         return None
 
 
-def _compose_graph_v3_capture(
+def _compose_graph_capture(
     *,
     store: object | None,
     config_dir: str | Path | None,
@@ -558,7 +558,7 @@ def compose_world_resource_guard(
     return WorldResourceBudgetGuard(**kwargs)  # type: ignore[arg-type]
 
 
-def compose_local_graph_v3_lanes(
+def compose_local_graph_lanes(
     *,
     enabled: bool | None = None,
     capture: object | None = None,
@@ -568,16 +568,16 @@ def compose_local_graph_v3_lanes(
     study_cohort_id: str | None = None,
     ontology_attestation: object | None = None,
 ) -> tuple[tuple[object, ...], WorldGraphEpisodeEnricher | None]:
-    """Compose local V3 lanes only when the reused GRAPH_V3 flag is on and capture+predictors exist."""
+    """Compose local graph lanes only when the graph flag is on and capture+predictors exist."""
 
     try:
-        resolved_enabled = graph_v3_enabled() if enabled is None else bool(enabled)
+        resolved_enabled = graph_enabled() if enabled is None else bool(enabled)
         if not resolved_enabled:
             return (), None
         resolved_capture = (
             capture
             if capture is not None
-            else _compose_graph_v3_capture(
+            else _compose_graph_capture(
                 store=store,
                 config_dir=config_dir,
                 study_cohort_id=study_cohort_id,
@@ -585,13 +585,13 @@ def compose_local_graph_v3_lanes(
             )
         )
         if predictors is None:
-            resolved_predictors: tuple[object, ...] = _compose_graph_v3_predictors()
+            resolved_predictors: tuple[object, ...] = _compose_graph_predictors()
         else:
             resolved_predictors = tuple(predictors)
         if resolved_capture is None or not resolved_predictors:
             return (), None
         return resolved_predictors, WorldGraphEpisodeEnricher(resolved_capture)
-    except Exception:  # noqa: BLE001 - V3 composition never blocks V1/V2/Trader
+    except Exception:  # noqa: BLE001 - graph composition never blocks market/context/Trader
         return (), None
 
 
@@ -658,7 +658,7 @@ def _default_scope_resolver() -> object | None:
         from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 
         return WorldScopeResolver.load(Path(__file__).resolve().parents[2] / "config")
-    except Exception:  # noqa: BLE001 - missing mapping never blocks V1 shadow
+    except Exception:  # noqa: BLE001 - missing mapping never blocks market shadow
         return None
 
 
@@ -702,7 +702,7 @@ def _mint_collecting_cohort_predictors(store: object, cohort_service: object | N
         try:
             cold = cold_lanes(cohort_id)
             cohort = load(cohort_id)
-        except Exception:  # noqa: BLE001 - unproven start never blocks V1 shadow
+        except Exception:  # noqa: BLE001 - unproven start never blocks market shadow
             continue
         by_id = {lane.lane_id: lane for lane in cohort.manifest.lanes}
         for item in cold:
@@ -787,8 +787,8 @@ __all__ = [
     "WorldModelRuntime",
     "WorldModelShadowRuntime",
     "WorldTemporalTraversalAdapter",
-    "compose_local_graph_v3_lanes",
+    "compose_local_graph_lanes",
     "compose_world_resource_guard",
-    "graph_v3_budget_view",
-    "graph_v3_status_overlay",
+    "graph_budget_view",
+    "graph_status_overlay",
 ]

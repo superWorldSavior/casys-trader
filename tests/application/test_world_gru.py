@@ -17,14 +17,14 @@ from trader.domain.world_cohort import WorldLaneDefinition
 from trader.domain.world_context import SensorEvidence
 from trader.domain.world_episode import WorldEpisode, WorldObservation, WorldOutcome, canonical_sha256
 from trader.domain.world_feature_contract import (
-    WORLD_V3_GRU_MODEL_IDENTITY,
-    WORLD_V3_MODEL_VERSION,
-    world_v1_feature_contract,
-    world_v2_feature_contract,
-    world_v3_feature_contract,
+    GRAPH_GRU_MODEL_IDENTITY,
+    GRAPH_MODEL_VERSION,
+    market_feature_contract,
+    context_feature_contract,
+    graph_feature_contract,
 )
 
-from tests.application.test_world_context_capture import _FakeSource, _v1_episode
+from tests.application.test_world_context_capture import _FakeSource, _market_episode
 
 
 UTC = timezone.utc
@@ -44,7 +44,7 @@ def _episode(
     macro_regime: str = "quiet",
     return_value: float = 0.006,
     available_after_hours: int = 0,
-    feature_contract_version: str = "market_ohlcv_causal.v1",
+    feature_contract_version: str = "world_feature.market.v1",
     sampling_policy_version: str = "first_fresh_bar.v1",
 ) -> WorldEpisode:
     as_of = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=hour)
@@ -238,9 +238,9 @@ def test_same_availability_cutoff_never_admits_a_later_market_bar() -> None:
 
 
 def test_sequence_never_mixes_feature_or_sampling_contract_versions() -> None:
-    model = _model(accepted_feature_contracts=frozenset({"market_ohlcv_causal.v1", "world_features.v2"}))
+    model = _model(accepted_feature_contracts=frozenset({"world_feature.market.v1", "world_feature.graph.v1"}))
     first_v1 = _episode(0)
-    incompatible = _episode(1, feature_contract_version="world_features.v2")
+    incompatible = _episode(1, feature_contract_version="world_feature.graph.v1")
     target_v1 = _episode(2)
 
     model.observe_episodes((first_v1, incompatible, target_v1))
@@ -390,7 +390,7 @@ def _cold_gru(kind: str = "market", **overrides: object) -> OnlineGRUWorldChalle
     return cold_gru_challenger(**settings)  # type: ignore[arg-type]
 
 
-def test_market_mask_gru_matches_v1_facade_predictions_bit_for_bit() -> None:
+def test_market_mask_gru_matches_market_facade_predictions_bit_for_bit() -> None:
     episode = _episode(0)
     outcome = _outcome(episode, simple_return=0.01)
     facade = _model()
@@ -404,13 +404,13 @@ def test_market_mask_gru_matches_v1_facade_predictions_bit_for_bit() -> None:
     assert first.comparison_batch_id == second.comparison_batch_id
     assert first.comparison_cohort_fingerprint == second.comparison_cohort_fingerprint
     assert masked.feature_mask.mask_id == "market.v1"
-    assert masked.feature_contract == world_v1_feature_contract()
+    assert masked.feature_contract == market_feature_contract()
     assert masked.sequence_len == 4
 
 
-def test_joint_mask_gru_matches_v2_include_context_facade() -> None:
+def test_joint_mask_gru_matches_context_include_context_facade() -> None:
     v2 = attach_world_context(
-        (_v1_episode(),),
+        (_market_episode(),),
         _FakeSource(
             SensorEvidence(status="missing", reason="no_artifact"),
             SensorEvidence(status="missing", reason="no_artifact"),
@@ -435,7 +435,7 @@ def test_joint_mask_gru_matches_v2_include_context_facade() -> None:
     second = masked.predict(v2, HORIZON_4H, prediction_at=predicted_at)
     assert dict(first.probabilities) == dict(second.probabilities)
     assert first.feature_hash == second.feature_hash
-    assert masked.feature_contract == world_v2_feature_contract()
+    assert masked.feature_contract == context_feature_contract()
 
 
 def test_cold_gru_challengers_match_slots_without_warm_reuse_or_content_leakage() -> None:
@@ -493,7 +493,7 @@ def test_cold_gru_challengers_match_slots_without_warm_reuse_or_content_leakage(
     with pytest.raises(ValueError, match="warm|trained|reuse"):
         cold_gru_challenger(
             lane=_lane("market"),
-            contract=world_v1_feature_contract(),
+            contract=market_feature_contract(),
             mask=world_lane_encoder_profile("market").mask,
             study_cohort_id=STUDY_COHORT_ID,
             manifest_sha256=MANIFEST_SHA256,
@@ -504,7 +504,7 @@ def test_cold_gru_challengers_match_slots_without_warm_reuse_or_content_leakage(
     with pytest.raises(ValueError, match="gru|family|sequence"):
         cold_gru_challenger(
             lane=_lane("market", family="markov"),
-            contract=world_v1_feature_contract(),
+            contract=market_feature_contract(),
             mask=world_lane_encoder_profile("market").mask,
             study_cohort_id=STUDY_COHORT_ID,
             manifest_sha256=MANIFEST_SHA256,
@@ -513,13 +513,13 @@ def test_cold_gru_challengers_match_slots_without_warm_reuse_or_content_leakage(
         )
 
 
-def test_cold_gru_v3_topology_status_only_is_constructible_and_isolated() -> None:
+def test_cold_gru_graph_topology_status_only_is_constructible_and_isolated() -> None:
     profile = world_lane_encoder_profile("topology_status_only")
     lane = WorldLaneDefinition(
         lane_id="gru.topology_status_only",
         model_family="gru",
-        model_id=WORLD_V3_GRU_MODEL_IDENTITY,
-        model_version=WORLD_V3_MODEL_VERSION,
+        model_id=GRAPH_GRU_MODEL_IDENTITY,
+        model_version=GRAPH_MODEL_VERSION,
         feature_contract_id=profile.contract.contract_id,
         feature_contract_fingerprint=profile.contract.fingerprint,
         feature_mask_id=profile.mask.mask_id,
@@ -543,10 +543,10 @@ def test_cold_gru_v3_topology_status_only_is_constructible_and_isolated() -> Non
     )
     v1 = _episode(0)
     v3 = _episode(0, feature_contract_version=profile.contract.accepted_episode_contract)
-    assert model.feature_contract == world_v3_feature_contract()
+    assert model.feature_contract == graph_feature_contract()
     assert model.feature_mask.mask_id == "topology_status_only.v1"
-    assert model.model_id == WORLD_V3_GRU_MODEL_IDENTITY
-    assert model.encoder_version == "world_gru_encoder.v3"
+    assert model.model_id == GRAPH_GRU_MODEL_IDENTITY
+    assert model.encoder_version == "world_gru_encoder.graph.v1"
     assert model.accepts_episode(v3) is True
     assert model.accepts_episode(v1) is False
     assert model.lane_identity.replay_bound_event_id == STARTED_EVENT_ID

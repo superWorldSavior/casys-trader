@@ -3,8 +3,8 @@
 > **Type** : Explanation (Diataxis). Cette capacité est observationnelle et
 > `shadow_only` : elle ne conseille pas le Brain et ne pilote ni scheduler,
 > RiskGate, broker, portefeuille, mandat Univers, ni mémoire.
-> Contrat runtime V1 : [référence World Model](../../reference/world-model.md)
-> (V1 marché ; le pilote est décrit ici).
+> Contrat runtime marché : [référence World Model](../../reference/world-model.md)
+> (voie marché ; le pilote est décrit ici).
 > Ontologie / PIT : [world-context-ontology](world-context-ontology.md).
 > Procédure : [opérer le shadow](../../how-to/operate-world-model-shadow.md).
 > Statut pilote : [note 2026-08-24](../../decisions/2026-08-24-world-model-shadow-pilot.md).
@@ -51,7 +51,7 @@ causal_claim     = false
 pnl_claim        = false
 ```
 
-Le boot V1 et le pilote cohort/macro/graphe **démarrent ensemble** selon la
+Le boot marché et le pilote cohort/macro/graphe **démarrent ensemble** selon la
 config courante. Cela ne change pas l'autorité.
 
 ## Exception d'activation (RFC vs opérateur)
@@ -62,7 +62,7 @@ Les RFCs 2026-08-23 disent : pas d'activation implicite ;
 Exception humaine, pas un défaut RFC : `activation_policy=operator_authorized_on_boot`
 dans `config/world_shadow_pilot.yaml`. Ce fichier **est** l'autorisation.
 `CASYS_WORLD_SHADOW_PILOT_ACTIVATION` vaut `1` par défaut pour l'honorer ;
-`=0` saute register/arm/start et le OU des workers YAML, le V1 demeure.
+`=0` saute register/arm/start et le OU des workers YAML, le marché demeure.
 
 Voir `trader/application/world_model/pilot_activation.py` (docstring du
 module) et le câblage `trader/runtime/daemon.py` autour des lectures de
@@ -73,7 +73,7 @@ flags.
 Les adapters ne font pas `payload["status"] = ...`. L'état métier est
 dérivé d'événements typés.
 
-### Marché (V1, gelé)
+### Marché (gelé)
 
 | Objet | Rôle | Cycle |
 |---|---|---|
@@ -128,7 +128,7 @@ compatibles. Détail :
 [RFC macro §17](../../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md).
 Le consommateur cherche l'ancestry marché du
 plus proche au plus large (`MacroContextSearchPlan`) et sélectionne la
-première observation v2 exact-scope ; `MacroObservationProvenance`
+première observation contexte exact-scope ; `MacroObservationProvenance`
 porte producteur, scope d'origine réel, distance d'ancestry et
 `fact_refs`. Un fait pays/région/monde n'est jamais restampé en
 place. Agrégat `MacroCollectionRun` : register / start / source
@@ -137,17 +137,17 @@ provenance est un échec de source typé, jamais une observation mixte.
 Fetch **hors** `run_cycle` et hors worker de capture barre. GDELT et
 `NewsMacroBrief` restent hors de ce producteur.
 
-### Graphe V3
+### Voie graphe
 
 Records typés (`WorldEntityRef`, relations structurelles / de
 connaissance, `WorldGraphSnapshot`, `PatternHypothesis` /
 `PatternOccurrence`). NetworkX est une projection **fraîche** pour
 traverser ; aucun objet NetworkX n'est persisté ; aucune arête `CAUSES`.
-`config/world_graph_v3.yaml` a `cohort_id: null` ; l'id d'étude est
+`config/world_graph.yaml` a `cohort_id: null` ; l'id d'étude est
 injecté au compose depuis l'activation pilote.
 
-La révision dérivée de `world_scope_mapping.v2` est vérifiée contre
-`WORLD_GRAPH_V3_ONTOLOGY_SHA256` / `market_ontology.v2` ; les adapters
+La révision dérivée de `world_scope_mapping.v1` est vérifiée contre
+`MARKET_ONTOLOGY_SHA256` / `market_ontology.v1` ; les adapters
 SQLite projettent, le payload JSON est l'autorité. Snapshot
 `unmapped`/`ambiguous` : `world_graph_snapshot.v1` avec
 `root_entity=null`, zéro membre. Une relation `OBSERVES` porte le
@@ -159,33 +159,33 @@ Le pont macro→graphe est append-only : classify avant réserve ;
 activation à froid ; restart no-op ; resume bloqué identique ; drift
 actif = block ; drift bloqué = erreur. Pas de handoff, pas de
 remediation de lignée. Curseur monotone ; pas de wildcard
-d'ownership. Génération 5 = shadow-only, aucune autorité Trader.
+d'ownership. La voie graphe = shadow-only, aucune autorité Trader.
 
 ## Deux cohortes, lanes Markov et GRU froid
 
 Le YAML pilote matérialise deux `pipeline_pilot` distinctes. C1 ne porte
-**pas** de voie graphe ; la voie V3 a sa propre cohorte.
+**pas** de voie graphe ; la voie graphe a sa propre cohorte.
 
 | Lane | Famille | Rôle | Contrat / masque |
 |---|---|---|---|
-| `markov.market` | Markov | `primary_control` | `market_ohlcv_causal.v1` |
+| `markov.market` | Markov | `primary_control` | `world_feature.market.v1` |
 | `gru.market` | GRU froid | `secondary_challenger` | idem, `sequence_length=4` |
-| `markov.status_only` / `gru.status_only` | Markov / GRU | process / challenger | contexte V2, masque status |
+| `markov.status_only` / `gru.status_only` | Markov / GRU | process / challenger | voie contexte, masque status |
 | `markov.company` / `gru.company` | Markov / GRU | process / challenger | company sidecar-prouvé |
 | `markov.macro` / `gru.macro` | Markov / GRU | process / challenger | `world_macro_source.v1` |
 | `markov.joint` / `gru.joint` | Markov / GRU | `pilot_treatment` / challenger | status + company + macro |
-| `markov.graph` | Markov | `primary_control` de la cohorte V3 | `topology_status_only.v1` |
-| `gru.graph` | GRU froid | `pilot_treatment` V3 | `graph_content.v1` |
+| `markov.graph` | Markov | `primary_control` de la cohorte graphe | `topology_status_only.v1` |
+| `gru.graph` | GRU froid | `pilot_treatment` graphe | `graph_content.v1` |
 
 Les GRU de cohorte sont **cold start** : `cold_gru_challenger` refuse de
-copier un prototype chaud. `sequence_length=4`, `seed=0`. Le GRU V1
-historique reste à 12 pas sur `market_ohlcv_causal.v1` ; ce n'est pas la
+copier un prototype chaud. `sequence_length=4`, `seed=0`. Le GRU marché
+historique reste à 12 pas sur `world_feature.market.v1` ; ce n'est pas la
 même identité que `gru.market` de C1.
 
 Une voie n'apprend que des épisodes admis de **sa** cohorte, après le
 cutoff du `WorldCohortStarted` prouvé, et jamais d'une lane `blocked`.
 
-## Flux V1
+## Flux marché
 
 ```text
 snapshot marché frais, avant les gates et le LLM
@@ -202,7 +202,7 @@ versions de contrats. Un replay strict est un no-op ; une même identité
 avec un contenu différent est un conflit. Deux wakes sur la même barre
 réutilisent la première preuve canonique.
 
-La V1 utilise les snapshots déjà chargés par les cycles Trader. Elle
+La voie marché utilise les snapshots déjà chargés par les cycles Trader. Elle
 retire le biais de sélection *entre symboles* dans un cycle, mais n'est
 pas encore une horloge de marché continue indépendante de la cadence des
 cycles. Le pilote échantillonne en `15m` (YAML), pas en `1h` d'exemple RFC.
@@ -232,14 +232,14 @@ est recalculé. Pas de fallback 1 j → 4 h. Classes `DOWN` / `FLAT` / `UP`
 persistance. Les deux doivent précéder le label pour qu'une prédiction
 soit scorable.
 
-## Baseline et GRU challenger (V1)
+## Baseline et GRU challenger (marché)
 
 Le baseline est un Markov catégoriel hiérarchique à lissage Dirichlet :
 état exact, puis grossier, puis fréquence globale, puis uniforme au cold
 start. Tant que le support est insuffisant il émet `warming_up/NO_GO` ;
 avec davantage de données il reste `shadow_only`.
 
-Le challenger V1 est un petit GRU NumPy sur les **douze** derniers
+Le challenger marché est un petit GRU NumPy sur les **douze** derniers
 épisodes compatibles d'un même instrument. Encodeur partagé dans
 `encoding.py`. Aucune normalisation n'est ajustée sur le futur. Le
 démarrage est froid, puis l'apprentissage se fait à partir du premier
@@ -251,7 +251,7 @@ et avant son outcome. Un redémarrage reconstruit leur état en rejouant
 
 ## Mesures shadow, pilote, apport Trader
 
-L'évaluation V1 groupe chaque version de modèle et chaque horizon. Elle
+L'évaluation marché groupe chaque version de modèle et chaque horizon. Elle
 mesure Brier, log-loss, accuracy, calibration à cinq bins, direction et
 un drawdown directionnel de marché (proxy à notionnel unitaire, **pas**
 un drawdown de portefeuille). Comparaison appariée ; sous 20 paires :
@@ -288,8 +288,8 @@ Context ne les consomme pas comme source modèle.
 
 Le hook runtime est fail-open et isolé. Toute panne du store, du labeler,
 du producteur macro ou du graphe est rapportée dans le résultat shadow,
-sans faire échouer le cycle métier. L'enrichissement V2/V3 se fait dans
-le worker background **après** que le cycle n'ait gelé que la cohorte V1.
+sans faire échouer le cycle métier. L'enrichissement contexte/graphe se fait dans
+le worker background **après** que le cycle n'ait gelé que la cohorte marché.
 
 ## Flags
 
@@ -297,10 +297,10 @@ Lus uniquement au boot (`trader/runtime/daemon.py`) :
 
 | Flag | Défaut | Notes |
 |---|---|---|
-| `CASYS_WORLD_MODEL_SHADOW_ENABLED` | `1` | V1 |
-| `CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED` | `0` | OR YAML `workers.context_v2` si le pilote s'active |
-| `CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED` | `0` | OR YAML `workers.macro_source_only` |
-| `CASYS_WORLD_MODEL_GRAPH_V3_ENABLED` | `0` | OR YAML `workers.graph_v3` |
+| `CASYS_WORLD_MODEL_SHADOW_ENABLED` | `1` | marché |
+| `CASYS_WORLD_MODEL_CONTEXT_ENABLED` | `0` | OR YAML `workers.context` si le pilote s'active |
+| `CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED` | `0` | OR YAML `workers.macro_source` |
+| `CASYS_WORLD_MODEL_GRAPH_ENABLED` | `0` | OR YAML `workers.graph` |
 | `CASYS_WORLD_SHADOW_PILOT_ACTIVATION` | `1` | `0` = skip register/arm/start + skip OU YAML |
 
 Le statut est une lecture seule : il ne crée ni ne migre la base absente.

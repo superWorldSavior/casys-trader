@@ -44,8 +44,8 @@ from trader.domain.world_cohort import (
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import (
     WorldFeatureMask,
-    world_v1_feature_contract,
-    world_v2_feature_contract,
+    market_feature_contract,
+    context_feature_contract,
 )
 from trader.infrastructure.state_db.world_model_store import (
     WORLD_MODEL_MIGRATIONS,
@@ -64,8 +64,8 @@ ANCHOR_TS = datetime(2026, 8, 24, 1, 0, tzinfo=UTC)
 GIT = "a" * 40
 COHORT_ID = "world_cohort:v1:" + "c" * 64
 
-V1 = world_v1_feature_contract()
-V2 = world_v2_feature_contract()
+V1 = market_feature_contract()
+V2 = context_feature_contract()
 MARKET_MASK = WorldFeatureMask.bind(V1, mask_id="market.v1", selected_groups=("market",))
 STATUS_MASK = WorldFeatureMask.bind(V2, mask_id="status_only.v1", selected_groups=("market", "status"))
 COMPANY_MASK = WorldFeatureMask.bind(V2, mask_id="company.v1", selected_groups=("market", "status", "company"))
@@ -629,20 +629,13 @@ def test_append_event_content_conflict_fails_closed(tmp_path: Path) -> None:
 
 def test_migration_creates_append_only_cohort_schema(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    versions = {
-        row["version"]
-        for row in store._db.query_all("SELECT version FROM schema_migrations")
-    }
-    assert 5 in versions
-    names = {
-        row["name"]
-        for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")
-    }
+    versions = {row["version"] for row in store._db.query_all("SELECT version FROM schema_migrations")}
+    assert 1 in versions
+    names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
     for table in _APPEND_ONLY_TABLES:
         assert table in names
     index_sql = " ".join(
-        row["sql"] or ""
-        for row in store._db.query_all("SELECT sql FROM sqlite_master WHERE type='index'")
+        row["sql"] or "" for row in store._db.query_all("SELECT sql FROM sqlite_master WHERE type='index'")
     )
     assert "study_cohort_id" in index_sql
     assert "lane_id" in index_sql
@@ -650,7 +643,7 @@ def test_migration_creates_append_only_cohort_schema(tmp_path: Path) -> None:
     assert "feature_contract_fingerprint" in index_sql
     assert "feature_mask_fingerprint" in index_sql
     catalog_versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert 5 in catalog_versions
+    assert catalog_versions == [1]
     assert catalog_versions[-1] == WORLD_MODEL_MIGRATIONS[-1][0]
     assert WORLD_MODEL_MIGRATIONS[-1][0] in versions
 
@@ -773,9 +766,7 @@ def test_concurrent_stale_writer_cannot_append_at_wrong_sequence(tmp_path: Path)
     try:
         assert verifier._db.query_one("SELECT COUNT(*) FROM world_cohort_events")[0] == 4
         loaded = verifier.load(WorldCohortId(manifest.cohort_id))
-        admitted_ids = {
-            event.event_id for event in loaded.events if isinstance(event, WorldCohortSlotAdmitted)
-        }
+        admitted_ids = {event.event_id for event in loaded.events if isinstance(event, WorldCohortSlotAdmitted)}
         assert admitted_ids == {oks[0][1]}
         leftover = racing if oks[0][1] == first_event.event_id else first_event
         with pytest.raises(ValueError, match="sequence"):

@@ -83,7 +83,7 @@ hashés :
 - `config/world_macro_derivation_policy.yaml` ;
 - `config/world_scope_mapping.yaml`.
 
-Avant `GRAPH-5`, `config/world_graph_v3.yaml` doit référencer l'ID/hash du même
+Avant `GRAPH-5`, `config/world_graph.yaml` doit référencer l'ID/hash du même
 `config/world_scope_mapping.yaml`, sans créer une seconde autorité de scopes.
 Avant `GRAPH-7`, il doit aussi geler `cohort_id` et la règle de
 fermeture/multiplicité. Grok valide ces choix mais ne les invente pas.

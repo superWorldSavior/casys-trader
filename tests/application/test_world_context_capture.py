@@ -10,7 +10,7 @@ from trader.application.world_model.capture import FEATURE_CONTRACT_VERSION, cap
 from trader.application.world_model.context_capture import attach_world_context, build_world_context_snapshot
 from trader.application.world_model.encoding import FEATURE_CONTRACT_FINGERPRINT
 from trader.domain.world_context import (
-    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_FEATURE_CONTRACT_ID,
     NO_PROVEN_ARTIFACT_REASON,
     SCOPE_UNMAPPED_REASON,
     EntityRef,
@@ -22,8 +22,8 @@ from trader.domain.world_episode import WorldEpisode
 
 CUTOFF = datetime(2026, 8, 22, 10, 5, tzinfo=timezone.utc)
 FROZEN_V1_FINGERPRINT = "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
-V1_EPISODE_ID = "world-episode:v1:a93639633318b9f93b8c84764f758825ff9a71414222ff9cd895a9618b62bf07"
-V1_PAYLOAD_HASH = "7871ad4c859664ac9c0b210aba953d8f64cab28eca69e6ae116e6d65f740e9b2"
+V1_EPISODE_ID = "world-episode:v1:e062e1a06696773cf4bc4ff7417faa716bf3862e08df0c1b3378418156f70411"
+V1_PAYLOAD_HASH = "e8e4a087c7776f8edd60770153f90a59c637f97c72f7002f6ce04d988be3de49"
 
 
 class _FakeSource:
@@ -40,7 +40,7 @@ class _FakeSource:
         return self.company
 
 
-def _v1_episode() -> WorldEpisode:
+def _market_episode() -> WorldEpisode:
     return capture_world_episodes(
         active_symbols=("AAA",),
         tradable_symbols=("AAA",),
@@ -78,22 +78,22 @@ def _v1_episode() -> WorldEpisode:
     )[0]
 
 
-def test_v1_fingerprint_and_capture_identity_remain_frozen() -> None:
-    episode = _v1_episode()
+def test_market_fingerprint_and_capture_identity_remain_frozen() -> None:
+    episode = _market_episode()
     assert FEATURE_CONTRACT_FINGERPRINT == FROZEN_V1_FINGERPRINT
     assert episode.observation.feature_contract_version == FEATURE_CONTRACT_VERSION
     assert episode.episode_id == V1_EPISODE_ID
     assert "context" not in episode.observation.to_dict()
 
 
-def test_missing_and_late_context_still_emit_trainable_v2_episodes() -> None:
-    v1 = _v1_episode()
+def test_missing_and_late_context_still_emit_trainable_context_episodes() -> None:
+    v1 = _market_episode()
     source = _FakeSource(
         SensorEvidence(status="late", reason="ready_at_after_cutoff", proven=True),
         SensorEvidence(status="missing", reason="no_artifact"),
     )
     v2 = attach_world_context((v1,), source)[0]
-    assert v2.observation.feature_contract_version == CONTEXT_FEATURE_CONTRACT_VERSION
+    assert v2.observation.feature_contract_version == CONTEXT_FEATURE_CONTRACT_ID
     assert v2.episode_id != v1.episode_id
     assert v2.training_eligible is True
     assert v2.observation.context["status"] == "missing"
@@ -103,7 +103,7 @@ def test_missing_and_late_context_still_emit_trainable_v2_episodes() -> None:
 
 
 def test_unproven_context_is_explicit_and_does_not_drop_the_market_episode() -> None:
-    v1 = _v1_episode()
+    v1 = _market_episode()
     source = _FakeSource(
         SensorEvidence(status="availability_unproven", reason="legacy_row_without_receipt"),
         SensorEvidence(status="availability_unproven", reason="legacy_row_without_receipt"),
@@ -115,8 +115,8 @@ def test_unproven_context_is_explicit_and_does_not_drop_the_market_episode() -> 
     assert v2.observation.context["categorical_features"]["macro_status"] == "missing"
 
 
-def test_missing_late_and_unproven_share_v2_identity() -> None:
-    v1 = _v1_episode()
+def test_missing_late_and_unproven_share_context_identity() -> None:
+    v1 = _market_episode()
     missing = attach_world_context(
         (v1,),
         _FakeSource(
@@ -146,7 +146,7 @@ def test_missing_late_and_unproven_share_v2_identity() -> None:
 
 
 def test_context_cutoff_is_completed_bar_clock_not_poll_time() -> None:
-    v1 = _v1_episode()
+    v1 = _market_episode()
     later = v1.observation
     # Poll clocks can move; the V1 available_at stays the observation market time.
     assert later.available_at is not None
@@ -225,7 +225,7 @@ def test_proven_company_issuer_uses_artifact_ready_at(tmp_path) -> None:
         company_store=companies,
         clock=lambda: ready,
     )
-    v2 = attach_world_context((_v1_episode(),), reader)[0]
+    v2 = attach_world_context((_market_episode(),), reader)[0]
     issued = [edge for edge in v2.observation.context["topology_edges"] if edge["kind"] == "ISSUED_BY"]
     assert len(issued) == 1
     assert issued[0]["ready_at"] == ready.isoformat()
@@ -266,19 +266,19 @@ def test_future_company_receipt_does_not_backdate_issuer(tmp_path) -> None:
         company_store=companies,
         clock=lambda: datetime(2026, 8, 22, 11, 0, tzinfo=timezone.utc),
     )
-    v2 = attach_world_context((_v1_episode(),), reader)[0]
+    v2 = attach_world_context((_market_episode(),), reader)[0]
     edges = v2.observation.context["topology_edges"]
     assert all(edge["kind"] != "ISSUED_BY" for edge in edges)
     assert all(edge["target"]["kind"] != "company" for edge in edges)
 
 
-def test_post_cutoff_poll_does_not_mint_a_second_v2_episode(tmp_path) -> None:
+def test_post_cutoff_poll_does_not_mint_a_second_context_episode(tmp_path) -> None:
     from trader.domain.company import CompanyIntelligenceBrief
     from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
     from trader.infrastructure.state_db.world_context_reader import WorldContextReader
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
 
-    v1 = _v1_episode()
+    v1 = _market_episode()
     companies = CompanyIntelligenceStore(tmp_path / "company_intelligence")
     reader = WorldContextReader(news_dir=tmp_path / "news", company_store=companies)
     first = attach_world_context((v1,), reader)[0]
@@ -311,7 +311,7 @@ def test_post_cutoff_poll_does_not_mint_a_second_v2_episode(tmp_path) -> None:
     assert store.counts()["episodes"] == 1
 
 
-def test_late_receipt_between_same_bar_polls_does_not_change_v2_identity(tmp_path) -> None:
+def test_late_receipt_between_same_bar_polls_does_not_change_context_identity(tmp_path) -> None:
     from trader.domain.company import CompanyIntelligenceBrief
     from trader.infrastructure.state_db.company_intelligence_store import CompanyIntelligenceStore
     from trader.infrastructure.state_db.world_context_reader import WorldContextReader
@@ -326,7 +326,7 @@ def test_late_receipt_between_same_bar_polls_does_not_change_v2_identity(tmp_pat
         company_store=companies,
         clock=lambda: clock["now"],
     )
-    v1 = _v1_episode()
+    v1 = _market_episode()
     first = attach_world_context((v1,), reader)[0]
     brief = CompanyIntelligenceBrief.from_mapping(
         {
@@ -357,14 +357,14 @@ def _missing_source() -> _FakeSource:
     )
 
 
-def test_frozen_v1_asset_family_is_not_reminted_from_catalog_or_injected_lookup(monkeypatch) -> None:
+def test_frozen_market_asset_family_is_not_reminted_from_catalog_or_injected_lookup(monkeypatch) -> None:
     import inspect
     from pathlib import Path
 
     from trader.domain.semantic import catalog
 
     monkeypatch.setattr(catalog, "family_for_symbol", lambda _symbol: "crypto")
-    v1 = _v1_episode()
+    v1 = _market_episode()
     assert v1.observation.categorical_features["asset_family"] == "equity"
     v2 = attach_world_context((v1,), _missing_source())[0]
     families = [edge for edge in v2.observation.context["topology_edges"] if edge["kind"] == "MEMBER_OF_FAMILY"]
@@ -385,12 +385,12 @@ def test_frozen_v1_asset_family_is_not_reminted_from_catalog_or_injected_lookup(
 
 def test_attach_passes_instrument_into_macro_lookup() -> None:
     source = _missing_source()
-    attach_world_context((_v1_episode(),), source)
+    attach_world_context((_market_episode(),), source)
     assert source.macro_calls == [("XTAI", "AAA")]
 
 
-def test_v2_macro_sensor_is_source_only_observation_not_news_brief() -> None:
-    v2 = attach_world_context((_v1_episode(),), _missing_source())[0]
+def test_context_macro_sensor_is_source_only_observation_not_news_brief() -> None:
+    v2 = attach_world_context((_market_episode(),), _missing_source())[0]
     kinds = {item["kind"] for item in v2.observation.context["artifact_proofs"]}
     statuses = v2.observation.context["sensor_statuses"]
     assert "macro_world_observation" in kinds
@@ -477,7 +477,7 @@ def test_described_by_uses_honest_country_subject_not_logical_venue() -> None:
                 "ancestry_distance": 1,
                 "producer_version": "world_macro_source.v1",
                 "scope_resolution": {
-                    "mapping_id": "world_scope_mapping.v2",
+                    "mapping_id": "world_scope_mapping.v1",
                     "mapping_sha256": "b" * 64,
                     "resolution_status": "resolved",
                     "anchor": {"market_venue": "US", "instrument": "GM"},

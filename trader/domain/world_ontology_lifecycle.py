@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from trader.domain.world_feature_contract import (
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
-    WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+    MARKET_ONTOLOGY_REVISION,
+    MARKET_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -120,9 +120,9 @@ class WorldOntologyPublicationPlan:
 
 def committed_world_ontology_lifecycle_spec() -> WorldOntologyLifecycleSpec:
     return WorldOntologyLifecycleSpec(
-        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        revision_id=MARKET_ONTOLOGY_REVISION,
         mapping_id=WORLD_SCOPE_MAPPING_ID,
-        revision_hash=WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+        revision_hash=MARKET_ONTOLOGY_SHA256,
         mapping_sha256=WORLD_SCOPE_MAPPING_SHA256,
     )
 

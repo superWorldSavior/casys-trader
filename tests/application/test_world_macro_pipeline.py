@@ -148,7 +148,7 @@ def _attested_receipt(
     subject = WorldAvailabilitySubjectRef(kind=subject_kind, subject_id=subject_id, content_sha256=content_sha256)
     locator = WorldStorageLocator(kind="jsonl", store_id=STORE_ID, path="macro/test.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope=scope,
         storage_locator=locator,

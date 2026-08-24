@@ -26,7 +26,7 @@ from trader.application.world_model.ontology_service import (
     WorldOntologyService,
 )
 from trader.domain.world_episode import parse_utc_timestamp
-from trader.domain.world_feature_contract import WORLD_GRAPH_V3_ONTOLOGY_REVISION
+from trader.domain.world_feature_contract import MARKET_ONTOLOGY_REVISION
 from trader.domain.world_graph import (
     FORBIDDEN_RELATION_KINDS,
     StructuralWorldRelation,
@@ -44,7 +44,7 @@ from trader.domain.world_ontology_lifecycle import (
 from trader.domain.world_scope import WorldCanonicalScopeRef, WorldScopeMapping
 
 
-MARKET_ONTOLOGY_REVISION_ID = WORLD_GRAPH_V3_ONTOLOGY_REVISION
+MARKET_ONTOLOGY_REVISION_ID = MARKET_ONTOLOGY_REVISION
 MARKET_ONTOLOGY_EFFECTIVE_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _SCOPE_HEAD_KINDS = frozenset({"TRADED_ON", "LOCATED_IN", "PART_OF_WORLD"})
 _BOOTSTRAP_KINDS = frozenset({"instrument", "venue", "country", "region", "world"})

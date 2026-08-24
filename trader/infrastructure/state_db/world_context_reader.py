@@ -10,8 +10,8 @@ applied to receipts discovered later.
 Late, unproven, or post-cutoff rows remain visible as store/audit facts, but
 the model-facing lookup collapses them to canonical missing
 (``no_proven_artifact_at_cutoff``, ``proven=False``, no artifact metadata).
-A restart is intentionally conservative for old cutoffs unless a canonical V2
-episode already exists.
+A restart is intentionally conservative for old cutoffs unless a canonical
+context episode already exists.
 
 Macro lookup consumes source-only ``MacroWorldObservation`` envelopes.  It does
 not read Univers news-macro briefs as a model source.

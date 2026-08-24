@@ -80,8 +80,8 @@ def _revision(mapping: WorldScopeMapping, *, revision_id: str = "market_ontology
         source_refs=("provider:instrument-master:2330",),
     )
     link = WorldEntityIdentityLink(
-        v2_ref=EntityRef(kind="instrument", entity_id="2330"),
-        v3_ref=entity,
+        context_ref=EntityRef(kind="instrument", entity_id="2330"),
+        graph_ref=entity,
         source_refs=("provider:instrument-master:2330",),
         effective_from=T0,
     )

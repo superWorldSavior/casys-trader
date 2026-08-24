@@ -1,10 +1,10 @@
-"""Prospective V3 World-graph capture. V1/V2 capture stays frozen.
+"""Prospective World-graph capture. Market and context capture stay frozen.
 
-One V3 companion is attached per V1 market slot. Cutoff is the completed-bar
+One graph companion is attached per market slot. Cutoff is the completed-bar
 clock. Missing, unpublished, unmapped, or budget-exceeded graph is encoded as
-snapshot missingness; it does not drop V1/V2. Unmapped or ambiguous
-``WorldScopeResolution`` never invents an instrument root, venue, or topology.
-A builder failure skips the V3 companion (fail-open).
+snapshot missingness; it does not drop market or context episodes. Unmapped or
+ambiguous ``WorldScopeResolution`` never invents an instrument root, venue, or
+topology. A builder failure skips the graph companion (fail-open).
 """
 
 from __future__ import annotations
@@ -21,15 +21,15 @@ from trader.application.world_model.capture import (
 from trader.application.world_model.graph_features import encode_world_graph_features
 from trader.application.world_model.graph_snapshot import WorldGraphSnapshotRequest
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     WorldEpisode,
     WorldObservation,
     completed_bar_cutoff,
 )
 from trader.domain.world_feature_contract import (
-    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_CONTRACT_ID,
     WorldFeatureMask,
-    world_v3_graph_content_mask,
+    graph_content_mask,
 )
 from trader.domain.world_graph import WorldGraphSnapshot, world_instrument_root_for_resolution
 from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping
@@ -37,7 +37,7 @@ from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping
 
 @dataclass(frozen=True)
 class WorldGraphCaptureConfig:
-    """Injected V3 capture config. Cohort id is constructor-injected, never file-loaded."""
+    """Injected graph capture config. Cohort id is constructor-injected, never file-loaded."""
 
     scope_mapping: WorldScopeMapping
     snapshot_service: object
@@ -57,7 +57,7 @@ def attach_world_graph(
     episodes: Sequence[WorldEpisode],
     config: WorldGraphCaptureConfig,
 ) -> tuple[WorldEpisode, ...]:
-    """Project one V3 graph episode per V1 market episode without widening V1/V2."""
+    """Project one graph episode per market episode without widening market or context."""
 
     if not isinstance(config, WorldGraphCaptureConfig):
         raise TypeError("config must be WorldGraphCaptureConfig")
@@ -81,9 +81,9 @@ def capture_world_episodes_with_graph(
     timestamp_semantics: str | None = None,
     captured_at: datetime | str | None = None,
 ) -> tuple[tuple[WorldEpisode, ...], tuple[WorldEpisode, ...]]:
-    """Return ``(v1_episodes, v3_episodes)`` from one frozen market cohort."""
+    """Return ``(market_episodes, graph_episodes)`` from one frozen market cohort."""
 
-    v1_episodes = capture_world_episodes(
+    market_episodes = capture_world_episodes(
         active_symbols,
         tradable_symbols,
         bars_by_symbol,
@@ -96,15 +96,15 @@ def capture_world_episodes_with_graph(
         sampling_policy_version=SAMPLING_POLICY_VERSION,
     )
     try:
-        v3_episodes = attach_world_graph(v1_episodes, config)
+        graph_episodes = attach_world_graph(market_episodes, config)
     except Exception:
-        v3_episodes = ()
-    return v1_episodes, v3_episodes
+        graph_episodes = ()
+    return market_episodes, graph_episodes
 
 
 def _attach_one(episode: WorldEpisode, config: WorldGraphCaptureConfig) -> WorldEpisode | None:
     observation = episode.observation
-    if observation.feature_contract_version != MARKET_FEATURE_CONTRACT_VERSION:
+    if observation.feature_contract_version != MARKET_FEATURE_CONTRACT_ID:
         return None
     cutoff = completed_bar_cutoff(
         as_of_bar_ts=observation.as_of_bar_ts,
@@ -131,14 +131,14 @@ def _attach_one(episode: WorldEpisode, config: WorldGraphCaptureConfig) -> World
         )
         bundle = config.snapshot_service.build(request)
         _persist_snapshot(config.snapshot_service, bundle.snapshot)
-        mask = config.feature_mask if config.feature_mask is not None else world_v3_graph_content_mask()
+        mask = config.feature_mask if config.feature_mask is not None else graph_content_mask()
         encoded = encode_world_graph_features(bundle, mask=mask)
-        v3_observation = WorldObservation(
+        graph_observation = WorldObservation(
             venue=observation.venue,
             symbol=observation.symbol,
             bar_interval=observation.bar_interval,
             as_of_bar_ts=observation.as_of_bar_ts,
-            feature_contract_version=GRAPH_FEATURE_CONTRACT_VERSION,
+            feature_contract_version=GRAPH_FEATURE_CONTRACT_ID,
             sampling_policy_version=observation.sampling_policy_version,
             anchor=observation.anchor,
             available_at=observation.available_at,
@@ -150,7 +150,7 @@ def _attach_one(episode: WorldEpisode, config: WorldGraphCaptureConfig) -> World
             graph_features=encoded.to_observation_payload(),
         )
         return WorldEpisode(
-            observation=v3_observation,
+            observation=graph_observation,
             training_eligible=episode.training_eligible,
             training_reason=episode.training_reason,
         )

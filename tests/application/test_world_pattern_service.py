@@ -20,7 +20,7 @@ from trader.domain.world_availability import (
     _receipt_identity_payload,
 )
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     WorldOutcome,
     WorldPrediction,
     canonical_sha256,
@@ -70,10 +70,10 @@ _SERVICE_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_
 
 def _contract() -> WorldFeatureContract:
     return WorldFeatureContract(
-        contract_id="market_ohlcv_graph.v3",
-        accepted_episode_contract=MARKET_FEATURE_CONTRACT_VERSION,
+        contract_id="world_feature.graph.v1",
+        accepted_episode_contract=MARKET_FEATURE_CONTRACT_ID,
         projection_version="graph_projection.v3",
-        encoder_identity="world_feature_encoder.v3",
+        encoder_identity="world_feature_encoder.graph.v1",
         groups=(
             WorldFeatureGroup(
                 group_id="market",
@@ -127,7 +127,7 @@ def _spec(**overrides: object) -> PatternHypothesisSpec:
         "feature_contract_fingerprint": contract.fingerprint,
         "feature_mask_id": mask.mask_id,
         "feature_mask_fingerprint": mask.fingerprint,
-        "model_identity": "online_gru_world_challenger@graph.v3",
+        "model_identity": "online_gru_world_challenger@graph.v1",
         "ontology_revision": "market_ontology.v1",
         "source_refs": (),
         "causal_claim": False,
@@ -165,8 +165,8 @@ def _prediction(**overrides: object) -> WorldPrediction:
     values: dict[str, object] = {
         "episode_id": EPISODE_ID,
         "horizon_id": "elapsed_1d.v1",
-        "model_id": "online_gru_world_challenger@graph.v3",
-        "model_version": "graph.v3",
+        "model_id": "online_gru_world_challenger@graph.v1",
+        "model_version": "graph.v1",
         "feature_hash": "feature-view",
         "created_at": CUTOFF,
         "probabilities": {"DOWN": 0.20, "FLAT": 0.30, "UP": 0.50},
@@ -209,7 +209,7 @@ def _scope_for(event: object) -> str:
 def _attested_receipt(*, subject: WorldAvailabilitySubjectRef, ready: datetime, scope: str) -> WorldAvailabilityReceipt:
     locator = WorldStorageLocator(kind="jsonl", store_id=STORE_ID, path="pattern/events.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope=scope,
         storage_locator=locator,
@@ -328,7 +328,9 @@ class _MemoryPatternStore:
         return sealed
 
 
-def _service(*, crash_before_receipt: int = 0, crash_event_types: frozenset[str] | None = None, now: datetime = FIRST_SEEN):
+def _service(
+    *, crash_before_receipt: int = 0, crash_event_types: frozenset[str] | None = None, now: datetime = FIRST_SEEN
+):
     from trader.application.world_model.pattern_service import WorldPatternService
 
     store = _MemoryPatternStore(
@@ -362,7 +364,7 @@ def _record(service, hypothesis_id: str, **overrides: object):
 
     values: dict[str, object] = {
         "hypothesis_id": hypothesis_id,
-        "cohort_id": "world_cohort:graph_v3_pilot",
+        "cohort_id": "world_cohort:graph_pilot",
         "instrument": _instrument(),
         "cutoff_at": CUTOFF,
         "exact_path": _path(),
@@ -377,7 +379,9 @@ def _record(service, hypothesis_id: str, **overrides: object):
 def _link(service, occurrence_id: str, outcome: WorldOutcome | object | None = None):
     from trader.application.world_model.pattern_service import LinkPatternOutcome
 
-    return service.link(LinkPatternOutcome(occurrence_id=occurrence_id, outcome=outcome if outcome is not None else _outcome()))
+    return service.link(
+        LinkPatternOutcome(occurrence_id=occurrence_id, outcome=outcome if outcome is not None else _outcome())
+    )
 
 
 def test_ports_are_consumer_owned_typed_contracts() -> None:
@@ -427,7 +431,11 @@ def test_ports_are_consumer_owned_typed_contracts() -> None:
 
 def test_ports_and_service_reject_sqlite_clock_and_layer_leaks() -> None:
     from trader.application.world_model import pattern_ports, pattern_service
-    from trader.application.world_model.pattern_ports import OccurrenceLedger, PatternAvailability, PatternHypothesisLedger
+    from trader.application.world_model.pattern_ports import (
+        OccurrenceLedger,
+        PatternAvailability,
+        PatternHypothesisLedger,
+    )
     from trader.application.world_model.pattern_service import WorldPatternService
 
     forbidden = ("trader.runtime", "trader.infrastructure", "trader.reporting", "sqlite3")
@@ -507,7 +515,11 @@ def test_typed_handlers_are_the_only_mutation_surface() -> None:
 
 def test_register_is_idempotent_and_conflicting_definition_is_typed_conflict() -> None:
     from trader.application.world_model.pattern_ports import PatternPayloadConflict
-    from trader.application.world_model.pattern_service import PATTERN_AUTHORITY, PATTERN_DECISION_EFFECT, RegisterPatternHypothesis
+    from trader.application.world_model.pattern_service import (
+        PATTERN_AUTHORITY,
+        PATTERN_DECISION_EFFECT,
+        RegisterPatternHypothesis,
+    )
 
     spec = _spec()
     service, store = _service(crash_before_receipt=1)
@@ -543,10 +555,21 @@ def test_definition_variant_mints_a_new_hypothesis_id() -> None:
     )
     horizon = _register(
         service,
-        _spec(target=PatternTarget(entity_kind="instrument", horizon_id="elapsed_4h.v1", move_distribution={"DOWN": 0.2, "FLAT": 0.3, "UP": 0.5})),
+        _spec(
+            target=PatternTarget(
+                entity_kind="instrument",
+                horizon_id="elapsed_4h.v1",
+                move_distribution={"DOWN": 0.2, "FLAT": 0.3, "UP": 0.5},
+            )
+        ),
     )
-    model = _register(service, _spec(model_identity="online_markov_world_challenger@graph.v3"))
-    ids = {first.event.hypothesis_id, permuted.event.hypothesis_id, horizon.event.hypothesis_id, model.event.hypothesis_id}
+    model = _register(service, _spec(model_identity="online_markov_world_challenger@graph.v1"))
+    ids = {
+        first.event.hypothesis_id,
+        permuted.event.hypothesis_id,
+        horizon.event.hypothesis_id,
+        model.event.hypothesis_id,
+    }
     assert len(ids) == 4
     assert len(store.hypothesis_events) == 4
 
@@ -603,7 +626,12 @@ def test_record_requires_started_evaluation_and_matching_fingerprints() -> None:
 
     service.close(ClosePatternEvaluation(hypothesis_id=started.event.hypothesis_id, closed_at=CLOSED_AT))
     with pytest.raises(ValueError, match="evaluating|closed"):
-        _record(service, started.event.hypothesis_id, cutoff_at=datetime(2026, 9, 6, tzinfo=UTC), forecast=_prediction(created_at=datetime(2026, 9, 6, tzinfo=UTC)))
+        _record(
+            service,
+            started.event.hypothesis_id,
+            cutoff_at=datetime(2026, 9, 6, tzinfo=UTC),
+            forecast=_prediction(created_at=datetime(2026, 9, 6, tzinfo=UTC)),
+        )
 
 
 def test_link_requires_durable_occurrence_and_canonical_world_outcome_leaf() -> None:
@@ -631,11 +659,23 @@ def test_link_requires_durable_occurrence_and_canonical_world_outcome_leaf() -> 
     assert leaf.world_outcome_content_sha256 == outcome.payload_hash
     assert leaf.horizon_id == "elapsed_1d.v1"
     payload = leaf.to_dict()
-    for forbidden in ("move_class", "direction", "simple_return", "anchor_close", "endpoint_close", "target_at", "available_at", "computed_at", "ready_at"):
+    for forbidden in (
+        "move_class",
+        "direction",
+        "simple_return",
+        "anchor_close",
+        "endpoint_close",
+        "target_at",
+        "available_at",
+        "computed_at",
+        "ready_at",
+    ):
         assert forbidden not in payload
     retry = _link(unproven_service, sealed.event.occurrence_id, outcome)
     assert retry.event.event_id == linked.event.event_id
-    validated = validate_world_outcome_leaf(outcome, expected_horizon_id="elapsed_1d.v1", expected_episode_id=EPISODE_ID)
+    validated = validate_world_outcome_leaf(
+        outcome, expected_horizon_id="elapsed_1d.v1", expected_episode_id=EPISODE_ID
+    )
     assert validated.event_id == outcome.event_id
     with pytest.raises(TypeError, match="WorldOutcome"):
         LinkPatternOutcome(occurrence_id=sealed.event.occurrence_id, outcome=outcome.to_dict())  # type: ignore[arg-type]

@@ -47,8 +47,8 @@ from trader.domain.world_episode import (
 )
 
 
-_V2_FEATURE_CONTRACT = "market_ohlcv_context.v2"
-_V3_FEATURE_CONTRACT = "market_ohlcv_graph.v3"
+_CONTEXT_FEATURE_CONTRACT = "world_feature.context.v1"
+_GRAPH_FEATURE_CONTRACT = "world_feature.graph.v1"
 
 
 DEFAULT_HORIZONS: tuple[str, ...] = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
@@ -210,12 +210,12 @@ def _iso_slot_text(value: object) -> str | None:
     return text or None
 
 
-def _v2_market_slot(episode: object) -> dict[str, str] | None:
-    return _market_slot_for_contract(episode, _V2_FEATURE_CONTRACT)
+def _context_market_slot(episode: object) -> dict[str, str] | None:
+    return _market_slot_for_contract(episode, _CONTEXT_FEATURE_CONTRACT)
 
 
-def _v3_market_slot(episode: object) -> dict[str, str] | None:
-    return _market_slot_for_contract(episode, _V3_FEATURE_CONTRACT)
+def _graph_market_slot(episode: object) -> dict[str, str] | None:
+    return _market_slot_for_contract(episode, _GRAPH_FEATURE_CONTRACT)
 
 
 def _market_slot_for_contract(episode: object, contract: str) -> dict[str, str] | None:
@@ -713,21 +713,21 @@ class WorldModelService:
     def _lookup_canonical_episode(self, incoming_episode: object) -> object | None:
         """Return the first durable episode for this sampling slot, if any.
 
-        V2/V3 identities include context/graph snapshot digests, so a later poll
-        with different evidence still maps onto the same market slot.  V1 uses
-        the deterministic episode id.  The stored observation is canonical even
+        Context/graph identities include snapshot digests, so a later poll with
+        different evidence still maps onto the same market slot. Market uses
+        the deterministic episode id. The stored observation is canonical even
         when the incoming poll carries later clocks or revised OHLCV.
         """
 
         stored = None
-        v2_slot = _v2_market_slot(incoming_episode)
-        v3_slot = _v3_market_slot(incoming_episode)
+        v2_slot = _context_market_slot(incoming_episode)
+        v3_slot = _graph_market_slot(incoming_episode)
         if v2_slot is not None:
-            lookup = getattr(self.store, "get_episode_by_v2_slot", None)
+            lookup = getattr(self.store, "get_episode_by_context_slot", None)
             if callable(lookup):
                 stored = lookup(**v2_slot)
         elif v3_slot is not None:
-            lookup = getattr(self.store, "get_episode_by_v3_slot", None)
+            lookup = getattr(self.store, "get_episode_by_graph_slot", None)
             if callable(lookup):
                 stored = lookup(**v3_slot)
         if stored is None:
@@ -818,7 +818,7 @@ class WorldModelService:
         the surrounding fields make older and newer store variants equally
         replayable without asking the predictor to know persistence details.
         Indexed cohort lineage columns are stamped from a cold-lane identity
-        when present; V1/V2 shadow predictions omit them.
+        when present; market/context shadow predictions omit them.
         """
 
         if isinstance(prediction, WorldPrediction):
@@ -1576,7 +1576,7 @@ class WorldModelService:
                 if started is None:
                     continue
                 evidence = envelope_for(started).require_proven()
-            except Exception:  # noqa: BLE001 - unproven start never blocks V1 shadow
+            except Exception:  # noqa: BLE001 - unproven start never blocks market shadow
                 continue
             grouped: dict[tuple[str, str, str, str], dict[str, str]] = {}
             anchor_ends: dict[tuple[str, str, str, str], datetime] = {}
@@ -1609,9 +1609,7 @@ class WorldModelService:
                 try:
                     declared = {lane.feature_contract_id for lane in cohort.manifest.lanes}
                     filtered = {
-                        contract_id: identifier
-                        for contract_id, identifier in refs.items()
-                        if contract_id in declared
+                        contract_id: identifier for contract_id, identifier in refs.items() if contract_id in declared
                     }
                     if not filtered:
                         continue

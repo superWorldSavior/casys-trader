@@ -318,7 +318,7 @@ def test_world_shadow_trigger_never_reads_context_on_the_cycle_thread(monkeypatc
         data_source=object(),
         runtime_interval="15m",
         now=NOW,
-        context_v2_enabled=True,
+        context_enabled=True,
     )
     assert result["triggered"] is True
     episodes = runner.calls[0]["episodes"]
@@ -326,11 +326,11 @@ def test_world_shadow_trigger_never_reads_context_on_the_cycle_thread(monkeypatc
     assert episodes[0].observation.context is None
 
 
-def test_repeated_poll_of_the_same_bar_keeps_one_v2_row(tmp_path) -> None:
+def test_repeated_poll_of_the_same_bar_keeps_one_context_row(tmp_path) -> None:
     from trader.application.world_model import labeler
     from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
     from trader.application.world_model.gru import OnlineGRUWorldChallenger
-    from trader.domain.world_context import ALLOWED_CONTEXT_CATEGORICAL_FEATURES, CONTEXT_FEATURE_CONTRACT_VERSION
+    from trader.domain.world_context import ALLOWED_CONTEXT_CATEGORICAL_FEATURES, CONTEXT_FEATURE_CONTRACT_ID
     from trader.infrastructure.state_db.world_context_reader import WorldContextReader
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
     from trader.runtime.world_model_runtime import (
@@ -350,18 +350,18 @@ def test_repeated_poll_of_the_same_bar_keeps_one_v2_row(tmp_path) -> None:
             predictors=(
                 OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4),
                 HierarchicalDirichletWorldBaseline(
-                    model_version="context.v2",
+                    model_version="context.v1",
                     include_context=True,
-                    accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                    accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_ID}),
                 ),
                 OnlineGRUWorldChallenger(
-                    model_version="context.v2",
-                    encoder_version="world_gru_encoder.v2",
+                    model_version="context.v1",
+                    encoder_version="world_gru_encoder.context.v1",
                     hidden_size=4,
                     sequence_len=4,
                     include_context=True,
                     extra_categorical_keys=ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
-                    accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                    accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_ID}),
                 ),
             ),
             labeler=labeler,
@@ -400,8 +400,8 @@ def test_repeated_poll_of_the_same_bar_keeps_one_v2_row(tmp_path) -> None:
             (row.get("feature_contract_version") or row["observation"]["feature_contract_version"])
             for row in store.list_eligible_episodes()
         }
-        assert "market_ohlcv_causal.v1" in versions
-        assert CONTEXT_FEATURE_CONTRACT_VERSION in versions
+        assert "world_feature.market.v1" in versions
+        assert CONTEXT_FEATURE_CONTRACT_ID in versions
         revised = daemon._trigger_world_model_shadow(
             runner=runner,
             active_symbols=["AAA"],
@@ -423,7 +423,7 @@ def test_repeated_poll_of_the_same_bar_keeps_one_v2_row(tmp_path) -> None:
         store.close()
 
 
-def test_context_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
+def test_context_enrichment_failure_keeps_market_and_is_visible(tmp_path) -> None:
     from trader.application.world_model import labeler
     from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
@@ -460,7 +460,7 @@ def test_context_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
         assert status["status"] == "partial"
         assert status["errors"][0]["stage"] == "context_enrich"
         assert store.counts()["episodes"] == 1
-        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "market_ohlcv_causal.v1"
+        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "world_feature.market.v1"
     finally:
         runner.stop()
         store.close()
@@ -507,7 +507,7 @@ def test_daemon_boot_wires_world_cohort_service_and_operator_authorized_pilot_ac
     assert signature(daemon.run_cycle).parameters["world_model_runner"].default is None
 
 
-def test_daemon_shadow_without_active_cohort_keeps_v1_gru_lanes(tmp_path) -> None:
+def test_daemon_shadow_without_active_cohort_keeps_market_gru_lanes(tmp_path) -> None:
     from trader.application.world_model import labeler
     from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
     from trader.application.world_model.cohort_service import WorldCohortService
@@ -594,26 +594,26 @@ def test_run_cycle_has_no_macro_io_or_runner_parameter() -> None:
     assert "world_macro_runner" not in signature.parameters
     cycle_src = inspect.getsource(daemon.run_cycle)
     assert "world_macro" not in cycle_src
-    assert "macro_source_only" not in cycle_src
+    assert "macro_source" not in cycle_src
     assert "wire_world_macro_runtime" not in cycle_src
     assert "_trigger_world_macro_source_only" not in cycle_src
 
 
-def test_macro_producer_boot_is_independent_of_v2_and_does_not_start_cohort() -> None:
+def test_macro_producer_boot_is_independent_of_context_and_does_not_start_cohort() -> None:
     from pathlib import Path
 
     source = Path(daemon.__file__).read_text(encoding="utf-8")
     macro_flag = source.index('_env_int("CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED", 0)')
-    v2_flag = source.index('_env_int("CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED", 0)')
+    context_flag = source.index('_env_int("CASYS_WORLD_MODEL_CONTEXT_ENABLED", 0)')
     shadow_if = source.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"')
     macro_if = source.index("if _world_macro_source_only:")
-    v2_if = source.index("if _world_model_context_v2:")
+    v2_if = source.index("if _world_model_context:")
     assert macro_if < shadow_if
     assert macro_if != v2_if
-    assert v2_flag < shadow_if
+    assert context_flag < shadow_if
     boot = source[macro_flag:shadow_if]
     assert "wire_world_macro_runtime(" in boot
-    assert "graph_v3_enabled=_world_model_graph_v3" in source
+    assert "graph_enabled=_world_model_graph" in source
     assert ".trigger(" not in boot
     assert "RegisterWorldCohort" not in boot
     assert "ArmWorldCohort" not in boot
@@ -628,7 +628,7 @@ def test_macro_producer_boot_is_independent_of_v2_and_does_not_start_cohort() ->
     assert "YahooCommodityAdapter" not in source
 
 
-def test_v2_predictors_use_macro_lane_identity_only_when_producer_store_is_wired() -> None:
+def test_context_predictors_use_macro_lane_identity_only_when_producer_store_is_wired() -> None:
     from pathlib import Path
 
     from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY
@@ -636,13 +636,13 @@ def test_v2_predictors_use_macro_lane_identity_only_when_producer_store_is_wired
     source = Path(daemon.__file__).read_text(encoding="utf-8")
     assert MACRO_LANE_IDENTITY == "world.context.macro"
     assert "MACRO_LANE_IDENTITY" in source
-    assert 'else "context.v2"' in source
+    assert 'else "context.v1"' in source
     assert "macro_store=" in source
     assert "scope_mapping=" in source
     shadow_start = source.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"')
-    v2_block = source[source.index("if _world_model_context_v2:", shadow_start) :]
+    v2_block = source[source.index("if _world_model_context:", shadow_start) :]
     assert "MACRO_LANE_IDENTITY" in v2_block
-    assert 'else "context.v2"' in v2_block
+    assert 'else "context.v1"' in v2_block
 
 
 def test_world_macro_disabled_is_a_noop() -> None:
@@ -680,29 +680,28 @@ def test_daemon_post_cycle_macro_trigger_cannot_break_trader_loop() -> None:
     assert "_trigger_world_macro_source_only" not in inspect.getsource(daemon.run_cycle)
 
 
-def test_graph_v3_flag_defaults_off_via_existing_env_int_surface() -> None:
+def test_graph_flag_defaults_off_via_existing_env_int_surface() -> None:
     from pathlib import Path
 
-    from trader.runtime.world_macro_runtime import GRAPH_V3_FLAG
+    from trader.runtime.world_macro_runtime import GRAPH_FLAG
 
     source = Path(daemon.__file__).read_text(encoding="utf-8")
-    assert GRAPH_V3_FLAG == "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
-    assert '_env_int("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", 0)' in source
-    assert "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED=1" not in source
-    assert "CASYS_WORLD_MODEL_GRAPH_ENABLED" not in source
+    assert GRAPH_FLAG == "CASYS_WORLD_MODEL_GRAPH_ENABLED"
+    assert '_env_int("CASYS_WORLD_MODEL_GRAPH_ENABLED", 0)' in source
+    assert "CASYS_WORLD_MODEL_GRAPH_ENABLED=1" not in source
 
 
-def test_daemon_boot_wires_graph_v3_only_inside_shadow_without_starting_cohort() -> None:
+def test_daemon_boot_wires_graph_only_inside_shadow_without_starting_cohort() -> None:
     from pathlib import Path
 
     source = Path(daemon.__file__).read_text(encoding="utf-8")
-    flag_idx = source.index('_env_int("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", 0)')
+    flag_idx = source.index('_env_int("CASYS_WORLD_MODEL_GRAPH_ENABLED", 0)')
     shadow_if = source.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"')
     boot = source[shadow_if : source.index("claimed_resources.learning_sync_runner", shadow_if)]
-    assert flag_idx < shadow_if or "_world_model_graph_v3" in boot
-    assert "compose_local_graph_v3_lanes" in boot
+    assert flag_idx < shadow_if or "_world_model_graph" in boot
+    assert "compose_local_graph_lanes" in boot
     assert "graph_enricher" in boot
-    assert "_world_model_graph_v3" in boot
+    assert "_world_model_graph" in boot
     assert "study_cohort_id=" in boot
     assert "activate_world_shadow_pilot(" in boot
     assert "RegisterWorldCohort" not in boot
@@ -739,11 +738,11 @@ def test_world_shadow_trigger_never_attaches_graph_on_the_cycle_thread(monkeypat
     assert result["triggered"] is True
     episodes = runner.calls[0]["episodes"]
     assert len(episodes) == 1
-    assert episodes[0].observation.feature_contract_version == "market_ohlcv_causal.v1"
+    assert episodes[0].observation.feature_contract_version == "world_feature.market.v1"
     assert getattr(episodes[0].observation, "graph", None) is None
 
 
-def test_graph_v3_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
+def test_graph_enrichment_failure_keeps_market_and_is_visible(tmp_path) -> None:
     from trader.application.world_model import labeler
     from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
@@ -780,30 +779,30 @@ def test_graph_v3_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
         assert status["status"] == "partial"
         assert status["errors"][0]["stage"] == "graph_enrich"
         assert store.counts()["episodes"] == 1
-        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "market_ohlcv_causal.v1"
+        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "world_feature.market.v1"
         assert store.list_collecting_cohort_ids() == ()
     finally:
         runner.stop()
         store.close()
 
 
-def test_due_unmapped_anchor_writes_missing_v3_without_fabricated_mic(tmp_path) -> None:
+def test_due_unmapped_anchor_writes_missing_graph_without_fabricated_mic(tmp_path) -> None:
     import json
     from pathlib import Path
 
     from trader.application.world_model import labeler
     from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
-    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_ID
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
     from trader.runtime.world_model_runtime import (
         WorldModelBackgroundRunner,
         WorldModelRuntime,
-        compose_local_graph_v3_lanes,
+        compose_local_graph_lanes,
     )
 
     store = WorldModelStore(tmp_path / "world_model.db")
     repo_config = Path(daemon.__file__).resolve().parents[2] / "config"
-    predictors, enricher = compose_local_graph_v3_lanes(
+    predictors, enricher = compose_local_graph_lanes(
         enabled=True,
         store=store,
         config_dir=repo_config,
@@ -841,16 +840,16 @@ def test_due_unmapped_anchor_writes_missing_v3_without_fabricated_mic(tmp_path) 
         versions = {
             (row.get("feature_contract_version") or row["observation"]["feature_contract_version"]) for row in rows
         }
-        assert "market_ohlcv_causal.v1" in versions
-        assert GRAPH_FEATURE_CONTRACT_VERSION in versions
-        v3_rows = [
+        assert "world_feature.market.v1" in versions
+        assert GRAPH_FEATURE_CONTRACT_ID in versions
+        graph_rows = [
             row
             for row in rows
             if (row.get("feature_contract_version") or row["observation"]["feature_contract_version"])
-            == GRAPH_FEATURE_CONTRACT_VERSION
+            == GRAPH_FEATURE_CONTRACT_ID
         ]
-        assert len(v3_rows) == 1
-        observation = v3_rows[0]["observation"]
+        assert len(graph_rows) == 1
+        observation = graph_rows[0]["observation"]
         snapshot = observation.get("graph") or (observation.get("graph_features") or {}).get("snapshot")
         assert snapshot is not None
         assert snapshot["status"] == "missing"

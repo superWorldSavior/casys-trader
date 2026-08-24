@@ -116,9 +116,7 @@ def _views(
     published = WorldOntologyRevision(
         revision_id=revision_id,
         entities=resolved_entities,
-        structural_relation_refs=tuple(
-            WorldStructuralRelationRef.from_relation(item) for item in structural_relations
-        ),
+        structural_relation_refs=tuple(WorldStructuralRelationRef.from_relation(item) for item in structural_relations),
         identity_link_refs=(),
         scope_mapping_id="world_scope_mapping.v1",
         scope_mapping_hash=SCOPE_HASH,
@@ -249,7 +247,7 @@ def test_mismatched_view_cutoffs_and_revision_bindings_are_rejected() -> None:
     structural, overlay = _views(
         entities=(_instrument(), _venue()),
         structural_relations=(_structural(),),
-        overlay_revision_id="market_ontology.v2",
+        overlay_revision_id="market_ontology.other",
     )
     with pytest.raises(ValueError, match="revision"):
         WorldTemporalGraph.from_resolved_views(structural, overlay)
@@ -402,7 +400,8 @@ def test_family_company_shortcut_and_disallowed_reverse_are_rejected() -> None:
         for path in from_instrument.paths
     )
     assert not any(
-        any(step.kind == "ISSUED_BY" for step in path.steps) and any(step.target_kind == "family" for step in path.steps)
+        any(step.kind == "ISSUED_BY" for step in path.steps)
+        and any(step.target_kind == "family" for step in path.steps)
         for path in from_instrument.paths
     )
 
@@ -490,7 +489,7 @@ def test_projector_does_not_fold_supersession_or_read_a_current_graph() -> None:
 def test_foreign_knowledge_relation_is_dropped_from_the_bound_overlay() -> None:
     native = _knowledge()
     foreign = _knowledge(
-        ontology_revision="market_ontology.v2",
+        ontology_revision="market_ontology.other",
         source_refs=(f"macro_world_observation:v1:{SHA}",),
         source=WorldObservationRef(observation_id=f"world_observation:v1:{SHA}"),
     )

@@ -23,7 +23,7 @@ appariée** qui répond à une question unique :
 > l'ajout d'un contexte réellement disponible au cutoff améliore-t-il les
 > probabilités `DOWN` / `FLAT` / `UP` ?
 
-Le code sait déjà capturer V1/V2, prédire avec Markov/GRU et comparer des
+Le code sait déjà capturer marché/contexte, prédire avec Markov/GRU et comparer des
 prédictions préquentielles. Il ne possède pas encore un objet métier de
 cohorte avec un départ durable, un protocole gelé, des arms explicites et une
 fin d'étude non déplaçable après lecture des résultats.
@@ -52,7 +52,7 @@ drawdown de portefeuille.
 5. Le query adapter et le service relisent actuellement tout le ledger
    compatible. Sans filtre de cohorte, un nouveau challenger peut donc apprendre
    d'épisodes antérieurs à son départ déclaré.
-6. Le flag V2 instancie des lanes au boot ; il ne constitue pas un événement
+6. Le flag contexte instancie des lanes au boot ; il ne constitue pas un événement
    durable de démarrage d'étude.
 
 ## 3. Deux cohortes, deux usages
@@ -82,9 +82,9 @@ succès produit un nouveau manifeste et un nouveau `cohort_id`.
 | `WorldCohort` | agrégat reconstruit depuis manifeste + événements | état dérivé |
 | `WorldLaneDefinition` | modèle, projection, seed et rôle primaire/secondaire | immuable |
 | `WorldSensorRequirement` | source/projection requise ou optionnelle par lane | immuable |
-| `WorldScopeResolution` | ancre marché résolue vers scopes V3 avec mapping/hash | immuable |
+| `WorldScopeResolution` | ancre marché résolue vers scopes graphe avec mapping/hash | immuable |
 | `WorldContrastDefinition` | combinaison pré-enregistrée de lanes à coefficients signés | immuable |
-| `WorldFeatureContract` | contrat de base partagé V1/V2/V3 et fingerprint | immuable |
+| `WorldFeatureContract` | contrat de base partagé marché/contexte/graphe et fingerprint | immuable |
 | `WorldFeatureMask` | sous-ensemble de groupes autorisés et fingerprint | immuable |
 | `WorldCohortSlot` | value object d'une ancre admise par l'agrégat | immuable |
 | `WorldCohortMatchedSet` | ensemble strict des lanes d'un contraste/horizon | read model dérivé |
@@ -105,7 +105,7 @@ projection/encoder identity, versions de vocabulaire et fingerprint. Un
 groupes et possède son propre fingerprint. La lane persiste les deux
 fingerprints. Les encoders application implémentent ce couple ; cohorte, macro
 et graphe ne créent pas de type concurrent. Le booléen `include_context`
-devient seulement une façade de compatibilité vers les profils V1/V2 figés.
+devient seulement une façade de compatibilité vers les profils marché/contexte figés.
 
 ### 4.2 Manifeste `world_cohort_manifest.v1`
 
@@ -124,8 +124,8 @@ devient seulement une façade de compatibilité vers les profils V1/V2 figés.
   "primary_horizon": "elapsed_1d.v1",
   "label_contract": "simple_return_band_50bp.v1",
   "sampling_policy_version": "active_tradable_completed_bar.v1",
-  "market_feature_contract": "market_ohlcv_causal.v1",
-  "context_feature_contract": "market_ohlcv_context.v2",
+  "market_feature_contract": "world_feature.market.v1",
+  "context_feature_contract": "world_feature.context.v1",
   "ontology_revision": "semantic_catalog.v1",
   "scope_mapping": null,
   "sensor_requirements": [
@@ -143,7 +143,7 @@ devient seulement une façade de compatibilité vers les profils V1/V2 figés.
       "model_family": "markov",
       "model_id": "hierarchical_dirichlet_world_baseline",
       "model_version": "cohort.market.v1",
-      "feature_contract_id": "market_ohlcv_causal.v1",
+      "feature_contract_id": "world_feature.market.v1",
       "feature_contract_fingerprint": "<sha256>",
       "feature_mask_id": "market.v1",
       "feature_mask_fingerprint": "<sha256>",
@@ -157,7 +157,7 @@ devient seulement une façade de compatibilité vers les profils V1/V2 figés.
       "model_family": "markov",
       "model_id": "hierarchical_dirichlet_world_baseline",
       "model_version": "cohort.status_only.v1",
-      "feature_contract_id": "market_ohlcv_context.v2",
+      "feature_contract_id": "world_feature.context.v1",
       "feature_contract_fingerprint": "<sha256>",
       "feature_mask_id": "status_only.v1",
       "feature_mask_fingerprint": "<sha256>",
@@ -171,7 +171,7 @@ devient seulement une façade de compatibilité vers les profils V1/V2 figés.
       "model_family": "markov",
       "model_id": "hierarchical_dirichlet_world_baseline",
       "model_version": "cohort.company.v1",
-      "feature_contract_id": "market_ohlcv_context.v2",
+      "feature_contract_id": "world_feature.context.v1",
       "feature_contract_fingerprint": "<sha256>",
       "feature_mask_id": "company.v1",
       "feature_mask_fingerprint": "<sha256>",
@@ -329,7 +329,7 @@ le runtime.
 fingerprints, la `WorldScopeResolution` (mapping ID/hash, statut et scopes
 canoniques) requise dès que le manifeste active une lane macro/graphe, sinon
 optionnelle, et started-event ID. Chaque clé de la map doit être déclarée par
-une lane du manifeste ; le type accepte donc V1/V2 et une future V3 sans changer
+une lane du manifeste ; le type accepte donc marché/contexte et une voie graphe sans changer
 l'agrégat. Son ID est le hash de la cohorte + ancre naturelle ; même ID/autre
 contenu est un conflit. Une résolution `unmapped` ou `ambiguous` ne supprime pas
 le slot : elle produit la missingness explicite prévue par le contrat.
@@ -364,14 +364,14 @@ cohorte implicitement.
 
 ## 6. Lanes et projections de features
 
-Un seul épisode V2 canonique est produit par slot. Les masks sont des
+Un seul épisode contexte canonique est produit par slot. Les masks sont des
 `WorldFeatureMask` référencés par un `WorldFeatureContract` puis appliqués par
 les projecteurs application-owned, pas des variantes d'épisode qui
 dupliqueraient la vérité canonique.
 
 | `lane_id` logique | Projection | Rôle |
 |---|---|---|
-| `market` | V1 marché seul | contrôle |
+| `market` | voie marché seul | contrôle |
 | `status_only` | marché + disponibilité/fraîcheur des capteurs | contrôle de processus |
 | `company` | `status_only` + contenu micro compact | ablation micro |
 | `macro` | `status_only` + macro source-only compacte | ablation macro |
@@ -440,7 +440,7 @@ matched set avec un motif explicite. Aucune jointure par proximité temporelle
 et aucune déduplication heuristique.
 
 `WorldCohortSlot` persiste l'admission du slot, les épisodes référencés par
-contrat (V1/V2/V3), les lanes attendues et leur batch.
+contrat (marché/contexte/graphe), les lanes attendues et leur batch.
 `WorldCohortMatchedSet` est reconstruit depuis ces
 identités et les prédictions/outcomes ; il n'invente jamais un membre absent.
 Un contraste binaire produit un set de deux membres ; l'interaction
@@ -552,7 +552,7 @@ une cohorte pauvre tout en réservant `invalidated` aux violations du protocole.
 
 | Couche | Owner proposé | Responsabilité |
 |---|---|---|
-| Domaine partagé | `trader/domain/world_feature_contract.py` | contrats/masks/fingerprints V1/V2/V3 |
+| Domaine partagé | `trader/domain/world_feature_contract.py` | contrats/masks/fingerprints marché/contexte/graphe |
 | Domaine | `trader/domain/world_cohort.py` | agrégat, manifeste, lanes, events, transitions |
 | Application | `cohort_service.py`, `cohort_ports.py` | commands, admission, factories, ports consumer-owned |
 | Infrastructure | `trader/infrastructure/state_db/world_model_store.py` | migrations et append des objets/events |
@@ -714,7 +714,7 @@ restart/kill daemon, push, fichier non listé dans `allowed_edits`, et
   invariants de compatibilité.
 - **tests** : `uv run pytest -q tests/domain/test_world_feature_contract.py
   tests/package_layout/test_world_model_layout.py`.
-- **exit** : type unique V1/V2/V3, stdlib-only ; aucun encoder modifié.
+- **exit** : type unique marché/contexte/graphe, stdlib-only ; aucun encoder modifié.
 
 ### Lot COHORT-1 — agrégat et manifeste
 
@@ -776,11 +776,11 @@ restart/kill daemon, push, fichier non listé dans `allowed_edits`, et
   `tests/application/test_world_model_feature_contracts.py`,
   `tests/application/test_world_baseline.py`,
   `tests/application/test_world_gru.py`.
-- **sortie** : profiles/masks explicites et façade V1/V2 compatible.
+- **sortie** : profiles/masks explicites et façade marché/contexte compatible.
 - **tests** : `uv run pytest -q
   tests/application/test_world_model_feature_contracts.py
   tests/application/test_world_baseline.py tests/application/test_world_gru.py`.
-- **exit** : fingerprints/prédictions V1/V2 actuels figés ; aucune feature hors
+- **exit** : fingerprints/prédictions marché/contexte actuels figés ; aucune feature hors
   mask ; modèles froids constructibles par lane.
 
 ### Lot COHORT-5 — lineage et runtime

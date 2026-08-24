@@ -11,7 +11,7 @@ import pytest
 
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     WorldOutcome,
     WorldPrediction,
     canonical_sha256,
@@ -75,10 +75,10 @@ MODULE_PATH = REPO_ROOT / "trader" / "domain" / "world_pattern.py"
 
 def _contract() -> WorldFeatureContract:
     return WorldFeatureContract(
-        contract_id="market_ohlcv_graph.v3",
-        accepted_episode_contract=MARKET_FEATURE_CONTRACT_VERSION,
+        contract_id="world_feature.graph.v1",
+        accepted_episode_contract=MARKET_FEATURE_CONTRACT_ID,
         projection_version="graph_projection.v3",
-        encoder_identity="world_feature_encoder.v3",
+        encoder_identity="world_feature_encoder.graph.v1",
         groups=(
             WorldFeatureGroup(
                 group_id="market",
@@ -132,7 +132,7 @@ def _spec(**overrides: object) -> PatternHypothesisSpec:
         "feature_contract_fingerprint": contract.fingerprint,
         "feature_mask_id": mask.mask_id,
         "feature_mask_fingerprint": mask.fingerprint,
-        "model_identity": "online_gru_world_challenger@graph.v3",
+        "model_identity": "online_gru_world_challenger@graph.v1",
         "ontology_revision": "market_ontology.v1",
         "source_refs": (),
         "causal_claim": False,
@@ -186,8 +186,8 @@ def _prediction(**overrides: object) -> WorldPrediction:
     values: dict[str, object] = {
         "episode_id": EPISODE_ID,
         "horizon_id": "elapsed_1d.v1",
-        "model_id": "online_gru_world_challenger@graph.v3",
-        "model_version": "graph.v3",
+        "model_id": "online_gru_world_challenger@graph.v1",
+        "model_version": "graph.v1",
         "feature_hash": "feature-view",
         "created_at": CUTOFF,
         "probabilities": {"DOWN": 0.20, "FLAT": 0.30, "UP": 0.50},
@@ -200,7 +200,7 @@ def _prediction(**overrides: object) -> WorldPrediction:
 def _occurrence(hypothesis: PatternHypothesis | None = None, **overrides: object) -> PatternOccurrence:
     resolved = hypothesis if hypothesis is not None else _evaluating()
     values: dict[str, object] = {
-        "cohort_id": "world_cohort:graph_v3_pilot",
+        "cohort_id": "world_cohort:graph_pilot",
         "instrument": _instrument(),
         "cutoff_at": CUTOFF,
         "exact_path": _path(),
@@ -255,9 +255,13 @@ def test_ordered_chain_hash_changes_when_steps_are_permuted() -> None:
 def test_definition_change_under_the_same_id_is_a_conflict() -> None:
     spec = _spec()
     payload = spec.to_dict()
-    payload["steps"] = [step.to_dict() for step in _spec(steps=_default_steps()[:1] + (
-        _step(1, subject_kind="venue", predicate="contains_venue", object_kind="instrument"),
-    )).steps]
+    payload["steps"] = [
+        step.to_dict()
+        for step in _spec(
+            steps=_default_steps()[:1]
+            + (_step(1, subject_kind="venue", predicate="contains_venue", object_kind="instrument"),)
+        ).steps
+    ]
     with pytest.raises(ValueError, match="hypothesis_id"):
         PatternHypothesisSpec.from_mapping(payload)
     duplicate = PatternHypothesis.register(spec, registered_at=FORMATION)
@@ -270,9 +274,7 @@ def test_definition_change_under_the_same_id_is_a_conflict() -> None:
 def test_hypothesis_lifecycle_allows_only_the_closed_transitions() -> None:
     registered = _hypothesis()
     assert registered.status == "registered"
-    assert PATTERN_HYPOTHESIS_STATUSES == frozenset(
-        {"registered", "evaluating", "evaluation_closed", "invalidated"}
-    )
+    assert PATTERN_HYPOTHESIS_STATUSES == frozenset({"registered", "evaluating", "evaluation_closed", "invalidated"})
     evaluating = registered.start_evaluation(started_at=EVAL_STARTED, evaluation_dataset_fingerprint=EVAL_FP)
     assert evaluating.status == "evaluating"
     assert evaluating.evaluation_dataset_fingerprint == EVAL_FP
@@ -387,7 +389,7 @@ def test_occurrence_is_a_separate_bounded_aggregate_matching_hypothesis_fingerpr
     with pytest.raises(ValueError, match="dataset|in-sample|confirmation"):
         PatternOccurrence.record(
             hypothesis,
-            cohort_id="world_cohort:graph_v3_pilot",
+            cohort_id="world_cohort:graph_pilot",
             instrument=_instrument(),
             cutoff_at=CUTOFF,
             exact_path=_path(),
@@ -565,7 +567,7 @@ def test_events_round_trip_and_aggregates_stay_stdlib_domain() -> None:
     assert hypothesized.predicate == "hypothesized_influence"
     forecast = PatternForecast.from_world_prediction(
         _prediction(),
-        model_identity="online_gru_world_challenger@graph.v3",
+        model_identity="online_gru_world_challenger@graph.v1",
     )
     assert forecast.prediction_id == _prediction().prediction_id
     assert forecast.episode_id == EPISODE_ID

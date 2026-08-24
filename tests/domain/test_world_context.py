@@ -8,7 +8,7 @@ import pytest
 from trader.application.world_model.capture import capture_world_episodes
 from trader.domain.world_context import (
     ARTIFACT_KINDS,
-    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_FEATURE_CONTRACT_ID,
     NO_PROVEN_ARTIFACT_REASON,
     POLICY_CONTAMINATED_REASON,
     SCOPE_AMBIGUOUS_REASON,
@@ -32,8 +32,8 @@ from trader.domain.world_episode import WorldObservation, canonical_json, world_
 UTC = timezone.utc
 CUTOFF = datetime(2026, 8, 22, 10, 5, tzinfo=UTC)
 
-V1_EPISODE_ID = "world-episode:v1:a93639633318b9f93b8c84764f758825ff9a71414222ff9cd895a9618b62bf07"
-V1_PAYLOAD_HASH = "7871ad4c859664ac9c0b210aba953d8f64cab28eca69e6ae116e6d65f740e9b2"
+V1_EPISODE_ID = "world-episode:v1:e062e1a06696773cf4bc4ff7417faa716bf3862e08df0c1b3378418156f70411"
+V1_PAYLOAD_HASH = "e8e4a087c7776f8edd60770153f90a59c637f97c72f7002f6ce04d988be3de49"
 
 
 def _capture_v1():
@@ -203,7 +203,7 @@ def test_bootstrap_topology_does_not_invent_unverified_issuer_joins() -> None:
     assert any(edge.kind == "ISSUED_BY" for edge in verified)
 
 
-def test_v1_observation_omits_context_and_keeps_frozen_identity() -> None:
+def test_market_observation_omits_context_and_keeps_frozen_identity() -> None:
     episode = _capture_v1()
     payload = episode.to_dict()
     assert "context" not in payload["observation"]
@@ -215,7 +215,7 @@ def test_v1_observation_omits_context_and_keeps_frozen_identity() -> None:
         symbol="AAA",
         bar_interval="1h",
         as_of_bar_ts="2026-08-22T10:00:00+00:00",
-        feature_contract_version="market_ohlcv_causal.v1",
+        feature_contract_version="world_feature.market.v1",
         sampling_policy_version="active_tradable_completed_bar.v1",
     )
     replayed = WorldObservation.from_dict(episode.observation.to_dict())
@@ -223,19 +223,19 @@ def test_v1_observation_omits_context_and_keeps_frozen_identity() -> None:
     assert "context" not in canonical_json(replayed.to_dict())
 
 
-def test_v2_observation_identity_includes_context_digest_and_keeps_v1_slot() -> None:
+def test_context_observation_identity_includes_context_digest_and_keeps_market_slot() -> None:
     v1 = _capture_v1()
     snapshot = _snapshot(
         status="missing",
         categorical_features={"context_status": "missing", "macro_status": "missing"},
-        feature_contract_version=CONTEXT_FEATURE_CONTRACT_VERSION,
+        feature_contract_version=CONTEXT_FEATURE_CONTRACT_ID,
     )
     v2 = WorldObservation(
         venue=v1.observation.venue,
         symbol=v1.observation.symbol,
         bar_interval=v1.observation.bar_interval,
         as_of_bar_ts=v1.observation.as_of_bar_ts,
-        feature_contract_version=CONTEXT_FEATURE_CONTRACT_VERSION,
+        feature_contract_version=CONTEXT_FEATURE_CONTRACT_ID,
         sampling_policy_version=v1.observation.sampling_policy_version,
         anchor=v1.observation.anchor,
         available_at=v1.observation.available_at,
@@ -251,7 +251,7 @@ def test_v2_observation_identity_includes_context_digest_and_keeps_v1_slot() -> 
         symbol="AAA",
         bar_interval="1h",
         as_of_bar_ts=v1.observation.as_of_bar_ts,
-        feature_contract_version=CONTEXT_FEATURE_CONTRACT_VERSION,
+        feature_contract_version=CONTEXT_FEATURE_CONTRACT_ID,
         sampling_policy_version=v1.observation.sampling_policy_version,
         context_snapshot_id=snapshot.context_id,
     )
@@ -492,7 +492,7 @@ def test_disconnected_path_and_mismatched_instrument_are_rejected() -> None:
             symbol=v1.observation.symbol,
             bar_interval=v1.observation.bar_interval,
             as_of_bar_ts=v1.observation.as_of_bar_ts,
-            feature_contract_version=CONTEXT_FEATURE_CONTRACT_VERSION,
+            feature_contract_version=CONTEXT_FEATURE_CONTRACT_ID,
             sampling_policy_version=v1.observation.sampling_policy_version,
             anchor=v1.observation.anchor,
             available_at=v1.observation.available_at,

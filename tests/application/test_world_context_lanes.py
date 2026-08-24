@@ -8,7 +8,7 @@ import pytest
 from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline, MODEL_ID, MODEL_VERSION
 from trader.application.world_model.encoding import (
     FEATURE_CONTRACT_FINGERPRINT,
-    FEATURE_CONTRACT_FINGERPRINT_V2,
+    FEATURE_CONTRACT_FINGERPRINT_CONTEXT,
     FeatureBoundaryError,
 )
 from trader.application.world_model.context_capture import attach_world_context
@@ -21,12 +21,12 @@ from trader.application.world_model.gru import (
 from trader.application.world_model.service import WorldModelService
 from trader.domain.world_context import (
     ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
-    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_FEATURE_CONTRACT_ID,
     SensorEvidence,
 )
-from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_VERSION, WorldPrediction
+from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_ID, WorldPrediction
 
-from tests.application.test_world_context_capture import _FakeSource, _v1_episode
+from tests.application.test_world_context_capture import _FakeSource, _market_episode
 
 
 NOW = datetime(2026, 8, 22, 10, 30, tzinfo=timezone.utc)
@@ -91,7 +91,7 @@ class RecordingPredictor:
 
     def accepts_episode(self, episode) -> bool:
         version = _contract_version(episode)
-        return version != CONTEXT_FEATURE_CONTRACT_VERSION
+        return version != CONTEXT_FEATURE_CONTRACT_ID
 
     def predict(self, episode, horizon_id, *, prediction_at=None):
         identifier = episode.episode_id if hasattr(episode, "episode_id") else episode["episode_id"]
@@ -115,49 +115,49 @@ class RecordingPredictor:
 
 class FilteringPredictor(RecordingPredictor):
     model_id = "filtering_predictor"
-    model_version = "context.v2"
+    model_version = "context.v1"
 
     def accepts_episode(self, episode) -> bool:
-        return _contract_version(episode) == CONTEXT_FEATURE_CONTRACT_VERSION
+        return _contract_version(episode) == CONTEXT_FEATURE_CONTRACT_ID
 
 
-def _v2_models() -> tuple[HierarchicalDirichletWorldBaseline, OnlineGRUWorldChallenger]:
+def _context_models() -> tuple[HierarchicalDirichletWorldBaseline, OnlineGRUWorldChallenger]:
     return (
         HierarchicalDirichletWorldBaseline(
-            model_version="context.v2",
+            model_version="context.v1",
             include_context=True,
-            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_ID}),
         ),
         OnlineGRUWorldChallenger(
-            model_version="context.v2",
-            encoder_version="world_gru_encoder.v2",
+            model_version="context.v1",
+            encoder_version="world_gru_encoder.context.v1",
             include_context=True,
             extra_categorical_keys=ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
-            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_ID}),
         ),
     )
 
 
-def test_four_model_identities_are_distinct_and_v1_stays_frozen() -> None:
+def test_four_model_identities_are_distinct_and_market_stays_frozen() -> None:
     markov_v1 = HierarchicalDirichletWorldBaseline()
-    gru_v1 = OnlineGRUWorldChallenger()
-    markov_v2, gru_v2 = _v2_models()
+    gru_market = OnlineGRUWorldChallenger()
+    markov_v2, gru_context = _context_models()
     identities = {
         (markov_v1.model_id, markov_v1.model_version),
-        (gru_v1.model_id, gru_v1.model_version),
+        (gru_market.model_id, gru_market.model_version),
         (markov_v2.model_id, markov_v2.model_version),
-        (gru_v2.model_id, gru_v2.model_version),
+        (gru_context.model_id, gru_context.model_version),
     }
     assert identities == {
         (MODEL_ID, MODEL_VERSION),
         (GRU_MODEL_ID, GRU_MODEL_VERSION),
-        (MODEL_ID, "context.v2"),
-        (GRU_MODEL_ID, "context.v2"),
+        (MODEL_ID, "context.v1"),
+        (GRU_MODEL_ID, "context.v1"),
     }
-    assert gru_v1.encoder_version == ENCODER_VERSION
-    assert gru_v2.encoder_version == "world_gru_encoder.v2"
-    assert gru_v1.model_fingerprint("elapsed_4h.v1") != gru_v2.model_fingerprint("elapsed_4h.v1")
-    v1 = _v1_episode()
+    assert gru_market.encoder_version == ENCODER_VERSION
+    assert gru_context.encoder_version == "world_gru_encoder.context.v1"
+    assert gru_market.model_fingerprint("elapsed_4h.v1") != gru_context.model_fingerprint("elapsed_4h.v1")
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -168,12 +168,12 @@ def test_four_model_identities_are_distinct_and_v1_stays_frozen() -> None:
     v1_audit = markov_v1.predict_audit(v1, "elapsed_4h.v1")
     v2_audit = markov_v2.predict_audit(v2, "elapsed_4h.v1")
     assert v1_audit.as_dict()["feature_contract_fingerprint"] == FEATURE_CONTRACT_FINGERPRINT
-    assert v2_audit.as_dict()["feature_contract_fingerprint"] == FEATURE_CONTRACT_FINGERPRINT_V2
+    assert v2_audit.as_dict()["feature_contract_fingerprint"] == FEATURE_CONTRACT_FINGERPRINT_CONTEXT
     assert FEATURE_CONTRACT_FINGERPRINT == "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
 
 
-def test_v1_and_v2_predictors_do_not_learn_from_each_other() -> None:
-    v1 = _v1_episode()
+def test_market_and_context_predictors_do_not_learn_from_each_other() -> None:
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -218,7 +218,7 @@ class LegacyPredictor:
 
 
 def test_legacy_predictor_without_accepts_episode_still_sees_all_rows() -> None:
-    v1 = _v1_episode()
+    v1 = _market_episode()
     predictor = LegacyPredictor()
     service = WorldModelService(
         store=MemoryStore(),
@@ -230,8 +230,8 @@ def test_legacy_predictor_without_accepts_episode_still_sees_all_rows() -> None:
     assert v1.episode_id in predictor.seen
 
 
-def test_direct_v1_and_v2_apis_reject_the_other_contract() -> None:
-    v1 = _v1_episode()
+def test_direct_market_and_context_apis_reject_the_other_contract() -> None:
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -240,16 +240,16 @@ def test_direct_v1_and_v2_apis_reject_the_other_contract() -> None:
         ),
     )[0]
     markov_v1 = HierarchicalDirichletWorldBaseline()
-    gru_v1 = OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4)
-    markov_v2, gru_v2 = _v2_models()
+    gru_market = OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4)
+    markov_v2, gru_context = _context_models()
     with pytest.raises(FeatureBoundaryError):
         markov_v1.predict(v2, "elapsed_4h.v1")
     with pytest.raises(FeatureBoundaryError):
-        gru_v1.predict(v2, "elapsed_4h.v1")
+        gru_market.predict(v2, "elapsed_4h.v1")
     with pytest.raises(FeatureBoundaryError):
         markov_v2.predict(v1, "elapsed_4h.v1")
     with pytest.raises(FeatureBoundaryError):
-        gru_v2.observe_episode(v1)
+        gru_context.observe_episode(v1)
     outcome = {
         "outcome_event_id": "evt-1",
         "horizon_id": "elapsed_4h.v1",
@@ -262,16 +262,16 @@ def test_direct_v1_and_v2_apis_reject_the_other_contract() -> None:
     update = markov_v1.apply_outcome(outcome, v2)
     assert update.applied is False
     assert update.reason == "feature_contract_rejected"
-    gru_update = gru_v1.apply_outcome(outcome, v2)
+    gru_update = gru_market.apply_outcome(outcome, v2)
     assert gru_update.applied is False
     assert gru_update.reason == "feature_contract_rejected"
-    assert gru_v1.support("elapsed_4h.v1") == 0
+    assert gru_market.support("elapsed_4h.v1") == 0
 
 
-def _v2_context_pair():
+def _context_pair():
     from trader.domain.world_context import EntityRef, KnowledgeArtifact
 
-    v1 = _v1_episode()
+    v1 = _market_episode()
     missing = SensorEvidence(status="missing", reason="no_artifact")
     artifact = KnowledgeArtifact(
         kind="company_intelligence",
@@ -298,12 +298,12 @@ def _v2_context_pair():
     return first, second
 
 
-def test_service_reuses_first_canonical_v2_slot_across_context_ids_and_restart(tmp_path) -> None:
+def test_service_reuses_first_canonical_context_slot_across_context_ids_and_restart(tmp_path) -> None:
     from pathlib import Path
 
     from trader.infrastructure.state_db.world_model_store import WorldModelConflictError, WorldModelStore
 
-    first, second = _v2_context_pair()
+    first, second = _context_pair()
     assert first.episode_id != second.episode_id
     store = WorldModelStore(Path(tmp_path) / "world_model.db")
     recorder = FilteringPredictor()
@@ -343,14 +343,14 @@ def test_service_reuses_first_canonical_v2_slot_across_context_ids_and_restart(t
     assert {row["episode_id"] for row in store.list_predictions()} == {first.episode_id}
 
 
-def test_service_reuses_canonical_v2_slot_when_later_poll_revises_ohlcv_and_context(tmp_path) -> None:
+def test_service_reuses_canonical_context_slot_when_later_poll_revises_ohlcv_and_context(tmp_path) -> None:
     from pathlib import Path
 
     from trader.domain.world_episode import WorldEpisode, WorldObservation
     from trader.infrastructure.state_db.world_model_store import WorldModelConflictError, WorldModelStore
 
-    first, _second = _v2_context_pair()
-    v1 = _v1_episode()
+    first, _second = _context_pair()
+    v1 = _market_episode()
     observation = v1.observation
     divergent = WorldEpisode(
         WorldObservation(
@@ -404,7 +404,7 @@ def test_service_reuses_canonical_v2_slot_when_later_poll_revises_ohlcv_and_cont
     stored = store.get_episode(first.episode_id)
     assert stored is not None
     assert float(stored["episode"]["observation"]["anchor"]["close"]) == first.observation.anchor.close
-    with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+    with pytest.raises(WorldModelConflictError, match="context market slot"):
         store.append_episode(artifact_second)
 
 
@@ -423,12 +423,12 @@ def _replace_offset_with_z(value: object) -> object:
     [True, False],
     ids=["zulu_then_offset", "offset_then_zulu"],
 )
-def test_service_reuses_v2_slot_across_zulu_and_offset_spellings(tmp_path, zulu_first: bool) -> None:
+def test_service_reuses_context_slot_across_zulu_and_offset_spellings(tmp_path, zulu_first: bool) -> None:
     from pathlib import Path
 
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
 
-    first, _second = _v2_context_pair()
+    first, _second = _context_pair()
     offset_payload = first.to_dict()
     zulu_payload = _replace_offset_with_z(deepcopy(offset_payload))
     assert isinstance(zulu_payload, dict)
@@ -508,7 +508,7 @@ def _cohort_market_episode(at, *, symbol: str = "AAPL", market_return: float = 0
     from datetime import timedelta
 
     from trader.domain.world_episode import (
-        MARKET_FEATURE_CONTRACT_VERSION,
+        MARKET_FEATURE_CONTRACT_ID,
         AnchorBar,
         WorldEpisode,
         WorldObservation,
@@ -520,7 +520,7 @@ def _cohort_market_episode(at, *, symbol: str = "AAPL", market_return: float = 0
             symbol=symbol,
             bar_interval="1h",
             as_of_bar_ts=at,
-            feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
+            feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
             sampling_policy_version="active_tradable_completed_bar.v1",
             anchor=AnchorBar(
                 ts=at,
@@ -547,8 +547,8 @@ def _cohort_market_episode(at, *, symbol: str = "AAPL", market_return: float = 0
     )
 
 
-def test_v1_shadow_predictions_omit_cohort_lineage_when_no_cohort_is_active() -> None:
-    v1 = _v1_episode()
+def test_market_shadow_predictions_omit_cohort_lineage_when_no_cohort_is_active() -> None:
+    v1 = _market_episode()
     store = MemoryStore()
     service = WorldModelService(
         store=store,
@@ -735,9 +735,7 @@ def test_pre_start_episodes_are_not_replayed_and_downtime_is_not_backfilled(tmp_
         )
         assert market_lane.lane_identity.replay_bound_event_id == cohort.started_event.event_id
         applied = [
-            event_id
-            for counts in getattr(market_lane, "_horizons", {}).values()
-            for event_id in counts.applied_events
+            event_id for counts in getattr(market_lane, "_horizons", {}).values() for event_id in counts.applied_events
         ]
         assert pre_start.episode_id not in "".join(applied)
         assert all(slot.anchor_end_at > ready for slot in slots)
@@ -747,12 +745,12 @@ def test_pre_start_episodes_are_not_replayed_and_downtime_is_not_backfilled(tmp_
 
 class GraphFilteringPredictor(RecordingPredictor):
     model_id = "graph_filtering_predictor"
-    model_version = "graph.v3"
+    model_version = "graph.v1"
 
     def accepts_episode(self, episode) -> bool:
-        from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+        from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_ID
 
-        return _contract_version(episode) == GRAPH_FEATURE_CONTRACT_VERSION
+        return _contract_version(episode) == GRAPH_FEATURE_CONTRACT_ID
 
 
 class MarketFilteringPredictor(RecordingPredictor):
@@ -760,58 +758,58 @@ class MarketFilteringPredictor(RecordingPredictor):
     model_version = "v1"
 
     def accepts_episode(self, episode) -> bool:
-        return _contract_version(episode) == MARKET_FEATURE_CONTRACT_VERSION
+        return _contract_version(episode) == MARKET_FEATURE_CONTRACT_ID
 
 
-def _v3_models():
+def _graph_models():
     from trader.application.world_model.encoding import world_lane_encoder_profile
     from trader.domain.world_feature_contract import (
-        GRAPH_FEATURE_CONTRACT_VERSION,
-        WORLD_V3_GRU_MODEL_IDENTITY,
-        WORLD_V3_MARKOV_MODEL_IDENTITY,
-        WORLD_V3_MODEL_VERSION,
+        GRAPH_FEATURE_CONTRACT_ID,
+        GRAPH_GRU_MODEL_IDENTITY,
+        GRAPH_MARKOV_MODEL_IDENTITY,
+        GRAPH_MODEL_VERSION,
     )
 
     status = world_lane_encoder_profile("topology_status_only")
     content = world_lane_encoder_profile("graph_content")
     markov = HierarchicalDirichletWorldBaseline(
-        model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
-        model_version=WORLD_V3_MODEL_VERSION,
+        model_id=GRAPH_MARKOV_MODEL_IDENTITY,
+        model_version=GRAPH_MODEL_VERSION,
         feature_contract=status.contract,
         feature_mask=status.mask,
-        accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+        accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_ID}),
     )
     gru = OnlineGRUWorldChallenger(
-        model_id=WORLD_V3_GRU_MODEL_IDENTITY,
-        model_version=WORLD_V3_MODEL_VERSION,
+        model_id=GRAPH_GRU_MODEL_IDENTITY,
+        model_version=GRAPH_MODEL_VERSION,
         feature_contract=content.contract,
         feature_mask=content.mask,
         hidden_size=4,
         sequence_len=4,
-        accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+        accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_ID}),
     )
     return markov, gru
 
 
-def _v3_companion():
+def _graph_companion():
     from tests.application.test_world_graph_capture import _attach, _unmapped_config
 
-    return _attach((_v1_episode(),), _unmapped_config())[0]
+    return _attach((_market_episode(),), _unmapped_config())[0]
 
 
-def test_v3_markov_and_gru_identities_are_distinct_and_refuse_other_contracts() -> None:
+def test_graph_markov_and_gru_identities_are_distinct_and_refuse_other_contracts() -> None:
     from trader.application.world_model.baseline import cold_markov_challenger
     from trader.application.world_model.encoding import world_lane_encoder_profile
-    from trader.application.world_model.gru import ENCODER_VERSION_V3, cold_gru_challenger
+    from trader.application.world_model.gru import GRAPH_GRU_ENCODER_IDENTITY, cold_gru_challenger
     from trader.domain.world_cohort import WorldLaneDefinition
     from trader.domain.world_episode import canonical_sha256
     from trader.domain.world_feature_contract import (
-        WORLD_V3_GRU_MODEL_IDENTITY,
-        WORLD_V3_MARKOV_MODEL_IDENTITY,
-        WORLD_V3_MODEL_VERSION,
+        GRAPH_GRU_MODEL_IDENTITY,
+        GRAPH_MARKOV_MODEL_IDENTITY,
+        GRAPH_MODEL_VERSION,
     )
 
-    v1 = _v1_episode()
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -819,34 +817,34 @@ def test_v3_markov_and_gru_identities_are_distinct_and_refuse_other_contracts() 
             SensorEvidence(status="missing", reason="no_artifact"),
         ),
     )[0]
-    v3 = _v3_companion()
-    markov_v3, gru_v3 = _v3_models()
-    assert markov_v3.model_id == WORLD_V3_MARKOV_MODEL_IDENTITY
-    assert gru_v3.model_id == WORLD_V3_GRU_MODEL_IDENTITY
-    assert markov_v3.model_version == gru_v3.model_version == WORLD_V3_MODEL_VERSION
-    assert gru_v3.encoder_version == ENCODER_VERSION_V3
-    assert markov_v3.accepts_episode(v3) is True
-    assert gru_v3.accepts_episode(v3) is True
-    assert markov_v3.accepts_episode(v1) is False
-    assert gru_v3.accepts_episode(v2) is False
+    v3 = _graph_companion()
+    markov_graph, gru_graph = _graph_models()
+    assert markov_graph.model_id == GRAPH_MARKOV_MODEL_IDENTITY
+    assert gru_graph.model_id == GRAPH_GRU_MODEL_IDENTITY
+    assert markov_graph.model_version == gru_graph.model_version == GRAPH_MODEL_VERSION
+    assert gru_graph.encoder_version == GRAPH_GRU_ENCODER_IDENTITY
+    assert markov_graph.accepts_episode(v3) is True
+    assert gru_graph.accepts_episode(v3) is True
+    assert markov_graph.accepts_episode(v1) is False
+    assert gru_graph.accepts_episode(v2) is False
     markov_v1 = HierarchicalDirichletWorldBaseline()
-    gru_v1 = OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4)
-    markov_v2, gru_v2 = _v2_models()
+    gru_market = OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4)
+    markov_v2, gru_context = _context_models()
     assert markov_v1.accepts_episode(v3) is False
-    assert gru_v1.accepts_episode(v3) is False
+    assert gru_market.accepts_episode(v3) is False
     assert markov_v2.accepts_episode(v3) is False
-    assert gru_v2.accepts_episode(v3) is False
+    assert gru_context.accepts_episode(v3) is False
     with pytest.raises(FeatureBoundaryError):
         markov_v1.predict(v3, "elapsed_4h.v1")
     with pytest.raises(FeatureBoundaryError):
-        gru_v3.predict(v1, "elapsed_4h.v1")
+        gru_graph.predict(v1, "elapsed_4h.v1")
 
     status = world_lane_encoder_profile("topology_status_only")
     lane = WorldLaneDefinition(
         lane_id="markov.topology_status_only",
         model_family="markov",
-        model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
-        model_version=WORLD_V3_MODEL_VERSION,
+        model_id=GRAPH_MARKOV_MODEL_IDENTITY,
+        model_version=GRAPH_MODEL_VERSION,
         feature_contract_id=status.contract.contract_id,
         feature_contract_fingerprint=status.contract.fingerprint,
         feature_mask_id=status.mask.mask_id,
@@ -874,8 +872,8 @@ def test_v3_markov_and_gru_identities_are_distinct_and_refuse_other_contracts() 
     gru_lane = WorldLaneDefinition(
         lane_id="gru.graph_content",
         model_family="gru",
-        model_id=WORLD_V3_GRU_MODEL_IDENTITY,
-        model_version=WORLD_V3_MODEL_VERSION,
+        model_id=GRAPH_GRU_MODEL_IDENTITY,
+        model_version=GRAPH_MODEL_VERSION,
         feature_contract_id=content.contract.contract_id,
         feature_contract_fingerprint=content.contract.fingerprint,
         feature_mask_id=content.mask.mask_id,
@@ -898,8 +896,8 @@ def test_v3_markov_and_gru_identities_are_distinct_and_refuse_other_contracts() 
     assert cold_gru.accepts_episode(v2) is False
 
 
-def test_service_dispatches_v1_v2_v3_companions_on_the_same_market_slot() -> None:
-    v1 = _v1_episode()
+def test_service_dispatches_market_context_graph_companions_on_the_same_market_slot() -> None:
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -907,7 +905,7 @@ def test_service_dispatches_v1_v2_v3_companions_on_the_same_market_slot() -> Non
             SensorEvidence(status="missing", reason="no_artifact"),
         ),
     )[0]
-    v3 = _v3_companion()
+    v3 = _graph_companion()
     assert (v1.observation.venue, v1.observation.symbol, v1.observation.bar_interval, v1.observation.as_of_bar_ts) == (
         v2.observation.venue,
         v2.observation.symbol,
@@ -938,16 +936,16 @@ def test_service_dispatches_v1_v2_v3_companions_on_the_same_market_slot() -> Non
     assert set(graph.seen) == {v3.episode_id}
 
 
-def test_v3_capture_failure_does_not_prevent_v1_v2_persistence() -> None:
-    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+def test_graph_capture_failure_does_not_prevent_market_context_persistence() -> None:
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_ID
 
     class FailOpenStore(MemoryStore):
         def append_episode(self, episode):
-            if _contract_version(episode) == GRAPH_FEATURE_CONTRACT_VERSION:
+            if _contract_version(episode) == GRAPH_FEATURE_CONTRACT_ID:
                 raise RuntimeError("graph capture failed")
             return super().append_episode(episode)
 
-    v1 = _v1_episode()
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -955,7 +953,7 @@ def test_v3_capture_failure_does_not_prevent_v1_v2_persistence() -> None:
             SensorEvidence(status="missing", reason="no_artifact"),
         ),
     )[0]
-    v3 = _v3_companion()
+    v3 = _graph_companion()
     store = FailOpenStore()
     service = WorldModelService(
         store=store,
@@ -972,14 +970,14 @@ def test_v3_capture_failure_does_not_prevent_v1_v2_persistence() -> None:
     assert v3.episode_id not in store.episodes
 
 
-def test_service_reuses_first_canonical_v3_slot(tmp_path) -> None:
+def test_service_reuses_first_canonical_graph_slot(tmp_path) -> None:
     from pathlib import Path
 
     from tests.application.test_world_graph_capture import _attach, _complete_config, _unpublished_config
-    from tests.application.test_world_graph_snapshot import _episode as _graph6_v1_episode
+    from tests.application.test_world_graph_snapshot import _episode as _graph6_market_episode
     from trader.infrastructure.state_db.world_model_store import WorldModelConflictError, WorldModelStore
 
-    v1 = _graph6_v1_episode()
+    v1 = _graph6_market_episode()
     first = _attach((v1,), _unpublished_config())[0]
     second = _attach((v1,), _complete_config())[0]
     assert first.episode_id != second.episode_id

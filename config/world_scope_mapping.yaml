@@ -1,8 +1,8 @@
 schema_version: world_scope_mapping.v1
-mapping_id: world_scope_mapping.v2
+mapping_id: world_scope_mapping.v1
 taxonomy_version: sessions_mic.v1
-content_sha256: "e1289a4a86e5cb07600cb3ac45122b170f1a0bb249db2fbb6e5c093a4a8a501b"
-operator_config_sha256: "f55ff3d75377e04b62b1f16e395ff79789b5c79298d1afa8dfd176326d41535a"
+content_sha256: "94a7d310d51ad411e04abf9b5e00e9d802e2836138123d2ae1d1b756bda148ee"
+operator_config_sha256: "f7aecd11fc4428da90d0a06db4af83fc5f426b824e20b23373673f68a6fa7d99"
 unmapped_policy: admit_as_missing_status_only
 ambiguous_policy: admit_as_missing_status_only
 no_logical_venue_mic_fallback: true

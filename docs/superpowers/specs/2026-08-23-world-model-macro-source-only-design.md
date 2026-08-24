@@ -50,7 +50,7 @@ mais une mauvaise entrée exogène pour le World Model. Il reste donc exclu avec
 
 ## 2. Faits actuels vérifiés
 
-1. Le contrat V2 prévoit déjà des slots compacts `macro_status`,
+1. Le contrat contexte prévoit déjà des slots compacts `macro_status`,
    `context_macro_regime`, `context_rates_regime` et `context_usd_regime`, mais
    le lecteur courant tente encore de lire `NewsMacroBrief`.
 2. Le brief courant est lié au scope de candidats par conception. Sa
@@ -59,7 +59,7 @@ mais une mauvaise entrée exogène pour le World Model. Il reste donc exclu avec
 3. Les histoires brutes macro/news existantes portent des temps de collecte,
    mais pas toujours un reçu durable prouvant qu'une ligne était lisible à un
    cutoff historique. Elles ne doivent pas être rétro-jointes à des épisodes.
-4. Les épisodes V1/V2, les horizons fixes 4 h/1 j, les quatre voies shadow et
+4. Les épisodes marché/contexte, les horizons fixes 4 h/1 j, les quatre voies shadow et
    la projection NetworkX existent déjà. Cette RFC ajoute un capteur ; elle ne
    redéfinit pas le modèle.
 5. GDELT peut répondre HTTP 429 et demande au moins cinq secondes entre deux
@@ -146,11 +146,11 @@ silencieusement.
 Un `MacroSourceFact` ne cible pas `company`, `family` ou `instrument`. La propagation
 vers ces entités appartient au graphe et à son hypothèse, pas au fait macro.
 Hors `world:market`, `MacroScope.entity_id` utilise exactement l'identité
-canonique de `WorldEntityRef` V3 ; le `MacroSourceRegistry` porte la table
+canonique de `WorldEntityRef` graphe ; le `MacroSourceRegistry` porte la table
 versionnée qui convertit les IDs provider vers ces IDs. Aucun crosswalk
 `east_asia/TW/TWSE` implicite n'est autorisé à la capture.
 
-Les épisodes V1/V2 conservent toutefois leurs venues marché logiques actuelles
+Les épisodes marché/contexte conservent toutefois leurs venues marché logiques actuelles
 (`EU`, `TW`, `US`). Le shared kernel définit donc `WorldMarketAnchorRef`,
 `WorldScopeMapping` et `WorldScopeResolution`. Le mapping versionné/hashé
 résout `(market_venue, instrument)` vers zéro ou un scope venue MIC, puis ses
@@ -495,7 +495,7 @@ Le registre est versionné et configuré. Le contrat live est
 
 - séries officielles déjà cartographiées dans le projet ;
 - benchmarks de marché explicitement désignés comme macro, distincts de
-  l'OHLCV instrument V1 ;
+  l'OHLCV instrument marché ;
 - aucune news/GDELT dans `macro_world_observation.v1`. Le capteur événementiel
   aura un contrat séparé après preuve de couverture et de débit.
 
@@ -524,7 +524,7 @@ Contraintes runtime :
 - dédupliquer avant append par identité fournisseur ;
 - timeout ou 429 → source `missing` avec motif, sans boucle agressive ;
 - tests adapters sur fixtures, jamais sur le réseau public ;
-- aucun LLM en V1 du producteur. Une synthèse LLM source-only éventuelle sera
+- aucun LLM dans le producteur live. Une synthèse LLM source-only éventuelle sera
   une RFC/arm distincte, avec prompt et modèle gelés.
 
 ## 10. Intégration au World Context
@@ -545,7 +545,7 @@ Contraintes runtime :
    changer silencieusement la population de sources.
 4. Projeter uniquement les catégories allowlistées. Raw facts, titres, URLs et
    texte sont hors feature vector.
-5. Garder `market_ohlcv_context.v2` seulement si noms et sens des features
+5. Garder `world_feature.context.v1` seulement si noms et sens des features
    existantes ne changent pas. La voie reçoit malgré tout une nouvelle identité
    `context.v2.macro_source.v1` et un départ de cohorte propre. Toute nouvelle
    feature ou nouvelle sémantique impose un bump de feature contract.
@@ -559,7 +559,7 @@ Contraintes runtime :
 | M0 — contrats | aucun runtime | invariants/hashes/deny-list testés |
 | M1 — collecte locale | écrit seulement `state/world_macro/` | replay, crash et 429 testés |
 | M2 — observation shadow | reporting de couverture | cutoff et contamination 100 % conformes |
-| M3 — attache V2 opt-in | nouveaux épisodes/lanes shadow | manifeste de cohorte armé |
+| M3 — attache contexte opt-in | nouveaux épisodes/lanes shadow | manifeste de cohorte armé |
 | M4 — étude | évaluation appariée | protocole de la RFC cohorte atteint |
 
 Flag proposé, défaut off et lu au boot :
@@ -641,7 +641,7 @@ listé dans `allowed_edits`.
   tests/state_db/test_availability_receipt.py
   tests/package_layout/test_world_model_layout.py`.
 - **exit** : seul le store attribue `ready_at`; les callers ne peuvent pas le
-  forger ; comportement V2 existant inchangé.
+  forger ; comportement contexte existant inchangé.
 
 ### Lot MACRO-1 — domaine macro et cycle de vie
 
@@ -714,7 +714,7 @@ workflow termine `NO_GO` sans édition.
   `tests/infrastructure/test_world_macro_series_adapter.py`,
   `tests/test_macro_series.py`, `tests/test_commodity_prices.py`.
 - **sortie** : registry versionné, adapters séries/commodités, vintages et
-  rate/backoff ; aucune source événementielle V1.
+  rate/backoff ; aucune source événementielle marché.
 - **tests** : `uv run pytest -q
   tests/infrastructure/test_world_macro_series_adapter.py
   tests/test_macro_series.py tests/test_commodity_prices.py`.
@@ -745,7 +745,7 @@ workflow termine `NO_GO` sans édition.
   tests/application/test_world_scope_resolution.py
   tests/state_db/test_world_context_reader.py
   tests/application/test_world_model_feature_contracts.py`.
-- **exit** : fingerprint V1 inchangé ; aucun fallback venue/scope/macro
+- **exit** : fingerprint marché inchangé ; aucun fallback venue/scope/macro
   implicite ; mapping ID/hash persistant ; ancien pipeline Univers intact.
 
 ### Lot MACRO-6 — runtime shadow opt-in
@@ -760,7 +760,7 @@ workflow termine `NO_GO` sans édition.
   macro distincte, aucune I/O dans le cycle.
 - **tests** : `uv run pytest -q tests/runtime/test_world_macro_runtime.py
   tests/runtime/test_daemon_world_model.py`.
-- **exit** : producer-on/V2-off possible ; panne sans effet Trader ; le lot ne
+- **exit** : producer-on/contexte-off possible ; panne sans effet Trader ; le lot ne
   redémarre aucun process.
 
 ### Lot MACRO-7 — reporting et CLI read-only

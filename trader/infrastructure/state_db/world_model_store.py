@@ -43,6 +43,7 @@ from trader.domain.world_cohort import (
     world_cohort_event_payload_hash,
 )
 from trader.domain.world_episode import (
+    CURRENT_FEATURE_CONTRACT_IDS,
     OUTCOME_STATUSES,
     PREDICTION_CLASSES,
     PREDICTION_STATUSES,
@@ -61,20 +62,29 @@ from trader.infrastructure.state_db.availability_receipt import (
 )
 from trader.infrastructure.state_db.connection import StateDb
 
-_LEGACY_MOVE_CLASS = {"up": "UP", "down": "DOWN", "flat": "FLAT"}
-_V2_FEATURE_CONTRACT = "market_ohlcv_context.v2"
-_V3_FEATURE_CONTRACT = "market_ohlcv_graph.v3"
+_MARKET_FEATURE_CONTRACT = "world_feature.market.v1"
+_CONTEXT_FEATURE_CONTRACT = "world_feature.context.v1"
+_GRAPH_FEATURE_CONTRACT = "world_feature.graph.v1"
+_CURRENT_FEATURE_CONTRACTS = frozenset(CURRENT_FEATURE_CONTRACT_IDS)
 
 __all__ = [
     "WORLD_MODEL_MIGRATIONS",
+    "WORLD_MODEL_REQUIRED_TABLES",
+    "WORLD_MODEL_SCHEMA_VERSION",
     "WORLD_MODEL_STORE_ID",
     "WorldModelConflictError",
+    "WorldModelSchemaMismatchError",
     "WorldModelStore",
+    "apply_current_world_model_schema",
 ]
 
 
 class WorldModelConflictError(ValueError):
     """A deterministic world-model identifier was reused with new content."""
+
+
+class WorldModelSchemaMismatchError(ValueError):
+    """Opened a world-model database whose schema is not the current definition."""
 
 
 WORLD_MODEL_STORE_ID = "world-model.db.v1"
@@ -88,132 +98,29 @@ _PREDICTION_COHORT_FIELDS = (
 )
 
 
-def _append_only_trigger_sql(table: str) -> list[str]:
-    return [
-        f"""
-            CREATE TRIGGER IF NOT EXISTS {table}_no_update
-            BEFORE UPDATE ON {table}
-            BEGIN
-                SELECT RAISE(ABORT, '{table} are append-only');
-            END
-            """,
-        f"""
-            CREATE TRIGGER IF NOT EXISTS {table}_no_delete
-            BEFORE DELETE ON {table}
-            BEGIN
-                SELECT RAISE(ABORT, '{table} are append-only');
-            END
-            """,
-    ]
+def _assert_current_world_model_schema(db: StateDb) -> None:
+    rows = db.query_all("SELECT version FROM schema_migrations ORDER BY version")
+    versions = [int(row["version"]) for row in rows]
+    expected = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    if versions != expected:
+        raise WorldModelSchemaMismatchError(
+            f"world-model schema versions {versions!r} are not the current {expected!r}"
+        )
+    tables = {
+        str(row["name"])
+        for row in db.query_all("SELECT name FROM sqlite_master WHERE type='table'")
+        if row["name"] not in {"schema_migrations", "sqlite_sequence"}
+    }
+    missing = WORLD_MODEL_REQUIRED_TABLES - tables
+    if missing:
+        raise WorldModelSchemaMismatchError(
+            "world-model schema is missing required tables: " + ", ".join(sorted(missing))
+        )
 
 
-_V2_CANONICAL_FIRST_WRITE_TRIGGER = """
-            CREATE TRIGGER IF NOT EXISTS world_episodes_v2_canonical_first_write
-            BEFORE INSERT ON world_episodes
-            WHEN NEW.feature_contract_version = 'market_ohlcv_context.v2'
-            BEGIN
-                SELECT RAISE(ABORT, 'V2 market slot already exists')
-                WHERE EXISTS (
-                    SELECT 1 FROM world_episodes AS existing
-                    WHERE existing.symbol = NEW.symbol
-                      AND existing.venue IS NEW.venue
-                      AND existing.bar_interval IS NEW.bar_interval
-                      AND existing.feature_contract_version = 'market_ohlcv_context.v2'
-                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
-                      AND existing.episode_id != NEW.episode_id
-                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
-                );
-            END
-            """
-
-_V2_SLOT_CANDIDATE_INDEX = """
-            CREATE INDEX IF NOT EXISTS idx_world_episodes_v2_market_slot_candidates
-            ON world_episodes(
-                venue,
-                symbol,
-                bar_interval,
-                feature_contract_version,
-                sampling_policy_version,
-                recorded_at,
-                episode_id
-            )
-            WHERE feature_contract_version = 'market_ohlcv_context.v2'
-            """
-
-_V3_CANONICAL_FIRST_WRITE_TRIGGER = """
-            CREATE TRIGGER IF NOT EXISTS world_episodes_v3_canonical_first_write
-            BEFORE INSERT ON world_episodes
-            WHEN NEW.feature_contract_version = 'market_ohlcv_graph.v3'
-            BEGIN
-                SELECT RAISE(ABORT, 'V3 market slot already exists')
-                WHERE EXISTS (
-                    SELECT 1 FROM world_episodes AS existing
-                    WHERE existing.symbol = NEW.symbol
-                      AND existing.venue IS NEW.venue
-                      AND existing.bar_interval IS NEW.bar_interval
-                      AND existing.feature_contract_version = 'market_ohlcv_graph.v3'
-                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
-                      AND existing.episode_id != NEW.episode_id
-                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
-                );
-                SELECT RAISE(ABORT, 'V3 graph snapshot must be persisted first')
-                WHERE json_extract(NEW.payload_json, '$.observation.graph_features.snapshot.snapshot_id') IS NOT NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM world_graph_snapshots AS snapshot
-                    WHERE snapshot.snapshot_id = json_extract(
-                        NEW.payload_json,
-                        '$.observation.graph_features.snapshot.snapshot_id'
-                    )
-                );
-            END
-            """
-
-_V3_SLOT_CANDIDATE_INDEX = """
-            CREATE INDEX IF NOT EXISTS idx_world_episodes_v3_market_slot_candidates
-            ON world_episodes(
-                venue,
-                symbol,
-                bar_interval,
-                feature_contract_version,
-                sampling_policy_version,
-                recorded_at,
-                episode_id
-            )
-            WHERE feature_contract_version = 'market_ohlcv_graph.v3'
-            """
-
-
-def _canonical_v2_episode(payload: Mapping[str, Any], observation: Mapping[str, Any]) -> WorldEpisode | None:
-    """Rebuild a V2 episode from its canonical projection, or return None for non-V2."""
-
-    top = _text(payload.get("feature_contract_version"))
-    nested = _text(observation.get("feature_contract_version"))
-    has_context = observation.get("context") is not None
-    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT
-    is_v2 = (top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context) and not is_v3
-    if top and nested and top != nested:
-        if is_v2:
-            raise ValueError("feature_contract_version envelope contradicts nested observation")
-        return None
-    if not is_v2:
-        return None
-    return WorldEpisode.from_dict(payload)
-
-
-def _canonical_v3_episode(payload: Mapping[str, Any], observation: Mapping[str, Any]) -> WorldEpisode | None:
-    """Rebuild a V3 episode from its canonical projection, or return None for non-V3."""
-
-    top = _text(payload.get("feature_contract_version"))
-    nested = _text(observation.get("feature_contract_version"))
-    has_graph = observation.get("graph_features") is not None or observation.get("graph") is not None
-    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT or has_graph
-    if top and nested and top != nested:
-        if is_v3:
-            raise ValueError("feature_contract_version envelope contradicts nested observation")
-        return None
-    if not is_v3:
-        return None
-    return WorldEpisode.from_dict(payload)
+def apply_current_world_model_schema(db: StateDb) -> None:
+    db.apply_migrations(WORLD_MODEL_MIGRATIONS)
+    _assert_current_world_model_schema(db)
 
 
 def _graph_snapshot_root_adapter_columns(root: WorldEntityRef | None) -> tuple[str, str]:
@@ -228,14 +135,122 @@ def _graph_snapshot_root_adapter_columns(root: WorldEntityRef | None) -> tuple[s
     return root.kind, root.entity_id
 
 
+WORLD_MODEL_SCHEMA_VERSION = 1
+WORLD_MODEL_REQUIRED_TABLES = frozenset(
+    {
+        "world_availability_receipts",
+        "world_cohort_events",
+        "world_cohort_manifests",
+        "world_cohort_slots",
+        "world_entity_events",
+        "world_entity_identity_events",
+        "world_episodes",
+        "world_graph_snapshot_members",
+        "world_graph_snapshots",
+        "world_macro_graph_bridge_events",
+        "world_ontology_revisions",
+        "world_outcome_events",
+        "world_pattern_hypothesis_events",
+        "world_pattern_occurrence_events",
+        "world_pattern_outcome_links",
+        "world_relation_events",
+        "world_shadow_predictions",
+    }
+)
+
 # This migration namespace belongs only to ``world_model.db``.  It must never
 # be added to the central ``trader.infrastructure.state_db.migrations`` list.
+# Live cutover archives the previous store; an old schema is rejected rather
+# than migrated.
 WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
     (
-        1,
+        WORLD_MODEL_SCHEMA_VERSION,
         [
             """
-            CREATE TABLE IF NOT EXISTS world_episodes (
+CREATE TABLE IF NOT EXISTS world_availability_receipts (
+                receipt_id             TEXT PRIMARY KEY,
+                subject_kind           TEXT NOT NULL,
+                subject_id             TEXT NOT NULL,
+                content_sha256         TEXT NOT NULL,
+                scope                  TEXT NOT NULL,
+                storage_locator_json   TEXT NOT NULL,
+                ready_at               TEXT NOT NULL,
+                receipt_sha256         TEXT NOT NULL,
+                payload_json           TEXT NOT NULL,
+                recorded_at            TEXT NOT NULL,
+                UNIQUE(subject_kind, subject_id, content_sha256)
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_cohort_events (
+                event_id          TEXT PRIMARY KEY,
+                cohort_id         TEXT NOT NULL
+                    REFERENCES world_cohort_manifests(cohort_id),
+                event_type        TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                manifest_sha256   TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(cohort_id, sequence)
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_cohort_manifests (
+                cohort_id         TEXT PRIMARY KEY,
+                manifest_sha256   TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_cohort_slots (
+                slot_id              TEXT PRIMARY KEY,
+                cohort_id            TEXT NOT NULL
+                    REFERENCES world_cohort_manifests(cohort_id),
+                event_id             TEXT NOT NULL
+                    REFERENCES world_cohort_events(event_id),
+                manifest_sha256      TEXT NOT NULL,
+                venue                TEXT NOT NULL,
+                symbol               TEXT NOT NULL,
+                bar_interval         TEXT NOT NULL,
+                as_of_bar_ts         TEXT NOT NULL,
+                anchor_end_at        TEXT NOT NULL,
+                comparison_batch_id  TEXT NOT NULL,
+                started_event_id     TEXT NOT NULL,
+                payload_json         TEXT NOT NULL,
+                payload_sha256       TEXT NOT NULL,
+                recorded_at          TEXT NOT NULL
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_entity_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                entity_kind       TEXT NOT NULL,
+                entity_id         TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_entity_identity_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                link_id           TEXT NOT NULL,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_episodes (
                 episode_id              TEXT PRIMARY KEY,
                 capture_id              TEXT,
                 venue                   TEXT,
@@ -256,11 +271,74 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             """
-            CREATE INDEX IF NOT EXISTS idx_world_episodes_eligible_observed
-            ON world_episodes(training_eligible, observed_at, episode_id)
+CREATE TABLE IF NOT EXISTS world_graph_snapshot_members (
+                snapshot_id       TEXT NOT NULL
+                    REFERENCES world_graph_snapshots(snapshot_id),
+                member_kind       TEXT NOT NULL
+                    CHECK (member_kind IN (
+                        'entity_revision',
+                        'identity_link',
+                        'structural_relation',
+                        'knowledge_relation',
+                        'artifact'
+                    )),
+                member_id         TEXT NOT NULL,
+                content_sha256    TEXT,
+                ordinal           INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, member_kind, member_id, ordinal)
+            )
             """,
             """
-            CREATE TABLE IF NOT EXISTS world_outcome_events (
+CREATE TABLE IF NOT EXISTS world_graph_snapshots (
+                snapshot_id         TEXT PRIMARY KEY,
+                root_episode_id     TEXT NOT NULL,
+                root_entity_kind    TEXT NOT NULL,
+                root_entity_id      TEXT NOT NULL,
+                cutoff_at           TEXT NOT NULL,
+                ontology_revision   TEXT NOT NULL,
+                ontology_hash       TEXT NOT NULL,
+                identity_map_hash   TEXT NOT NULL,
+                scope_mapping_id    TEXT NOT NULL,
+                scope_mapping_hash  TEXT NOT NULL,
+                status              TEXT NOT NULL
+                    CHECK (status IN ('complete', 'partial', 'missing', 'stale')),
+                payload_json        TEXT NOT NULL,
+                payload_sha256      TEXT NOT NULL,
+                recorded_at         TEXT NOT NULL
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                bridge_key        TEXT NOT NULL,
+                run_id            TEXT,
+                epoch             INTEGER,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(bridge_key, sequence)
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_ontology_revisions (
+                event_id                TEXT PRIMARY KEY,
+                event_type              TEXT NOT NULL,
+                revision_id             TEXT NOT NULL,
+                successor_revision_id   TEXT,
+                sequence                INTEGER NOT NULL,
+                payload_json            TEXT NOT NULL,
+                payload_sha256          TEXT NOT NULL,
+                recorded_at             TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_outcome_events (
                 outcome_event_id            TEXT PRIMARY KEY,
                 episode_id                  TEXT NOT NULL
                     REFERENCES world_episodes(episode_id),
@@ -282,372 +360,7 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             """
-            CREATE INDEX IF NOT EXISTS idx_world_outcomes_pending
-            ON world_outcome_events(episode_id, horizon_code, status, outcome_event_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_outcomes_observed
-            ON world_outcome_events(status, training_eligible, label_available_at, outcome_event_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_outcomes_supersedes
-            ON world_outcome_events(supersedes_outcome_event_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_shadow_predictions (
-                prediction_id              TEXT PRIMARY KEY,
-                run_id                     TEXT NOT NULL,
-                episode_id                 TEXT NOT NULL
-                    REFERENCES world_episodes(episode_id),
-                horizon_code               TEXT NOT NULL,
-                model_kind                 TEXT,
-                model_version              TEXT,
-                predicted_at               TEXT,
-                input_sha256               TEXT NOT NULL,
-                prediction_json            TEXT NOT NULL,
-                prediction_sha256          TEXT NOT NULL,
-                payload_json               TEXT NOT NULL,
-                payload_sha256             TEXT NOT NULL,
-                recorded_at                TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_predictions_run_episode
-            ON world_shadow_predictions(run_id, horizon_code, episode_id, prediction_id)
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS world_episodes_no_update
-            BEFORE UPDATE ON world_episodes
-            BEGIN
-                SELECT RAISE(ABORT, 'world_episodes are append-only');
-            END
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS world_episodes_no_delete
-            BEFORE DELETE ON world_episodes
-            BEGIN
-                SELECT RAISE(ABORT, 'world_episodes are append-only');
-            END
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS world_outcomes_no_update
-            BEFORE UPDATE ON world_outcome_events
-            BEGIN
-                SELECT RAISE(ABORT, 'world_outcome_events are append-only');
-            END
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS world_outcomes_no_delete
-            BEFORE DELETE ON world_outcome_events
-            BEGIN
-                SELECT RAISE(ABORT, 'world_outcome_events are append-only');
-            END
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS world_predictions_no_update
-            BEFORE UPDATE ON world_shadow_predictions
-            BEGIN
-                SELECT RAISE(ABORT, 'world_shadow_predictions are append-only');
-            END
-            """,
-            """
-            CREATE TRIGGER IF NOT EXISTS world_predictions_no_delete
-            BEFORE DELETE ON world_shadow_predictions
-            BEGIN
-                SELECT RAISE(ABORT, 'world_shadow_predictions are append-only');
-            END
-            """,
-        ],
-    ),
-    (
-        2,
-        [
-            "DROP INDEX IF EXISTS idx_world_episodes_v2_market_slot",
-            "DROP TRIGGER IF EXISTS world_episodes_v2_canonical_first_write",
-            _V2_CANONICAL_FIRST_WRITE_TRIGGER,
-            _V2_SLOT_CANDIDATE_INDEX,
-        ],
-    ),
-    (
-        3,
-        [
-            "DROP INDEX IF EXISTS idx_world_episodes_v2_market_slot",
-            "DROP TRIGGER IF EXISTS world_episodes_v2_canonical_first_write",
-            _V2_CANONICAL_FIRST_WRITE_TRIGGER,
-            _V2_SLOT_CANDIDATE_INDEX,
-        ],
-    ),
-    (
-        4,
-        [
-            "DROP INDEX IF EXISTS idx_world_episodes_v2_market_slot",
-            "DROP TRIGGER IF EXISTS world_episodes_v2_canonical_first_write",
-            _V2_CANONICAL_FIRST_WRITE_TRIGGER,
-            _V2_SLOT_CANDIDATE_INDEX,
-        ],
-    ),
-    (
-        5,
-        [
-            """
-            CREATE TABLE IF NOT EXISTS world_cohort_manifests (
-                cohort_id         TEXT PRIMARY KEY,
-                manifest_sha256   TEXT NOT NULL,
-                payload_json      TEXT NOT NULL,
-                payload_sha256    TEXT NOT NULL,
-                recorded_at       TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_cohort_events (
-                event_id          TEXT PRIMARY KEY,
-                cohort_id         TEXT NOT NULL
-                    REFERENCES world_cohort_manifests(cohort_id),
-                event_type        TEXT NOT NULL,
-                sequence          INTEGER NOT NULL,
-                manifest_sha256   TEXT NOT NULL,
-                payload_json      TEXT NOT NULL,
-                payload_sha256    TEXT NOT NULL,
-                recorded_at       TEXT NOT NULL,
-                UNIQUE(cohort_id, sequence)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_cohort_events_cohort_sequence
-            ON world_cohort_events(cohort_id, sequence, event_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_cohort_slots (
-                slot_id              TEXT PRIMARY KEY,
-                cohort_id            TEXT NOT NULL
-                    REFERENCES world_cohort_manifests(cohort_id),
-                event_id             TEXT NOT NULL
-                    REFERENCES world_cohort_events(event_id),
-                manifest_sha256      TEXT NOT NULL,
-                venue                TEXT NOT NULL,
-                symbol               TEXT NOT NULL,
-                bar_interval         TEXT NOT NULL,
-                as_of_bar_ts         TEXT NOT NULL,
-                anchor_end_at        TEXT NOT NULL,
-                comparison_batch_id  TEXT NOT NULL,
-                started_event_id     TEXT NOT NULL,
-                payload_json         TEXT NOT NULL,
-                payload_sha256       TEXT NOT NULL,
-                recorded_at          TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_cohort_slots_cohort_anchor
-            ON world_cohort_slots(cohort_id, as_of_bar_ts, slot_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_availability_receipts (
-                receipt_id             TEXT PRIMARY KEY,
-                subject_kind           TEXT NOT NULL,
-                subject_id             TEXT NOT NULL,
-                content_sha256         TEXT NOT NULL,
-                scope                  TEXT NOT NULL,
-                storage_locator_json   TEXT NOT NULL,
-                ready_at               TEXT NOT NULL,
-                receipt_sha256         TEXT NOT NULL,
-                payload_json           TEXT NOT NULL,
-                recorded_at            TEXT NOT NULL,
-                UNIQUE(subject_kind, subject_id, content_sha256)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_availability_receipts_subject
-            ON world_availability_receipts(subject_kind, subject_id, content_sha256)
-            """,
-            *_append_only_trigger_sql("world_cohort_manifests"),
-            *_append_only_trigger_sql("world_cohort_events"),
-            *_append_only_trigger_sql("world_cohort_slots"),
-            *_append_only_trigger_sql("world_availability_receipts"),
-            "ALTER TABLE world_shadow_predictions ADD COLUMN study_cohort_id TEXT",
-            "ALTER TABLE world_shadow_predictions ADD COLUMN lane_id TEXT",
-            "ALTER TABLE world_shadow_predictions ADD COLUMN manifest_sha256 TEXT",
-            "ALTER TABLE world_shadow_predictions ADD COLUMN feature_contract_fingerprint TEXT",
-            "ALTER TABLE world_shadow_predictions ADD COLUMN feature_mask_fingerprint TEXT",
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_predictions_study_cohort
-            ON world_shadow_predictions(study_cohort_id, lane_id, prediction_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_predictions_manifest
-            ON world_shadow_predictions(manifest_sha256, prediction_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_predictions_feature_fps
-            ON world_shadow_predictions(feature_contract_fingerprint, feature_mask_fingerprint, prediction_id)
-            """,
-        ],
-    ),
-    (
-        6,
-        [
-            """
-            CREATE TABLE IF NOT EXISTS world_entity_events (
-                event_id          TEXT PRIMARY KEY,
-                event_type        TEXT NOT NULL,
-                entity_kind       TEXT NOT NULL,
-                entity_id         TEXT NOT NULL,
-                sequence          INTEGER NOT NULL,
-                payload_json      TEXT NOT NULL,
-                payload_sha256    TEXT NOT NULL,
-                recorded_at       TEXT NOT NULL,
-                UNIQUE(sequence)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_entity_events_entity
-            ON world_entity_events(entity_kind, entity_id, sequence, event_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_entity_identity_events (
-                event_id          TEXT PRIMARY KEY,
-                event_type        TEXT NOT NULL,
-                link_id           TEXT NOT NULL,
-                sequence          INTEGER NOT NULL,
-                payload_json      TEXT NOT NULL,
-                payload_sha256    TEXT NOT NULL,
-                recorded_at       TEXT NOT NULL,
-                UNIQUE(sequence)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_entity_identity_events_link
-            ON world_entity_identity_events(link_id, sequence, event_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_relation_events (
-                event_id          TEXT PRIMARY KEY,
-                event_type        TEXT NOT NULL,
-                family            TEXT NOT NULL
-                    CHECK (family IN ('structural', 'knowledge')),
-                relation_id       TEXT NOT NULL,
-                relation_kind     TEXT,
-                sequence          INTEGER NOT NULL,
-                payload_json      TEXT NOT NULL,
-                payload_sha256    TEXT NOT NULL,
-                recorded_at       TEXT NOT NULL,
-                UNIQUE(sequence)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_relation_events_family
-            ON world_relation_events(family, sequence, relation_id, event_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_ontology_revisions (
-                event_id                TEXT PRIMARY KEY,
-                event_type              TEXT NOT NULL,
-                revision_id             TEXT NOT NULL,
-                successor_revision_id   TEXT,
-                sequence                INTEGER NOT NULL,
-                payload_json            TEXT NOT NULL,
-                payload_sha256          TEXT NOT NULL,
-                recorded_at             TEXT NOT NULL,
-                UNIQUE(sequence)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_ontology_revisions_revision
-            ON world_ontology_revisions(revision_id, sequence, event_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_graph_snapshots (
-                snapshot_id         TEXT PRIMARY KEY,
-                root_episode_id     TEXT NOT NULL,
-                root_entity_kind    TEXT NOT NULL,
-                root_entity_id      TEXT NOT NULL,
-                cutoff_at           TEXT NOT NULL,
-                ontology_revision   TEXT NOT NULL,
-                ontology_hash       TEXT NOT NULL,
-                identity_map_hash   TEXT NOT NULL,
-                scope_mapping_id    TEXT NOT NULL,
-                scope_mapping_hash  TEXT NOT NULL,
-                status              TEXT NOT NULL
-                    CHECK (status IN ('complete', 'partial', 'missing', 'stale')),
-                payload_json        TEXT NOT NULL,
-                payload_sha256      TEXT NOT NULL,
-                recorded_at         TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_graph_snapshots_cutoff
-            ON world_graph_snapshots(cutoff_at, root_episode_id, snapshot_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_graph_snapshot_members (
-                snapshot_id       TEXT NOT NULL
-                    REFERENCES world_graph_snapshots(snapshot_id),
-                member_kind       TEXT NOT NULL
-                    CHECK (member_kind IN (
-                        'entity_revision',
-                        'identity_link',
-                        'structural_relation',
-                        'knowledge_relation',
-                        'artifact'
-                    )),
-                member_id         TEXT NOT NULL,
-                content_sha256    TEXT,
-                ordinal           INTEGER NOT NULL,
-                payload_json      TEXT NOT NULL,
-                payload_sha256    TEXT NOT NULL,
-                recorded_at       TEXT NOT NULL,
-                PRIMARY KEY (snapshot_id, member_kind, member_id, ordinal)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_graph_snapshot_members_snapshot
-            ON world_graph_snapshot_members(snapshot_id, member_kind, member_id)
-            """,
-            *_append_only_trigger_sql("world_entity_events"),
-            *_append_only_trigger_sql("world_entity_identity_events"),
-            *_append_only_trigger_sql("world_relation_events"),
-            *_append_only_trigger_sql("world_ontology_revisions"),
-            *_append_only_trigger_sql("world_graph_snapshots"),
-            *_append_only_trigger_sql("world_graph_snapshot_members"),
-        ],
-    ),
-    (
-        7,
-        [
-            """
-            CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events (
-                event_id          TEXT PRIMARY KEY,
-                event_type        TEXT NOT NULL,
-                bridge_key        TEXT NOT NULL,
-                run_id            TEXT,
-                epoch             INTEGER,
-                sequence          INTEGER NOT NULL,
-                payload_json      TEXT NOT NULL,
-                payload_sha256    TEXT NOT NULL,
-                recorded_at       TEXT NOT NULL,
-                UNIQUE(bridge_key, sequence)
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_macro_graph_bridge_events_key
-            ON world_macro_graph_bridge_events(bridge_key, sequence, event_id)
-            """,
-            *_append_only_trigger_sql("world_macro_graph_bridge_events"),
-        ],
-    ),
-    (
-        8,
-        [
-            "DROP TRIGGER IF EXISTS world_episodes_v3_canonical_first_write",
-            "DROP INDEX IF EXISTS idx_world_episodes_v3_market_slot_candidates",
-            _V3_CANONICAL_FIRST_WRITE_TRIGGER,
-            _V3_SLOT_CANDIDATE_INDEX,
-        ],
-    ),
-    (
-        9,
-        [
-            """
-            CREATE TABLE IF NOT EXISTS world_pattern_hypothesis_events (
+CREATE TABLE IF NOT EXISTS world_pattern_hypothesis_events (
                 event_id          TEXT PRIMARY KEY,
                 hypothesis_id     TEXT NOT NULL,
                 event_type        TEXT NOT NULL,
@@ -659,11 +372,7 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             """
-            CREATE INDEX IF NOT EXISTS idx_world_pattern_hypothesis_events_hypothesis
-            ON world_pattern_hypothesis_events(hypothesis_id, sequence, event_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_pattern_occurrence_events (
+CREATE TABLE IF NOT EXISTS world_pattern_occurrence_events (
                 event_id          TEXT PRIMARY KEY,
                 occurrence_id     TEXT NOT NULL,
                 hypothesis_id     TEXT NOT NULL,
@@ -679,15 +388,7 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             """
-            CREATE INDEX IF NOT EXISTS idx_world_pattern_occurrence_events_cohort_cutoff
-            ON world_pattern_occurrence_events(cohort_id, cutoff_at, occurrence_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_world_pattern_occurrence_events_hypothesis
-            ON world_pattern_occurrence_events(hypothesis_id, cutoff_at, occurrence_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS world_pattern_outcome_links (
+CREATE TABLE IF NOT EXISTS world_pattern_outcome_links (
                 link_id                      TEXT PRIMARY KEY,
                 occurrence_id                TEXT NOT NULL,
                 event_id                     TEXT NOT NULL,
@@ -701,20 +402,491 @@ WORLD_MODEL_MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             """
-            CREATE INDEX IF NOT EXISTS idx_world_pattern_outcome_links_horizon
+CREATE TABLE IF NOT EXISTS world_relation_events (
+                event_id          TEXT PRIMARY KEY,
+                event_type        TEXT NOT NULL,
+                family            TEXT NOT NULL
+                    CHECK (family IN ('structural', 'knowledge')),
+                relation_id       TEXT NOT NULL,
+                relation_kind     TEXT,
+                sequence          INTEGER NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                UNIQUE(sequence)
+            )
+            """,
+            """
+CREATE TABLE IF NOT EXISTS world_shadow_predictions (
+                prediction_id                  TEXT PRIMARY KEY,
+                run_id                         TEXT NOT NULL,
+                episode_id                     TEXT NOT NULL
+                    REFERENCES world_episodes(episode_id),
+                horizon_code                   TEXT NOT NULL,
+                model_kind                     TEXT,
+                model_version                  TEXT,
+                predicted_at                   TEXT,
+                input_sha256                   TEXT NOT NULL,
+                prediction_json                TEXT NOT NULL,
+                prediction_sha256              TEXT NOT NULL,
+                payload_json                   TEXT NOT NULL,
+                payload_sha256                 TEXT NOT NULL,
+                recorded_at                    TEXT NOT NULL,
+                study_cohort_id                TEXT,
+                lane_id                        TEXT,
+                manifest_sha256                TEXT,
+                feature_contract_fingerprint   TEXT,
+                feature_mask_fingerprint       TEXT
+            )
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_availability_receipts_subject
+            ON world_availability_receipts(subject_kind, subject_id, content_sha256)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_cohort_events_cohort_sequence
+            ON world_cohort_events(cohort_id, sequence, event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_cohort_slots_cohort_anchor
+            ON world_cohort_slots(cohort_id, as_of_bar_ts, slot_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_entity_events_entity
+            ON world_entity_events(entity_kind, entity_id, sequence, event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_entity_identity_events_link
+            ON world_entity_identity_events(link_id, sequence, event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_episodes_context_market_slot_candidates
+            ON world_episodes(
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+                recorded_at,
+                episode_id
+            )
+            WHERE feature_contract_version = 'world_feature.context.v1'
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_episodes_eligible_observed
+            ON world_episodes(training_eligible, observed_at, episode_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_episodes_graph_market_slot_candidates
+            ON world_episodes(
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+                recorded_at,
+                episode_id
+            )
+            WHERE feature_contract_version = 'world_feature.graph.v1'
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_graph_snapshot_members_snapshot
+            ON world_graph_snapshot_members(snapshot_id, member_kind, member_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_graph_snapshots_cutoff
+            ON world_graph_snapshots(cutoff_at, root_episode_id, snapshot_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_macro_graph_bridge_events_key
+            ON world_macro_graph_bridge_events(bridge_key, sequence, event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_ontology_revisions_revision
+            ON world_ontology_revisions(revision_id, sequence, event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_outcomes_observed
+            ON world_outcome_events(status, training_eligible, label_available_at, outcome_event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_outcomes_pending
+            ON world_outcome_events(episode_id, horizon_code, status, outcome_event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_outcomes_supersedes
+            ON world_outcome_events(supersedes_outcome_event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_pattern_hypothesis_events_hypothesis
+            ON world_pattern_hypothesis_events(hypothesis_id, sequence, event_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_pattern_occurrence_events_cohort_cutoff
+            ON world_pattern_occurrence_events(cohort_id, cutoff_at, occurrence_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_pattern_occurrence_events_hypothesis
+            ON world_pattern_occurrence_events(hypothesis_id, cutoff_at, occurrence_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_pattern_outcome_links_horizon
             ON world_pattern_outcome_links(horizon_id, occurrence_id, link_id)
             """,
             """
-            CREATE INDEX IF NOT EXISTS idx_world_pattern_outcome_links_occurrence
+CREATE INDEX IF NOT EXISTS idx_world_pattern_outcome_links_occurrence
             ON world_pattern_outcome_links(occurrence_id, horizon_id, link_id)
             """,
-            *_append_only_trigger_sql("world_pattern_hypothesis_events"),
-            *_append_only_trigger_sql("world_pattern_occurrence_events"),
-            *_append_only_trigger_sql("world_pattern_outcome_links"),
+            """
+CREATE INDEX IF NOT EXISTS idx_world_predictions_feature_fps
+            ON world_shadow_predictions(feature_contract_fingerprint, feature_mask_fingerprint, prediction_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_predictions_manifest
+            ON world_shadow_predictions(manifest_sha256, prediction_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_predictions_run_episode
+            ON world_shadow_predictions(run_id, horizon_code, episode_id, prediction_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_predictions_study_cohort
+            ON world_shadow_predictions(study_cohort_id, lane_id, prediction_id)
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_relation_events_family
+            ON world_relation_events(family, sequence, relation_id, event_id)
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_availability_receipts_no_delete
+            BEFORE DELETE ON world_availability_receipts
+            BEGIN
+                SELECT RAISE(ABORT, 'world_availability_receipts are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_availability_receipts_no_update
+            BEFORE UPDATE ON world_availability_receipts
+            BEGIN
+                SELECT RAISE(ABORT, 'world_availability_receipts are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_cohort_events_no_delete
+            BEFORE DELETE ON world_cohort_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_cohort_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_cohort_events_no_update
+            BEFORE UPDATE ON world_cohort_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_cohort_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_cohort_manifests_no_delete
+            BEFORE DELETE ON world_cohort_manifests
+            BEGIN
+                SELECT RAISE(ABORT, 'world_cohort_manifests are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_cohort_manifests_no_update
+            BEFORE UPDATE ON world_cohort_manifests
+            BEGIN
+                SELECT RAISE(ABORT, 'world_cohort_manifests are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_cohort_slots_no_delete
+            BEFORE DELETE ON world_cohort_slots
+            BEGIN
+                SELECT RAISE(ABORT, 'world_cohort_slots are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_cohort_slots_no_update
+            BEFORE UPDATE ON world_cohort_slots
+            BEGIN
+                SELECT RAISE(ABORT, 'world_cohort_slots are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_entity_events_no_delete
+            BEFORE DELETE ON world_entity_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_entity_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_entity_events_no_update
+            BEFORE UPDATE ON world_entity_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_entity_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_entity_identity_events_no_delete
+            BEFORE DELETE ON world_entity_identity_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_entity_identity_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_entity_identity_events_no_update
+            BEFORE UPDATE ON world_entity_identity_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_entity_identity_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_episodes_context_canonical_first_write
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version = 'world_feature.context.v1'
+            BEGIN
+                SELECT RAISE(ABORT, 'context market slot already exists')
+                WHERE EXISTS (
+                    SELECT 1 FROM world_episodes AS existing
+                    WHERE existing.symbol = NEW.symbol
+                      AND existing.venue IS NEW.venue
+                      AND existing.bar_interval IS NEW.bar_interval
+                      AND existing.feature_contract_version = 'world_feature.context.v1'
+                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
+                      AND existing.episode_id != NEW.episode_id
+                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
+                );
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_episodes_graph_canonical_first_write
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version = 'world_feature.graph.v1'
+            BEGIN
+                SELECT RAISE(ABORT, 'graph market slot already exists')
+                WHERE EXISTS (
+                    SELECT 1 FROM world_episodes AS existing
+                    WHERE existing.symbol = NEW.symbol
+                      AND existing.venue IS NEW.venue
+                      AND existing.bar_interval IS NEW.bar_interval
+                      AND existing.feature_contract_version = 'world_feature.graph.v1'
+                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
+                      AND existing.episode_id != NEW.episode_id
+                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
+                );
+                SELECT RAISE(ABORT, 'graph snapshot must be persisted first')
+                WHERE json_extract(NEW.payload_json, '$.observation.graph_features.snapshot.snapshot_id') IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM world_graph_snapshots AS snapshot
+                    WHERE snapshot.snapshot_id = json_extract(
+                        NEW.payload_json,
+                        '$.observation.graph_features.snapshot.snapshot_id'
+                    )
+                );
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_episodes_no_delete
+            BEFORE DELETE ON world_episodes
+            BEGIN
+                SELECT RAISE(ABORT, 'world_episodes are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_episodes_no_update
+            BEFORE UPDATE ON world_episodes
+            BEGIN
+                SELECT RAISE(ABORT, 'world_episodes are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_graph_snapshot_members_no_delete
+            BEFORE DELETE ON world_graph_snapshot_members
+            BEGIN
+                SELECT RAISE(ABORT, 'world_graph_snapshot_members are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_graph_snapshot_members_no_update
+            BEFORE UPDATE ON world_graph_snapshot_members
+            BEGIN
+                SELECT RAISE(ABORT, 'world_graph_snapshot_members are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_graph_snapshots_no_delete
+            BEFORE DELETE ON world_graph_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'world_graph_snapshots are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_graph_snapshots_no_update
+            BEFORE UPDATE ON world_graph_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'world_graph_snapshots are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_macro_graph_bridge_events_no_delete
+            BEFORE DELETE ON world_macro_graph_bridge_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_macro_graph_bridge_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_macro_graph_bridge_events_no_update
+            BEFORE UPDATE ON world_macro_graph_bridge_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_macro_graph_bridge_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_ontology_revisions_no_delete
+            BEFORE DELETE ON world_ontology_revisions
+            BEGIN
+                SELECT RAISE(ABORT, 'world_ontology_revisions are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_ontology_revisions_no_update
+            BEFORE UPDATE ON world_ontology_revisions
+            BEGIN
+                SELECT RAISE(ABORT, 'world_ontology_revisions are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_outcomes_no_delete
+            BEFORE DELETE ON world_outcome_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_outcome_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_outcomes_no_update
+            BEFORE UPDATE ON world_outcome_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_outcome_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_pattern_hypothesis_events_no_delete
+            BEFORE DELETE ON world_pattern_hypothesis_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_hypothesis_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_pattern_hypothesis_events_no_update
+            BEFORE UPDATE ON world_pattern_hypothesis_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_hypothesis_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_pattern_occurrence_events_no_delete
+            BEFORE DELETE ON world_pattern_occurrence_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_occurrence_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_pattern_occurrence_events_no_update
+            BEFORE UPDATE ON world_pattern_occurrence_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_occurrence_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_pattern_outcome_links_no_delete
+            BEFORE DELETE ON world_pattern_outcome_links
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_outcome_links are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_pattern_outcome_links_no_update
+            BEFORE UPDATE ON world_pattern_outcome_links
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_outcome_links are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_predictions_no_delete
+            BEFORE DELETE ON world_shadow_predictions
+            BEGIN
+                SELECT RAISE(ABORT, 'world_shadow_predictions are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_predictions_no_update
+            BEFORE UPDATE ON world_shadow_predictions
+            BEGIN
+                SELECT RAISE(ABORT, 'world_shadow_predictions are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_relation_events_no_delete
+            BEFORE DELETE ON world_relation_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_relation_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_relation_events_no_update
+            BEFORE UPDATE ON world_relation_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_relation_events are append-only');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_episodes_current_feature_contract
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version IS NULL
+               OR NEW.feature_contract_version NOT IN (
+                    'world_feature.market.v1',
+                    'world_feature.context.v1',
+                    'world_feature.graph.v1'
+               )
+            BEGIN
+                SELECT RAISE(ABORT, 'unsupported feature contract');
+            END
+            """,
+            """
+CREATE TRIGGER IF NOT EXISTS world_episodes_market_canonical_first_write
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version = 'world_feature.market.v1'
+            BEGIN
+                SELECT RAISE(ABORT, 'market slot already exists')
+                WHERE EXISTS (
+                    SELECT 1 FROM world_episodes AS existing
+                    WHERE existing.symbol = NEW.symbol
+                      AND existing.venue IS NEW.venue
+                      AND existing.bar_interval IS NEW.bar_interval
+                      AND existing.feature_contract_version = 'world_feature.market.v1'
+                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
+                      AND existing.episode_id != NEW.episode_id
+                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
+                );
+            END
+            """,
+            """
+CREATE INDEX IF NOT EXISTS idx_world_episodes_market_slot_candidates
+            ON world_episodes(
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+                recorded_at,
+                episode_id
+            )
+            WHERE feature_contract_version = 'world_feature.market.v1'
+            """,
         ],
     ),
 ]
-
 
 _EPISODE_COLUMNS = (
     "episode_id",
@@ -909,14 +1081,16 @@ def _required_text(value: Any, *, field: str) -> str:
 
 
 def _canonical_move_class(value: str | None) -> str | None:
-    """Read adapter: persist lowercase historical directions as DOWN/FLAT/UP."""
+    """Read adapter: persist only the current DOWN/FLAT/UP classes."""
 
     if value is None:
         return None
     text = str(value).strip()
     if not text:
         return None
-    return _LEGACY_MOVE_CLASS.get(text.lower(), text.upper() if text.upper() in PREDICTION_CLASSES else text)
+    if text not in PREDICTION_CLASSES:
+        raise ValueError("move_class must be one of: DOWN, FLAT, UP")
+    return text
 
 
 def _assert_live_prediction(payload: Mapping[str, Any], nested: Mapping[str, Any]) -> None:
@@ -1073,7 +1247,7 @@ class WorldModelStore:
         # ``foreign_keys`` is connection-local and StateDb intentionally stays
         # generic, so set it before the world schema is used.
         self._db.query_one("PRAGMA foreign_keys=ON")
-        self._db.apply_migrations(WORLD_MODEL_MIGRATIONS)
+        apply_current_world_model_schema(self._db)
         self._prime_existing_receipts()
 
     def close(self) -> None:
@@ -1086,16 +1260,24 @@ class WorldModelStore:
         return self._db.integrity_check()
 
     def append_episode(self, episode: Any) -> bool:
-        payload = _as_mapping(episode, name="episode")
+        if isinstance(episode, WorldEpisode):
+            canonical = episode
+        else:
+            mapping = _as_mapping(episode, name="episode")
+            observation = mapping.get("observation")
+            if isinstance(observation, Mapping):
+                top = _text(mapping.get("feature_contract_version"))
+                nested = _text(observation.get("feature_contract_version"))
+                if top and nested and top != nested:
+                    raise ValueError("feature_contract_version envelope contradicts nested observation")
+            canonical = WorldEpisode.from_dict(mapping)
+        payload = canonical.to_dict()
         observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
-        canonical_v3 = _canonical_v3_episode(payload, observation)
-        canonical_v2 = None if canonical_v3 is not None else _canonical_v2_episode(payload, observation)
-        if canonical_v3 is not None:
-            payload = canonical_v3.to_dict()
-            observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
-        elif canonical_v2 is not None:
-            payload = canonical_v2.to_dict()
-            observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
+        contract = canonical.observation.feature_contract_version
+        if contract not in _CURRENT_FEATURE_CONTRACTS:
+            raise ValueError(
+                "feature_contract_version must be one of: " + ", ".join(sorted(_CURRENT_FEATURE_CONTRACTS))
+            )
         source_evidence = _first(
             payload,
             ("source_evidence",),
@@ -1105,7 +1287,7 @@ class WorldModelStore:
         )
         source = _mapping_or_empty(source_evidence, name="episode.source_evidence")
         if not source and observation:
-            # The domain V1 object keeps its point-in-time proof in the
+            # The domain object keeps its point-in-time proof in the
             # observation itself (anchor/freshness/availability).  Duplicate
             # that narrow evidence projection for indexed provenance without
             # inventing a reconstruction from later runtime state.
@@ -1155,49 +1337,42 @@ class WorldModelStore:
             "source_evidence_json": _canonical_json(source),
             "source_evidence_sha256": _canonical_sha256(source),
         }
-        if values["feature_contract_version"] in {_V2_FEATURE_CONTRACT, _V3_FEATURE_CONTRACT}:
-            slot_fields = (
-                values["venue"],
-                values["symbol"],
-                values["bar_interval"],
-                values["as_of_bar_ts"],
-                values["sampling_policy_version"],
-            )
-            contract = values["feature_contract_version"]
-            label = "V2" if contract == _V2_FEATURE_CONTRACT else "V3"
-            if any(item is None or item == "" for item in slot_fields):
-                raise ValueError(f"{label} episode requires a complete market slot identity")
-            if contract == _V3_FEATURE_CONTRACT:
-                snapshot = None
-                graph_features = observation.get("graph_features")
-                if isinstance(graph_features, Mapping):
-                    snapshot = graph_features.get("snapshot")
-                if snapshot is not None:
-                    self.append_graph_snapshot(snapshot)
-                existing = self.get_episode_by_v3_slot(
-                    venue=values["venue"],
-                    symbol=values["symbol"],
-                    bar_interval=values["bar_interval"],
-                    as_of_bar_ts=values["as_of_bar_ts"],
-                    feature_contract_version=contract,
-                    sampling_policy_version=values["sampling_policy_version"],
-                )
-            else:
-                existing = self.get_episode_by_v2_slot(
-                    venue=values["venue"],
-                    symbol=values["symbol"],
-                    bar_interval=values["bar_interval"],
-                    as_of_bar_ts=values["as_of_bar_ts"],
-                    feature_contract_version=contract,
-                    sampling_policy_version=values["sampling_policy_version"],
-                )
-            if existing is not None:
-                if (
-                    existing["episode_id"] == values["episode_id"]
-                    and existing["payload_sha256"] == values["payload_sha256"]
-                ):
-                    return False
-                raise WorldModelConflictError(f"{label} market slot already exists with different canonical content")
+        capability = {
+            _MARKET_FEATURE_CONTRACT: "market",
+            _CONTEXT_FEATURE_CONTRACT: "context",
+            _GRAPH_FEATURE_CONTRACT: "graph",
+        }[contract]
+        slot_fields = (
+            values["venue"],
+            values["symbol"],
+            values["bar_interval"],
+            values["as_of_bar_ts"],
+            values["sampling_policy_version"],
+        )
+        if any(item is None or item == "" for item in slot_fields):
+            raise ValueError(f"{capability} episode requires a complete market slot identity")
+        if contract == _GRAPH_FEATURE_CONTRACT:
+            snapshot = None
+            graph_features = observation.get("graph_features")
+            if isinstance(graph_features, Mapping):
+                snapshot = graph_features.get("snapshot")
+            if snapshot is not None:
+                self.append_graph_snapshot(snapshot)
+        existing = self.get_episode_by_capability_slot(
+            venue=values["venue"],
+            symbol=values["symbol"],
+            bar_interval=values["bar_interval"],
+            as_of_bar_ts=values["as_of_bar_ts"],
+            feature_contract_version=contract,
+            sampling_policy_version=values["sampling_policy_version"],
+        )
+        if existing is not None:
+            if (
+                existing["episode_id"] == values["episode_id"]
+                and existing["payload_sha256"] == values["payload_sha256"]
+            ):
+                return False
+            raise WorldModelConflictError(f"{capability} market slot already exists with different canonical content")
         try:
             return self._append(
                 table="world_episodes",
@@ -1207,15 +1382,14 @@ class WorldModelStore:
             )
         except sqlite3.IntegrityError as exc:
             message = str(exc)
-            if values["feature_contract_version"] == _V2_FEATURE_CONTRACT and (
-                "UNIQUE constraint failed" in message or "V2 market slot already exists" in message
-            ):
-                raise WorldModelConflictError("V2 market slot already exists with different canonical content") from exc
-            if values["feature_contract_version"] == _V3_FEATURE_CONTRACT:
-                if "V3 graph snapshot must be persisted first" in message:
-                    raise WorldModelConflictError("V3 graph snapshot must be persisted first") from exc
-                if "UNIQUE constraint failed" in message or "V3 market slot already exists" in message:
-                    raise WorldModelConflictError("V3 market slot already exists with different canonical content") from exc
+            if "unsupported feature contract" in message:
+                raise ValueError("unsupported feature contract") from exc
+            if f"{capability} market slot already exists" in message or "UNIQUE constraint failed" in message:
+                raise WorldModelConflictError(
+                    f"{capability} market slot already exists with different canonical content"
+                ) from exc
+            if capability == "graph" and "graph snapshot must be persisted first" in message:
+                raise WorldModelConflictError("graph snapshot must be persisted first") from exc
             raise
 
     def append_outcome_event(self, outcome: Any) -> bool:
@@ -1461,7 +1635,7 @@ class WorldModelStore:
         row = self._db.query_one("SELECT * FROM world_episodes WHERE episode_id=?", (episode_id,))
         return None if row is None else self._episode_row(row)
 
-    def get_episode_by_v2_slot(
+    def get_episode_by_capability_slot(
         self,
         *,
         venue: str,
@@ -1471,9 +1645,9 @@ class WorldModelStore:
         feature_contract_version: str,
         sampling_policy_version: str,
     ) -> dict[str, Any] | None:
-        """Return the first canonical V2 episode for one market slot, if any."""
+        """Return the first canonical episode for one market slot and capability."""
 
-        if feature_contract_version != _V2_FEATURE_CONTRACT:
+        if feature_contract_version not in _CURRENT_FEATURE_CONTRACTS:
             return None
         incoming = parse_utc_timestamp(as_of_bar_ts, "as_of_bar_ts")
         rows = self._db.query_all(
@@ -1503,7 +1677,7 @@ class WorldModelStore:
                 return self._episode_row(row)
         return None
 
-    def get_episode_by_v3_slot(
+    def get_episode_by_context_slot(
         self,
         *,
         venue: str,
@@ -1513,40 +1687,42 @@ class WorldModelStore:
         feature_contract_version: str,
         sampling_policy_version: str,
     ) -> dict[str, Any] | None:
-        """Return the first canonical V3 episode for one market slot, if any."""
-
-        if feature_contract_version != _V3_FEATURE_CONTRACT:
+        if feature_contract_version != _CONTEXT_FEATURE_CONTRACT:
             return None
-        incoming = parse_utc_timestamp(as_of_bar_ts, "as_of_bar_ts")
-        rows = self._db.query_all(
-            """
-            SELECT * FROM world_episodes
-            WHERE venue IS ? AND symbol=? AND bar_interval IS ?
-              AND feature_contract_version=? AND sampling_policy_version IS ?
-            ORDER BY recorded_at ASC, episode_id ASC
-            """,
-            (
-                venue,
-                symbol,
-                bar_interval,
-                feature_contract_version,
-                sampling_policy_version,
-            ),
+        return self.get_episode_by_capability_slot(
+            venue=venue,
+            symbol=symbol,
+            bar_interval=bar_interval,
+            as_of_bar_ts=as_of_bar_ts,
+            feature_contract_version=feature_contract_version,
+            sampling_policy_version=sampling_policy_version,
         )
-        for row in rows:
-            raw = row["as_of_bar_ts"]
-            if raw in (None, ""):
-                continue
-            try:
-                existing = parse_utc_timestamp(raw, "as_of_bar_ts")
-            except (TypeError, ValueError):
-                continue
-            if existing == incoming:
-                return self._episode_row(row)
-        return None
+
+    def get_episode_by_graph_slot(
+        self,
+        *,
+        venue: str,
+        symbol: str,
+        bar_interval: str,
+        as_of_bar_ts: str,
+        feature_contract_version: str,
+        sampling_policy_version: str,
+    ) -> dict[str, Any] | None:
+        """Return the first canonical graph episode for one market slot, if any."""
+
+        if feature_contract_version != _GRAPH_FEATURE_CONTRACT:
+            return None
+        return self.get_episode_by_capability_slot(
+            venue=venue,
+            symbol=symbol,
+            bar_interval=bar_interval,
+            as_of_bar_ts=as_of_bar_ts,
+            feature_contract_version=feature_contract_version,
+            sampling_policy_version=sampling_policy_version,
+        )
 
     def append_graph_snapshot(self, snapshot: Any) -> bool:
-        """Persist a V3 graph snapshot before the episode that roots on it."""
+        """Persist a graph snapshot before the episode that roots on it."""
 
         parsed = snapshot if isinstance(snapshot, WorldGraphSnapshot) else WorldGraphSnapshot.from_mapping(snapshot)
         payload = parsed.to_dict()

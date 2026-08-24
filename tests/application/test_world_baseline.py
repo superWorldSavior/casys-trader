@@ -18,14 +18,14 @@ from trader.domain.world_cohort import WorldLaneDefinition
 from trader.domain.world_context import SensorEvidence
 from trader.domain.world_episode import WorldEpisode, WorldObservation, canonical_sha256
 from trader.domain.world_feature_contract import (
-    WORLD_V3_MARKOV_MODEL_IDENTITY,
-    WORLD_V3_MODEL_VERSION,
-    world_v1_feature_contract,
-    world_v2_feature_contract,
-    world_v3_feature_contract,
+    GRAPH_MARKOV_MODEL_IDENTITY,
+    GRAPH_MODEL_VERSION,
+    market_feature_contract,
+    context_feature_contract,
+    graph_feature_contract,
 )
 
-from tests.application.test_world_context_capture import _FakeSource, _v1_episode
+from tests.application.test_world_context_capture import _FakeSource, _market_episode
 from tests.application.test_world_gru import HORIZON_4H, _outcome as _gru_outcome
 
 STARTED_EVENT_ID = "world_cohort_started:v1:" + "a" * 64
@@ -53,7 +53,7 @@ def _observation(
 ) -> dict:
     return {
         "available_at": at,
-        "feature_contract_version": "market_ohlcv_causal.v1",
+        "feature_contract_version": "world_feature.market.v1",
         "categorical_features": {
             "asset_family": "equities",
             "venue": "NYSE",
@@ -142,7 +142,7 @@ def test_accepts_immutable_world_episode_and_emits_runner_safe_payload() -> None
         symbol="SPY",
         bar_interval="1h",
         as_of_bar_ts="2026-01-01T00:00:00+00:00",
-        feature_contract_version="market_ohlcv_causal.v1",
+        feature_contract_version="world_feature.market.v1",
         sampling_policy_version="first_fresh_bar.v1",
         anchor={
             "ts": "2026-01-01T00:00:00+00:00",
@@ -310,7 +310,9 @@ def test_prediction_rejects_labels_that_were_not_available_at_t0() -> None:
         model.predict(observation, "elapsed_4h.v1", prediction_at="2026-01-01T01:00:00+00:00")
 
 
-def _lane(lane_id: str, *, family: str = "markov", profile=None, sequence_length: int | None = None) -> WorldLaneDefinition:
+def _lane(
+    lane_id: str, *, family: str = "markov", profile=None, sequence_length: int | None = None
+) -> WorldLaneDefinition:
     resolved = profile or world_lane_encoder_profile("market")
     return WorldLaneDefinition(
         lane_id=lane_id,
@@ -346,7 +348,7 @@ def _cold_markov(kind: str = "market", **overrides: object) -> HierarchicalDiric
     return cold_markov_challenger(**settings)  # type: ignore[arg-type]
 
 
-def test_market_mask_predictions_match_v1_facade_bit_for_bit() -> None:
+def test_market_mask_predictions_match_market_facade_bit_for_bit() -> None:
     observation = _observation()
     facade = _ready_model()
     masked = _cold_markov("market")
@@ -360,12 +362,12 @@ def test_market_mask_predictions_match_v1_facade_bit_for_bit() -> None:
     assert first.comparison_batch_id == second.comparison_batch_id
     assert first.comparison_cohort_fingerprint == second.comparison_cohort_fingerprint
     assert masked.feature_mask.mask_id == "market.v1"
-    assert masked.feature_contract == world_v1_feature_contract()
+    assert masked.feature_contract == market_feature_contract()
     assert masked.predict(later, "elapsed_4h.v1").global_support == 1
 
 
 def test_cold_markov_challengers_are_independent_matched_and_refuse_warm_reuse() -> None:
-    v1 = _v1_episode()
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -380,7 +382,18 @@ def test_cold_markov_challengers_are_independent_matched_and_refuse_warm_reuse()
     company = lanes["company"].predict(v2, HORIZON_4H, prediction_at=predicted_at)
     macro = lanes["macro"].predict(v2, HORIZON_4H, prediction_at=predicted_at)
     joint = lanes["joint"].predict(v2, HORIZON_4H, prediction_at=predicted_at)
-    assert len({market.comparison_batch_id, status.comparison_batch_id, company.comparison_batch_id, macro.comparison_batch_id, joint.comparison_batch_id}) == 1
+    assert (
+        len(
+            {
+                market.comparison_batch_id,
+                status.comparison_batch_id,
+                company.comparison_batch_id,
+                macro.comparison_batch_id,
+                joint.comparison_batch_id,
+            }
+        )
+        == 1
+    )
     assert len({item.comparison_cohort_fingerprint for item in (market, status, company, macro, joint)}) == 1
     assert all(item.global_support == 0 for item in (market, status, company, macro, joint))
     assert lanes["status_only"].lane_identity.started_event_id == STARTED_EVENT_ID
@@ -394,7 +407,7 @@ def test_cold_markov_challengers_are_independent_matched_and_refuse_warm_reuse()
     with pytest.raises(ValueError, match="warm|trained|reuse"):
         cold_markov_challenger(
             lane=_lane("markov.market"),
-            contract=world_v1_feature_contract(),
+            contract=market_feature_contract(),
             mask=world_lane_encoder_profile("market").mask,
             study_cohort_id=STUDY_COHORT_ID,
             manifest_sha256=MANIFEST_SHA256,
@@ -406,8 +419,8 @@ def test_cold_markov_challengers_are_independent_matched_and_refuse_warm_reuse()
         model_family="gru",
         model_id="online_gru_world_challenger",
         model_version="cohort.gru.market.v1",
-        feature_contract_id=world_v1_feature_contract().contract_id,
-        feature_contract_fingerprint=world_v1_feature_contract().fingerprint,
+        feature_contract_id=market_feature_contract().contract_id,
+        feature_contract_fingerprint=market_feature_contract().fingerprint,
         feature_mask_id=world_lane_encoder_profile("market").mask.mask_id,
         feature_mask_fingerprint=world_lane_encoder_profile("market").mask.fingerprint,
         seed=0,
@@ -418,7 +431,7 @@ def test_cold_markov_challengers_are_independent_matched_and_refuse_warm_reuse()
     with pytest.raises(ValueError, match="markov|family"):
         cold_markov_challenger(
             lane=gru_lane,
-            contract=world_v1_feature_contract(),
+            contract=market_feature_contract(),
             mask=world_lane_encoder_profile("market").mask,
             study_cohort_id=STUDY_COHORT_ID,
             manifest_sha256=MANIFEST_SHA256,
@@ -428,7 +441,7 @@ def test_cold_markov_challengers_are_independent_matched_and_refuse_warm_reuse()
 
 def test_status_only_markov_does_not_see_company_or_macro_content() -> None:
     v2 = attach_world_context(
-        (_v1_episode(),),
+        (_market_episode(),),
         _FakeSource(
             SensorEvidence(status="missing", reason="no_artifact"),
             SensorEvidence(status="missing", reason="no_artifact"),
@@ -441,33 +454,38 @@ def test_status_only_markov_does_not_see_company_or_macro_content() -> None:
     macro = _cold_markov("macro")
     joint = _cold_markov("joint")
     predicted_at = v2.observation.available_at
-    assert status.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash == status.predict(
-        other, HORIZON_4H, prediction_at=predicted_at
-    ).feature_hash
-    assert company.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash != company.predict(
-        other, HORIZON_4H, prediction_at=predicted_at
-    ).feature_hash
-    assert macro.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash != macro.predict(
-        other, HORIZON_4H, prediction_at=predicted_at
-    ).feature_hash
-    assert joint.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash != joint.predict(
-        other, HORIZON_4H, prediction_at=predicted_at
-    ).feature_hash
-    assert company.feature_contract == world_v2_feature_contract()
-    facade = HierarchicalDirichletWorldBaseline(include_context=True, model_version="context.v2", alpha=1.0)
+    assert (
+        status.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash
+        == status.predict(other, HORIZON_4H, prediction_at=predicted_at).feature_hash
+    )
+    assert (
+        company.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash
+        != company.predict(other, HORIZON_4H, prediction_at=predicted_at).feature_hash
+    )
+    assert (
+        macro.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash
+        != macro.predict(other, HORIZON_4H, prediction_at=predicted_at).feature_hash
+    )
+    assert (
+        joint.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash
+        != joint.predict(other, HORIZON_4H, prediction_at=predicted_at).feature_hash
+    )
+    assert company.feature_contract == context_feature_contract()
+    facade = HierarchicalDirichletWorldBaseline(include_context=True, model_version="context.v1", alpha=1.0)
     masked_joint = _cold_markov("joint")
-    assert facade.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash == masked_joint.predict(
-        intact, HORIZON_4H, prediction_at=predicted_at
-    ).feature_hash
+    assert (
+        facade.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash
+        == masked_joint.predict(intact, HORIZON_4H, prediction_at=predicted_at).feature_hash
+    )
 
 
-def test_cold_markov_v3_topology_status_only_is_constructible_and_isolated() -> None:
+def test_cold_markov_graph_topology_status_only_is_constructible_and_isolated() -> None:
     profile = world_lane_encoder_profile("topology_status_only")
     lane = WorldLaneDefinition(
         lane_id="markov.topology_status_only",
         model_family="markov",
-        model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
-        model_version=WORLD_V3_MODEL_VERSION,
+        model_id=GRAPH_MARKOV_MODEL_IDENTITY,
+        model_version=GRAPH_MODEL_VERSION,
         feature_contract_id=profile.contract.contract_id,
         feature_contract_fingerprint=profile.contract.fingerprint,
         feature_mask_id=profile.mask.mask_id,
@@ -489,7 +507,7 @@ def test_cold_markov_v3_topology_status_only_is_constructible_and_isolated() -> 
         minimum_coarse_support=1,
         minimum_exact_support=2,
     )
-    v1 = _v1_episode()
+    v1 = _market_episode()
     v3 = WorldEpisode(
         WorldObservation.from_dict(
             {
@@ -498,9 +516,9 @@ def test_cold_markov_v3_topology_status_only_is_constructible_and_isolated() -> 
             }
         )
     )
-    assert model.feature_contract == world_v3_feature_contract()
+    assert model.feature_contract == graph_feature_contract()
     assert model.feature_mask.mask_id == "topology_status_only.v1"
-    assert model.model_id == WORLD_V3_MARKOV_MODEL_IDENTITY
+    assert model.model_id == GRAPH_MARKOV_MODEL_IDENTITY
     assert model.accepts_episode(v3) is True
     assert model.accepts_episode(v1) is False
     assert model.lane_identity.prior_training_lineage == ()

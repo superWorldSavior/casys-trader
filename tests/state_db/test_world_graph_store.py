@@ -135,8 +135,8 @@ def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
 
 def _link(**overrides: object) -> WorldEntityIdentityLink:
     values: dict[str, object] = {
-        "v2_ref": EntityRef(kind="instrument", entity_id="2330"),
-        "v3_ref": _entity(),
+        "context_ref": EntityRef(kind="instrument", entity_id="2330"),
+        "graph_ref": _entity(),
         "source_refs": ("provider:instrument-master:2330",),
         "effective_from": T0,
     }
@@ -431,7 +431,7 @@ def test_identity_relation_revision_events_round_trip_and_split_families(tmp_pat
         effective_from=T1,
         supersedes=link.link_id,
         source_refs=("provider:instrument-master:2330:corrected",),
-        v3_ref=_entity(entity_id="mic:XTAI:symbol:2330.TW"),
+        graph_ref=_entity(entity_id="mic:XTAI:symbol:2330.TW"),
     )
     store.append_identity_event(
         WorldEntityIdentityLinkSuperseded(predecessor_link_id=link.link_id, successor=successor)
@@ -459,7 +459,7 @@ def test_identity_relation_revision_events_round_trip_and_split_families(tmp_pat
     revision = _revision()
     store.append_revision_event(WorldOntologyRevisionPublished(revision=revision))
     store.append_revision_event(
-        WorldOntologyRevisionSuperseded(revision_id=revision.revision_id, successor_revision_id="market_ontology.v2")
+        WorldOntologyRevisionSuperseded(revision_id=revision.revision_id, successor_revision_id="market_ontology.other")
     )
 
     entities = store.list_entity_events_available_through(LATER)
@@ -665,20 +665,19 @@ def test_anti_update_delete_triggers_cover_graph_and_shared_receipt_tables(tmp_p
 def test_migration_creates_append_only_graph_schema(tmp_path: Path) -> None:
     store = _store(tmp_path)
     versions = {row["version"] for row in store._db.query_all("SELECT version FROM schema_migrations")}
-    assert 5 in versions
-    assert 6 in versions
+    assert versions == {1}
     names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
     for table in _GRAPH_TABLES:
         assert table in names
         assert table in WORLD_GRAPH_TABLES
     assert "world_availability_receipts" in names
-    v6_sql = "\n".join(WORLD_MODEL_MIGRATIONS[5][1])
+    current_sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
     for table in _GRAPH_TABLES:
-        assert table in v6_sql
-        assert f"{table}_no_update" in v6_sql
-        assert f"{table}_no_delete" in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v6_sql
-    assert "sequence" in v6_sql
+        assert table in current_sql
+        assert f"{table}_no_update" in current_sql
+        assert f"{table}_no_delete" in current_sql
+    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" in current_sql
+    assert "sequence" in current_sql
 
 
 def test_sequences_are_monotone_and_replay_keeps_original_sequence(tmp_path: Path) -> None:
@@ -808,16 +807,13 @@ def _activate(store: WorldGraphStore, spec: MacroGraphBridgeRunSpec | None = Non
 def test_bridge_migration_is_version_7_and_does_not_rewrite_graph_v6(tmp_path: Path) -> None:
     store = _store(tmp_path)
     versions = {row["version"] for row in store._db.query_all("SELECT version FROM schema_migrations")}
-    assert 6 in versions
-    assert 7 in versions
+    assert versions == {1}
     names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "world_macro_graph_bridge_events" in names
-    v6_sql = "\n".join(WORLD_MODEL_MIGRATIONS[5][1])
-    v7_sql = "\n".join(WORLD_MODEL_MIGRATIONS[6][1])
-    assert "world_macro_graph_bridge_events" not in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events" in v7_sql
-    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v7_sql
-    assert "world_macro_graph_bridge_events_no_update" in v7_sql
+    current_sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
+    assert "CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events" in current_sql
+    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" in current_sql
+    assert "world_macro_graph_bridge_events_no_update" in current_sql
     _activate(store)
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         with store._db.transaction() as cur:
@@ -889,9 +885,9 @@ def test_fenced_knowledge_append_and_old_worker_is_rejected_after_handoff(tmp_pa
         ),
     )
     next_spec = MacroGraphBridgeRunSpec(
-        scope_mapping_id="world_scope_mapping.v2",
+        scope_mapping_id="world_scope_mapping.v1",
         scope_mapping_hash="b" * 64,
-        ontology_revision_id="market_ontology.v2",
+        ontology_revision_id="market_ontology.v1",
         ontology_revision_hash="c" * 64,
         collection_plan_id=next_plan.plan_id,
         collection_plan_hash=next_plan.content_sha256,

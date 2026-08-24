@@ -14,9 +14,7 @@ from typing import Any, Generic, TypeVar
 from trader.domain.world_episode import canonical_sha256, parse_utc_timestamp
 
 
-AVAILABILITY_RECEIPT_V1_SCHEMA = "availability_receipt.v1"
-AVAILABILITY_RECEIPT_V2_SCHEMA = "availability_receipt.v2"
-RECEIPT_SCHEMAS = frozenset({AVAILABILITY_RECEIPT_V1_SCHEMA, AVAILABILITY_RECEIPT_V2_SCHEMA})
+WORLD_AVAILABILITY_RECEIPT_SCHEMA = "world_availability_receipt.v1"
 STORAGE_KINDS = frozenset({"jsonl", "sqlite"})
 ELIGIBILITY_STATUSES = frozenset({"eligible", "availability_unproven", "stale", "superseded"})
 T = TypeVar("T")
@@ -36,7 +34,7 @@ def _iso(value: datetime) -> str:
 
 
 def world_subject_content_sha256(payload: Mapping[str, Any]) -> str:
-    """Domain-owned content hash for generalized V2 World subjects."""
+    """Domain-owned content hash for World availability subjects."""
 
     if not isinstance(payload, Mapping):
         raise TypeError("subject content payload must be a mapping")
@@ -186,8 +184,8 @@ class WorldAvailabilityReceipt:
             else WorldStorageLocator.from_mapping(self.storage_locator)
         )
         schema_version = _required_text(self.schema_version, "schema_version")
-        if schema_version != AVAILABILITY_RECEIPT_V2_SCHEMA:
-            raise ValueError("world availability receipt schema_version must be availability_receipt.v2")
+        if schema_version != WORLD_AVAILABILITY_RECEIPT_SCHEMA:
+            raise ValueError(f"world availability receipt schema_version must be {WORLD_AVAILABILITY_RECEIPT_SCHEMA}")
         content_sha256 = _required_text(self.content_sha256, "content_sha256")
         if content_sha256 != subject.content_sha256:
             raise ValueError("receipt content_sha256 must match the subject")
@@ -266,12 +264,12 @@ def _attest_verified_store_receipt(
     expected_scope: str,
     expected_locator: WorldStorageLocator,
 ) -> WorldAvailabilityReceipt:
-    """Mark a V2 receipt as store-verified after subject+receipt readback. Not exported."""
+    """Mark a World receipt as store-verified after subject+receipt readback. Not exported."""
 
     if not isinstance(receipt, WorldAvailabilityReceipt):
         raise TypeError("store attestation requires a WorldAvailabilityReceipt")
-    if receipt.schema_version != AVAILABILITY_RECEIPT_V2_SCHEMA:
-        raise ValueError("store attestation requires availability_receipt.v2")
+    if receipt.schema_version != WORLD_AVAILABILITY_RECEIPT_SCHEMA:
+        raise ValueError(f"store attestation requires {WORLD_AVAILABILITY_RECEIPT_SCHEMA}")
     if receipt.ready_at is None or receipt.receipt_sha256 is None:
         raise ValueError("store attestation requires a store-stamped receipt")
     if receipt.subject != expected_subject:
@@ -397,14 +395,12 @@ class PointInTimeEligibilityPolicy:
 
 
 __all__ = [
-    "AVAILABILITY_RECEIPT_V1_SCHEMA",
-    "AVAILABILITY_RECEIPT_V2_SCHEMA",
     "AvailabilityEvidence",
     "ELIGIBILITY_STATUSES",
     "PersistedWorldRef",
     "PointInTimeEligibility",
     "PointInTimeEligibilityPolicy",
-    "RECEIPT_SCHEMAS",
+    "WORLD_AVAILABILITY_RECEIPT_SCHEMA",
     "WorldAvailabilityReceipt",
     "WorldAvailabilitySubjectRef",
     "WorldStorageLocator",

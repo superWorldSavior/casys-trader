@@ -9,14 +9,14 @@ from trader.application.world_model.ontology_service import (
 )
 from trader.domain.world_feature_contract import (
     GRAPH_CONTENT_CATEGORICAL_FEATURES,
-    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_CONTRACT_ID,
     GRAPH_STATUS_CATEGORICAL_FEATURES,
-    WORLD_V3_ENCODER_IDENTITY,
+    GRAPH_ENCODER_IDENTITY,
     WorldFeatureMask,
-    world_v1_feature_contract,
-    world_v3_feature_contract,
-    world_v3_graph_content_mask,
-    world_v3_topology_status_only_mask,
+    market_feature_contract,
+    graph_feature_contract,
+    graph_content_mask,
+    topology_status_only_mask,
 )
 from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeResolution
 
@@ -46,15 +46,15 @@ def test_same_snapshot_yields_the_same_bounded_features_with_per_feature_provena
     bundle = _service(ledger).build(_request(mapping))
     first = _encode(bundle)
     second = _encode(bundle)
-    contract = world_v3_feature_contract()
-    mask = world_v3_graph_content_mask()
+    contract = graph_feature_contract()
+    mask = graph_content_mask()
     assert first.snapshot_id == bundle.snapshot.snapshot_id == second.snapshot_id
     assert first.cutoff_at == CUTOFF == second.cutoff_at
-    assert first.contract_id == GRAPH_FEATURE_CONTRACT_VERSION == contract.contract_id
+    assert first.contract_id == GRAPH_FEATURE_CONTRACT_ID == contract.contract_id
     assert first.contract_fingerprint == contract.fingerprint == second.contract_fingerprint
     assert first.mask_id == mask.mask_id
     assert first.mask_fingerprint == mask.fingerprint
-    assert first.encoder_identity == WORLD_V3_ENCODER_IDENTITY
+    assert first.encoder_identity == GRAPH_ENCODER_IDENTITY
     assert first.categorical_features == second.categorical_features
     assert dict(first.numeric_features) == {}
     assert GRAPH_STATUS_CATEGORICAL_FEATURES <= set(first.categorical_features)
@@ -83,8 +83,8 @@ def test_topology_status_only_drops_graph_content_and_stays_stable_when_paths_ch
     _seed_rfc_graph(ledger, mapping)
     full = _service(ledger).build(_request(mapping))
     truncated = _service(ledger).build(_request(mapping, max_paths=1))
-    status_mask = world_v3_topology_status_only_mask()
-    content_mask = world_v3_graph_content_mask()
+    status_mask = topology_status_only_mask()
+    content_mask = graph_content_mask()
     status_full = _encode(full, mask=status_mask)
     status_again = _encode(full, mask=status_mask)
     content_full = _encode(full, mask=content_mask)
@@ -161,7 +161,7 @@ def test_feature_encoder_rejects_incompatible_contract_or_mask() -> None:
     ledger = _InMemoryWorldGraphLedger()
     _seed_rfc_graph(ledger, mapping)
     bundle = _service(ledger).build(_request(mapping))
-    v1 = world_v1_feature_contract()
+    v1 = market_feature_contract()
     with pytest.raises(ValueError, match="contract|mask"):
         encode_world_graph_features(
             bundle,

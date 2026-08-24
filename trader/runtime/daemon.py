@@ -754,7 +754,7 @@ def _trigger_world_model_shadow(
     data_source: object,
     runtime_interval: str,
     now: datetime,
-    context_v2_enabled: bool = False,
+    context_enabled: bool = False,
 ) -> dict[str, object]:
     """Freeze an action-free market cohort and enqueue it without blocking trade."""
 
@@ -805,8 +805,8 @@ def _trigger_world_model_shadow(
             timestamp_semantics="bar_start",
             captured_at=now,
         )
-        # V2 context attachment is a background enricher.  The cycle only freezes V1.
-        _ = context_v2_enabled
+        # Context attachment is a background enricher. The cycle only freezes market episodes.
+        _ = context_enabled
         result = runner.trigger(
             episodes=episodes,
             bars_by_symbol=evidence_by_symbol,
@@ -890,7 +890,7 @@ def run_cycle(
     process_pilot: ProcessPilot | None = None,
     experiment_runtime_identity: Mapping[str, object] | None = None,
     world_model_runner: object | None = None,
-    world_model_context_v2: bool = False,
+    world_model_context: bool = False,
 ) -> dict:
     """Exécute UN cycle. Retourne un rapport structuré (machine-readable)."""
     process_state = process_state or _DEFAULT_CYCLE_PROCESS_STATE
@@ -1083,7 +1083,7 @@ def run_cycle(
         data_source=data_source,
         runtime_interval=runtime_interval,
         now=world_model_snapshot_at,
-        context_v2_enabled=world_model_context_v2,
+        context_enabled=world_model_context,
     )
     if worker_cycle_context is not None:
         worker_cycle_context.publish(
@@ -2087,8 +2087,8 @@ def main(
     cycle_run = run_cycle
     experiment_runtime_identity = _capture_experiment_runtime_identity()
     _world_model_runner: object | None = None
-    _world_model_context_v2 = _env_int("CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED", 0) == 1
-    _world_model_graph_v3 = _env_int("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", 0) == 1
+    _world_model_context = _env_int("CASYS_WORLD_MODEL_CONTEXT_ENABLED", 0) == 1
+    _world_model_graph = _env_int("CASYS_WORLD_MODEL_GRAPH_ENABLED", 0) == 1
     _world_macro_source_only = _env_int("CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED", 0) == 1
     _world_shadow_pilot_activation = _env_int("CASYS_WORLD_SHADOW_PILOT_ACTIVATION", 1) == 1
     _world_macro_runner: object | None = None
@@ -2101,9 +2101,9 @@ def main(
     except Exception:  # noqa: BLE001 - missing/invalid pilot config cannot block trading
         _pilot_config = None
     if _world_shadow_pilot_activation and _pilot_config is not None and _pilot_config.enabled:
-        _world_model_context_v2 = _world_model_context_v2 or bool(_pilot_config.workers.get("context_v2"))
-        _world_model_graph_v3 = _world_model_graph_v3 or bool(_pilot_config.workers.get("graph_v3"))
-        _world_macro_source_only = _world_macro_source_only or bool(_pilot_config.workers.get("macro_source_only"))
+        _world_model_context = _world_model_context or bool(_pilot_config.workers.get("context"))
+        _world_model_graph = _world_model_graph or bool(_pilot_config.workers.get("graph"))
+        _world_macro_source_only = _world_macro_source_only or bool(_pilot_config.workers.get("macro_source"))
 
     def _run_cycle_with_process_state(**kwargs):
         return cycle_run(
@@ -2111,7 +2111,7 @@ def main(
             process_state=process_state,
             process_pilot=process_pilot,
             world_model_runner=_world_model_runner,
-            world_model_context_v2=_world_model_context_v2,
+            world_model_context=_world_model_context,
         )
 
     # Ref partagée vers le data_source courant : les workers de file la lisent via
@@ -2127,7 +2127,7 @@ def main(
                 config_dir=ROOT / "config",
                 state_dir=STATE_DIR,
                 logger=log,
-                graph_v3_enabled=_world_model_graph_v3,
+                graph_enabled=_world_model_graph,
             )
             _world_macro_runner = _world_macro_bundle.runner
             _world_macro_store = _world_macro_bundle.store
@@ -2153,10 +2153,10 @@ def main(
             from trader.application.world_model.baseline import (
                 HierarchicalDirichletWorldBaseline,
             )
-            from trader.application.world_model.gru import OnlineGRUWorldChallenger
+            from trader.application.world_model.gru import CONTEXT_GRU_ENCODER_IDENTITY, OnlineGRUWorldChallenger
             from trader.domain.world_context import (
                 ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
-                CONTEXT_FEATURE_CONTRACT_VERSION,
+                CONTEXT_FEATURE_CONTRACT_ID,
             )
             from trader.application.world_model.cohort_service import WorldCohortService
             from trader.infrastructure.state_db.world_model_store import WorldModelStore
@@ -2165,7 +2165,7 @@ def main(
                 WorldContextEpisodeEnricher,
                 WorldModelBackgroundRunner,
                 WorldModelRuntime,
-                compose_local_graph_v3_lanes,
+                compose_local_graph_lanes,
                 compose_world_ontology_attestation,
                 compose_world_resource_guard,
             )
@@ -2184,7 +2184,7 @@ def main(
                 )
                 if _ontology_attestation is not None:
                     _ontology_attestation.ensure_published(now=now())
-            except Exception as exc:  # noqa: BLE001 - unpublished ontology cannot block V1/Trader
+            except Exception as exc:  # noqa: BLE001 - unpublished ontology cannot block market/Trader
                 log.warning(
                     "[world_shadow_pilot] ontology attestation skipped: %s:%s",
                     type(exc).__name__,
@@ -2212,7 +2212,7 @@ def main(
                         _pilot_report.reason,
                         len(_pilot_report.cohorts),
                     )
-                except Exception as exc:  # noqa: BLE001 - pilot activation cannot block V1 shadow
+                except Exception as exc:  # noqa: BLE001 - pilot activation cannot block market shadow
                     log.warning(
                         "[world_shadow_pilot] skipped after activation failure: %s:%s",
                         type(exc).__name__,
@@ -2220,23 +2220,23 @@ def main(
                     )
             extra_predictors: list[object] = [OnlineGRUWorldChallenger()]
             context_enricher = None
-            if _world_model_context_v2:
+            if _world_model_context:
                 from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY
 
-                v2_model_version = MACRO_LANE_IDENTITY if _world_macro_store is not None else "context.v2"
+                context_model_version = MACRO_LANE_IDENTITY if _world_macro_store is not None else "context.v1"
                 extra_predictors.extend(
                     [
                         HierarchicalDirichletWorldBaseline(
-                            model_version=v2_model_version,
+                            model_version=context_model_version,
                             include_context=True,
-                            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_ID}),
                         ),
                         OnlineGRUWorldChallenger(
-                            model_version=v2_model_version,
-                            encoder_version="world_gru_encoder.v2",
+                            model_version=context_model_version,
+                            encoder_version=CONTEXT_GRU_ENCODER_IDENTITY,
                             include_context=True,
                             extra_categorical_keys=ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
-                            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_VERSION}),
+                            accepted_feature_contracts=frozenset({CONTEXT_FEATURE_CONTRACT_ID}),
                         ),
                     ]
                 )
@@ -2255,19 +2255,19 @@ def main(
                     )
                 )
             graph_enricher = None
-            if _world_model_graph_v3:
+            if _world_model_graph:
                 try:
-                    v3_predictors, graph_enricher = compose_local_graph_v3_lanes(
+                    graph_predictors, graph_enricher = compose_local_graph_lanes(
                         enabled=True,
                         store=_world_model_store,
                         config_dir=ROOT / "config",
                         study_cohort_id=_pilot_graph_cohort_id,
                         ontology_attestation=_ontology_attestation,
                     )
-                    extra_predictors.extend(v3_predictors)
-                except Exception as exc:  # noqa: BLE001 - V3 composition cannot block V1/V2
+                    extra_predictors.extend(graph_predictors)
+                except Exception as exc:  # noqa: BLE001 - graph composition cannot block market/context
                     log.warning(
-                        "[world_model_shadow] graph_v3 disabled after compose failure: %s:%s",
+                        "[world_model_shadow] graph disabled after compose failure: %s:%s",
                         type(exc).__name__,
                         exc,
                     )
@@ -2288,7 +2288,7 @@ def main(
                     db_path=_world_model_store.path,
                     config_dir=ROOT / "config",
                 )
-            except Exception as exc:  # noqa: BLE001 - guard compose cannot block V1 shadow
+            except Exception as exc:  # noqa: BLE001 - guard compose cannot block market shadow
                 log.warning(
                     "[world_model_shadow] resource_budget guard disabled after compose failure: %s:%s",
                     type(exc).__name__,
@@ -2304,14 +2304,14 @@ def main(
             claimed_resources.world_model_store = _world_model_store
             claimed_resources.world_model_runner = _world_model_runner
             _world_model_lane_count = 2
-            if _world_model_context_v2:
+            if _world_model_context:
                 _world_model_lane_count += 2
             if graph_enricher is not None:
                 _world_model_lane_count += 2
             log.info(
-                "[world_model_shadow] enabled db=%s authority=shadow_only context_v2=%s graph_v3=%s lanes=%s resource_budget=%s",
+                "[world_model_shadow] enabled db=%s authority=shadow_only context=%s graph=%s lanes=%s resource_budget=%s",
                 STATE_DIR / "world_model.db",
-                int(_world_model_context_v2),
+                int(_world_model_context),
                 int(graph_enricher is not None),
                 _world_model_lane_count,
                 "on" if _world_resource_guard is not None else "off",

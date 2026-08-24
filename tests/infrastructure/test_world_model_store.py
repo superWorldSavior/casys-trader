@@ -7,13 +7,14 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     AnchorBar,
     OutcomeHorizon,
     WorldEpisode,
@@ -24,46 +25,60 @@ from trader.domain.world_episode import (
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.world_model_store import (
     WORLD_MODEL_MIGRATIONS,
+    WORLD_MODEL_REQUIRED_TABLES,
+    WORLD_MODEL_SCHEMA_VERSION,
     WorldModelConflictError,
+    WorldModelSchemaMismatchError,
     WorldModelStore,
 )
 
 
-def _episode(episode_id: str = "episode-1", **overrides: object) -> dict[str, object]:
-    episode: dict[str, object] = {
-        "episode_id": episode_id,
-        "capture_id": "capture-2026-08-22T00:00:00Z",
-        "observed_at": "2026-08-22T00:00:00+00:00",
-        "available_at": "2026-08-22T00:00:00+00:00",
+def _observation(**overrides: object) -> WorldObservation:
+    values: dict[str, object] = {
         "venue": "US",
         "symbol": "AAPL",
         "bar_interval": "1h",
         "as_of_bar_ts": "2026-08-22T00:00:00+00:00",
-        "feature_contract_version": "world-features-v1",
+        "feature_contract_version": MARKET_FEATURE_CONTRACT_ID,
         "sampling_policy_version": "fresh-active-v1",
-        "training_eligible": True,
-        "training_reason": "fresh_pre_dispatch",
-        "observation": {
-            "symbol": "AAPL",
-            "as_of_bar_ts": "2026-08-22T00:00:00+00:00",
-            "features": {"return_1h": 0.01, "volume_z": 0.2},
-        },
-        "source_evidence": {
-            "bars": [
-                {"ts": "2026-08-21T23:00:00+00:00", "close": 100.0},
-                {"ts": "2026-08-22T00:00:00+00:00", "close": 101.0},
-            ],
-            "source": "fixture",
-        },
+        "anchor": AnchorBar(
+            ts="2026-08-22T00:00:00+00:00",
+            open=100.0,
+            high=102.0,
+            low=99.0,
+            close=101.0,
+            volume=1_000.0,
+            source="fixture",
+        ),
+        "available_at": "2026-08-22T00:00:00+00:00",
+        "captured_at": "2026-08-22T00:01:00+00:00",
+        "freshness": "fresh",
+        "categorical_features": {"venue": "US"},
+        "numeric_features": {"return_1h": 0.01},
     }
-    episode.update(overrides)
-    return episode
+    values.update(overrides)
+    return WorldObservation(**values)  # type: ignore[arg-type]
+
+
+def _episode(**overrides: object) -> dict[str, object]:
+    observation = overrides.pop("observation", None)
+    if observation is None:
+        observation = _observation()
+    elif isinstance(observation, Mapping):
+        observation = WorldObservation.from_dict(observation)
+    episode = WorldEpisode(observation=observation)
+    payload = episode.to_dict()
+    payload.update(overrides)
+    return payload
+
+
+DEFAULT_EPISODE_ID = _episode()["episode_id"]
 
 
 def _outcome(
     outcome_event_id: str = "outcome-4h-v1",
     *,
-    episode_id: str = "episode-1",
+    episode_id: str = DEFAULT_EPISODE_ID,
     **overrides: object,
 ) -> dict[str, object]:
     outcome: dict[str, object] = {
@@ -72,10 +87,10 @@ def _outcome(
         "horizon_code": "4h",
         "label_schema_version": "world-label-v1",
         "status": "observed",
-        "move_class": "up",
+        "move_class": "UP",
         "label_available_at": "2026-08-22T04:00:00+00:00",
         "sealed_at": "2026-08-22T04:01:00+00:00",
-        "label": {"forward_return": 0.03, "move_class": "up"},
+        "label": {"forward_return": 0.03, "move_class": "UP"},
         "evidence": {
             "initial_bar": {"ts": "2026-08-22T00:00:00+00:00", "close": 101.0},
             "target_bar": {"ts": "2026-08-22T04:00:00+00:00", "close": 104.03},
@@ -89,7 +104,7 @@ def _prediction(prediction_id: str = "prediction-1", **overrides: object) -> dic
     prediction: dict[str, object] = {
         "prediction_id": prediction_id,
         "run_id": "markov-run-1",
-        "episode_id": "episode-1",
+        "episode_id": DEFAULT_EPISODE_ID,
         "model_kind": "markov",
         "model_version": "markov-v1",
         "horizon_id": "elapsed_4h.v1",
@@ -99,7 +114,7 @@ def _prediction(prediction_id: str = "prediction-1", **overrides: object) -> dic
             "p_up": 0.6,
             "p_flat": 0.3,
             "p_down": 0.1,
-            "probabilities": {"up": 0.6, "flat": 0.3, "down": 0.1},
+            "probabilities": {"UP": 0.6, "FLAT": 0.3, "DOWN": 0.1},
             "status": "ok",
             "support": 12,
             "backoff_tier": "symbol",
@@ -120,13 +135,13 @@ def test_episode_exact_replay_is_noop_and_content_change_fails_closed(store: Wor
     assert store.append_episode(episode) is True
     assert store.append_episode(deepcopy(episode)) is False
 
-    stored = store.get_episode("episode-1")
+    stored = store.get_episode(DEFAULT_EPISODE_ID)
     assert stored is not None
     assert stored["training_eligible"] is True
-    assert stored["episode"]["observation"]["features"]["return_1h"] == 0.01
+    assert stored["episode"]["observation"]["numeric_features"]["return_1h"] == 0.01
 
     conflicting = deepcopy(episode)
-    conflicting["observation"]["features"]["return_1h"] = -0.01  # type: ignore[index]
+    conflicting["observation"]["numeric_features"]["return_1h"] = -0.01  # type: ignore[index]
     with pytest.raises(WorldModelConflictError, match="different canonical content"):
         store.append_episode(conflicting)
 
@@ -138,7 +153,7 @@ def test_immutable_triggers_reject_update_and_delete(store: WorldModelStore) -> 
 
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         with store._db.transaction() as cur:
-            cur.execute("UPDATE world_episodes SET symbol='MSFT' WHERE episode_id='episode-1'")
+            cur.execute("UPDATE world_episodes SET symbol='MSFT' WHERE episode_id=?", (DEFAULT_EPISODE_ID,))
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         with store._db.transaction() as cur:
             cur.execute("DELETE FROM world_outcome_events WHERE outcome_event_id='outcome-4h-v1'")
@@ -212,7 +227,7 @@ def test_outcome_revisions_are_retained_and_pending_query_is_horizon_specific(st
         label_schema_version="world-label-v2",
         label={
             "forward_return": 0.029,
-            "move_class": "up",
+            "move_class": "UP",
             # Runtime keeps the complete label nested in its immutable
             # envelope, including a correction link if supplied by a labeler.
             "supersedes_event_id": "outcome-4h-v1",
@@ -224,12 +239,12 @@ def test_outcome_revisions_are_retained_and_pending_query_is_horizon_specific(st
     assert store.append_legacy_outcome(deepcopy(first)) is False
     assert store.append_legacy_outcome_event(second) is True
 
-    rows = store.list_outcome_events(episode_id="episode-1", horizon_code="4h")
+    rows = store.list_outcome_events(episode_id=DEFAULT_EPISODE_ID, horizon_code="4h")
     assert [row["outcome_event_id"] for row in rows] == ["outcome-4h-v1", "outcome-4h-v2"]
     assert rows[1]["supersedes_outcome_event_id"] == "outcome-4h-v1"
     assert store.list_pending_episodes(horizon_code="4h") == []
-    assert [row["episode_id"] for row in store.list_pending_episodes(horizon_code="1d")] == ["episode-1"]
-    assert [row["episode_id"] for row in store.list_pending_episodes(horizon_id="1d")] == ["episode-1"]
+    assert [row["episode_id"] for row in store.list_pending_episodes(horizon_code="1d")] == [DEFAULT_EPISODE_ID]
+    assert [row["episode_id"] for row in store.list_pending_episodes(horizon_id="1d")] == [DEFAULT_EPISODE_ID]
     assert [row["outcome_event_id"] for row in store.list_observed_outcomes(horizon_id="4h")] == [
         "outcome-4h-v2",
     ]
@@ -280,7 +295,7 @@ def test_pending_requires_an_active_observation_leaf(store: WorldModelStore) -> 
             label={"reason": "provider_correction_unavailable"},
         )
     )
-    assert [row["episode_id"] for row in store.list_pending_episodes(horizon_code="4h")] == ["episode-1"]
+    assert [row["episode_id"] for row in store.list_pending_episodes(horizon_code="4h")] == [DEFAULT_EPISODE_ID]
 
 
 def test_predictions_are_immutable_and_listed_deterministically(store: WorldModelStore) -> None:
@@ -313,7 +328,7 @@ def test_store_accepts_domain_records_and_preserves_domain_ids(store: WorldModel
         symbol="MSFT",
         bar_interval="1h",
         as_of_bar_ts="2026-08-22T00:00:00+00:00",
-        feature_contract_version="world-features-v1",
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
         sampling_policy_version="fresh-active-v1",
         anchor=AnchorBar(
             ts="2026-08-22T00:00:00+00:00",
@@ -375,7 +390,7 @@ def test_top_level_baseline_prediction_metadata_and_direction_are_preserved(stor
     assert store.append_episode(_episode())
     assert store.append_legacy_outcome(
         _outcome(
-            direction="up",
+            direction="UP",
             move_class=None,
         )
     )
@@ -383,7 +398,7 @@ def test_top_level_baseline_prediction_metadata_and_direction_are_preserved(stor
         _prediction(
             prediction_id="prediction-baseline-shape",
             prediction=None,
-            probabilities={"up": 0.7, "flat": 0.2, "down": 0.1},
+            probabilities={"UP": 0.7, "FLAT": 0.2, "DOWN": 0.1},
             status="no_go",
             support=3,
             backoff_tier="global",
@@ -399,7 +414,7 @@ def test_top_level_baseline_prediction_metadata_and_direction_are_preserved(stor
     outcome = store.list_observed_outcomes()[0]
     assert outcome["move_class"] == "UP"
     prediction = store.list_predictions(run_id="markov-run-1")[-1]
-    assert prediction["prediction"]["probabilities"]["up"] == 0.7
+    assert prediction["prediction"]["probabilities"]["UP"] == 0.7
     assert prediction["prediction"]["status"] == "no_go"
     assert prediction["prediction"]["support"] == 3
     assert prediction["prediction"]["backoff_tier"] == "global"
@@ -414,7 +429,7 @@ def test_live_append_rejects_invalid_canonical_outcome_and_prediction(store: Wor
     assert store.append_episode(_episode())
 
     with pytest.raises(ValueError, match="move_class must be one of"):
-        store.append_outcome_event(_outcome())
+        store.append_outcome_event(_outcome(move_class="up"))
     with pytest.raises(ValueError, match="immutable source evidence"):
         store.append_outcome_event(
             _outcome(
@@ -429,7 +444,7 @@ def test_live_append_rejects_invalid_canonical_outcome_and_prediction(store: Wor
         store.append_prediction(
             _prediction(
                 prediction={
-                    "probabilities": {"up": 0.6, "flat": 0.3, "down": 0.1},
+                    "probabilities": {"UP": 0.6, "FLAT": 0.4},
                     "status": "shadow_only",
                     "recommendation": "NO_GO",
                     "authority": "shadow_only",
@@ -477,16 +492,16 @@ def test_legacy_append_keeps_historical_mappings_readable_as_canonical_classes(
     assert outcome["move_class"] == "UP"
     assert outcome["label"]["move_class"] == "UP"
     prediction = store.list_predictions()[0]
-    assert prediction["prediction"]["probabilities"]["up"] == 0.6
+    assert prediction["prediction"]["probabilities"]["UP"] == 0.6
     assert prediction["prediction"]["status"] == "ok"
 
 
-def _v2_pair():
+def _context_pair():
     from trader.application.world_model.context_capture import attach_world_context
     from trader.domain.world_context import EntityRef, KnowledgeArtifact, SensorEvidence
-    from tests.application.test_world_context_capture import _FakeSource, _v1_episode
+    from tests.application.test_world_context_capture import _FakeSource, _market_episode
 
-    v1 = _v1_episode()
+    v1 = _market_episode()
     missing = SensorEvidence(status="missing", reason="no_artifact")
     artifact = KnowledgeArtifact(
         kind="company_intelligence",
@@ -513,14 +528,14 @@ def _v2_pair():
     return first, second
 
 
-def test_v2_market_slot_keeps_one_canonical_episode_and_conflicts_on_reuse(store: WorldModelStore) -> None:
-    first, second = _v2_pair()
+def test_context_market_slot_keeps_one_canonical_episode_and_conflicts_on_reuse(store: WorldModelStore) -> None:
+    first, second = _context_pair()
     assert first.episode_id != second.episode_id
     assert store.append_episode(first) is True
     assert store.append_episode(first.to_dict()) is False
-    with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+    with pytest.raises(WorldModelConflictError, match="context market slot"):
         store.append_episode(second)
-    stored = store.get_episode_by_v2_slot(
+    stored = store.get_episode_by_context_slot(
         venue=first.observation.venue,
         symbol=first.observation.symbol,
         bar_interval=first.observation.bar_interval,
@@ -533,8 +548,8 @@ def test_v2_market_slot_keeps_one_canonical_episode_and_conflicts_on_reuse(store
     assert store.counts()["episodes"] == 1
 
 
-def test_v2_slot_lookup_is_preserved_after_reopen(tmp_path: Path) -> None:
-    first, second = _v2_pair()
+def test_context_slot_lookup_is_preserved_after_reopen(tmp_path: Path) -> None:
+    first, second = _context_pair()
     db_path = tmp_path / "world_model.db"
     store = WorldModelStore(db_path)
     try:
@@ -543,7 +558,7 @@ def test_v2_slot_lookup_is_preserved_after_reopen(tmp_path: Path) -> None:
         store.close()
     restarted = WorldModelStore(db_path)
     try:
-        stored = restarted.get_episode_by_v2_slot(
+        stored = restarted.get_episode_by_context_slot(
             venue=first.observation.venue,
             symbol=first.observation.symbol,
             bar_interval=first.observation.bar_interval,
@@ -553,7 +568,7 @@ def test_v2_slot_lookup_is_preserved_after_reopen(tmp_path: Path) -> None:
         )
         assert stored is not None
         assert stored["episode_id"] == first.episode_id
-        with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+        with pytest.raises(WorldModelConflictError, match="context market slot"):
             restarted.append_episode(second)
     finally:
         restarted.close()
@@ -569,7 +584,7 @@ def _replace_offset_with_z(value: object) -> object:
     return value
 
 
-def _insert_raw_v2_episode(
+def _insert_raw_context_episode(
     db: StateDb,
     *,
     episode_id: str,
@@ -591,7 +606,7 @@ def _insert_raw_v2_episode(
                 as_of_bar_ts, bar_interval, feature_contract_version, sampling_policy_version,
                 training_eligible, training_reason, payload_json, payload_sha256,
                 source_evidence_json, source_evidence_sha256, recorded_at
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'market_ohlcv_context.v2', ?, 1, NULL, ?, ?, '{}', ?, ?)
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'world_feature.context.v1', ?, 1, NULL, ?, ?, '{}', ?, ?)
             """,
             (
                 episode_id,
@@ -610,15 +625,15 @@ def _insert_raw_v2_episode(
         )
 
 
-def test_v2_mapping_zulu_and_offset_timestamps_share_one_canonical_slot(store: WorldModelStore) -> None:
-    first, second = _v2_pair()
+def test_context_mapping_zulu_and_offset_timestamps_share_one_canonical_slot(store: WorldModelStore) -> None:
+    first, second = _context_pair()
     payload = first.to_dict()
     z_payload = _replace_offset_with_z(deepcopy(payload))
     assert isinstance(z_payload, dict)
     assert store.append_episode(payload) is True
     assert store.append_episode(z_payload) is False
     assert store.counts()["episodes"] == 1
-    stored = store.get_episode_by_v2_slot(
+    stored = store.get_episode_by_context_slot(
         venue=first.observation.venue,
         symbol=first.observation.symbol,
         bar_interval=first.observation.bar_interval,
@@ -629,17 +644,17 @@ def test_v2_mapping_zulu_and_offset_timestamps_share_one_canonical_slot(store: W
     assert stored is not None
     assert stored["episode_id"] == first.episode_id
     assert stored["as_of_bar_ts"].endswith("+00:00")
-    with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+    with pytest.raises(WorldModelConflictError, match="context market slot"):
         store.append_episode(second)
 
 
-def test_v2_mapping_rejects_contradictory_envelope_versions(store: WorldModelStore) -> None:
-    from tests.application.test_world_context_capture import _v1_episode
+def test_context_mapping_rejects_contradictory_envelope_versions(store: WorldModelStore) -> None:
+    from tests.application.test_world_context_capture import _market_episode
 
-    first, _second = _v2_pair()
+    first, _second = _context_pair()
     nested_v2_top_v1 = first.to_dict()
-    nested_v2_top_v1["feature_contract_version"] = MARKET_FEATURE_CONTRACT_VERSION
-    nested_v1_top_v2 = _v1_episode().to_dict()
+    nested_v2_top_v1["feature_contract_version"] = MARKET_FEATURE_CONTRACT_ID
+    nested_v1_top_v2 = _market_episode().to_dict()
     nested_v1_top_v2["feature_contract_version"] = first.observation.feature_contract_version
     with pytest.raises(ValueError, match="contradict"):
         store.append_episode(nested_v2_top_v1)
@@ -648,8 +663,8 @@ def test_v2_mapping_rejects_contradictory_envelope_versions(store: WorldModelSto
     assert store.counts()["episodes"] == 0
 
 
-def test_concurrent_conflicting_v2_slots_are_rejected_atomically(tmp_path: Path) -> None:
-    first, second = _v2_pair()
+def test_concurrent_conflicting_context_slots_are_rejected_atomically(tmp_path: Path) -> None:
+    first, second = _context_pair()
     db_path = tmp_path / "world_model.db"
     WorldModelStore(db_path).close()
     barrier = threading.Barrier(8)
@@ -672,7 +687,7 @@ def test_concurrent_conflicting_v2_slots_are_rejected_atomically(tmp_path: Path)
     try:
         assert sum(1 for item in results if item is True) == 1
         assert verifier.counts()["episodes"] == 1
-        stored = verifier.get_episode_by_v2_slot(
+        stored = verifier.get_episode_by_context_slot(
             venue=first.observation.venue,
             symbol=first.observation.symbol,
             bar_interval=first.observation.bar_interval,
@@ -686,91 +701,8 @@ def test_concurrent_conflicting_v2_slots_are_rejected_atomically(tmp_path: Path)
         verifier.close()
 
 
-def test_migration_v1_duplicate_v2_slots_upgrade_without_mutating_legacy_rows(tmp_path: Path) -> None:
-    db_path = tmp_path / "world_model.db"
-    db = StateDb(db_path)
-    db.apply_migrations(WORLD_MODEL_MIGRATIONS[:1])
-    _insert_raw_v2_episode(
-        db,
-        episode_id="dup-b",
-        as_of_bar_ts="2026-08-22T10:00:00+00:00",
-        recorded_at="2026-08-22T12:00:00+00:00",
-    )
-    _insert_raw_v2_episode(
-        db,
-        episode_id="dup-a",
-        as_of_bar_ts="2026-08-22T10:00:00+00:00",
-        recorded_at="2026-08-22T11:00:00+00:00",
-    )
-    assert db.query_one("SELECT COUNT(*) FROM world_episodes")[0] == 2
-    db.close()
-
-    store = WorldModelStore(db_path)
-    try:
-        assert store.counts()["episodes"] == 2
-        stored = store.get_episode_by_v2_slot(
-            venue="XTAI",
-            symbol="AAA",
-            bar_interval="1h",
-            as_of_bar_ts="2026-08-22T10:00:00+00:00",
-            feature_contract_version="market_ohlcv_context.v2",
-            sampling_policy_version="active_tradable_completed_bar.v1",
-        )
-        assert stored is not None
-        assert stored["episode_id"] == "dup-a"
-        first, _second = _v2_pair()
-        with pytest.raises(WorldModelConflictError, match="V2 market slot"):
-            store.append_episode(first)
-        ids = [
-            row["episode_id"]
-            for row in store._db.query_all(
-                "SELECT episode_id, recorded_at FROM world_episodes ORDER BY recorded_at, episode_id"
-            )
-        ]
-        assert ids == ["dup-a", "dup-b"]
-        assert store.counts()["episodes"] == 2
-    finally:
-        store.close()
-
-    restarted = WorldModelStore(db_path)
-    try:
-        stored = restarted.get_episode_by_v2_slot(
-            venue="XTAI",
-            symbol="AAA",
-            bar_interval="1h",
-            as_of_bar_ts="2026-08-22T10:00:00Z",
-            feature_contract_version="market_ohlcv_context.v2",
-            sampling_policy_version="active_tradable_completed_bar.v1",
-        )
-        assert stored is not None
-        assert stored["episode_id"] == "dup-a"
-        assert restarted.counts()["episodes"] == 2
-    finally:
-        restarted.close()
-
-
-_OLD_UNIXEPOCH_V2_TRIGGER = """
-            CREATE TRIGGER IF NOT EXISTS world_episodes_v2_canonical_first_write
-            BEFORE INSERT ON world_episodes
-            WHEN NEW.feature_contract_version = 'market_ohlcv_context.v2'
-            BEGIN
-                SELECT RAISE(ABORT, 'V2 market slot already exists')
-                WHERE EXISTS (
-                    SELECT 1 FROM world_episodes AS existing
-                    WHERE existing.symbol = NEW.symbol
-                      AND existing.venue IS NEW.venue
-                      AND existing.bar_interval IS NEW.bar_interval
-                      AND existing.feature_contract_version = 'market_ohlcv_context.v2'
-                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
-                      AND existing.episode_id != NEW.episode_id
-                      AND unixepoch(existing.as_of_bar_ts) = unixepoch(NEW.as_of_bar_ts)
-                );
-            END
-            """
-
-
-def _v2_episode_at(as_of_bar_ts: str) -> WorldEpisode:
-    first, _second = _v2_pair()
+def _context_episode_at(as_of_bar_ts: str) -> WorldEpisode:
+    first, _second = _context_pair()
     observation = first.observation
     return WorldEpisode(
         WorldObservation(
@@ -793,7 +725,7 @@ def _v2_episode_at(as_of_bar_ts: str) -> WorldEpisode:
 
 def _slot_lookup(store: WorldModelStore, episode: WorldEpisode, *, as_of_bar_ts: str | None = None) -> dict | None:
     observation = episode.observation
-    return store.get_episode_by_v2_slot(
+    return store.get_episode_by_context_slot(
         venue=observation.venue,
         symbol=observation.symbol,
         bar_interval=observation.bar_interval,
@@ -803,11 +735,11 @@ def _slot_lookup(store: WorldModelStore, episode: WorldEpisode, *, as_of_bar_ts:
     )
 
 
-def test_legacy_plus0000_slot_is_found_by_canonical_offset_without_second_append(tmp_path: Path) -> None:
+def test_plus0000_slot_is_found_by_canonical_offset_without_second_append(tmp_path: Path) -> None:
     db_path = tmp_path / "world_model.db"
     db = StateDb(db_path)
     db.apply_migrations(WORLD_MODEL_MIGRATIONS[:1])
-    _insert_raw_v2_episode(
+    _insert_raw_context_episode(
         db,
         episode_id="legacy-plus0000",
         as_of_bar_ts="2026-08-22T10:00:00+0000",
@@ -817,28 +749,28 @@ def test_legacy_plus0000_slot_is_found_by_canonical_offset_without_second_append
 
     store = WorldModelStore(db_path)
     try:
-        stored = store.get_episode_by_v2_slot(
+        stored = store.get_episode_by_context_slot(
             venue="XTAI",
             symbol="AAA",
             bar_interval="1h",
             as_of_bar_ts="2026-08-22T10:00:00+00:00",
-            feature_contract_version="market_ohlcv_context.v2",
+            feature_contract_version="world_feature.context.v1",
             sampling_policy_version="active_tradable_completed_bar.v1",
         )
         assert stored is not None
         assert stored["episode_id"] == "legacy-plus0000"
         assert stored["as_of_bar_ts"] == "2026-08-22T10:00:00+0000"
-        first, _second = _v2_pair()
-        with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+        first, _second = _context_pair()
+        with pytest.raises(WorldModelConflictError, match="context market slot"):
             store.append_episode(first)
         assert store.counts()["episodes"] == 1
     finally:
         store.close()
 
 
-def test_fractional_v2_slots_remain_distinct_and_lookup_returns_each_row(tmp_path: Path) -> None:
-    early = _v2_episode_at("2026-08-22T10:00:00.100000+00:00")
-    late = _v2_episode_at("2026-08-22T10:00:00.900000+00:00")
+def test_fractional_context_slots_remain_distinct_and_lookup_returns_each_row(tmp_path: Path) -> None:
+    early = _context_episode_at("2026-08-22T10:00:00.100000+00:00")
+    late = _context_episode_at("2026-08-22T10:00:00.900000+00:00")
     db_path = tmp_path / "world_model.db"
     store = WorldModelStore(db_path)
     try:
@@ -864,220 +796,60 @@ def test_fractional_v2_slots_remain_distinct_and_lookup_returns_each_row(tmp_pat
         restarted.close()
 
 
-def test_migration_upgrades_old_unixepoch_trigger_and_keeps_legacy_plus0000(tmp_path: Path) -> None:
-    db_path = tmp_path / "world_model.db"
-    db = StateDb(db_path)
-    db.apply_migrations(WORLD_MODEL_MIGRATIONS[:1])
-    with db.transaction() as cur:
-        cur.execute(_OLD_UNIXEPOCH_V2_TRIGGER)
-        cur.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?)",
-            ("2026-08-22T00:00:00+00:00",),
-        )
-    _insert_raw_v2_episode(
-        db,
-        episode_id="legacy-plus0000",
-        as_of_bar_ts="2026-08-22T10:00:00+0000",
-        recorded_at="2026-08-22T11:00:00+00:00",
-    )
-    db.close()
+def test_current_schema_is_a_single_fresh_definition() -> None:
+    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
+    assert versions == [WORLD_MODEL_SCHEMA_VERSION] == [1]
+    sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
+    for table in sorted(WORLD_MODEL_REQUIRED_TABLES):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
+    assert "world_episodes_market_canonical_first_write" in sql
+    assert "world_episodes_context_canonical_first_write" in sql
+    assert "world_episodes_graph_canonical_first_write" in sql
+    assert "world_episodes_current_feature_contract" in sql
+    assert "world_feature.market.v1" in sql
+    assert "world_feature.context.v1" in sql
+    assert "world_feature.graph.v1" in sql
+    assert "study_cohort_id" in sql
+    assert "feature_mask_fingerprint" in sql
+    assert "ALTER TABLE" not in sql
+    assert sql.count("CREATE TABLE IF NOT EXISTS world_shadow_predictions") == 1
+    assert ", study_cohort_id TEXT" not in sql
 
-    store = WorldModelStore(db_path)
+
+def test_unrecognized_migration_version_is_rejected_while_cold_and_exact_restart_work(
+    tmp_path: Path,
+) -> None:
+    foreign = tmp_path / "foreign.db"
+    db = StateDb(foreign)
+    db.query_one("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+    with db.transaction() as cur:
+        cur.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (99, "2026-08-22T00:00:00+00:00"),
+        )
+    db.close()
+    with pytest.raises(WorldModelSchemaMismatchError, match="schema versions"):
+        WorldModelStore(foreign)
+
+    cold = tmp_path / "cold.db"
+    store = WorldModelStore(cold)
     try:
-        trigger = store._db.query_one(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='world_episodes_v2_canonical_first_write'"
-        )
-        assert trigger is not None
-        assert "unixepoch" not in trigger["sql"]
-        index = store._db.query_one(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_world_episodes_v2_market_slot_candidates'"
-        )
-        assert index is not None
-        stored = store.get_episode_by_v2_slot(
-            venue="XTAI",
-            symbol="AAA",
-            bar_interval="1h",
-            as_of_bar_ts="2026-08-22T10:00:00+00:00",
-            feature_contract_version="market_ohlcv_context.v2",
-            sampling_policy_version="active_tradable_completed_bar.v1",
-        )
-        assert stored is not None
-        assert stored["episode_id"] == "legacy-plus0000"
-        assert stored["as_of_bar_ts"] == "2026-08-22T10:00:00+0000"
-        first, _second = _v2_pair()
-        with pytest.raises(WorldModelConflictError, match="V2 market slot"):
-            store.append_episode(first)
-        early = _v2_episode_at("2026-08-22T10:00:00.100000+00:00")
-        late = _v2_episode_at("2026-08-22T10:00:00.900000+00:00")
-        assert store.append_episode(early) is True
-        assert store.append_episode(late) is True
-        assert store.counts()["episodes"] == 3
+        versions = [int(row["version"]) for row in store._db.query_all("SELECT version FROM schema_migrations")]
+        assert versions == [WORLD_MODEL_SCHEMA_VERSION]
+        assert store.append_episode(_episode()) is True
+        counts = store.counts()
+        assert counts["episodes"] == 1
     finally:
         store.close()
 
-
-def test_cohort_migration_is_version_5_and_preserves_v1_v4_statements() -> None:
-    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions[:6] == [1, 2, 3, 4, 5, 6]
-    v1_sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
-    assert "CREATE TABLE IF NOT EXISTS world_episodes" in v1_sql
-    assert "CREATE TABLE IF NOT EXISTS world_outcome_events" in v1_sql
-    assert "CREATE TABLE IF NOT EXISTS world_shadow_predictions" in v1_sql
-    for version, statements in WORLD_MODEL_MIGRATIONS[:4]:
-        blob = "\n".join(statements)
-        assert "world_cohort_manifests" not in blob
-        assert "world_cohort_events" not in blob
-        assert "world_availability_receipts" not in blob
-        assert "study_cohort_id" not in blob
-        assert version < 5
-    v5_sql = "\n".join(WORLD_MODEL_MIGRATIONS[4][1])
-    assert "world_cohort_manifests" in v5_sql
-    assert "world_cohort_events" in v5_sql
-    assert "world_cohort_slots" in v5_sql
-    assert "world_availability_receipts" in v5_sql
-    assert "study_cohort_id" in v5_sql
-    assert "feature_mask_fingerprint" in v5_sql
-    assert "world_entity_events" not in v5_sql
-    assert "world_graph_snapshots" not in v5_sql
-
-
-def test_graph_bridge_migration_is_version_7_reuses_receipts_and_does_not_rewrite_v1_v6() -> None:
-    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert 7 in versions
-    v7_sql = "\n".join(WORLD_MODEL_MIGRATIONS[6][1])
-    assert "CREATE TABLE IF NOT EXISTS world_macro_graph_bridge_events" in v7_sql
-    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v7_sql
-    assert "world_macro_graph_bridge_events_no_update" in v7_sql
-    assert "world_macro_graph_bridge_events_no_delete" in v7_sql
-    for _version, statements in WORLD_MODEL_MIGRATIONS[:6]:
-        assert "world_macro_graph_bridge_events" not in "\n".join(statements)
-
-
-def test_graph_migration_is_version_6_reuses_receipts_and_does_not_rewrite_v1_v5() -> None:
-    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert 6 in versions
-    for version, statements in WORLD_MODEL_MIGRATIONS[:5]:
-        blob = "\n".join(statements)
-        assert "world_entity_events" not in blob
-        assert "world_entity_identity_events" not in blob
-        assert "world_relation_events" not in blob
-        assert "world_ontology_revisions" not in blob
-        assert "world_graph_snapshots" not in blob
-        assert "world_graph_snapshot_members" not in blob
-        assert version < 6
-    v6_sql = "\n".join(WORLD_MODEL_MIGRATIONS[5][1])
-    assert "CREATE TABLE IF NOT EXISTS world_entity_events" in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_entity_identity_events" in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_relation_events" in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_ontology_revisions" in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_graph_snapshots" in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_graph_snapshot_members" in v6_sql
-    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v6_sql
-    assert "sequence" in v6_sql
-    for table in (
-        "world_entity_events",
-        "world_entity_identity_events",
-        "world_relation_events",
-        "world_ontology_revisions",
-        "world_graph_snapshots",
-        "world_graph_snapshot_members",
-    ):
-        assert f"{table}_no_update" in v6_sql
-        assert f"{table}_no_delete" in v6_sql
-
-
-def test_v5_does_not_rewrite_existing_episode_outcome_or_prediction_bytes(tmp_path: Path) -> None:
-    db_path = tmp_path / "world_model.db"
-    db = StateDb(db_path)
-    db.apply_migrations(WORLD_MODEL_MIGRATIONS[:4])
-    episode_payload = json.dumps({"episode_id": "legacy-1", "keep": True}, separators=(",", ":"), sort_keys=True)
-    outcome_payload = json.dumps({"outcome_event_id": "legacy-out", "keep": True}, separators=(",", ":"), sort_keys=True)
-    prediction_payload = json.dumps(
-        {"prediction_id": "legacy-pred", "keep": True},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    episode_digest = "sha256:" + hashlib.sha256(episode_payload.encode("utf-8")).hexdigest()
-    outcome_digest = "sha256:" + hashlib.sha256(outcome_payload.encode("utf-8")).hexdigest()
-    prediction_digest = "sha256:" + hashlib.sha256(prediction_payload.encode("utf-8")).hexdigest()
-    recorded = "2026-08-22T11:00:00+00:00"
-    with db.transaction() as cur:
-        cur.execute(
-            """
-            INSERT INTO world_episodes(
-                episode_id, capture_id, venue, symbol, observed_at, available_at,
-                as_of_bar_ts, bar_interval, feature_contract_version, sampling_policy_version,
-                training_eligible, training_reason, payload_json, payload_sha256,
-                source_evidence_json, source_evidence_sha256, recorded_at
-            ) VALUES ('legacy-1', NULL, 'US', 'AAPL', ?, ?, ?, '1h', 'world-features-v1', 'fresh-active-v1',
-                      1, NULL, ?, ?, '{}', ?, ?)
-            """,
-            (recorded, recorded, recorded, episode_payload, episode_digest, episode_digest, recorded),
-        )
-        cur.execute(
-            """
-            INSERT INTO world_outcome_events(
-                outcome_event_id, episode_id, horizon_code, label_schema_version, status, move_class,
-                training_eligible, label_available_at, sealed_at, supersedes_outcome_event_id,
-                label_json, evidence_json, evidence_sha256, payload_json, payload_sha256, recorded_at
-            ) VALUES ('legacy-out', 'legacy-1', '4h', 'world-label-v1', 'observed', 'UP',
-                      1, ?, ?, NULL, '{}', '{}', ?, ?, ?, ?)
-            """,
-            (recorded, recorded, outcome_digest, outcome_payload, outcome_digest, recorded),
-        )
-        cur.execute(
-            """
-            INSERT INTO world_shadow_predictions(
-                prediction_id, run_id, episode_id, horizon_code, model_kind, model_version,
-                predicted_at, input_sha256, prediction_json, prediction_sha256,
-                payload_json, payload_sha256, recorded_at
-            ) VALUES ('legacy-pred', 'run-1', 'legacy-1', 'elapsed_4h.v1', 'markov', 'v1',
-                      ?, ?, '{}', ?, ?, ?, ?)
-            """,
-            (recorded, prediction_digest, prediction_digest, prediction_payload, prediction_digest, recorded),
-        )
-    before = db.query_one(
-        "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
-        "o.payload_json AS outcome_json, o.payload_sha256 AS outcome_sha, "
-        "p.payload_json AS prediction_json, p.payload_sha256 AS prediction_sha "
-        "FROM world_episodes e "
-        "JOIN world_outcome_events o ON o.episode_id=e.episode_id "
-        "JOIN world_shadow_predictions p ON p.episode_id=e.episode_id"
-    )
-    db.close()
-
-    store = WorldModelStore(db_path)
+    restarted = WorldModelStore(cold)
     try:
-        after = store._db.query_one(
-            "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
-            "o.payload_json AS outcome_json, o.payload_sha256 AS outcome_sha, "
-            "p.payload_json AS prediction_json, p.payload_sha256 AS prediction_sha, "
-            "p.study_cohort_id, p.lane_id, p.manifest_sha256, "
-            "p.feature_contract_fingerprint, p.feature_mask_fingerprint "
-            "FROM world_episodes e "
-            "JOIN world_outcome_events o ON o.episode_id=e.episode_id "
-            "JOIN world_shadow_predictions p ON p.episode_id=e.episode_id"
-        )
-        assert after["episode_json"] == before["episode_json"]
-        assert after["episode_sha"] == before["episode_sha"]
-        assert after["outcome_json"] == before["outcome_json"]
-        assert after["outcome_sha"] == before["outcome_sha"]
-        assert after["prediction_json"] == before["prediction_json"]
-        assert after["prediction_sha"] == before["prediction_sha"]
-        assert after["study_cohort_id"] is None
-        assert after["lane_id"] is None
-        assert after["manifest_sha256"] is None
-        assert after["feature_contract_fingerprint"] is None
-        assert after["feature_mask_fingerprint"] is None
-        listed = store.list_predictions(run_id="run-1")
-        assert listed[0]["prediction_id"] == "legacy-pred"
-        assert listed[0]["prediction_record"]["keep"] is True
-        names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "world_entity_events" in names
-        assert "world_graph_snapshots" in names
-        assert "world_availability_receipts" in names
+        versions = [int(row["version"]) for row in restarted._db.query_all("SELECT version FROM schema_migrations")]
+        assert versions == [WORLD_MODEL_SCHEMA_VERSION]
+        assert restarted.counts() == counts
+        assert restarted.append_episode(_episode()) is False
     finally:
-        store.close()
+        restarted.close()
 
 
 def test_prediction_cohort_columns_are_indexed_and_override_json(store: WorldModelStore) -> None:
@@ -1177,19 +949,19 @@ def test_append_event_cas_and_restart_keep_conservative_first_seen(tmp_path: Pat
         store.close()
 
 
-def _v3_pair():
+def _graph_pair():
     from tests.application.test_world_graph_capture import _attach, _complete_config, _unpublished_config
-    from tests.application.test_world_graph_snapshot import _episode as _graph6_v1_episode
+    from tests.application.test_world_graph_snapshot import _episode as _graph6_market_episode
 
-    v1 = _graph6_v1_episode()
+    v1 = _graph6_market_episode()
     first = _attach((v1,), _unpublished_config())[0]
     second = _attach((v1,), _complete_config())[0]
     return first, second
 
 
-def _v3_slot_lookup(store: WorldModelStore, episode: WorldEpisode, *, as_of_bar_ts: str | None = None):
+def _graph_slot_lookup(store: WorldModelStore, episode: WorldEpisode, *, as_of_bar_ts: str | None = None):
     observation = episode.observation
-    return store.get_episode_by_v3_slot(
+    return store.get_episode_by_graph_slot(
         venue=observation.venue,
         symbol=observation.symbol,
         bar_interval=observation.bar_interval,
@@ -1199,27 +971,29 @@ def _v3_slot_lookup(store: WorldModelStore, episode: WorldEpisode, *, as_of_bar_
     )
 
 
-def test_v3_market_slot_keeps_one_canonical_episode_and_writes_snapshot_first(store: WorldModelStore) -> None:
-    first, second = _v3_pair()
+def test_graph_market_slot_keeps_one_canonical_episode_and_writes_snapshot_first(store: WorldModelStore) -> None:
+    first, second = _graph_pair()
     assert first.episode_id != second.episode_id
     assert store.append_episode(first) is True
     snapshots = store._db.query_one("SELECT COUNT(*) AS n FROM world_graph_snapshots")
     assert snapshots["n"] == 1
     assert store.append_episode(first.to_dict()) is False
-    with pytest.raises(WorldModelConflictError, match="V3 market slot"):
+    with pytest.raises(WorldModelConflictError, match="graph market slot"):
         store.append_episode(second)
-    stored = _v3_slot_lookup(store, first)
+    stored = _graph_slot_lookup(store, first)
     assert stored is not None
     assert stored["episode_id"] == first.episode_id
     assert store.counts()["episodes"] == 1
     snapshot_id = first.observation.to_dict()["graph_features"]["snapshot"]["snapshot_id"]
-    row = store._db.query_one("SELECT snapshot_id, payload_sha256 FROM world_graph_snapshots WHERE snapshot_id=?", (snapshot_id,))
+    row = store._db.query_one(
+        "SELECT snapshot_id, payload_sha256 FROM world_graph_snapshots WHERE snapshot_id=?", (snapshot_id,)
+    )
     assert row is not None
     assert row["snapshot_id"] == snapshot_id
 
 
-def test_v3_crash_between_snapshot_and_episode_repairs_on_identical_retry(tmp_path: Path) -> None:
-    first, second = _v3_pair()
+def test_graph_crash_between_snapshot_and_episode_repairs_on_identical_retry(tmp_path: Path) -> None:
+    first, second = _graph_pair()
     db_path = tmp_path / "world_model.db"
     store = WorldModelStore(db_path)
     try:
@@ -1231,17 +1005,17 @@ def test_v3_crash_between_snapshot_and_episode_repairs_on_identical_retry(tmp_pa
         assert store.counts()["episodes"] == 1
         assert store.append_graph_snapshot(snapshot) is False
         assert store.append_episode(first.to_dict()) is False
-        with pytest.raises(WorldModelConflictError, match="V3 market slot|snapshot"):
+        with pytest.raises(WorldModelConflictError, match="graph market slot|snapshot"):
             store.append_episode(second)
-        stored = _v3_slot_lookup(store, first)
+        stored = _graph_slot_lookup(store, first)
         assert stored is not None
         assert stored["episode_id"] == first.episode_id
     finally:
         store.close()
 
 
-def test_v3_same_snapshot_id_different_payload_conflicts(store: WorldModelStore) -> None:
-    first, _second = _v3_pair()
+def test_graph_same_snapshot_id_different_payload_conflicts(store: WorldModelStore) -> None:
+    first, _second = _graph_pair()
     snapshot = first.observation.to_dict()["graph_features"]["snapshot"]
     assert store.append_graph_snapshot(snapshot) is True
     with store._db.transaction() as cur:
@@ -1263,127 +1037,62 @@ def test_v3_same_snapshot_id_different_payload_conflicts(store: WorldModelStore)
         store.append_graph_snapshot(snapshot)
 
 
-def test_v3_zulu_and_offset_timestamps_share_one_canonical_slot(store: WorldModelStore) -> None:
-    first, second = _v3_pair()
+def test_graph_zulu_and_offset_timestamps_share_one_canonical_slot(store: WorldModelStore) -> None:
+    first, second = _graph_pair()
     payload = first.to_dict()
     z_payload = _replace_offset_with_z(deepcopy(payload))
     assert isinstance(z_payload, dict)
     assert store.append_episode(payload) is True
     assert store.append_episode(z_payload) is False
     assert store.counts()["episodes"] == 1
-    stored = _v3_slot_lookup(store, first, as_of_bar_ts="2026-08-23T13:00:00Z")
+    stored = _graph_slot_lookup(store, first, as_of_bar_ts="2026-08-23T13:00:00Z")
     assert stored is not None
     assert stored["episode_id"] == first.episode_id
-    with pytest.raises(WorldModelConflictError, match="V3 market slot"):
+    with pytest.raises(WorldModelConflictError, match="graph market slot"):
         store.append_episode(second)
 
 
-def test_v3_mapping_rejects_contradictory_envelope_versions(store: WorldModelStore) -> None:
-    first, _second = _v3_pair()
-    nested_v3_top_v1 = first.to_dict()
-    nested_v3_top_v1["feature_contract_version"] = MARKET_FEATURE_CONTRACT_VERSION
+def test_graph_mapping_rejects_contradictory_envelope_versions(store: WorldModelStore) -> None:
+    first, _second = _graph_pair()
+    nested_graph_top_market = first.to_dict()
+    nested_graph_top_market["feature_contract_version"] = MARKET_FEATURE_CONTRACT_ID
     with pytest.raises(ValueError, match="contradict"):
-        store.append_episode(nested_v3_top_v1)
+        store.append_episode(nested_graph_top_market)
     assert store.counts()["episodes"] == 0
 
 
-def test_v3_migration_is_version_8_and_does_not_rewrite_v1_v7() -> None:
-    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions[7] == 8
-    v8_sql = "\n".join(WORLD_MODEL_MIGRATIONS[7][1])
-    assert "world_episodes_v3_canonical_first_write" in v8_sql
-    assert "idx_world_episodes_v3_market_slot_candidates" in v8_sql
-    assert "market_ohlcv_graph.v3" in v8_sql
-    assert "world_pattern_hypothesis_events" not in v8_sql
-    assert "world_pattern_occurrence_events" not in v8_sql
-    assert "world_pattern_outcome_links" not in v8_sql
-    for _version, statements in WORLD_MODEL_MIGRATIONS[:7]:
-        blob = "\n".join(statements)
-        assert "world_episodes_v3_canonical_first_write" not in blob
-        assert "idx_world_episodes_v3_market_slot_candidates" not in blob
-
-
-def test_pattern_migration_is_version_9_reuses_receipts_and_does_not_rewrite_v1_v8() -> None:
-    versions = [version for version, _statements in WORLD_MODEL_MIGRATIONS]
-    assert versions[-1] == 9
-    assert versions[:9] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
-    v9_sql = "\n".join(WORLD_MODEL_MIGRATIONS[8][1])
-    assert "CREATE TABLE IF NOT EXISTS world_pattern_hypothesis_events" in v9_sql
-    assert "CREATE TABLE IF NOT EXISTS world_pattern_occurrence_events" in v9_sql
-    assert "CREATE TABLE IF NOT EXISTS world_pattern_outcome_links" in v9_sql
-    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v9_sql
-    assert "idx_world_pattern_occurrence_events_cohort_cutoff" in v9_sql
-    assert "idx_world_pattern_outcome_links_horizon" in v9_sql
-    assert "world_pattern_hypothesis_events_no_update" in v9_sql
-    assert "world_pattern_occurrence_events_no_delete" in v9_sql
-    assert "world_pattern_outcome_links_no_update" in v9_sql
-    for _version, statements in WORLD_MODEL_MIGRATIONS[:8]:
-        blob = "\n".join(statements)
-        assert "world_pattern_hypothesis_events" not in blob
-        assert "world_pattern_occurrence_events" not in blob
-        assert "world_pattern_outcome_links" not in blob
-
-
-def test_v9_does_not_rewrite_existing_episode_graph_or_cohort_bytes(tmp_path: Path) -> None:
+def test_old_schema_catalog_is_rejected_rather_than_migrated(tmp_path: Path) -> None:
     db_path = tmp_path / "world_model.db"
     db = StateDb(db_path)
-    db.apply_migrations(WORLD_MODEL_MIGRATIONS[:8])
-    recorded = "2026-08-22T11:00:00+00:00"
-    episode_payload = json.dumps({"episode_id": "legacy-pattern", "keep": True}, separators=(",", ":"), sort_keys=True)
-    episode_digest = "sha256:" + hashlib.sha256(episode_payload.encode("utf-8")).hexdigest()
+    db.query_one("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+    with db.transaction() as cur:
+        for version in range(1, 10):
+            cur.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (version, "2026-08-22T00:00:00+00:00"),
+            )
+    db.close()
+    with pytest.raises(WorldModelSchemaMismatchError, match="schema versions"):
+        WorldModelStore(db_path)
+
+
+def test_incomplete_current_version_missing_tables_is_rejected(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    db = StateDb(db_path)
+    db.query_one("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+    db.query_one("CREATE TABLE IF NOT EXISTS world_episodes (episode_id TEXT PRIMARY KEY)")
     with db.transaction() as cur:
         cur.execute(
-            """
-            INSERT INTO world_episodes(
-                episode_id, capture_id, venue, symbol, observed_at, available_at,
-                as_of_bar_ts, bar_interval, feature_contract_version, sampling_policy_version,
-                training_eligible, training_reason, payload_json, payload_sha256,
-                source_evidence_json, source_evidence_sha256, recorded_at
-            ) VALUES ('legacy-pattern', NULL, 'US', 'AAPL', ?, ?, ?, '1h', 'world-features-v1', 'fresh-active-v1',
-                      1, NULL, ?, ?, '{}', ?, ?)
-            """,
-            (recorded, recorded, recorded, episode_payload, episode_digest, episode_digest, recorded),
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (1, "2026-08-22T00:00:00+00:00"),
         )
-        cur.execute(
-            """
-            INSERT INTO world_entity_events(
-                event_id, event_type, entity_kind, entity_id, sequence,
-                payload_json, payload_sha256, recorded_at
-            ) VALUES ('legacy-entity', 'world_entity_asserted', 'instrument', 'mic:XTAI:symbol:2330', 1,
-                      '{"keep":true}', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?)
-            """,
-            (recorded,),
-        )
-    before = db.query_one(
-        "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
-        "g.payload_json AS graph_json, g.payload_sha256 AS graph_sha "
-        "FROM world_episodes e JOIN world_entity_events g ON 1=1"
-    )
     db.close()
-
-    store = WorldModelStore(db_path)
-    try:
-        after = store._db.query_one(
-            "SELECT e.payload_json AS episode_json, e.payload_sha256 AS episode_sha, "
-            "g.payload_json AS graph_json, g.payload_sha256 AS graph_sha "
-            "FROM world_episodes e JOIN world_entity_events g ON 1=1"
-        )
-        assert after["episode_json"] == before["episode_json"]
-        assert after["episode_sha"] == before["episode_sha"]
-        assert after["graph_json"] == before["graph_json"]
-        assert after["graph_sha"] == before["graph_sha"]
-        names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "world_pattern_hypothesis_events" in names
-        assert "world_pattern_occurrence_events" in names
-        assert "world_pattern_outcome_links" in names
-        assert "world_availability_receipts" in names
-        assert store._db.query_one("SELECT COUNT(*) FROM world_pattern_hypothesis_events")[0] == 0
-    finally:
-        store.close()
+    with pytest.raises(WorldModelSchemaMismatchError, match="missing required tables"):
+        WorldModelStore(db_path)
 
 
-def test_v3_slot_lookup_survives_reopen(tmp_path: Path) -> None:
-    first, second = _v3_pair()
+def test_graph_slot_lookup_survives_reopen(tmp_path: Path) -> None:
+    first, second = _graph_pair()
     db_path = tmp_path / "world_model.db"
     store = WorldModelStore(db_path)
     try:
@@ -1392,13 +1101,13 @@ def test_v3_slot_lookup_survives_reopen(tmp_path: Path) -> None:
         store.close()
     restarted = WorldModelStore(db_path)
     try:
-        stored = _v3_slot_lookup(restarted, first)
+        stored = _graph_slot_lookup(restarted, first)
         assert stored is not None
         assert stored["episode_id"] == first.episode_id
-        with pytest.raises(WorldModelConflictError, match="V3 market slot"):
+        with pytest.raises(WorldModelConflictError, match="graph market slot"):
             restarted.append_episode(second)
         trigger = restarted._db.query_one(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='world_episodes_v3_canonical_first_write'"
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='world_episodes_graph_canonical_first_write'"
         )
         assert trigger is not None
         assert "unixepoch" not in trigger["sql"]

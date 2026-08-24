@@ -25,7 +25,12 @@ from typing import Any
 WORLD_EPISODE_SCHEMA_VERSION = "world_episode.v1"
 WORLD_OUTCOME_SCHEMA_VERSION = "world_outcome.v1"
 WORLD_PREDICTION_SCHEMA_VERSION = "world_prediction.v1"
-MARKET_FEATURE_CONTRACT_VERSION = "market_ohlcv_causal.v1"
+MARKET_FEATURE_CONTRACT_ID = "world_feature.market.v1"
+CONTEXT_FEATURE_CONTRACT_ID = "world_feature.context.v1"
+GRAPH_FEATURE_CONTRACT_ID = "world_feature.graph.v1"
+CURRENT_FEATURE_CONTRACT_IDS = frozenset(
+    {MARKET_FEATURE_CONTRACT_ID, CONTEXT_FEATURE_CONTRACT_ID, GRAPH_FEATURE_CONTRACT_ID}
+)
 _INTERVAL_PATTERN = re.compile(r"^(?P<count>\d+(?:\.\d+)?)(?P<unit>[mhd])$")
 _BAR_CLOSE_SEMANTICS = frozenset({"bar_close", "bar_end", "close", "end"})
 _BAR_START_SEMANTICS = frozenset({"bar_start", "start"})
@@ -36,7 +41,6 @@ OUTCOME_EVENT_TYPES = frozenset({"outcome_scheduled", "outcome_observed", "outco
 PREDICTION_CLASSES = ("DOWN", "FLAT", "UP")
 PREDICTION_STATUSES = frozenset({"warming_up", "shadow_only"})
 PREDICTION_TIERS = frozenset({"uniform", "global", "coarse", "exact"})
-_LEGACY_PREDICTION_CLASSES = {"down": "DOWN", "flat": "FLAT", "up": "UP"}
 SIMPLE_RETURN_DIRECTION_BAND = 0.005
 
 # The initial feature contract intentionally remains small and semantic.  A
@@ -60,7 +64,7 @@ ALLOWED_CATEGORICAL_FEATURES = frozenset(
         "geopolitical_risk_bucket",
         "data_freshness",
         "source_status",
-        # Existing market-domain nomenclature retained for a lossless V1
+        # Existing market-domain nomenclature retained for a lossless market
         # projection; capture policy decides which of these enter a baseline.
         "regime",
         "vol_state",
@@ -177,7 +181,10 @@ __all__ = [
     "bar_timestamp_on_canonical_grid",
     "is_eligible_completed_bar",
     "parse_bar_interval",
-    "MARKET_FEATURE_CONTRACT_VERSION",
+    "CURRENT_FEATURE_CONTRACT_IDS",
+    "CONTEXT_FEATURE_CONTRACT_ID",
+    "GRAPH_FEATURE_CONTRACT_ID",
+    "MARKET_FEATURE_CONTRACT_ID",
 ]
 
 
@@ -191,14 +198,13 @@ def _required_text(value: Any, field_name: str) -> str:
 
 
 def canonical_prediction_class(value: Any) -> str:
-    """Normalize live or legacy up/down/flat labels onto DOWN/FLAT/UP."""
+    """Accept only the current DOWN/FLAT/UP prediction classes."""
 
     text = _required_text(value, "prediction class")
-    mapped = _LEGACY_PREDICTION_CLASSES.get(text.lower(), text.upper())
-    if mapped not in PREDICTION_CLASSES:
+    if text not in PREDICTION_CLASSES:
         allowed = ", ".join(PREDICTION_CLASSES)
         raise ValueError(f"prediction class must be one of: {allowed}")
-    return mapped
+    return text
 
 
 def move_class_from_simple_return(
@@ -374,7 +380,7 @@ def _normalise_key(value: str) -> str:
 def _forbidden_feature_key(key: str) -> bool:
     # Some deliberately whitelisted market terms contain a control-looking
     # token in an unrelated semantic (for example ``range_position``).  The
-    # exact V1 whitelist takes precedence; nested values are still inspected.
+    # exact market whitelist takes precedence; nested values are still inspected.
     if key in ALLOWED_CATEGORICAL_FEATURES or key in ALLOWED_NUMERIC_FEATURES:
         return False
     tokens = re.findall(r"[a-z0-9]+", _normalise_key(key))
@@ -384,7 +390,7 @@ def _forbidden_feature_key(key: str) -> bool:
 def validate_action_free_features(value: Any, field_name: str = "features") -> None:
     """Reject forbidden control keys at every nested level.
 
-    Feature values are scalar in the concrete V1 contract, but recursive
+    Feature values are scalar in the concrete market contract, but recursive
     validation keeps a future caller from smuggling an action-bearing object
     through a nested Mapping or list before scalar validation reports it.
     """
@@ -487,9 +493,6 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-_GRAPH_FEATURE_CONTRACT_VERSION = "market_ohlcv_graph.v3"
-
-
 def world_episode_id(
     *,
     venue: str,
@@ -503,11 +506,11 @@ def world_episode_id(
 ) -> str:
     """Return the deterministic identity of one action-independent sampling slot.
 
-    ``context_snapshot_id`` is omitted from the V1 slot.  A V2 context episode
+    ``context_snapshot_id`` is omitted from the market slot. A context episode
     includes the snapshot digest so two different proven contexts at the same
-    market bar cannot collide, while a market-only observation keeps the
-    historical identity byte-for-byte.  A V3 graph episode includes
-    ``graph_snapshot_id`` the same way and must not change V1/V2 identities.
+    market bar cannot collide, while a market-only observation keeps its
+    identity byte-for-byte. A graph episode includes ``graph_snapshot_id`` the
+    same way and must not change market or context identities.
     """
 
     slot = {
@@ -784,7 +787,6 @@ class WorldObservation:
         object.__setattr__(self, "categorical_features", _immutable_categorical_features(self.categorical_features))
         object.__setattr__(self, "numeric_features", _immutable_numeric_features(self.numeric_features))
         from trader.domain.world_context import (
-            CONTEXT_FEATURE_CONTRACT_VERSION,
             WorldContextSnapshot,
             freeze_context_mapping,
         )
@@ -804,37 +806,37 @@ class WorldObservation:
             object.__setattr__(self, "graph", observation_graph_snapshot(raw_graph))
         object.__setattr__(self, "graph_features", _immutable_graph_features(self.graph_features))
         contract = self.feature_contract_version
-        if contract == MARKET_FEATURE_CONTRACT_VERSION:
+        if contract not in CURRENT_FEATURE_CONTRACT_IDS:
+            raise ValueError(
+                "feature_contract_version must be one of: " + ", ".join(sorted(CURRENT_FEATURE_CONTRACT_IDS))
+            )
+        if contract == MARKET_FEATURE_CONTRACT_ID:
             if self.context is not None:
-                raise ValueError("V1 observation must not carry context")
+                raise ValueError("market observation must not carry context")
             if self.graph is not None or self.graph_features is not None:
-                raise ValueError("V1 observation must not carry graph")
-        elif contract == CONTEXT_FEATURE_CONTRACT_VERSION:
+                raise ValueError("market observation must not carry graph")
+        elif contract == CONTEXT_FEATURE_CONTRACT_ID:
             if self.context is None:
-                raise ValueError("V2 observation must carry context")
+                raise ValueError("context observation must carry context")
             if self.graph is not None or self.graph_features is not None:
-                raise ValueError("V2 observation must not carry graph")
+                raise ValueError("context observation must not carry graph")
             snapshot = WorldContextSnapshot.from_mapping(self.context)
             if snapshot.instrument.entity_id != self.symbol:
                 raise ValueError("context instrument must match observation symbol")
             if snapshot.feature_contract_version != contract:
                 raise ValueError("context feature contract must match observation")
             if available_at is None:
-                raise ValueError("V2 observation requires available_at to bound context cutoff")
+                raise ValueError("context observation requires available_at to bound context cutoff")
             if snapshot.cutoff_at > available_at:
                 raise ValueError("context cutoff must not follow observation available_at")
-        elif contract == _GRAPH_FEATURE_CONTRACT_VERSION:
+        elif contract == GRAPH_FEATURE_CONTRACT_ID:
             if self.context is not None:
-                raise ValueError("V3 observation must not carry V2 context")
+                raise ValueError("graph observation must not carry context")
             if self.graph is not None:
                 if available_at is None:
-                    raise ValueError("V3 observation requires available_at to bound graph cutoff")
+                    raise ValueError("graph observation requires available_at to bound graph cutoff")
                 if self.graph.cutoff_at > available_at:
                     raise ValueError("graph cutoff must not follow observation available_at")
-        elif self.context is not None:
-            raise ValueError("unknown feature contract must not carry context")
-        elif self.graph is not None or self.graph_features is not None:
-            raise ValueError("unknown feature contract must not carry graph")
 
     @property
     def observed_at(self) -> datetime:
@@ -975,15 +977,9 @@ class WorldEpisode:
         schema_version = _required_text(self.schema_version, "schema_version")
         object.__setattr__(self, "schema_version", schema_version)
 
-        # Old payloads remain auditable, but their feature semantics have not
-        # been accepted by this V1 contract.  They must never become a silent
-        # source of training rows merely because their fields happen to look
-        # complete.
-        derived_reason = (
-            "unsupported_schema_version"
-            if schema_version != WORLD_EPISODE_SCHEMA_VERSION
-            else observation.training_ineligibility_reason
-        )
+        if schema_version != WORLD_EPISODE_SCHEMA_VERSION:
+            raise ValueError(f"schema_version must be {WORLD_EPISODE_SCHEMA_VERSION}")
+        derived_reason = observation.training_ineligibility_reason
         requested = self.training_eligible
         if requested is not None and not isinstance(requested, bool):
             raise TypeError("training_eligible must be a bool or None")
@@ -1029,13 +1025,13 @@ class WorldEpisode:
     def from_dict(cls, value: Mapping[str, Any]) -> WorldEpisode:
         if not isinstance(value, Mapping):
             raise TypeError("world episode payload must be a mapping")
+        if "schema_version" not in value:
+            raise ValueError("schema_version is required")
         episode = cls(
             observation=value.get("observation"),
             training_eligible=value.get("training_eligible"),
             training_reason=value.get("training_reason"),
-            # A payload without an explicit schema is legacy/audit-only.  Do
-            # not reinterpret it as a current training record on replay.
-            schema_version=value.get("schema_version", "legacy.missing_schema_version"),
+            schema_version=value.get("schema_version"),
         )
         persisted_id = value.get("episode_id")
         if persisted_id is not None and _required_text(persisted_id, "episode_id") != episode.episode_id:
@@ -1195,11 +1191,7 @@ class WorldOutcome:
             and self.available_at < self.endpoint_bar_ts
         ):
             raise ValueError("available_at must not precede endpoint_bar_ts")
-        if (
-            self.computed_at is not None
-            and self.available_at is not None
-            and self.computed_at < self.available_at
-        ):
+        if self.computed_at is not None and self.available_at is not None and self.computed_at < self.available_at:
             raise ValueError("computed_at must not precede available_at")
         object.__setattr__(self, "anchor_close", _finite_optional(self.anchor_close, "anchor_close"))
         object.__setattr__(self, "endpoint_close", _finite_optional(self.endpoint_close, "endpoint_close"))

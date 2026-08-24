@@ -3,7 +3,7 @@
 - **Date** : 2026-08-23
 - **Statut** : 💬 RFC proposée — prête pour revue ; aucune activation runtime
 - **Auteurs** : Erwan + Codex
-- **Portée** : ontologie temporelle, projection NetworkX, features V3,
+- **Portée** : ontologie temporelle, projection NetworkX, features graphe,
   hypothèses de chaînes et outcomes prospectifs
 - **Autorité** : `shadow_only` / `NO_GO` ; `decision_effect=none`
 - **Registre** : D19 ; cette RFC ne modifie pas l'autorité Trader
@@ -38,7 +38,7 @@ La vérité canonique reste constituée d'objets de domaine typés et immuables.
 NetworkX construit une projection fraîche pour traverser ou valider ces
 objets ; le graphe mutable NetworkX n'est jamais persisté. La première
 expérience ML reste un vecteur déterministe compact donné aux Markov/GRU dans
-une voie V3 distincte. Ni GNN, ni GraphRAG, ni Neo4j dans cette RFC.
+une voie graphe distincte. Ni GNN, ni GraphRAG, ni Neo4j dans cette RFC.
 
 ## 2. Ce qui existe et ce qui manque
 
@@ -47,10 +47,10 @@ une voie V3 distincte. Ni GNN, ni GraphRAG, ni Neo4j dans cette RFC.
 - `EntityRef`, `TopologyEdge`, `KnowledgeArtifact` et
   `WorldContextSnapshot` sont immuables, hashés et stdlib-only ;
 - la projection `WorldContextGraph` crée un `networkx.MultiDiGraph` détaché ;
-- V2 relie déjà instrument, venue, famille gelée et, sous garde stricte,
+- la voie contexte relie déjà instrument, venue, famille gelée et, sous garde stricte,
   émetteur vérifié et artefacts sensoriels ;
 - les arêtes `CAUSES` sont interdites ;
-- le contexte V2 est une projection plate : aucune topologie n'est encodée dans
+- la voie contexte est une projection plate : aucune topologie n'est encodée dans
   Markov ou GRU.
 
 ### 2.2 Manques à couvrir
@@ -60,7 +60,7 @@ une voie V3 distincte. Ni GNN, ni GraphRAG, ni Neo4j dans cette RFC.
 - histoire autonome des entités/relations, avec assertion, retrait et
   supersession append-only ;
 - relations de connaissance `ABOUT`, `OBSERVES`, `DERIVED_FROM`, `SUPERSEDES` ;
-- profil de features V3 explicite, distinct du booléen `include_context` ;
+- profil de features graphe explicite, distinct du booléen `include_context` ;
 - `PatternHypothesis`, occurrences, outcomes, contre-exemples et contrôles
   négatifs ;
 - séparation stricte entre découverte d'un pattern et évaluation prospective ;
@@ -96,13 +96,13 @@ Le vocabulaire public reste `predictive_hypothesis`,
 | Objet | Rôle | Cycle de vie |
 |---|---|---|
 | `WorldEntityRef` | identité namespacée stable | immuable |
-| `WorldEntityIdentityMap` | agrégat de correspondances V2→V3 prouvées | assertion, retrait et supersession par événement |
+| `WorldEntityIdentityMap` | agrégat de correspondances contexte→graphe prouvées | assertion, retrait et supersession par événement |
 | `WorldRelation` | union fermée de relation structurelle ou de connaissance | assertion puis retrait/supersession par événement |
 | `WorldOntologyRevision` | heads structurels déterministes, jamais les observations dynamiques | publié, puis supersédé |
 | `KnowledgeArtifact` | preuve à propos d'entités | append-only, éligibilité dérivée des horloges |
 | `WorldContextSnapshot` | vue exacte à un cutoff | immuable |
-| `WorldGraphSnapshot` | sous-graphe V3 admissible enraciné sur un épisode | immuable |
-| `WorldFeatureContract` | contrat de base partagé V1/V2/V3 et fingerprint | immuable |
+| `WorldGraphSnapshot` | sous-voie graphe admissible enraciné sur un épisode | immuable |
+| `WorldFeatureContract` | contrat de base partagé marché/contexte/graphe et fingerprint | immuable |
 | `WorldFeatureMask` | sous-ensemble de groupes du contrat et fingerprint | immuable |
 | `MacroGraphBridgeRegistry` | agrégat coordinateur single-active par `bridge_key` | générations activées, bloquées et handoff par events |
 | `MacroGraphBridgeRun` | état d'une génération détenue par le registry | actif, bloqué, repris ou supersédé |
@@ -147,10 +147,10 @@ d'outcome de ses horizons. Les agrégats refusent : lien outcome avant
 occurrence, occurrence antérieure au départ, nouvelle feuille sans
 supersession explicite, changement de définition sous le même ID.
 
-## 5. Identités d'entités V3
+## 5. Identités d'entités graphe
 
-Les `EntityRef` V2 actuels sont conservés pour rejouer les épisodes V2. En V3,
-les IDs sont globalement namespacés :
+Les `EntityRef` contexte restent le scope marché local. Les identités graphe
+sont globalement namespacées :
 
 ```text
 world:market
@@ -179,11 +179,11 @@ les variantes source/cible autorisées. Grok ne doit pas inventer des artefacts
 en les faisant passer pour `WorldEntityRef`.
 
 Un symbole seul ne constitue jamais un ID global d'instrument. Aucune migration
-ne réécrit les V2 : l'agrégat `WorldEntityIdentityMap.v1` relie, quand c'est
-non ambigu, la référence V2 locale à l'identité V3 namespacée. Chaque lien
+ne réécrit les refs contexte : l'agrégat `WorldEntityIdentityMap.v1` relie, quand c'est
+non ambigu, la référence contexte locale à l'identité graphe namespacée. Chaque lien
 porte ses preuves et son intervalle de validité. Il est créé, retiré ou
-supersédé uniquement par les événements typés ci-dessus ; un même V2 actif ne
-peut pointer vers deux V3 et une correction ne réécrit jamais l'ancien lien.
+supersédé uniquement par les événements typés ci-dessus ; une même ref contexte active ne
+peut pointer vers deux graphe et une correction ne réécrit jamais l'ancien lien.
 
 Une entreprise n'est créée que depuis un identifiant externe vérifié
 namespacé (`lei`, `cik` ou provider issuer ID approuvé). L'ISIN identifie un
@@ -196,8 +196,8 @@ rigide.
 ancre→venue→country→region→world. Le service de publication dérive
 déterministement de ses entrées les heads structurels `TRADED_ON`, `LOCATED_IN`
 et `PART_OF_WORLD` concernés ; ni l'identity map ni
-`config/world_graph_v3.yaml` ne peuvent en publier une variante. L'identity map
-traduit seulement une ref legacy vers une identité V3. À la publication, une
+`config/world_graph.yaml` ne peuvent en publier une variante. L'identity map
+traduit seulement une ref legacy vers une identité graphe. À la publication, une
 comparaison canonique exige l'égalité exacte entre les heads dérivés et le
 mapping gelé : relation manquante, supplémentaire ou contradictoire = rejet de
 la révision.
@@ -231,7 +231,7 @@ Les deux familles utilisent des enums/classes distinctes
 
 ### 6.3 Bridge prospectif macro → graphe
 
-`MacroScope.entity_id` réutilise les IDs `WorldEntityRef` V3 (`iso-un-m49`,
+`MacroScope.entity_id` réutilise les IDs `WorldEntityRef` graphe (`iso-un-m49`,
 `iso-3166`, `mic`) ; la conversion depuis les IDs provider est gelée dans
 `MacroSourceRegistry`, pas redécouverte à la capture. Après publication et reçu
 durable d'un `MacroObservationEnvelope`, le use case
@@ -402,7 +402,7 @@ mapping de scopes est un conflit. Les relations `ABOUT`, `OBSERVES`,
 
 ### 7.1 `WorldGraphSnapshot.v1`
 
-Le snapshot V3 matérialise le sous-graphe exact utilisé pour un épisode :
+Le snapshot graphe matérialise le sous-graphe exact utilisé pour un épisode :
 
 ```json
 {
@@ -515,11 +515,11 @@ Une hypothèse est formulée **avant** ses occurrences d'évaluation :
   ],
   "formation_cutoff": "2026-09-01T00:00:00Z",
   "formation_dataset_fingerprint": "<sha256>",
-  "feature_contract_id": "market_ohlcv_graph.v3",
+  "feature_contract_id": "world_feature.graph.v1",
   "feature_contract_fingerprint": "<sha256>",
   "feature_mask_id": "graph_content.v1",
   "feature_mask_fingerprint": "<sha256>",
-  "model_identity": "online_gru_world_challenger@graph.v3",
+  "model_identity": "online_gru_world_challenger@graph.v1",
   "ontology_revision": "market_ontology.v1",
   "source_refs": [],
   "causal_claim": false,
@@ -580,14 +580,14 @@ et supersède l'ancien ; jamais d'overwrite ni de deuxième autorité du label.
 ### 10.3 `PatternAssessment.v1`
 
 Read model par hypothèse/version : support unique, couverture, log-loss/Brier,
-calibration, lift contre contrôle V2, contextes favorables, contre-exemples,
+calibration, lift contre contrôle contexte, contextes favorables, contre-exemples,
 résultats des permutations et raisons d'exclusion. Ses conclusions restent
 `predictive_association_observed`, `inconclusive`, `not_supported` ou
 `invalidated`.
 
-## 11. Profil de features V3
+## 11. Profil de features graphe
 
-Le booléen `include_context` ne doit pas devenir deux ou trois booléens. V3
+Le booléen `include_context` ne doit pas devenir deux ou trois booléens. La voie graphe
 étend le type canonique `WorldFeatureContract` défini par la RFC cohorte :
 
 ```text
@@ -603,7 +603,7 @@ vocabulary_fingerprint
 ```
 
 Le module owner reste `trader/domain/world_feature_contract.py`. Cette RFC
-n'introduit aucun `FeatureContractSpec` concurrent. Les masks V3
+n'introduit aucun `FeatureContractSpec` concurrent. Les masks graphe
 (`topology_status_only`, contenu topologique complet, etc.) restent des
 `WorldFeatureMask` séparés ; une lane et une prédiction persistent le
 fingerprint du contrat **et** celui du mask.
@@ -612,11 +612,11 @@ Profils :
 
 | Profil | Contrat | Contenu |
 |---|---|---|
-| V1 | `market_ohlcv_causal.v1` | marché |
-| V2 | `market_ohlcv_context.v2` | marché + contexte plat |
-| V3 | `market_ohlcv_graph.v3` | V2 + features de chemins déterministes |
+| marché | `world_feature.market.v1` | marché |
+| contexte | `world_feature.context.v1` | marché + contexte plat |
+| graphe | `world_feature.graph.v1` | contexte + features de chemins déterministes |
 
-Le premier V3 reste petit :
+Le premier graphe reste petit :
 
 - statut/couverture de résolution du graphe ;
 - nombre de sources et artefacts admissibles par fenêtre ;
@@ -635,28 +635,28 @@ fingerprint. Recommandation initiale : chemins structurels de profondeur
 `<= 4`, sans parcours cyclique, et agrégats calculés uniquement sur les
 artefacts référencés par le snapshot.
 
-## 12. Expérience V3 et découverte de patterns
+## 12. Expérience graphe et découverte de patterns
 
 ### 12.1 Ablation prospective
 
-V3 commence dans une nouvelle cohorte définie par la
+La voie graphe commence dans une nouvelle cohorte définie par la
 [RFC cohorte](2026-08-23-world-model-prospective-cohort-design.md) :
 
 ```text
-V1 market
-V2 flat context
-V3 topology_status_only       # contrôle processus/topologie
-V3 graph_content              # chemins + contenu structuré
+market
+flat context
+topology_status_only       # contrôle processus/topologie
+graph_content              # chemins + contenu structuré
 ```
 
-Markov V3 et GRU V3 reçoivent chacun une identité distincte. Ils apprennent à
+Markov graphe et GRU graphe reçoivent chacun une identité distincte. Ils apprennent à
 zéro sur les mêmes slots/labels ordonnés que leurs contrôles. Le graphe
-NetworkX lui-même n'est pas l'entrée ; seul `WorldFeatureContract(V3)` produit
+NetworkX lui-même n'est pas l'entrée ; seul `WorldFeatureContract` graphe produit
 un vecteur déterministe.
 
 ### 12.2 Découverte puis confirmation
 
-1. un pilote V3 collecte features, paths et outcomes ;
+1. un pilote graphe collecte features, paths et outcomes ;
 2. une analyse offline groupe des occurrences par signature de chaîne et
    propose des `PatternHypothesis` ;
 3. les hypothèses, seuils et population sont enregistrés ;
@@ -696,12 +696,12 @@ décision séparée parce qu'il créerait un nouveau lien avec le chemin Trader.
 
 | Couche | Owner proposé | Responsabilité |
 |---|---|---|
-| Domaine actuel | `trader/domain/world_context.py` | records V2 et compatibilité |
-| Domaine V3 | `trader/domain/world_graph.py` | entités, relations, révisions, snapshots, events |
+| Domaine actuel | `trader/domain/world_context.py` | records contexte et compatibilité |
+| Domaine graphe | `trader/domain/world_graph.py` | entités, relations, révisions, snapshots, events |
 | Domaine patterns | `trader/domain/world_pattern.py` | agrégats hypothesis/occurrence et lifecycle |
 | Application | `ontology_service.py`, `graph_observation_bridge.py`, `graph_ports.py` | commands/queries point-in-time, bridge et ports consumer-owned |
 | Application ML | `graph_features.py`, `pattern_service.py`, `pattern_ports.py` | profiles, features, admission/outcomes |
-| Infrastructure graph | `trader/infrastructure/graph/world_temporal_networkx.py` | projection fraîche V3 uniquement |
+| Infrastructure graph | `trader/infrastructure/graph/world_temporal_networkx.py` | projection fraîche graphe uniquement |
 | Infrastructure état | `world_graph_store.py`, `world_pattern_store.py` | ledgers append-only séparés |
 | Reporting | `trader/reporting/read_models/world_patterns.py` | assessments et explications |
 | Interface | `trader/interfaces/cli/world_model.py` | façade mince |
@@ -820,15 +820,15 @@ verrouillent cette frontière.
 
 ## 15. Runtime, budgets et rollout
 
-Le resolver et le projecteur V3 font uniquement de l'I/O locale. Aucun fetch
+Le resolver et le projecteur graphe font uniquement de l'I/O locale. Aucun fetch
 ni LLM pendant la capture. Les traversées sont bornées par instrument,
 profondeur, nombre de chemins et cutoff ; un dépassement produit
-`graph_budget_exceeded`/missingness et laisse V1/V2 continuer.
+`graph_budget_exceeded`/missingness et laisse marché/contexte continuer.
 
 Flag proposé, défaut off et boot-only :
 
 ```text
-CASYS_WORLD_MODEL_GRAPH_V3_ENABLED=0
+CASYS_WORLD_MODEL_GRAPH_ENABLED=0
 ```
 
 | Phase | Travail | Peut avancer quand |
@@ -836,8 +836,8 @@ CASYS_WORLD_MODEL_GRAPH_V3_ENABLED=0
 | G0 | contrats/IDs/events/store | dès validation RFC |
 | G1 | collecte topologie et résolution PIT | en parallèle du flux macro |
 | G2 | read model + projection NetworkX | après G1 |
-| G3 | `WorldFeatureContract` V3 + spike offline | contrats macro/cohorte gelés |
-| G4 | cohorte pilote V3 | cohorte et contrôles prêts |
+| G3 | `WorldFeatureContract` graphe + spike offline | contrats macro/cohorte gelés |
+| G4 | cohorte pilote graphe | cohorte et contrôles prêts |
 | G5 | hypothèses + période de confirmation | support pilote suffisant |
 | G6 | adapter FLAIR/MemRL | décision séparée après preuve |
 
@@ -846,14 +846,14 @@ le daemon et ne touche pas au frontend.
 
 ## 16. Gates et critères de stop
 
-Stop/invalidation si : ID instrument non namespacé admis en V3, relation sans
+Stop/invalidation si : ID instrument non namespacé admis en graphe, relation sans
 source ou sans `AvailabilityEvidence` store-assigned, arête causale factuelle,
 snapshot construit depuis `current`,
 path post-cutoff, mutation historique, feature hors profil, découverte et
 confirmation sur les mêmes données, model lineage non appariée, ou effet sur
 le chemin Trader.
 
-Lancement V3 `NO_GO` tant que :
+Lancement graphe `NO_GO` tant que :
 
 - macro source-only et manifeste de cohorte ne sont pas stables ;
 - les mappings région/pays/place n'ont pas version/hash ;
@@ -868,7 +868,7 @@ Lancement V3 `NO_GO` tant que :
 - IDs namespacés, enums fermées, immutabilité/hash ;
 - symbole homonyme sur deux venues = deux instruments ;
 - société multi-instrument et instrument sans issuer vérifié ;
-- identity link V2→V3 prouvé, ambiguïté refusée et correction supersédée ;
+- identity link contexte→graphe prouvé, ambiguïté refusée et correction supersédée ;
 - assertion/retrait/supersession et intervalles exclusifs ;
 - `CAUSES` impossible dans toute relation factuelle ;
 - reconstruction identique quel que soit l'ordre d'append.
@@ -884,11 +884,11 @@ Lancement V3 `NO_GO` tant que :
 
 ### Feature contracts/modèles
 
-- V1/V2 fingerprints et prédictions non régressés ;
-- V3 refuse épisode/profil incompatible ;
-- encoder V3 déterministe et borné ;
+- marché/contexte fingerprints et prédictions non régressés ;
+- graphe refuse épisode/profil incompatible ;
+- encoder graphe déterministe et borné ;
 - `topology_status_only` sans contenu ;
-- même slot/labels/lineage entre V2/V3 ;
+- même slot/labels/lineage entre contexte/graphe ;
 - Markov et GRU n'importent ni NetworkX ni l'un l'autre.
 
 ### Patterns
@@ -904,8 +904,8 @@ Lancement V3 `NO_GO` tant que :
 ### Architecture/reporting/runtime
 
 - règles d'import DDD ; CLI sans SQL ; status/report read-only ;
-- migrations sans réécriture V1/V2 ; triggers anti-mutation ;
-- panne/budget V3 sans effet sur V1/V2/Trader ;
+- schéma frais unique ; store d'une autre version rejeté ; triggers anti-mutation ;
+- panne/budget graphe sans effet sur marché/contexte/Trader ;
 - invariants `shadow_only`, `NO_GO`, `decision_effect=none`.
 
 ## 18. Lots Grok CLI bornés
@@ -923,12 +923,12 @@ sale.
 - **allowed_edits** : `trader/domain/world_graph.py`,
   `tests/domain/test_world_graph.py`.
 - **sortie** : refs namespacées, union node refs, agrégat et events d'identity
-  map V2→V3, events structurels et de connaissance distincts,
+  map contexte→graphe, events structurels et de connaissance distincts,
   revision events et `WorldGraphSnapshot` avec les deux jeux de refs.
 - **tests** : `uv run pytest -q tests/domain/test_world_graph.py
   tests/domain/test_world_availability.py`.
 - **exit** : temporalité, correction, lifecycle et interdiction `CAUSES`
-  testés ; V2 inchangée.
+  testés ; voie contexte inchangée.
 
 ### Lot GRAPH-2 — ports et resolver application
 
@@ -1026,12 +1026,12 @@ sale.
   tests/infrastructure/test_world_temporal_networkx.py
   tests/infrastructure/test_world_context_networkx.py
   tests/package_layout/test_infrastructure_layout.py`.
-- **exit** : aucune persistance NetworkX, mutation détachée, V2 non régressée.
+- **exit** : aucune persistance NetworkX, mutation détachée, voie contexte non régressée.
 
 ### Gate GRAPH-CONFIG — décision opérateur, non délégable
 
 Avant `GRAPH-5`, un opérateur doit valider et committer
-`config/world_graph_v3.yaml`. Cet artefact versionné/hashé référence
+`config/world_graph.yaml`. Cet artefact versionné/hashé référence
 obligatoirement l'ID/hash de `config/world_scope_mapping.yaml` ; il ne définit
 jamais un second mapping ni les relations de scope qui en sont dérivées. Il
 fige taxonomies region/country, providers de
@@ -1042,12 +1042,12 @@ fermeture/multiplicité approuvés. Grok peut valider le schéma mais ne choisit
 aucune valeur ; champ/hash manquant =
 `blocked_until`, `NO_GO` sans édition.
 
-### Lot GRAPH-5 — profil de features V3
+### Lot GRAPH-5 — profil de features graphe
 
 - **depends_on** : `COHORT-4`, `MACRO-5`, `GRAPH-1`, `GRAPH-CONFIG` ; cette
   dépendance sérialise les contracts/encoders partagés après l'extension macro.
 - **read_only_context** : `trader/domain/world_feature_contract.py`,
-  `config/world_graph_v3.yaml`, `config/world_scope_mapping.yaml`.
+  `config/world_graph.yaml`, `config/world_scope_mapping.yaml`.
 - **allowed_edits** : `trader/domain/world_feature_contract.py`,
   `trader/application/world_model/encoding.py`,
   `trader/application/world_model/baseline.py`,
@@ -1056,13 +1056,13 @@ aucune valeur ; champ/hash manquant =
   `tests/application/test_world_model_feature_contracts.py`,
   `tests/application/test_world_baseline.py`,
   `tests/application/test_world_gru.py`.
-- **sortie** : `market_ohlcv_graph.v3`, model/encoder identities et profil
+- **sortie** : `world_feature.graph.v1`, model/encoder identities et profil
   `topology_status_only`.
 - **tests** : `uv run pytest -q
   tests/domain/test_world_feature_contract.py
   tests/application/test_world_model_feature_contracts.py
   tests/application/test_world_baseline.py tests/application/test_world_gru.py`.
-- **exit** : V1/V2 bit/fingerprint compatibles ; V3 isolée, sans NetworkX dans
+- **exit** : marché/contexte bit/fingerprint compatibles ; graphe isolé, sans NetworkX dans
   les modèles.
 
 ### Lot GRAPH-6 — snapshot et features application
@@ -1075,14 +1075,14 @@ aucune valeur ; champ/hash manquant =
   `trader/application/world_model/graph_ports.py`,
   `tests/application/test_world_graph_snapshot.py`,
   `tests/application/test_world_graph_features.py`.
-- **sortie** : snapshot V3 PIT et vecteur borné avec provenance par feature.
+- **sortie** : snapshot graphe PIT et vecteur borné avec provenance par feature.
 - **tests** : `uv run pytest -q
   tests/application/test_world_graph_snapshot.py
   tests/application/test_world_graph_features.py`.
 - **exit** : même input/cutoff = même snapshot/features ; budgets, late data et
   missingness contrôlés ; aucune I/O réseau/LLM.
 
-### Lot GRAPH-7 — épisodes et lanes V3
+### Lot GRAPH-7 — épisodes et lanes graphe
 
 - **depends_on** : `GRAPH-3`, `GRAPH-5`, `GRAPH-6`, `COHORT-5`,
   `GRAPH-CONFIG` avec `cohort_id` gelé.
@@ -1094,12 +1094,12 @@ aucune valeur ; champ/hash manquant =
   `tests/application/test_world_graph_capture.py`,
   `tests/application/test_world_context_lanes.py`,
   `tests/infrastructure/test_world_model_store.py`.
-- **sortie** : canonical-first-write V3, Markov/GRU graph.v3 et appariement de
-  slot V1/V2/V3.
+- **sortie** : canonical-first-write graphe, Markov/GRU graph.v1 et appariement de
+  slot marché/contexte/graphe.
 - **tests** : `uv run pytest -q tests/application/test_world_graph_capture.py
   tests/application/test_world_context_lanes.py
   tests/infrastructure/test_world_model_store.py`.
-- **exit** : chaque profil refuse les autres contracts ; V3 missing neutre ;
+- **exit** : chaque profil refuse les autres contracts ; graphe missing neutre ;
   aucune lane runtime activée.
 
 ### Lot GRAPH-8 — domaine patterns
@@ -1153,7 +1153,7 @@ aucune valeur ; champ/hash manquant =
 - **allowed_edits** : `trader/reporting/read_models/world_patterns.py`,
   `trader/infrastructure/state_db/world_model_query.py`,
   `tests/read_models/test_world_patterns.py`.
-- **sortie** : matched sets V2/V3, assessments, permutations, contre-exemples et
+- **sortie** : matched sets contexte/graphe, assessments, permutations, contre-exemples et
   multiplicité.
 - **tests** : `uv run pytest -q tests/read_models/test_world_patterns.py
   tests/read_models/test_world_cohort_report.py`.
@@ -1172,10 +1172,10 @@ aucune valeur ; champ/hash manquant =
   `trader/runtime/cli.py`, `tests/runtime/test_world_model_runtime.py`,
   `tests/runtime/test_daemon_world_model.py`,
   `tests/test_cli_world_model.py`.
-- **sortie** : flag défaut off, lanes V3 locales, status/report budgets/gaps.
+- **sortie** : flag défaut off, lanes graphe locales, status/report budgets/gaps.
 - **tests** : `uv run pytest -q tests/runtime/test_world_model_runtime.py
   tests/runtime/test_daemon_world_model.py tests/test_cli_world_model.py`.
-- **exit** : aucun restart/activation ; V1/V2/Trader fail-open.
+- **exit** : aucun restart/activation ; marché/contexte/Trader fail-open.
 
 ## 19. Contrat d'exécution pour Grok
 
@@ -1194,8 +1194,8 @@ uniquement si l'orchestrateur l'autorise avec pathspecs explicites.
 ## 20. Documentation après livraison et points ouverts
 
 Après livraison, consolider référence World Model, explication ontologie et
-how-to opérateur. Les pages actuelles restent la vérité de la capacité V2 tant
-que V3 n'est pas livrée.
+how-to opérateur. Les voies live sont `market`, `context`, `macro_source` et
+`graph`. Pas de contrat tombstone héritage.
 
 La gate `GRAPH-CONFIG` fige avant GRAPH-5 taxonomie région/pays, sources de
 mappings instrument/issuer, fenêtres/decay, profondeur/path budget et

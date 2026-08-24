@@ -11,6 +11,7 @@ from trader.domain.world_availability import (
     AvailabilityEvidence,
     PersistedWorldRef,
     PointInTimeEligibilityPolicy,
+    WORLD_AVAILABILITY_RECEIPT_SCHEMA,
     WorldAvailabilityReceipt,
     WorldAvailabilitySubjectRef,
     WorldStorageLocator,
@@ -72,7 +73,7 @@ def _stamp(
     resolved_subject = subject or _subject()
     locator = storage_locator or _locator()
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version=WORLD_AVAILABILITY_RECEIPT_SCHEMA,
         subject=resolved_subject,
         scope=scope,
         storage_locator=locator,
@@ -149,7 +150,7 @@ def test_unsigned_or_rehydrated_receipt_cannot_enter_persisted_ref_or_evidence()
         scope="iso-3166:US",
         storage_locator=_locator(),
         content_sha256=CONTENT,
-        schema_version="availability_receipt.v2",
+        schema_version=WORLD_AVAILABILITY_RECEIPT_SCHEMA,
     )
     assert unsigned.ready_at is None
     with pytest.raises(ValueError, match="store-attested"):
@@ -210,6 +211,54 @@ def test_receipt_hash_mismatch_and_locator_kinds_fail_closed() -> None:
         WorldStorageLocator(kind="sqlite", store_id="world-model.db.v1", table="world_availability_receipts")
     with pytest.raises(ValueError, match="kind"):
         WorldStorageLocator(kind="mtime", store_id=STORE_ID)
+
+
+def test_parsers_and_attestation_accept_only_current_world_receipt_schema() -> None:
+    sealed = _stamp()
+    assert sealed.schema_version == WORLD_AVAILABILITY_RECEIPT_SCHEMA == "world_availability_receipt.v1"
+    attested = _attest_verified_store_receipt(
+        sealed,
+        expected_subject=sealed.subject,
+        expected_scope=sealed.scope,
+        expected_locator=sealed.storage_locator,
+    )
+    assert attested.schema_version == WORLD_AVAILABILITY_RECEIPT_SCHEMA
+    for old in ("availability_receipt.v1", "availability_receipt.v2"):
+        with pytest.raises(ValueError, match="schema_version"):
+            WorldAvailabilityReceipt(
+                receipt_id="unsigned",
+                subject=_subject(),
+                scope="iso-3166:US",
+                storage_locator=_locator(),
+                content_sha256=CONTENT,
+                schema_version=old,
+            )
+        identity = _receipt_identity_payload(
+            schema_version=old,
+            subject=_subject(),
+            scope="iso-3166:US",
+            storage_locator=_locator(),
+        )
+        receipt_id = _receipt_id_for(identity)
+        digest = canonical_sha256(_receipt_hash_payload(identity, receipt_id=receipt_id, ready_at=READY))
+        with pytest.raises(ValueError, match="schema_version"):
+            WorldAvailabilityReceipt.from_mapping(
+                {
+                    **identity,
+                    "receipt_id": receipt_id,
+                    "ready_at": _iso(READY),
+                    "receipt_sha256": digest,
+                }
+            )
+        forged = _stamp()
+        object.__setattr__(forged, "schema_version", old)
+        with pytest.raises(ValueError, match=WORLD_AVAILABILITY_RECEIPT_SCHEMA):
+            _attest_verified_store_receipt(
+                forged,
+                expected_subject=forged.subject,
+                expected_scope=forged.scope,
+                expected_locator=forged.storage_locator,
+            )
 
 
 def test_receipt_is_frozen() -> None:

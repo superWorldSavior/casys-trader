@@ -53,11 +53,11 @@ from trader.infrastructure.state_db.availability_receipt import (
 )
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.world_model_store import (
-    WORLD_MODEL_MIGRATIONS,
     WORLD_MODEL_STORE_ID,
     WorldModelConflictError,
     _aware_utc,
     _open_dedicated_state_db,
+    apply_current_world_model_schema,
 )
 
 
@@ -101,9 +101,7 @@ def _json_load(text: str) -> Any:
 
 
 def _payload_conflict(event_id: str) -> PatternPayloadConflict:
-    return PatternPayloadConflict(
-        f"event_id {event_id!r} already exists with different canonical content"
-    )
+    return PatternPayloadConflict(f"event_id {event_id!r} already exists with different canonical content")
 
 
 class WorldPatternStore:
@@ -124,7 +122,7 @@ class WorldPatternStore:
         self._clock = clock or default_utc_clock
         self._first_seen_at: dict[str, datetime] = {}
         self._db.query_one("PRAGMA foreign_keys=ON")
-        self._db.apply_migrations(WORLD_MODEL_MIGRATIONS)
+        apply_current_world_model_schema(self._db)
 
     def close(self) -> None:
         if self._owns_db:
@@ -216,7 +214,11 @@ class WorldPatternStore:
             return event
         if isinstance(event, Mapping):
             event_type = str(event.get("event_type") or "")
-            if event_type.startswith("pattern_hypothesis_") or event_type == "pattern_evaluation_started" or event_type == "pattern_evaluation_closed":
+            if (
+                event_type.startswith("pattern_hypothesis_")
+                or event_type == "pattern_evaluation_started"
+                or event_type == "pattern_evaluation_closed"
+            ):
                 return parse_pattern_hypothesis_event(event)
             return parse_pattern_occurrence_event(event)
         raise TypeError("event must be a pattern hypothesis or occurrence event")
@@ -300,7 +302,9 @@ class WorldPatternStore:
                 return int(existing["sequence"])
             raise WorldModelConflictError("conflicting sequence") from None
 
-    def _event_columns(self, cur: sqlite3.Cursor, event: PatternHypothesisEvent | PatternOccurrenceEvent) -> dict[str, str]:
+    def _event_columns(
+        self, cur: sqlite3.Cursor, event: PatternHypothesisEvent | PatternOccurrenceEvent
+    ) -> dict[str, str]:
         if isinstance(event, _HYPOTHESIS_EVENTS):
             return {"hypothesis_id": event.hypothesis_id}
         if isinstance(event, PatternOccurrenceRecorded):

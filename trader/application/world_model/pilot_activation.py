@@ -8,7 +8,7 @@ is not an implicit runtime default.
 
 No backfill. No trade decision effect. Idle cycles may still write no episode.
 Fail-open if the config is missing or invalid. ``CASYS_WORLD_SHADOW_PILOT_ACTIVATION=0``
-skips register/arm/start while leaving V1 shadow.
+skips register/arm/start while leaving market shadow.
 """
 
 from __future__ import annotations
@@ -55,8 +55,8 @@ from trader.domain.world_cohort import (
 )
 from trader.domain.world_episode import canonical_sha256, parse_utc_timestamp
 from trader.domain.world_feature_contract import (
-    GRAPH_FEATURE_CONTRACT_VERSION,
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    GRAPH_FEATURE_CONTRACT_ID,
+    MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -68,7 +68,7 @@ from trader.domain.world_macro import (
 )
 
 
-WORLD_SHADOW_PILOT_SCHEMA = "world_shadow_pilot.v2"
+WORLD_SHADOW_PILOT_SCHEMA = "world_shadow_pilot.v1"
 WORLD_SHADOW_PILOT_PRIOR_SCHEMA = "world_shadow_pilot.v1"
 WORLD_SHADOW_PILOT_CONFIG_NAME = "world_shadow_pilot.yaml"
 WORLD_SHADOW_PILOT_ACTIVATION_FLAG = "CASYS_WORLD_SHADOW_PILOT_ACTIVATION"
@@ -230,19 +230,18 @@ def _parse_world_shadow_pilot_config(path: Path) -> WorldShadowPilotConfig:
     workers_raw = _mapping(payload.get("workers"), "workers")
     workers = {
         key: _required_bool(workers_raw.get(key), f"workers.{key}")
-        for key in ("v1_shadow", "context_v2", "macro_source_only", "graph_v3")
+        for key in ("market", "context", "macro_source", "graph")
     }
     if payload.get("runtime_identity") is not None:
         raise ValueError("runtime_identity is measured at activation and must not be committed")
+    if payload.get("supersedes_pilot_id") is not None:
+        raise ValueError("current world_shadow_pilot.v1 must not declare supersedes_pilot_id")
     intent = WorldRuntimeIdentityIntent.from_mapping(
         _mapping(payload.get("runtime_identity_intent"), "runtime_identity_intent")
     )
-    supersedes = _required_text(payload.get("supersedes_pilot_id"), "supersedes_pilot_id")
-    if supersedes != WORLD_SHADOW_PILOT_PRIOR_ID:
-        raise ValueError("supersedes_pilot_id must name the prior immutable pilot")
     generation = payload.get("lifecycle_generation")
-    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 2:
-        raise ValueError("lifecycle_generation must be an int >= 2")
+    if generation is not None and (not isinstance(generation, int) or isinstance(generation, bool) or generation < 1):
+        raise ValueError("lifecycle_generation must be a positive int")
     return WorldShadowPilotConfig(
         schema_version=schema,
         content_sha256=digest,
@@ -381,8 +380,8 @@ def _sensors(lanes: Sequence[WorldLaneDefinition]) -> tuple[WorldSensorRequireme
         sensors.append(
             WorldSensorRequirement(
                 sensor_id="graph",
-                source_contract_id=GRAPH_FEATURE_CONTRACT_VERSION,
-                projection_contract_id="graph_v3_projection.v1",
+                source_contract_id=GRAPH_FEATURE_CONTRACT_ID,
+                projection_contract_id="graph_projection.v1",
                 mode="required",
                 lane_ids=graph_lanes,
             )
@@ -436,23 +435,23 @@ def _materialize_manifest(
         raise ValueError(f"{key} must declare families and logical_lanes")
     if "graph" in logicals:
         if tuple(logicals) != _GRAPH_LOGICAL:
-            raise ValueError("graph cohort must keep V3 graph lanes off technical C1")
+            raise ValueError("graph cohort must keep graph lanes off technical C1")
     elif tuple(logicals) != _C1_LOGICAL:
         raise ValueError("technical C1 must declare market/status_only/company/macro/joint")
     lanes = tuple(_lane(family, logical) for family in families for logical in logicals)
     graph = "graph" in logicals
     context_contract = (
-        GRAPH_FEATURE_CONTRACT_VERSION
+        GRAPH_FEATURE_CONTRACT_ID
         if graph
         else _required_text(config.payload.get("context_feature_contract"), "context_feature_contract")
     )
     if graph:
         ontology_revision = _required_text(
-            spec.get("ontology_revision") or WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+            spec.get("ontology_revision") or MARKET_ONTOLOGY_REVISION,
             "ontology_revision",
         )
-        if ontology_revision != WORLD_GRAPH_V3_ONTOLOGY_REVISION:
-            raise ValueError(f"graph cohort ontology_revision must be {WORLD_GRAPH_V3_ONTOLOGY_REVISION}")
+        if ontology_revision != MARKET_ONTOLOGY_REVISION:
+            raise ValueError(f"graph cohort ontology_revision must be {MARKET_ONTOLOGY_REVISION}")
     else:
         ontology_revision = _required_text(
             spec.get("ontology_revision") or config.payload.get("ontology_revision"),
@@ -672,7 +671,7 @@ def superseded_world_shadow_cohort_ids(
     resolved = config
     if resolved is None and config_dir is not None:
         resolved = load_world_shadow_pilot_config(config_dir)
-    keys = ("technical_c1", "graph_v3")
+    keys = ("technical_c1", "graph")
     policy = "operator_authorized_on_boot"
     prior_id = WORLD_SHADOW_PILOT_PRIOR_ID
     if resolved is not None:
@@ -758,7 +757,7 @@ def activate_world_shadow_pilot(
             return _skip("config_missing")
         try:
             config = _parse_world_shadow_pilot_config(path)
-        except Exception:  # noqa: BLE001 - invalid authorization cannot block V1/Trader
+        except Exception:  # noqa: BLE001 - invalid authorization cannot block market/Trader
             return _skip("config_invalid")
         if not config.enabled:
             return _skip("disabled", config=config)
@@ -770,7 +769,7 @@ def activate_world_shadow_pilot(
                 config_path=path,
                 runtime_identity=runtime_identity,
             )
-        except Exception:  # noqa: BLE001 - unmeasurable identity cannot block V1/Trader
+        except Exception:  # noqa: BLE001 - unmeasurable identity cannot block market/Trader
             return _skip("runtime_identity_unavailable", config=config)
         specs = config.payload.get("cohorts")
         if not isinstance(specs, Sequence) or isinstance(specs, (str, bytes, bytearray)):
@@ -797,7 +796,7 @@ def activate_world_shadow_pilot(
                     "collection_stop_at": reports[0]["collection_stop_at"],
                 }
             )
-        graph_id = next((item["cohort_id"] for item in reports if item["key"] == "graph_v3"), None)
+        graph_id = next((item["cohort_id"] for item in reports if item["key"] == "graph"), None)
         already = bool(reports) and all(item["already_present"] for item in reports)
         return WorldShadowPilotActivation(
             status="already_collecting" if already else "started",
@@ -807,7 +806,7 @@ def activate_world_shadow_pilot(
             cohorts=tuple(reports),
             workers=config.workers,
             graph_cohort_id=graph_id,
-            prior_cohort_ids=superseded_world_shadow_cohort_ids(config),
+            prior_cohort_ids=(),
         )
     except Exception:  # noqa: BLE001 - activation cannot raise into the trader loop
         return _skip("activation_error")

@@ -1,6 +1,6 @@
 """Load the committed WorldScopeMapping and resolve market anchors without heuristics.
 
-Logical V1/V2 venues are never converted to a default MIC at runtime. An exact
+Logical market venues are never converted to a default MIC at runtime. An exact
 ``(market_venue, instrument)`` row is required; otherwise the resolution is
 ``unmapped`` or ``ambiguous`` and the mapping id/hash stay attached.
 """

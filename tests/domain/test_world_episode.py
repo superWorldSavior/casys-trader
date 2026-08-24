@@ -8,6 +8,7 @@ from trader.domain.world_episode import (
     AnchorBar,
     DEFAULT_WORLD_HORIZONS,
     Freshness,
+    MARKET_FEATURE_CONTRACT_ID,
     WorldEpisode,
     WorldObservation,
     WorldOutcome,
@@ -25,7 +26,7 @@ def _observation(**overrides: object) -> WorldObservation:
         "symbol": "2330.TW",
         "bar_interval": "1h",
         "as_of_bar_ts": "2026-08-22T02:00:00Z",
-        "feature_contract_version": "market_state.v1",
+        "feature_contract_version": MARKET_FEATURE_CONTRACT_ID,
         "sampling_policy_version": "active_fresh_bar_v1",
         "anchor": AnchorBar(
             ts="2026-08-22T02:00:00+00:00",
@@ -92,7 +93,7 @@ def test_episode_identity_and_hash_are_stable_across_equivalent_utc_inputs() -> 
         symbol="2330.TW",
         bar_interval="1h",
         as_of_bar_ts="2026-08-22T02:00:00Z",
-        feature_contract_version="market_state.v1",
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
         sampling_policy_version="active_fresh_bar_v1",
     )
     assert canonical_json({"b": 2, "a": 1}) == canonical_json({"a": 1, "b": 2})
@@ -116,9 +117,25 @@ def test_legacy_or_missing_point_in_time_evidence_is_explicitly_non_trainable() 
     with pytest.raises(ValueError, match="cannot mark incomplete"):
         WorldEpisode(observation=observation, training_eligible=True)
 
-    legacy = WorldEpisode(observation=_observation(), schema_version="world_episode.v0")
-    assert legacy.training_eligible is False
-    assert legacy.training_reason == "unsupported_schema_version"
+    with pytest.raises(ValueError, match="schema_version"):
+        WorldEpisode(observation=_observation(), schema_version="world_episode.v0")
+
+
+def test_episode_rejects_old_feature_contracts_and_missing_schema() -> None:
+    with pytest.raises(ValueError, match="feature_contract_version"):
+        _observation(feature_contract_version="market_ohlcv_causal.v1")
+    with pytest.raises(ValueError, match="feature_contract_version"):
+        _observation(feature_contract_version="market_ohlcv_context.v2")
+    with pytest.raises(ValueError, match="feature_contract_version"):
+        _observation(feature_contract_version="market_ohlcv_graph.v3")
+    with pytest.raises(ValueError, match="schema_version"):
+        WorldEpisode.from_dict(
+            {
+                "observation": _observation().to_dict(),
+                "training_eligible": False,
+                "training_reason": "explicitly_ineligible",
+            }
+        )
 
 
 def test_episode_copies_feature_maps_and_exposes_a_replayable_payload() -> None:
@@ -170,14 +187,14 @@ def test_prediction_is_three_class_and_permanently_shadow_only() -> None:
         )
 
 
-def test_world_outcome_from_dict_adapts_nested_labeler_payload_and_normalizes_direction() -> None:
+def test_world_outcome_from_dict_adapts_nested_labeler_payload() -> None:
     payload = {
         "episode_id": "episode-nested",
         "horizon_code": "elapsed_4h.v1",
         "status": "observed",
         "training_eligible": True,
         "label": {
-            "direction": "up",
+            "direction": "UP",
             "target_at": "2026-08-22T06:00:00+00:00",
             "available_at": "2026-08-22T06:00:00+00:00",
             "computed_at": "2026-08-22T06:01:00+00:00",
@@ -211,6 +228,8 @@ def test_world_outcome_from_dict_adapts_nested_labeler_payload_and_normalizes_di
     assert outcome.horizon.horizon_id == "elapsed_4h.v1"
     assert outcome.horizon.duration_seconds == 4 * 60 * 60
     assert outcome.supersedes_event_id == "previous-event"
+    with pytest.raises(ValueError, match="prediction class"):
+        WorldOutcome.from_dict({**payload, "label": {**payload["label"], "direction": "up"}})
     assert outcome.training_eligible is True
 
 

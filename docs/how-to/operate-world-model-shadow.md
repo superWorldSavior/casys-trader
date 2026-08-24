@@ -2,7 +2,7 @@
 
 > **Type** : How-to (Diátaxis). Procédure opérateur.
 > **Référence** : [`reference/world-model.md`](../reference/world-model.md)
->   (contrat V1 ; le pilote cohorte/macro/graphe est décrit ici et dans les
+>   (contrat marché ; le pilote cohorte/macro/graphe est décrit ici et dans les
 >   pages explanation / note de statut).
 > **Pourquoi** : [`world-model-shadow.md`](../explanation/architecture/world-model-shadow.md),
 >   [`world-context-ontology.md`](../explanation/architecture/world-context-ontology.md).
@@ -60,7 +60,7 @@ apparaissent dans le log `[world_shadow_pilot]` au boot. Deux clés :
 | Clé YAML | `study_kind` | Lanes |
 |---|---|---|
 | `technical_c1` | `pipeline_pilot` | Markov + GRU × `market` / `status_only` / `company` / `macro` / `joint` — **pas de graphe** |
-| `graph_v3` | `pipeline_pilot` | Markov + GRU × `graph` seulement |
+| `graph` | `pipeline_pilot` | Markov + GRU × `graph` seulement |
 
 ```bash
 uv run casys-trader world cohort status --json COHORT_ID
@@ -80,7 +80,7 @@ Trois états distincts. Ne pas les fusionner :
 | Observation | Ce que ça prouve | Ce que ça ne prouve pas |
 |---|---|---|
 | Log `[world_model_shadow] enabled` / `[world_shadow_pilot] status=started` | câblage au boot, cohortes `register`/`arm`/`start` | qu'un épisode a été écrit |
-| `world graph status` avec overlay câblé | le worker V3 est instancié | une projection persistée ou un `CAUSES` |
+| `world graph status` avec overlay câblé | le worker graphe est instancié | une projection persistée ou un `CAUSES` |
 | `episodes_appended=0` au boot | l'activation **ne backfill pas** | un échec de plomberie |
 | Cycle daemon `idle_waiting_for_wake` / replay de la même barre | le daemon vit | un nouveau `WorldEpisode` |
 | Compteur d'épisodes qui monte | un **cycle dû** a capturé une ancre OHLCV valide | un effet Trader |
@@ -92,7 +92,7 @@ LLM (`reason=market_snapshot_pre_dispatch`). Sans ancre OHLCV valide : **aucun
 en file (`queued_latest`) peuvent donc produire **zéro** nouvelle ligne alors
 que le daemon et le shadow sont câblés. Le graphe le dit explicitement :
 `gaps.writes=none_until_due_cycle`. Un cycle dû dont le `(market_venue,
-instrument)` est `unmapped` ou `ambiguous` écrit le V1 et un compagnon V3
+instrument)` est `unmapped` ou `ambiguous` écrit le marché et un compagnon graphe
 missing/status-only, sans racine MIC ni relation structurelle/connaissance.
 
 Vérifier ensuite, dans cet ordre :
@@ -117,8 +117,18 @@ ré-écrit pas d'épisode, et répare au plus les reçus d'availability. Relire
 
 ## Contrat live unique (cutover store frais)
 
-Le YAML committe un seul contrat : mapping `world_scope_mapping.v2`,
-ontologie `market_ontology.v2`, producteur `world_macro_source.v1`,
+Les voies de capacité sont `market`, `context`, `macro_source` et `graph`.
+Les suffixes `.v1` des schémas payload (`world_feature.market.v1`,
+`world_availability_receipt.v1`, `world_episode.v1`, `world_graph_snapshot.v1`,
+…) sont des **révisions de sérialisation**, pas des générations de capacité.
+
+Cutover dur : **arrêter le daemon**, archiver hors ligne l'ancien
+`state/world_model.db` et `state/world_macro/`, démarrer un store **frais**,
+relancer. Le runtime **ne lit jamais** un ledger héritage. Pas de contrat
+tombstone actif, pas de reader d'ancien reçu, pas de migration incrémentale.
+
+Le YAML committe un seul contrat : mapping `world_scope_mapping.v1`,
+ontologie `market_ontology.v1`, producteur `world_macro_source.v1`,
 lane `world.context.macro`, registre `world_macro_sources.v1`, adapters
 `world_dbnomics_series.v1` / `world_yahoo_commodity.v1`, plan
 `WORLD_MACRO_COLLECTION_PLAN_ID` /
@@ -133,20 +143,16 @@ gelées. Un bit de dérive bloque le boot du worker shadow ; le cycle
 Trader reste fail-open. Il n'existe plus de migration runtime, de
 handoff pont, ni de supersession ontologie.
 
-Cutover : archiver hors ligne l'ancien `state/world_model.db` /
-`state/world_macro/`, démarrer un store **frais**, puis redémarrer le
-daemon.
-
 1. le boot **classifie** l'état durable du pont **avant** toute réservation
    de curseur. Cold start = `missing` → activate. Restart identique =
    no-op. Spec bloquée identique = resume no-op. Drift actif = block.
    Drift bloqué = erreur, pas de wildcard ;
-2. le boot publie `market_ontology.v2` seulement si le store est vide.
+2. le boot publie `market_ontology.v1` seulement si le store est vide.
    Une révision déjà publiée d'une autre identité ou d'un autre hash
    est un conflit ;
 3. `world graph status` / `world cohort status` doivent montrer les têtes
-   `world_scope_mapping.v2` / `market_ontology.v2` ;
-4. un symbole sans ligne exacte reste `unmapped` : snapshot V3
+   `world_scope_mapping.v1` / `market_ontology.v1` ;
+4. un symbole sans ligne exacte reste `unmapped` : snapshot graphe
    `missing` **sans racine**, sans membres, sans MIC inventé. Le schéma
    reste `world_graph_snapshot.v1` (null = missingness, payload
    canonique ; les colonnes SQL vides ne sont pas une entité).
@@ -181,27 +187,27 @@ Tous les flags sont lus **uniquement au boot**. Défauts runtime :
 
 | Flag | Défaut | Effet |
 |---|---|---|
-| `CASYS_WORLD_MODEL_SHADOW_ENABLED` | `1` | shadow V1 (Markov + GRU marché) |
-| `CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED` | `0` | voies contexte V2 |
+| `CASYS_WORLD_MODEL_SHADOW_ENABLED` | `1` | shadow marché (Markov + GRU) |
+| `CASYS_WORLD_MODEL_CONTEXT_ENABLED` | `0` | voies contexte |
 | `CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED` | `0` | worker macro source-only |
-| `CASYS_WORLD_MODEL_GRAPH_V3_ENABLED` | `0` | voies graphe V3 |
+| `CASYS_WORLD_MODEL_GRAPH_ENABLED` | `0` | voies graphe |
 | `CASYS_WORLD_SHADOW_PILOT_ACTIVATION` | `1` | honore le YAML d'autorisation |
 
 Le YAML `config/world_shadow_pilot.yaml` est l'**autorisation opérateur**, pas
 un défaut RFC. Si `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1` **et**
 `enabled: true`, le boot fait un **OU** avec `workers.*` :
 
-- `workers.v1_shadow` — V1 déjà porté par `CASYS_WORLD_MODEL_SHADOW_ENABLED` ;
-- `workers.context_v2` → OR du flag V2 ;
-- `workers.macro_source_only` → OR du flag macro ;
-- `workers.graph_v3` → OR du flag graphe.
+- `workers.market` — marché déjà porté par `CASYS_WORLD_MODEL_SHADOW_ENABLED` ;
+- `workers.context` → OR du flag contexte ;
+- `workers.macro_source` → OR du flag macro ;
+- `workers.graph` → OR du flag graphe.
 
-Puis, si le store V1 est créé, `activate_world_shadow_pilot` enregistre, arme
+Puis, si le store marché est créé, `activate_world_shadow_pilot` enregistre, arme
 et démarre les deux cohortes (exception documentée à l'activation RFC).
-`=0` saute register/arm/start **et** le OU YAML ; le V1 reste si son flag
+`=0` saute register/arm/start **et** le OU YAML ; le marché reste si son flag
 est on.
 
-`config/world_graph_v3.yaml` garde `cohort_id: null`. L'id graphe est
+`config/world_graph.yaml` garde `cohort_id: null`. L'id graphe est
 **injecté** au compose depuis le rapport d'activation, jamais lu dans ce
 fichier.
 
@@ -249,8 +255,8 @@ volontaire.
 
 | Objectif | Action | Ce qui reste |
 |---|---|---|
-| Ne plus auto-activer au prochain boot | `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=0` | V1 si `SHADOW_ENABLED=1` ; les cohortes **déjà** `collecting` dans `world_model.db` restent collectantes jusqu'à `close` / `invalidate` |
-| Couper V2 / macro / graphe au prochain boot | flags concernés à `0` **et** soit activation `0`, soit `workers.*: false` (rehash `content_sha256`) | V1 |
+| Ne plus auto-activer au prochain boot | `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=0` | marché si `SHADOW_ENABLED=1` ; les cohortes **déjà** `collecting` dans `world_model.db` restent collectantes jusqu'à `close` / `invalidate` |
+| Couper contexte / macro / graphe au prochain boot | flags concernés à `0` **et** soit activation `0`, soit `workers.*: false` (rehash `content_sha256`) | marché |
 | Fermer la collecte d'une cohorte | `uv run casys-trader world cohort close COHORT_ID --reason TEXT --json` | ledger append-only intact |
 | Invalider le protocole | `uv run casys-trader world cohort invalidate COHORT_ID --reason REASON --json` | `complete` est terminal : on n'invalide pas après |
 | Couper tout le shadow | `CASYS_WORLD_MODEL_SHADOW_ENABLED=0` | `world_model.db` n'est pas effacé ; **pas** de register/arm/start (pas de store). Le worker macro peut encore tourner si le YAML/flag l'OR : le couper aussi (ligne workers ci-dessus). Le chemin de décision Trader ne change pas |
@@ -263,19 +269,19 @@ Raisons d'`invalidate` (enum fermé) : `manifest_id_hash_conflict`,
 l'activation **explicite**. Le YAML `operator_authorized_on_boot` est
 l'exception humaine, pas un feu vert trading.
 
-## Activer / couper le V1 seul
+## Activer / couper le marché seul
 
 | Objectif | Action |
 |---|---|
-| Shadow V1 on (défaut) | omettre le flag, ou `CASYS_WORLD_MODEL_SHADOW_ENABLED=1`, **puis redémarrer** |
-| Shadow V1 off | `CASYS_WORLD_MODEL_SHADOW_ENABLED=0`, **puis redémarrer** |
+| Shadow marché on (défaut) | omettre le flag, ou `CASYS_WORLD_MODEL_SHADOW_ENABLED=1`, **puis redémarrer** |
+| Shadow marché off | `CASYS_WORLD_MODEL_SHADOW_ENABLED=0`, **puis redémarrer** |
 
 Le chemin de décision Trader ne change pas. Couper le shadow n'efface pas
 `world_model.db`.
 
 ## Lire l'évaluation sans sur-interpréter
 
-Quand `evaluation.status=ready` (voie V1) :
+Quand `evaluation.status=ready` (voie marché) :
 
 - comparer baseline et GRU seulement si `comparisons[].status=ready` ;
 - en dessous de 20 paires : `insufficient_support`, pas de vainqueur ;

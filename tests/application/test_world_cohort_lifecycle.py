@@ -17,14 +17,14 @@ from trader.domain.world_cohort import (
     WorldRuntimeIdentity,
 )
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     AnchorBar,
     WorldEpisode,
     WorldObservation,
 )
 from trader.domain.world_feature_contract import (
-    GRAPH_FEATURE_CONTRACT_VERSION,
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    GRAPH_FEATURE_CONTRACT_ID,
+    MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -40,13 +40,13 @@ IDENTITY_A = WorldRuntimeIdentity(
     git_commit="b" * 40,
     python_version="3.11.9",
     numpy_version="1.26.4",
-    application_build_id="casys-trader.world.shadow_pilot.v2",
+    application_build_id="casys-trader.world.shadow_pilot.v1",
 )
 IDENTITY_B = WorldRuntimeIdentity(
     git_commit="c" * 40,
     python_version="3.11.9",
     numpy_version="1.26.4",
-    application_build_id="casys-trader.world.shadow_pilot.v2",
+    application_build_id="casys-trader.world.shadow_pilot.v1",
 )
 
 
@@ -90,7 +90,7 @@ def _matching_graph_proof():
     from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
 
     return WorldOntologyHeadsProof(
-        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        revision_id=MARKET_ONTOLOGY_REVISION,
         content_sha256="d" * 64,
         scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
         scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
@@ -154,20 +154,20 @@ def test_committed_pilot_separates_operator_intent_from_measured_runtime_identit
 
     payload = yaml.safe_load((CONFIG_DIR / "world_shadow_pilot.yaml").read_text(encoding="utf-8"))
     source = (CONFIG_DIR / "world_shadow_pilot.yaml").read_text(encoding="utf-8")
-    assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v2"
-    assert payload["pilot_id"] == "world_shadow_pilot.v2"
-    assert payload["supersedes_pilot_id"] == V1_PILOT_ID
+    assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v1"
+    assert payload["pilot_id"] == "world_shadow_pilot.v1"
+    assert "supersedes_pilot_id" not in payload
     assert "runtime_identity" not in payload
     assert "git_commit" not in source
     intent = payload["runtime_identity_intent"]
     assert intent["schema_version"] == "world_runtime_identity_intent.v1"
-    assert intent["application_build_id"] == "casys-trader.world.shadow_pilot.v2"
+    assert intent["application_build_id"] == "casys-trader.world.shadow_pilot.v1"
     assert "git_commit" not in intent
     hashed = {key: value for key, value in payload.items() if key != "content_sha256"}
     assert payload["content_sha256"] == canonical_sha256(hashed)
     by_key = {item["key"]: item for item in payload["cohorts"]}
     assert by_key["technical_c1"].get("ontology_revision", payload["ontology_revision"]) == "semantic_catalog.v1"
-    assert by_key["graph_v3"]["ontology_revision"] == WORLD_GRAPH_V3_ONTOLOGY_REVISION
+    assert by_key["graph"]["ontology_revision"] == MARKET_ONTOLOGY_REVISION
 
 
 def test_graph_unavailable_stays_registered_and_never_collecting() -> None:
@@ -175,12 +175,12 @@ def test_graph_unavailable_stays_registered_and_never_collecting() -> None:
     report = _activate(cohort_service=service, ontology_proof=None)
     by_key = {item["key"]: item for item in report.cohorts}
     c1 = store.load(WorldCohortId(by_key["technical_c1"]["cohort_id"]))
-    graph = store.load(WorldCohortId(by_key["graph_v3"]["cohort_id"]))
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
     assert c1.phase is CohortPhase.COLLECTING
     assert graph.phase is CohortPhase.REGISTERED
     assert graph.started_event is None
-    assert by_key["graph_v3"]["blocked_reason"] == "graph_ontology_unpublished"
-    assert graph.manifest.ontology_revision == WORLD_GRAPH_V3_ONTOLOGY_REVISION
+    assert by_key["graph"]["blocked_reason"] == "graph_ontology_unpublished"
+    assert graph.manifest.ontology_revision == MARKET_ONTOLOGY_REVISION
     assert c1.manifest.ontology_revision == "semantic_catalog.v1"
     assert report.authority == "shadow_only"
     assert report.decision_effect == "none"
@@ -191,11 +191,11 @@ def test_exact_graph_ontology_proof_starts_graph_cohort() -> None:
     service, store = _service()
     report = _activate(cohort_service=service, ontology_proof=_matching_graph_proof())
     by_key = {item["key"]: item for item in report.cohorts}
-    graph = store.load(WorldCohortId(by_key["graph_v3"]["cohort_id"]))
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
     assert graph.phase is CohortPhase.COLLECTING
     assert graph.started_event is not None
-    assert by_key["graph_v3"].get("blocked_reason") in {None, ""}
-    assert graph.manifest.ontology_revision == WORLD_GRAPH_V3_ONTOLOGY_REVISION
+    assert by_key["graph"].get("blocked_reason") in {None, ""}
+    assert graph.manifest.ontology_revision == MARKET_ONTOLOGY_REVISION
     assert graph.manifest.scope_mapping.mapping_id == WORLD_SCOPE_MAPPING_ID
     assert graph.manifest.scope_mapping.mapping_sha256 == WORLD_SCOPE_MAPPING_SHA256
 
@@ -213,10 +213,10 @@ def test_wrong_ontology_revision_or_mapping_heads_keep_graph_registered() -> Non
         structural_heads_hash="f" * 64,
     )
     report = _activate(cohort_service=service, ontology_proof=wrong_revision)
-    graph = store.load(WorldCohortId({item["key"]: item for item in report.cohorts}["graph_v3"]["cohort_id"]))
+    graph = store.load(WorldCohortId({item["key"]: item for item in report.cohorts}["graph"]["cohort_id"]))
     assert graph.phase is CohortPhase.REGISTERED
     drifted_mapping = WorldOntologyHeadsProof(
-        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        revision_id=MARKET_ONTOLOGY_REVISION,
         content_sha256="d" * 64,
         scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
         scope_mapping_hash="a" * 64,
@@ -224,7 +224,7 @@ def test_wrong_ontology_revision_or_mapping_heads_keep_graph_registered() -> Non
         structural_heads_hash="f" * 64,
     )
     second = _activate(cohort_service=service, ontology_proof=drifted_mapping)
-    graph = store.load(WorldCohortId({item["key"]: item for item in second.cohorts}["graph_v3"]["cohort_id"]))
+    graph = store.load(WorldCohortId({item["key"]: item for item in second.cohorts}["graph"]["cohort_id"]))
     assert graph.phase is CohortPhase.REGISTERED
 
 
@@ -232,10 +232,7 @@ def test_measured_runtime_drift_blocks_and_does_not_rewrite_manifest() -> None:
     service, store = _service()
     first = _activate(cohort_service=service, identity=IDENTITY_A, ontology_proof=_matching_graph_proof())
     by_key = {item["key"]: item for item in first.cohorts}
-    before = {
-        key: store.load(WorldCohortId(item["cohort_id"]))
-        for key, item in by_key.items()
-    }
+    before = {key: store.load(WorldCohortId(item["cohort_id"])) for key, item in by_key.items()}
     hashes = {key: cohort.manifest.manifest_sha256 for key, cohort in before.items()}
     identities = {key: cohort.manifest.runtime_identity for key, cohort in before.items()}
     second = _activate(cohort_service=service, identity=IDENTITY_B, ontology_proof=_matching_graph_proof())
@@ -333,7 +330,7 @@ def test_two_concurrent_disjoint_cohorts_filter_foreign_refs_and_propagate_scope
         )
         by_key = {item["key"]: item for item in report.cohorts}
         c1_id = WorldCohortId(by_key["technical_c1"]["cohort_id"])
-        graph_id = WorldCohortId(by_key["graph_v3"]["cohort_id"])
+        graph_id = WorldCohortId(by_key["graph"]["cohort_id"])
         resolver = WorldScopeResolver.load(CONFIG_DIR)
         runtime = WorldModelService(
             store=store,
@@ -344,10 +341,10 @@ def test_two_concurrent_disjoint_cohorts_filter_foreign_refs_and_propagate_scope
             cohort_service=cohort_service,
             scope_resolver=resolver,
         )
-        mapped_v1 = _episode(venue="TW", symbol="2301.TW", contract=MARKET_FEATURE_CONTRACT_VERSION)
-        mapped_v3 = _episode(venue="TW", symbol="2301.TW", contract=GRAPH_FEATURE_CONTRACT_VERSION)
-        unmapped_v1 = _episode(venue="US", symbol="AAPL", contract=MARKET_FEATURE_CONTRACT_VERSION)
-        unmapped_v3 = _episode(venue="US", symbol="AAPL", contract=GRAPH_FEATURE_CONTRACT_VERSION)
+        mapped_v1 = _episode(venue="TW", symbol="2301.TW", contract=MARKET_FEATURE_CONTRACT_ID)
+        mapped_v3 = _episode(venue="TW", symbol="2301.TW", contract=GRAPH_FEATURE_CONTRACT_ID)
+        unmapped_v1 = _episode(venue="US", symbol="AAPL", contract=MARKET_FEATURE_CONTRACT_ID)
+        unmapped_v3 = _episode(venue="US", symbol="AAPL", contract=GRAPH_FEATURE_CONTRACT_ID)
         captured = runtime.capture_and_predict(
             (mapped_v1, mapped_v3, unmapped_v1, unmapped_v3),
             now=CAPTURE,
@@ -357,12 +354,10 @@ def test_two_concurrent_disjoint_cohorts_filter_foreign_refs_and_propagate_scope
         graph_slots = {slot.symbol: slot for slot in cohort_service.list_slots(graph_id)}
         assert set(c1_slots) == {"2301.TW", "AAPL"}
         assert set(graph_slots) == {"2301.TW", "AAPL"}
-        assert set(c1_slots["2301.TW"].episode_refs_by_contract) == {MARKET_FEATURE_CONTRACT_VERSION}
-        assert graph_slots["2301.TW"].episode_refs_by_contract == {
-            GRAPH_FEATURE_CONTRACT_VERSION: mapped_v3.episode_id
-        }
-        assert GRAPH_FEATURE_CONTRACT_VERSION not in c1_slots["2301.TW"].episode_refs_by_contract
-        assert MARKET_FEATURE_CONTRACT_VERSION not in graph_slots["2301.TW"].episode_refs_by_contract
+        assert set(c1_slots["2301.TW"].episode_refs_by_contract) == {MARKET_FEATURE_CONTRACT_ID}
+        assert graph_slots["2301.TW"].episode_refs_by_contract == {GRAPH_FEATURE_CONTRACT_ID: mapped_v3.episode_id}
+        assert GRAPH_FEATURE_CONTRACT_ID not in c1_slots["2301.TW"].episode_refs_by_contract
+        assert MARKET_FEATURE_CONTRACT_ID not in graph_slots["2301.TW"].episode_refs_by_contract
         mapped = resolver.resolve(WorldMarketAnchorRef(market_venue="TW", instrument="2301.TW"))
         assert mapped.status == "resolved"
         assert c1_slots["2301.TW"].scope_resolution == mapped
@@ -395,7 +390,7 @@ def test_scope_resolution_is_required_when_manifest_declares_mapping(tmp_path: P
             cohort_service=cohort_service,
             scope_resolver=None,
         )
-        episode = _episode(venue="TW", symbol="2301.TW", contract=MARKET_FEATURE_CONTRACT_VERSION)
+        episode = _episode(venue="TW", symbol="2301.TW", contract=MARKET_FEATURE_CONTRACT_ID)
         runtime.capture_and_predict((episode,), now=CAPTURE)
         collecting = store.list_collecting_cohort_ids()
         assert collecting

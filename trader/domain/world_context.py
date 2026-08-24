@@ -23,14 +23,13 @@ from typing import Any
 from urllib.parse import quote
 
 from trader.domain.world_episode import (
+    CONTEXT_FEATURE_CONTRACT_ID,
     canonical_json,
     canonical_payload,
     canonical_sha256,
     parse_utc_timestamp,
 )
 
-
-CONTEXT_FEATURE_CONTRACT_VERSION = "market_ohlcv_context.v2"
 ONTOLOGY_REVISION = "semantic_catalog.v1"
 CONTEXT_SNAPSHOT_SCHEMA_VERSION = "world_context_snapshot.v1"
 NON_CAUSAL_STATUS = "non_causal_association"
@@ -567,7 +566,7 @@ class WorldContextSnapshot:
     categorical_features: Mapping[str, Any] | None = field(default_factory=dict)
     numeric_features: Mapping[str, Any] | None = field(default_factory=dict)
     causal_status: str = NON_CAUSAL_STATUS
-    feature_contract_version: str = CONTEXT_FEATURE_CONTRACT_VERSION
+    feature_contract_version: str = CONTEXT_FEATURE_CONTRACT_ID
     status: str = "missing"
     sensor_statuses: Mapping[str, Any] | None = field(default_factory=dict)
     schema_version: str = CONTEXT_SNAPSHOT_SCHEMA_VERSION
@@ -601,11 +600,10 @@ class WorldContextSnapshot:
         object.__setattr__(self, "categorical_features", _immutable_categorical(self.categorical_features))
         object.__setattr__(self, "numeric_features", _immutable_numeric(self.numeric_features))
         object.__setattr__(self, "causal_status", causal_status)
-        object.__setattr__(
-            self,
-            "feature_contract_version",
-            _required_text(self.feature_contract_version, "feature_contract_version"),
-        )
+        feature_contract_version = _required_text(self.feature_contract_version, "feature_contract_version")
+        if feature_contract_version != CONTEXT_FEATURE_CONTRACT_ID:
+            raise ValueError(f"feature_contract_version must be {CONTEXT_FEATURE_CONTRACT_ID}")
+        object.__setattr__(self, "feature_contract_version", feature_contract_version)
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "sensor_statuses", _status_mapping(self.sensor_statuses))
         object.__setattr__(self, "schema_version", _required_text(self.schema_version, "schema_version"))
@@ -798,7 +796,7 @@ class WorldContextSnapshot:
             categorical_features=value.get("categorical_features") or {},
             numeric_features=value.get("numeric_features") or {},
             causal_status=value.get("causal_status", NON_CAUSAL_STATUS),
-            feature_contract_version=value.get("feature_contract_version", CONTEXT_FEATURE_CONTRACT_VERSION),
+            feature_contract_version=value.get("feature_contract_version", CONTEXT_FEATURE_CONTRACT_ID),
             status=value.get("status", "missing"),
             sensor_statuses=value.get("sensor_statuses") or {},
             schema_version=value.get("schema_version", CONTEXT_SNAPSHOT_SCHEMA_VERSION),
@@ -1144,7 +1142,7 @@ __all__ = [
     "ALLOWED_CONTEXT_CATEGORICAL_FEATURES",
     "ALLOWED_CONTEXT_NUMERIC_FEATURES",
     "ARTIFACT_KINDS",
-    "CONTEXT_FEATURE_CONTRACT_VERSION",
+    "CONTEXT_FEATURE_CONTRACT_ID",
     "CONTEXT_SNAPSHOT_SCHEMA_VERSION",
     "CONTEXT_STATUSES",
     "EDGE_KINDS",

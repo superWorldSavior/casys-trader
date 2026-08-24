@@ -172,8 +172,8 @@ def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
 
 def _link(**overrides: object) -> WorldEntityIdentityLink:
     values: dict[str, object] = {
-        "v2_ref": EntityRef(kind="instrument", entity_id="2330"),
-        "v3_ref": _entity(),
+        "context_ref": EntityRef(kind="instrument", entity_id="2330"),
+        "graph_ref": _entity(),
         "source_refs": ("provider:instrument-master:2330",),
         "effective_from": T0,
     }
@@ -250,7 +250,7 @@ def _attested_receipt(*, subject_id: str, content_sha256: str, ready: datetime =
     )
     locator = WorldStorageLocator(kind="jsonl", store_id="world-graph-jsonl.v1", path="relations/2026-08-23.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope="instrument:mic:XTAI:symbol:2330",
         storage_locator=locator,
@@ -358,25 +358,25 @@ def test_node_ref_union_does_not_treat_artifacts_as_world_entities() -> None:
         parse_world_graph_node_ref({"node_kind": "prompt", "value": "nope"})
 
 
-def test_identity_map_links_v2_to_v3_and_rejects_ambiguity() -> None:
+def test_identity_map_links_context_to_graph_and_rejects_ambiguity() -> None:
     empty = WorldEntityIdentityMap.empty()
     linked = empty.link(_link())
     active = linked.active_links_at(CUTOFF)
     assert len(active) == 1
-    assert active[0].v2_ref == EntityRef(kind="instrument", entity_id="2330")
-    assert active[0].v3_ref == _entity()
+    assert active[0].context_ref == EntityRef(kind="instrument", entity_id="2330")
+    assert active[0].graph_ref == _entity()
     assert active[0].source_refs == ("provider:instrument-master:2330",)
     replayed = WorldEntityIdentityMap.from_events([event.to_dict() for event in linked.events])
     assert replayed.active_links_at(CUTOFF) == active
-    other_venue = _link(v3_ref=WorldEntityRef(kind="instrument", entity_id="mic:XNYS:symbol:2330"))
+    other_venue = _link(graph_ref=WorldEntityRef(kind="instrument", entity_id="mic:XNYS:symbol:2330"))
     with pytest.raises(ValueError, match="ambiguous|already"):
         linked.link(other_venue)
     with pytest.raises(ValueError, match="kind"):
-        _link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_entity())
+        _link(context_ref=EntityRef(kind="venue", entity_id="XTAI"), graph_ref=_entity())
     with pytest.raises(ValueError, match="sensor"):
         _link(
-            v2_ref=EntityRef(kind="sensor", entity_id="news_macro"),
-            v3_ref=_entity(kind="event", entity_id="provider:evt-1"),
+            context_ref=EntityRef(kind="sensor", entity_id="news_macro"),
+            graph_ref=_entity(kind="event", entity_id="provider:evt-1"),
         )
 
 
@@ -385,7 +385,7 @@ def test_identity_correction_supersedes_without_rewriting_the_old_link() -> None
     mapped = WorldEntityIdentityMap.empty().link(original)
     payload_before = original.to_dict()
     successor = _link(
-        v3_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
+        graph_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
         effective_from=T1,
         supersedes=original.link_id,
         source_refs=("provider:instrument-master:2330:corrected",),
@@ -396,7 +396,7 @@ def test_identity_correction_supersedes_without_rewriting_the_old_link() -> None
     at_t0 = corrected.active_links_at(T0)
     assert len(at_t0) == 1
     assert at_t0[0].link_id == original.link_id
-    assert at_t0[0].v3_ref == original.v3_ref
+    assert at_t0[0].graph_ref == original.graph_ref
     at_t1 = corrected.active_links_at(T1)
     assert len(at_t1) == 1
     assert at_t1[0].link_id == successor.link_id
@@ -681,7 +681,7 @@ def test_entity_and_revision_lifecycle_events_round_trip() -> None:
         assert parse_world_entity_event(event.to_dict()) == event
     revision = _revision()
     published = WorldOntologyRevisionPublished(revision=revision)
-    successor = _revision(revision_id="market_ontology.v2")
+    successor = _revision(revision_id="market_ontology.other")
     superseded_revision = WorldOntologyRevisionSuperseded(
         revision_id=revision.revision_id,
         successor_revision_id=successor.revision_id,
@@ -701,7 +701,7 @@ def test_entity_and_revision_lifecycle_events_round_trip() -> None:
     assert replayed_revision.content_sha256 == revision.content_sha256
     assert revision.identity_map_hash != revision.structural_heads_hash
     other_identity = _revision(
-        identity_link_refs=(_link(v2_ref=EntityRef(kind="instrument", entity_id="2454")).as_ref(),)
+        identity_link_refs=(_link(context_ref=EntityRef(kind="instrument", entity_id="2454")).as_ref(),)
     )
     with pytest.raises(ValueError, match="conflict"):
         reconcile_world_ontology_revision(revision, other_identity)
@@ -732,11 +732,15 @@ def test_revision_hash_is_independent_of_append_order() -> None:
     map_left = (
         WorldEntityIdentityMap.empty()
         .link(_link())
-        .link(_link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",)))
+        .link(
+            _link(context_ref=EntityRef(kind="venue", entity_id="XTAI"), graph_ref=_venue(), source_refs=("mic:XTAI",))
+        )
     )
     map_right = (
         WorldEntityIdentityMap.empty()
-        .link(_link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",)))
+        .link(
+            _link(context_ref=EntityRef(kind="venue", entity_id="XTAI"), graph_ref=_venue(), source_refs=("mic:XTAI",))
+        )
         .link(_link())
     )
     assert map_left.heads_hash_at(CUTOFF) == map_right.heads_hash_at(CUTOFF)
@@ -929,33 +933,33 @@ def test_historical_instrument_root_snapshot_payload_remains_parseable() -> None
     assert replayed.root_entity is not None
 
 
-def test_v2_entity_refs_remain_locally_scoped_and_unrelated_to_v3_ids() -> None:
-    v2 = EntityRef(kind="instrument", entity_id="2330")
-    v3 = _entity()
-    assert v2.entity_id == "2330"
-    assert v3.entity_id == "mic:XTAI:symbol:2330"
-    assert v2.to_dict() != v3.to_dict()
+def test_context_entity_refs_remain_locally_scoped_and_unrelated_to_graph_ids() -> None:
+    context_entity = EntityRef(kind="instrument", entity_id="2330")
+    graph_entity = _entity()
+    assert context_entity.entity_id == "2330"
+    assert graph_entity.entity_id == "mic:XTAI:symbol:2330"
+    assert context_entity.to_dict() != graph_entity.to_dict()
     assert "sensor" in ENTITY_KINDS
     assert "country" in ENTITY_KINDS
     assert "region" in ENTITY_KINDS
     assert "sensor" not in WORLD_ENTITY_KINDS
     assert "macro_indicator" in WORLD_ENTITY_KINDS
     country_link = _link(
-        v2_ref=EntityRef(kind="country", entity_id="iso-3166:TW"),
-        v3_ref=WorldEntityRef(kind="country", entity_id="iso-3166:TW"),
+        context_ref=EntityRef(kind="country", entity_id="iso-3166:TW"),
+        graph_ref=WorldEntityRef(kind="country", entity_id="iso-3166:TW"),
     )
-    assert country_link.v2_ref.kind == country_link.v3_ref.kind == "country"
+    assert country_link.context_ref.kind == country_link.graph_ref.kind == "country"
     edge = TopologyEdge(
         kind="TRADED_ON",
-        source=v2,
+        source=context_entity,
         target=EntityRef(kind="venue", entity_id="XTAI"),
         effective_from=CUTOFF,
         ready_at=CUTOFF,
         ontology_revision="semantic_catalog.v1",
     )
     assert edge.source.entity_id == "2330"
-    linked = _link(v2_ref=v2, v3_ref=v3)
-    assert linked.v2_ref.entity_id != linked.v3_ref.entity_id
+    linked = _link(context_ref=context_entity, graph_ref=graph_entity)
+    assert linked.context_ref.entity_id != linked.graph_ref.entity_id
 
 
 def test_knowledge_endpoints_are_closed_and_structural_endpoints_are_entities() -> None:
@@ -1018,7 +1022,7 @@ def test_identity_and_relation_events_parse_as_typed_unions() -> None:
         source_refs=("operator:retire",),
     )
     successor = _link(
-        v3_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
+        graph_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
         effective_from=T1,
         supersedes=link.link_id,
         source_refs=("provider:instrument-master:2330:corrected",),
@@ -1194,7 +1198,7 @@ def _observation_envelope(observation: MacroWorldObservation | None = None) -> M
     )
     locator = WorldStorageLocator(kind="jsonl", store_id="world-macro-jsonl.v1", path="observations/2026-08-23.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope=f"{resolved.scope.kind}:{resolved.scope.entity_id}",
         storage_locator=locator,
@@ -1425,7 +1429,7 @@ def test_unregistered_or_invalid_scope_is_terminal_skip_never_an_invented_relati
 def test_knowledge_link_rejects_mapping_hash_mismatch_without_sealing_a_relation() -> None:
     mapping = _scope_mapping()
     other = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v2",
+        mapping_id="world_scope_mapping.drifted",
         entries=mapping.entries,
     )
     revision = _revision(scope_mapping_id=other.mapping_id, scope_mapping_hash=other.content_sha256)
@@ -1576,11 +1580,11 @@ def test_handoff_is_a_single_event_with_incremented_epoch_and_exactly_one_active
         .block(reason="config_drift", expected_version=1)
     )
     next_mapping = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v2",
+        mapping_id="world_scope_mapping.v1",
         entries=mapping.entries,
     )
     next_revision = _revision(
-        revision_id="market_ontology.v2",
+        revision_id="market_ontology.v1",
         scope_mapping_id=next_mapping.mapping_id,
         scope_mapping_hash=next_mapping.content_sha256,
     )

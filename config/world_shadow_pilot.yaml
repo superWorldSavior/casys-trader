@@ -1,8 +1,7 @@
-schema_version: world_shadow_pilot.v2
-content_sha256: "d9b55eab824a923b4469c8b290b1c2c5a62701ddd7bf4420aaf1dbce756dacc2"
-pilot_id: world_shadow_pilot.v2
-supersedes_pilot_id: world_shadow_pilot.v1
-lifecycle_generation: 5
+schema_version: world_shadow_pilot.v1
+content_sha256: "a9612f22c193b2c643a9f0e24d511f803cd79624c66bf826129221b1f462ed1e"
+pilot_id: world_shadow_pilot.v1
+lifecycle_generation: 1
 authority: shadow_only
 decision_effect: none
 recommendation: NO_GO
@@ -22,14 +21,14 @@ horizons: [elapsed_4h.v1, elapsed_1d.v1]
 primary_horizon: elapsed_1d.v1
 label_contract: simple_return_band_50bp.v1
 sampling_policy_version: active_tradable_completed_bar.v1
-market_feature_contract: market_ohlcv_causal.v1
-context_feature_contract: market_ohlcv_context.v2
-graph_feature_contract: market_ohlcv_graph.v3
+market_feature_contract: world_feature.market.v1
+context_feature_contract: world_feature.context.v1
+graph_feature_contract: world_feature.graph.v1
 ontology_revision: semantic_catalog.v1
 
 scope_mapping:
-  mapping_id: world_scope_mapping.v2
-  mapping_sha256: "e1289a4a86e5cb07600cb3ac45122b170f1a0bb249db2fbb6e5c093a4a8a501b"
+  mapping_id: world_scope_mapping.v1
+  mapping_sha256: "94a7d310d51ad411e04abf9b5e00e9d802e2836138123d2ae1d1b756bda148ee"
 
 macro_producer:
   producer_version: world_macro_source.v1
@@ -39,13 +38,13 @@ macro_producer:
 
 runtime_identity_intent:
   schema_version: world_runtime_identity_intent.v1
-  application_build_id: casys-trader.world.shadow_pilot.v2
+  application_build_id: casys-trader.world.shadow_pilot.v1
 
 workers:
-  v1_shadow: true
-  context_v2: true
-  macro_source_only: true
-  graph_v3: true
+  market: true
+  context: true
+  macro_source: true
+  graph: true
 
 statistical_protocol:
   pair_unit: unique_market_anchor
@@ -66,9 +65,9 @@ cohorts:
     question: "Can paired market/status/company/macro/joint lanes be captured live for one week without causal violations or Trader decision effect?"
     families: [markov, gru]
     logical_lanes: [market, status_only, company, macro, joint]
-  - key: graph_v3
+  - key: graph
     study_kind: pipeline_pilot
-    question: "Can a matched V3 graph lane be captured live beside C1 without contaminating technical C1 or Trader decisions?"
-    ontology_revision: market_ontology.v2
+    question: "Can a matched graph lane be captured live beside C1 without contaminating technical C1 or Trader decisions?"
+    ontology_revision: market_ontology.v1
     families: [markov, gru]
     logical_lanes: [graph]

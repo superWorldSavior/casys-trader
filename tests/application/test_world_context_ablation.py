@@ -28,7 +28,7 @@ def _prediction(**overrides):
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_causal.v1",
+            "feature_contract_version": "world_feature.market.v1",
         },
     }
     payload.update(overrides)
@@ -72,14 +72,14 @@ def test_context_ablation_pairs_by_market_anchor_not_episode_id() -> None:
     context = _prediction(
         prediction_id="markov-v2",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         probabilities={"DOWN": 0.05, "FLAT": 0.05, "UP": 0.9},
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
             "context": {"status": "complete"},
         },
     )
@@ -92,7 +92,7 @@ def test_context_ablation_pairs_by_market_anchor_not_episode_id() -> None:
         prediction_id="gru-v2",
         episode_id="episode-context",
         model_id=GRU_MODEL_ID,
-        model_version="context.v2",
+        model_version="context.v1",
         probabilities={"DOWN": 0.1, "FLAT": 0.1, "UP": 0.8},
         input=context["input"],
     )
@@ -120,13 +120,13 @@ def test_ablation_rejects_label_mismatch_and_withholds_below_support() -> None:
     context = _prediction(
         prediction_id="v2",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     result = evaluate_shadow(
@@ -150,14 +150,14 @@ def test_ablation_respects_custom_model_ids_and_valid_pair() -> None:
         prediction_id="custom-v2",
         episode_id="episode-context",
         model_id="custom_markov",
-        model_version="context.v2",
+        model_version="context.v1",
         probabilities={"DOWN": 0.05, "FLAT": 0.05, "UP": 0.9},
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
             "context": {"status": "complete"},
         },
     )
@@ -187,13 +187,13 @@ def test_ablation_rejects_duplicate_anchors_and_mismatched_target_evidence() -> 
     context = _prediction(
         prediction_id="v2",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     result = evaluate_shadow(
@@ -211,13 +211,13 @@ def test_ablation_rejects_duplicate_anchors_and_mismatched_target_evidence() -> 
     context_other_target = _prediction(
         prediction_id="v2-target",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     mismatched = evaluate_shadow(
@@ -242,7 +242,7 @@ def test_ablation_excludes_asynchronous_and_training_cohort_mismatches() -> None
     later = _prediction(
         prediction_id="v2-later",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         created_at="2026-08-20T11:00:00+00:00",
         comparison_batch_id="world-comparison-batch:v1:other",
         input={
@@ -250,7 +250,7 @@ def test_ablation_excludes_asynchronous_and_training_cohort_mismatches() -> None
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     later_result = evaluate_shadow(
@@ -264,14 +264,14 @@ def test_ablation_excludes_asynchronous_and_training_cohort_mismatches() -> None
     cutoff_mismatch = _prediction(
         prediction_id="v2-cutoff",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         training_cutoff="2026-08-19T00:00:00+00:00",
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     cutoff_result = evaluate_shadow(
@@ -284,14 +284,14 @@ def test_ablation_excludes_asynchronous_and_training_cohort_mismatches() -> None
     missing_cohort = _prediction(
         prediction_id="v2-missing-cohort",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         comparison_cohort_fingerprint=None,
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     missing_result = evaluate_shadow(
@@ -304,14 +304,14 @@ def test_ablation_excludes_asynchronous_and_training_cohort_mismatches() -> None
     different_cohort = _prediction(
         prediction_id="v2-other-cohort",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         comparison_cohort_fingerprint="world-comparison-cohort:v1:other",
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     different_result = evaluate_shadow(
@@ -344,7 +344,7 @@ def test_ablation_pairs_store_shaped_rows_and_rejects_nested_evidence_mismatch()
                 "symbol": "AAA",
                 "bar_interval": "1h",
                 "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-                "feature_contract_version": "market_ohlcv_causal.v1",
+                "feature_contract_version": "world_feature.market.v1",
             },
             "prediction": {
                 "probabilities": {"DOWN": 0.2, "FLAT": 0.2, "UP": 0.6},
@@ -358,7 +358,7 @@ def test_ablation_pairs_store_shaped_rows_and_rejects_nested_evidence_mismatch()
         "horizon_code": "elapsed_4h.v1",
         "model_kind": BASELINE_MODEL_ID,
         "model_id": BASELINE_MODEL_ID,
-        "model_version": "context.v2",
+        "model_version": "context.v1",
         "predicted_at": "2026-08-20T10:00:00+00:00",
         "ready_at": "2026-08-20T10:00:00+00:00",
         "prediction": {
@@ -374,7 +374,7 @@ def test_ablation_pairs_store_shaped_rows_and_rejects_nested_evidence_mismatch()
                 "symbol": "AAA",
                 "bar_interval": "1h",
                 "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-                "feature_contract_version": "market_ohlcv_context.v2",
+                "feature_contract_version": "world_feature.context.v1",
                 "context": {"status": "complete"},
             },
             "prediction": {
@@ -433,13 +433,13 @@ def test_unknown_feature_contract_is_excluded_from_context_ablation() -> None:
     context = _prediction(
         prediction_id="v2",
         episode_id="episode-context",
-        model_version="context.v2",
+        model_version="context.v1",
         input={
             "venue": "XTAI",
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "market_ohlcv_context.v2",
+            "feature_contract_version": "world_feature.context.v1",
         },
     )
     result = evaluate_shadow(

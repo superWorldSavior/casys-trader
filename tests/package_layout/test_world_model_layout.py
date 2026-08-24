@@ -220,7 +220,7 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert "xnys" not in scope_path.read_text(encoding="utf-8").lower()
 
 
-def test_world_feature_contract_is_stdlib_domain_single_v1_v2_v3_type() -> None:
+def test_world_feature_contract_is_stdlib_domain_single_capability_type() -> None:
     contract_path = REPO_ROOT / "trader" / "domain" / "world_feature_contract.py"
     assert contract_path.exists()
     assert _domain_import_violations([contract_path], REPO_ROOT) == []
@@ -247,11 +247,11 @@ def test_world_feature_contract_is_stdlib_domain_single_v1_v2_v3_type() -> None:
     assert encoding_path.exists()
     from trader.application.world_model.encoding import (
         FEATURE_CONTRACT_FINGERPRINT,
-        FEATURE_CONTRACT_FINGERPRINT_V2,
+        FEATURE_CONTRACT_FINGERPRINT_CONTEXT,
     )
 
     assert FEATURE_CONTRACT_FINGERPRINT == "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
-    assert FEATURE_CONTRACT_FINGERPRINT_V2 == "a039216d5b53dab0c1aea134faabeac7b6f94c656d5880ec84882ebab05dbde5"
+    assert FEATURE_CONTRACT_FINGERPRINT_CONTEXT == "a66a8a399f0ee6562366def6f9a231a0f0871137e9c838692f3e4c20ee6d9700"
     assert "FEATURE_CONTRACT_FINGERPRINT" not in source
     assert "trader.application.world_model.encoding" not in source
 
@@ -280,8 +280,25 @@ def test_world_availability_receipt_public_surface_does_not_mint_ready_at() -> N
 
     import trader.domain.world_availability as availability_mod
     import trader.domain.world_scope as scope_mod
+    from trader.application.world_model.gru import GRAPH_GRU_ENCODER_IDENTITY
+    from trader.domain.world_availability import WORLD_AVAILABILITY_RECEIPT_SCHEMA
+    from trader.domain.world_graph import CONTEXT_IDENTITY_MAPPABLE_KINDS
 
     assert "_attest_verified_store_receipt" not in availability_mod.__all__
+    assert "AVAILABILITY_RECEIPT_V1_SCHEMA" not in availability_mod.__all__
+    assert "AVAILABILITY_RECEIPT_V2_SCHEMA" not in availability_mod.__all__
+    assert "RECEIPT_SCHEMAS" not in availability_mod.__all__
+    assert "AVAILABILITY_RECEIPT_SCHEMA_V2" not in receipt_mod.__all__
+    assert "WORLD_AVAILABILITY_RECEIPT_SCHEMA" in availability_mod.__all__
+    assert WORLD_AVAILABILITY_RECEIPT_SCHEMA == "world_availability_receipt.v1"
+    assert GRAPH_GRU_ENCODER_IDENTITY == "world_gru_encoder.graph.v1"
+    assert "ENCODER_VERSION_V3" not in (REPO_ROOT / "trader" / "application" / "world_model" / "gru.py").read_text(
+        encoding="utf-8"
+    )
+    assert "IDENTITY_MAPPABLE_V2_KINDS" not in (REPO_ROOT / "trader" / "domain" / "world_graph.py").read_text(
+        encoding="utf-8"
+    )
+    assert CONTEXT_IDENTITY_MAPPABLE_KINDS
     assert "resolve_world_market_anchor" not in scope_mod.__all__
     assert not hasattr(scope_mod, "resolve_world_market_anchor")
 

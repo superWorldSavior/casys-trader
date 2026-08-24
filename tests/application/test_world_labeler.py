@@ -252,7 +252,7 @@ def test_target_requires_full_availability_and_exposes_market_path_metrics() -> 
     assert observed["training_eligible"] is True
     assert observed["simple_return"] == pytest.approx(0.01)
     assert observed["log_return"] == pytest.approx(math.log(1.01))
-    assert observed["direction"] == "up"
+    assert observed["direction"] == "UP"
     assert observed["direction_band"] == DIRECTION_BAND
     assert observed["direction_semantics_version"] == DIRECTION_SEMANTICS_VERSION
     assert observed["mfe"] == pytest.approx(0.04)
@@ -269,7 +269,7 @@ def test_world_episode_duck_type_and_world_outcome_projection_are_compatible() -
             symbol="SPY",
             bar_interval="1h",
             as_of_bar_ts=anchor_at,
-            feature_contract_version="world_features.v1",
+            feature_contract_version="world_feature.market.v1",
             sampling_policy_version="fixed_cadence.v1",
             anchor=AnchorBar(anchor_at, 100.0, 101.0, 99.0, 100.0, 100.0, "yahoo"),
             available_at=anchor_at,

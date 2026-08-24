@@ -22,13 +22,13 @@ from trader.application.world_model import encoding as world_encoding
 from trader.application.world_model.encoding import (
     ALLOWED_CATEGORICAL_FEATURES,
     ALLOWED_NUMERIC_FEATURES,
-    CONTEXT_FEATURE_CONTRACT_VERSION,
-    CONTEXT_V2_CATEGORICAL_FEATURES,
-    CONTEXT_V2_COARSE_FEATURES,
-    CONTEXT_V2_NUMERIC_FEATURES,
+    CONTEXT_FEATURE_CONTRACT_ID,
+    CONTEXT_CATEGORICAL_FEATURES,
+    CONTEXT_COARSE_FEATURES,
+    CONTEXT_NUMERIC_FEATURES,
     FEATURE_CONTRACT_FINGERPRINT,
-    FEATURE_CONTRACT_FINGERPRINT_V2,
-    MARKET_FEATURE_CONTRACT_VERSION,
+    FEATURE_CONTRACT_FINGERPRINT_CONTEXT,
+    MARKET_FEATURE_CONTRACT_ID,
     feature_contract_version_of,
     OUTCOME_CLASSES,
     FeatureBoundaryError,
@@ -51,7 +51,7 @@ from trader.application.world_model.encoding import (
     revalidate_context_observation,
     revalidate_graph_observation,
     training_event_signature,
-    world_encoder_profile_for_include_context,
+    world_lane_encoder_profile,
 )
 from trader.domain.world_cohort import ModelFamily, WorldLaneDefinition
 from trader.domain.world_episode import (
@@ -59,7 +59,7 @@ from trader.domain.world_episode import (
     WorldEpisode,
     WorldPrediction,
 )
-from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION, WorldFeatureContract, WorldFeatureMask
+from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_ID, WorldFeatureContract, WorldFeatureMask
 
 
 MODEL_ID = "hierarchical_dirichlet_world_baseline"
@@ -221,20 +221,22 @@ class HierarchicalDirichletWorldBaseline:
         self._feature_contract_fingerprint = (
             self._profile.encoder_fingerprint
             if self._profile is not None
-            else FEATURE_CONTRACT_FINGERPRINT_V2 if include_context else FEATURE_CONTRACT_FINGERPRINT
+            else FEATURE_CONTRACT_FINGERPRINT_CONTEXT
+            if include_context
+            else FEATURE_CONTRACT_FINGERPRINT
         )
 
     @property
     def feature_contract(self) -> WorldFeatureContract:
         if self._profile is not None:
             return self._profile.contract
-        return world_encoder_profile_for_include_context(self._include_context).contract
+        return world_lane_encoder_profile("joint" if self._include_context else "market").contract
 
     @property
     def feature_mask(self) -> WorldFeatureMask:
         if self._profile is not None:
             return self._profile.mask
-        return world_encoder_profile_for_include_context(self._include_context).mask
+        return world_lane_encoder_profile("joint" if self._include_context else "market").mask
 
     def accepts_episode(self, episode: object) -> bool:
         version = feature_contract_version_of(episode)
@@ -243,7 +245,9 @@ class HierarchicalDirichletWorldBaseline:
         expected = (
             self._profile.contract.accepted_episode_contract
             if self._profile is not None
-            else CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+            else CONTEXT_FEATURE_CONTRACT_ID
+            if self._include_context
+            else MARKET_FEATURE_CONTRACT_ID
         )
         return version == expected
 
@@ -256,7 +260,7 @@ class HierarchicalDirichletWorldBaseline:
         if self._profile is not None:
             if self._profile.include_context:
                 revalidate_context_observation(observation)
-            elif self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
+            elif self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_ID:
                 revalidate_graph_observation(observation)
             return build_feature_state(
                 observation,
@@ -267,10 +271,10 @@ class HierarchicalDirichletWorldBaseline:
             revalidate_context_observation(observation)
             return build_feature_state(
                 observation,
-                allowed_categorical=CONTEXT_V2_CATEGORICAL_FEATURES,
-                allowed_numeric=CONTEXT_V2_NUMERIC_FEATURES,
+                allowed_categorical=CONTEXT_CATEGORICAL_FEATURES,
+                allowed_numeric=CONTEXT_NUMERIC_FEATURES,
                 include_context=True,
-                coarse_features=CONTEXT_V2_COARSE_FEATURES,
+                coarse_features=CONTEXT_COARSE_FEATURES,
             )
         return build_feature_state(observation)
 

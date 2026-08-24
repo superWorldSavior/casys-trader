@@ -4,6 +4,12 @@ import json
 from pathlib import Path
 
 from tests.domain.test_world_cohort import COHORT_ID, _manifest
+from trader.domain.world_episode import (
+    MARKET_FEATURE_CONTRACT_ID,
+    AnchorBar,
+    WorldEpisode,
+    WorldObservation,
+)
 from trader.interfaces.cli.world_model import read_world_model_status
 from trader.runtime import cli
 
@@ -38,6 +44,31 @@ def _assert_claims(payload: dict) -> None:
 
 def _db_path(tmp_path: Path) -> Path:
     return tmp_path / "world_model.db"
+
+
+def _market_episode(*, venue: str = "US", symbol: str = "SPY", as_of: str = "2026-08-22T00:00:00+00:00") -> dict:
+    observation = WorldObservation(
+        venue=venue,
+        symbol=symbol,
+        bar_interval="1h",
+        as_of_bar_ts=as_of,
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
+        sampling_policy_version="cycle_snapshot.v1",
+        anchor=AnchorBar(
+            ts=as_of,
+            open=100.0,
+            high=102.0,
+            low=99.0,
+            close=101.0,
+            volume=1_000.0,
+            source="fixture",
+        ),
+        available_at=as_of,
+        captured_at=as_of,
+        freshness="fresh",
+        numeric_features={"return": 0.01},
+    )
+    return WorldEpisode(observation=observation).to_dict()
 
 
 def test_world_status_does_not_create_a_missing_database(tmp_path) -> None:
@@ -83,25 +114,13 @@ def test_world_status_compares_persisted_baseline_and_gru_predictions(tmp_path, 
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
 
     store = WorldModelStore(tmp_path / "world_model.db")
-    episode = {
-        "episode_id": "episode-1",
-        "venue": "US",
-        "symbol": "SPY",
-        "observed_at": "2026-08-22T00:00:00+00:00",
-        "available_at": "2026-08-22T00:00:00+00:00",
-        "as_of_bar_ts": "2026-08-22T00:00:00+00:00",
-        "bar_interval": "1h",
-        "feature_contract_version": "world_features.v1",
-        "sampling_policy_version": "cycle_snapshot.v1",
-        "training_eligible": True,
-        "observation": {"symbol": "SPY", "features": {"return": 0.01}},
-        "source_evidence": {"source": "fixture"},
-    }
+    episode = _market_episode()
+    episode_id = episode["episode_id"]
     assert store.append_episode(episode)
     assert store.append_outcome_event(
         {
             "outcome_event_id": "outcome-1",
-            "episode_id": "episode-1",
+            "episode_id": episode_id,
             "horizon_code": "elapsed_4h.v1",
             "status": "observed",
             "move_class": "UP",
@@ -133,7 +152,7 @@ def test_world_status_compares_persisted_baseline_and_gru_predictions(tmp_path, 
             {
                 "prediction_id": f"prediction-{model_id}",
                 "run_id": "world_shadow.v1",
-                "episode_id": "episode-1",
+                "episode_id": episode_id,
                 "horizon_code": "elapsed_4h.v1",
                 "model_kind": model_id,
                 "model_version": "v1",
@@ -166,26 +185,13 @@ def test_world_status_uses_indexed_model_and_direction_over_payload_claims(tmp_p
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
 
     store = WorldModelStore(tmp_path / "world_model.db")
-    assert store.append_episode(
-        {
-            "episode_id": "episode-index-authority",
-            "venue": "US",
-            "symbol": "SPY",
-            "observed_at": "2026-08-22T00:00:00+00:00",
-            "available_at": "2026-08-22T00:00:00+00:00",
-            "as_of_bar_ts": "2026-08-22T00:00:00+00:00",
-            "bar_interval": "1h",
-            "feature_contract_version": "world_features.v1",
-            "sampling_policy_version": "cycle_snapshot.v1",
-            "training_eligible": True,
-            "observation": {"symbol": "SPY", "features": {"return": 0.01}},
-            "source_evidence": {"source": "fixture"},
-        }
-    )
+    episode = _market_episode()
+    episode_id = episode["episode_id"]
+    assert store.append_episode(episode)
     assert store.append_outcome_event(
         {
             "outcome_event_id": "outcome-index-authority",
-            "episode_id": "episode-index-authority",
+            "episode_id": episode_id,
             "horizon_code": "elapsed_4h.v1",
             # This is the indexed authority, intentionally contradicting the
             # payload's top-level and nested direction claims below.
@@ -214,7 +220,7 @@ def test_world_status_uses_indexed_model_and_direction_over_payload_claims(tmp_p
         {
             "prediction_id": "prediction-index-authority",
             "run_id": "world_shadow.v1",
-            "episode_id": "episode-index-authority",
+            "episode_id": episode_id,
             "horizon_code": "elapsed_4h.v1",
             # This indexed model identity must win over both payload claims.
             "model_kind": "hierarchical_dirichlet_world_baseline",
@@ -277,9 +283,7 @@ def test_world_cohort_validate_is_read_only_and_machine_readable(tmp_path, monke
     assert list(tmp_path.glob("world_model.db*")) == []
 
 
-def test_world_cohort_validate_rejects_invalid_manifest_without_creating_db(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_world_cohort_validate_rejects_invalid_manifest_without_creating_db(tmp_path, monkeypatch, capsys) -> None:
     manifest_path = tmp_path / "bad-manifest.json"
     manifest_path.write_text("{}", encoding="utf-8")
 
@@ -297,9 +301,7 @@ def test_world_cohort_validate_rejects_invalid_manifest_without_creating_db(
     assert not _db_path(tmp_path).exists()
 
 
-def test_world_cohort_status_and_report_missing_db_do_not_create_or_migrate(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_world_cohort_status_and_report_missing_db_do_not_create_or_migrate(tmp_path, monkeypatch, capsys) -> None:
     status_code, status = _run_json(
         monkeypatch,
         capsys,
@@ -539,9 +541,7 @@ def test_world_cohort_parser_exposes_rfc_commands() -> None:
     assert report.cohort_command == "report"
     close = parser.parse_args(["world", "cohort", "close", COHORT_ID, "--reason", "done"])
     assert close.cohort_command == "close"
-    invalidate = parser.parse_args(
-        ["world", "cohort", "invalidate", COHORT_ID, "--reason", "future_leak"]
-    )
+    invalidate = parser.parse_args(["world", "cohort", "invalidate", COHORT_ID, "--reason", "future_leak"])
     assert invalidate.cohort_command == "invalidate"
     world_status = parser.parse_args(["world", "status", "--json"])
     assert world_status.world_command == "status"
@@ -550,9 +550,7 @@ def test_world_cohort_parser_exposes_rfc_commands() -> None:
     assert macro_status.macro_command == "status"
 
 
-def test_world_macro_status_is_read_only_machine_readable_and_shadow_bounded(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_world_macro_status_is_read_only_machine_readable_and_shadow_bounded(tmp_path, monkeypatch, capsys) -> None:
     (tmp_path / "gdelt").mkdir()
     (tmp_path / "gdelt" / "events.jsonl").write_text("{}", encoding="utf-8")
 
@@ -604,16 +602,14 @@ def test_world_graph_parser_exposes_status_and_report() -> None:
     assert report_cohort.cohort_id == COHORT_ID
 
 
-def test_world_graph_status_is_read_only_and_exposes_budgets_gaps(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_world_graph_status_is_read_only_and_exposes_budgets_gaps(tmp_path, monkeypatch, capsys) -> None:
     code, payload = _run_json(monkeypatch, capsys, tmp_path, ["world", "graph", "status", "--json"])
 
     assert code == 0
     assert payload["schema_version"] == "world_graph_status.v1"
     assert payload["command"] == "status"
     assert payload["status"] == "not_started"
-    assert payload["flag"] == "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
+    assert payload["flag"] == "CASYS_WORLD_MODEL_GRAPH_ENABLED"
     assert payload["flag_default"] == 0
     assert payload["budgets"]["max_depth"] == 4
     assert payload["budgets"]["max_paths_per_root"] == 32
@@ -645,9 +641,7 @@ def test_world_graph_report_is_read_only_shadow_bounded(tmp_path, monkeypatch, c
     assert list(tmp_path.glob("world_model.db*")) == []
 
 
-def test_world_status_json_nests_graph_budgets_without_causal_or_pnl(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_world_status_json_nests_graph_budgets_without_causal_or_pnl(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli.daemon, "STATE_DIR", tmp_path)
 
     assert cli.main(["world", "status", "--json"]) == 0
@@ -666,9 +660,7 @@ def test_world_status_json_nests_graph_budgets_without_causal_or_pnl(
     assert not _db_path(tmp_path).exists()
 
 
-def test_world_graph_status_reads_collecting_graph_cohort_not_not_started(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_world_graph_status_reads_collecting_graph_cohort_not_not_started(tmp_path, monkeypatch, capsys) -> None:
     from tests.read_models.test_world_graph_report import GRAPH_COHORT_ID, _graph_manifest, _persist
 
     _persist(tmp_path, _manifest(), phase="collecting")
@@ -696,9 +688,7 @@ def test_world_graph_report_and_nested_status_keep_c1_collecting_off_graph_activ
     assert status["gaps"]["cohort_activation"] == "no_graph_cohort"
     _assert_claims(status)
 
-    report_code, report = _run_json(
-        monkeypatch, capsys, tmp_path, ["world", "graph", "report", "--json"]
-    )
+    report_code, report = _run_json(monkeypatch, capsys, tmp_path, ["world", "graph", "report", "--json"])
     assert report_code == 0
     assert report["gaps"]["cohort_activation"] == "no_graph_cohort"
     _assert_claims(report)

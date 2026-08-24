@@ -1,4 +1,4 @@
-"""Point-in-time V3 WorldGraphSnapshot builder. NetworkX is never imported here."""
+"""Point-in-time WorldGraphSnapshot builder. NetworkX is never imported here."""
 
 from __future__ import annotations
 
@@ -252,7 +252,9 @@ def _missing_snapshot(
             item for item in view.entity_revision_refs if root_node is not None and item.entity.node_id == root_node
         ),
         identity_link_refs=tuple(
-            link.as_ref() for link in view.identity_links if root_node is not None and link.v3_ref.node_id == root_node
+            link.as_ref()
+            for link in view.identity_links
+            if root_node is not None and link.graph_ref.node_id == root_node
         ),
         structural_relation_refs=(),
         knowledge_relation_refs=(),
@@ -271,7 +273,7 @@ def _missing_snapshot(
 
 
 class WorldGraphSnapshotService:
-    """Build the exact V3 subgraph admissible at a cutoff. Does not persist unless asked."""
+    """Build the exact graph subgraph admissible at a cutoff. Does not persist unless asked."""
 
     def __init__(
         self,
@@ -381,7 +383,9 @@ class WorldGraphSnapshotService:
             scope_mapping_id=request.scope_mapping.mapping_id,
             scope_mapping_hash=request.scope_mapping.content_sha256,
             entity_revision_refs=tuple(item for item in view.entity_revision_refs if item.entity.node_id in node_ids),
-            identity_link_refs=tuple(link.as_ref() for link in view.identity_links if link.v3_ref.node_id in node_ids),
+            identity_link_refs=tuple(
+                link.as_ref() for link in view.identity_links if link.graph_ref.node_id in node_ids
+            ),
             structural_relation_refs=frozenset(
                 WorldStructuralRelationRef.from_relation(item) for item in structural_members
             ),

@@ -60,8 +60,8 @@ from trader.domain.world_cohort import (
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import (
     WorldFeatureMask,
-    world_v1_feature_contract,
-    world_v2_feature_contract,
+    market_feature_contract,
+    context_feature_contract,
 )
 
 
@@ -79,8 +79,8 @@ STORE_ID = "world-cohort-jsonl.v1"
 _PORTS_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "cohort_ports.py"
 _SERVICE_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "cohort_service.py"
 
-V1 = world_v1_feature_contract()
-V2 = world_v2_feature_contract()
+V1 = market_feature_contract()
+V2 = context_feature_contract()
 MARKET_MASK = WorldFeatureMask.bind(V1, mask_id="market.v1", selected_groups=("market",))
 STATUS_MASK = WorldFeatureMask.bind(V2, mask_id="status_only.v1", selected_groups=("market", "status"))
 COMPANY_MASK = WorldFeatureMask.bind(V2, mask_id="company.v1", selected_groups=("market", "status", "company"))
@@ -206,7 +206,7 @@ def _manifest(**overrides: object) -> WorldCohortManifest:
 def _attested_receipt(*, subject: WorldAvailabilitySubjectRef, ready: datetime, scope: str) -> WorldAvailabilityReceipt:
     locator = WorldStorageLocator(kind="jsonl", store_id=STORE_ID, path="cohort/events.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope=scope,
         storage_locator=locator,
@@ -229,7 +229,9 @@ def _attested_receipt(*, subject: WorldAvailabilitySubjectRef, ready: datetime, 
     )
 
 
-def _evidence_for(event: Any, *, ready: datetime = START_READY, first_seen: datetime = START_SEEN) -> AvailabilityEvidence:
+def _evidence_for(
+    event: Any, *, ready: datetime = START_READY, first_seen: datetime = START_SEEN
+) -> AvailabilityEvidence:
     subject = WorldAvailabilitySubjectRef(
         kind="world_cohort_event",
         subject_id=event.event_id,
@@ -387,7 +389,9 @@ def _slot_for(cohort: WorldCohort, **overrides: object) -> WorldCohortSlot:
     return WorldCohortSlot(**values)  # type: ignore[arg-type]
 
 
-def _admit_command(cohort: WorldCohort, store: _MemoryWorldCohortStore, **slot_overrides: object) -> AdmitWorldCohortSlot:
+def _admit_command(
+    cohort: WorldCohort, store: _MemoryWorldCohortStore, **slot_overrides: object
+) -> AdmitWorldCohortSlot:
     started = cohort.started_event
     assert started is not None
     envelope = store.envelope_for(started)
@@ -684,7 +688,9 @@ def test_admit_uses_store_attested_start_evidence_and_rejects_pre_start_and_call
     too_early = _slot_for(cohort, anchor_end_at=START_SEEN, as_of_bar_ts=START_SEEN)
     with pytest.raises(ValueError, match="strictly|after"):
         service.admit_slot(AdmitWorldCohortSlot(slot=too_early, started_evidence=store_envelope.require_proven()))
-    minted = _evidence_for(started, ready=datetime(2026, 8, 23, 0, 0, tzinfo=UTC), first_seen=datetime(2026, 8, 23, 0, 0, tzinfo=UTC))
+    minted = _evidence_for(
+        started, ready=datetime(2026, 8, 23, 0, 0, tzinfo=UTC), first_seen=datetime(2026, 8, 23, 0, 0, tzinfo=UTC)
+    )
     with pytest.raises(ValueError, match="store-attested|started_evidence|availability"):
         service.admit_slot(AdmitWorldCohortSlot(slot=_slot_for(cohort), started_evidence=minted))
     admitted = service.admit_slot(_admit_command(cohort, store))
@@ -874,7 +880,10 @@ def test_idempotent_retry_seals_the_command_event_not_the_head() -> None:
     assert start_retry.event.event_id == started.event.event_id
     assert start_retry.event.event_type == "world_cohort_started"
     assert start_retry.availability_status == "eligible"
-    assert start_store.envelope_for(blocked_after_unproven_start.event).event.event_id == blocked_after_unproven_start.event.event_id
+    assert (
+        start_store.envelope_for(blocked_after_unproven_start.event).event.event_id
+        == blocked_after_unproven_start.event.event_id
+    )
 
     admit_service, admit_store = _service(
         crash_before_receipt=1,
@@ -883,19 +892,27 @@ def test_idempotent_retry_seals_the_command_event_not_the_head() -> None:
     first_cohort = _collecting(admit_service, admit_store, manifest)
     first_admit = admit_service.admit_slot(_admit_command(first_cohort, admit_store))
     assert first_admit.availability_status == "availability_unproven"
-    second = admit_service.admit_slot(_admit_command(admit_store.load(WorldCohortId(manifest.cohort_id)), admit_store, **{
-        "as_of_bar_ts": LATER_TS,
-        "anchor_end_at": LATER_TS,
-        "symbol": "MSFT",
-        "comparison_batch_id": "batch:v1:anchor-msft",
-        "episode_refs_by_contract": {
-            V1.contract_id: "world-episode:v1:" + "3" * 64,
-            V2.contract_id: "world-episode:v1:" + "4" * 64,
-        },
-    }))
+    second = admit_service.admit_slot(
+        _admit_command(
+            admit_store.load(WorldCohortId(manifest.cohort_id)),
+            admit_store,
+            **{
+                "as_of_bar_ts": LATER_TS,
+                "anchor_end_at": LATER_TS,
+                "symbol": "MSFT",
+                "comparison_batch_id": "batch:v1:anchor-msft",
+                "episode_refs_by_contract": {
+                    V1.contract_id: "world-episode:v1:" + "3" * 64,
+                    V2.contract_id: "world-episode:v1:" + "4" * 64,
+                },
+            },
+        )
+    )
     assert second.event.event_type == "world_cohort_slot_admitted"
     assert second.event.event_id != first_admit.event.event_id
-    admit_retry = admit_service.admit_slot(_admit_command(admit_store.load(WorldCohortId(manifest.cohort_id)), admit_store))
+    admit_retry = admit_service.admit_slot(
+        _admit_command(admit_store.load(WorldCohortId(manifest.cohort_id)), admit_store)
+    )
     assert admit_retry.event.event_id == first_admit.event.event_id
     assert admit_retry.availability_status == "eligible"
 
@@ -1011,7 +1028,9 @@ def test_stale_snapshot_insert_is_rejected_and_identical_event_may_repair_after_
 
     def sneak() -> None:
         WorldCohortService(repository=race_store, query=race_store).admit_slot(
-            AdmitWorldCohortSlot(slot=_msft_slot(race_store.load(WorldCohortId(race_cohort.cohort_id))), started_evidence=evidence)
+            AdmitWorldCohortSlot(
+                slot=_msft_slot(race_store.load(WorldCohortId(race_cohort.cohort_id))), started_evidence=evidence
+            )
         )
 
     race_store.before_insert = sneak

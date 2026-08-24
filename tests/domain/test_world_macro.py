@@ -184,7 +184,7 @@ def _attested_receipt(
     )
     locator = _locator()
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope=scope if scope is not None else f"{observation.scope.kind}:{observation.scope.entity_id}",
         storage_locator=locator,
@@ -260,7 +260,7 @@ def _run(*, expected: tuple[str, ...] = ("fed_policy_rate", "brent", "broad_usd_
     )
 
 
-def test_macro_scope_reuses_canonical_v3_ids_and_rejects_company_family_instrument() -> None:
+def test_macro_scope_reuses_canonical_graph_ids_and_rejects_company_family_instrument() -> None:
     world = _scope(kind="world", entity_id="market")
     assert world.canonical_ref() == WorldCanonicalScopeRef(kind="world", entity_id="market")
     assert _scope(kind="region", entity_id="iso-un-m49:030").kind == "region"
@@ -675,7 +675,7 @@ def test_observation_envelope_keeps_persisted_ref_and_evidence() -> None:
         scope=f"{observation.scope.kind}:{observation.scope.entity_id}",
         storage_locator=_locator(),
         content_sha256=observation.content_sha256,
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
     )
     with pytest.raises(ValueError, match="store-attested"):
         MacroObservationEnvelope(
@@ -1065,13 +1065,13 @@ def _resolution(
     anchor = WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument)
     if status != "resolved":
         return WorldScopeResolution(
-            mapping_id="world_scope_mapping.v2",
+            mapping_id="world_scope_mapping.v1",
             mapping_sha256="e" * 64,
             anchor=anchor,
             status=status,
         )
     return WorldScopeResolution(
-        mapping_id="world_scope_mapping.v2",
+        mapping_id="world_scope_mapping.v1",
         mapping_sha256="e" * 64,
         anchor=anchor,
         status="resolved",

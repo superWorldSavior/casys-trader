@@ -1,4 +1,4 @@
-"""Append-only SQLite ledger for V3 world-graph events and snapshots.
+"""Append-only SQLite ledger for world-graph events and snapshots.
 
 Canonical records live in dedicated event/snapshot tables. Availability receipts
 are reused from ``world_availability_receipts`` (COHORT-3) and stamped only after
@@ -75,12 +75,12 @@ from trader.infrastructure.state_db.availability_receipt import (
 )
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.world_model_store import (
-    WORLD_MODEL_MIGRATIONS,
     WORLD_MODEL_STORE_ID,
     WorldModelConflictError,
     _aware_utc,
     _graph_snapshot_root_adapter_columns,
     _open_dedicated_state_db,
+    apply_current_world_model_schema,
 )
 
 
@@ -127,9 +127,7 @@ def _json_load(text: str) -> Any:
 
 
 def _conflict(id_column: str, identity: str) -> WorldModelConflictError:
-    return WorldModelConflictError(
-        f"{id_column} {identity!r} already exists with different canonical content"
-    )
+    return WorldModelConflictError(f"{id_column} {identity!r} already exists with different canonical content")
 
 
 def _assert_persistable_payload(payload: Mapping[str, Any]) -> None:
@@ -302,7 +300,7 @@ class WorldGraphStore:
         self._clock = clock or default_utc_clock
         self._first_seen_at: dict[str, datetime] = {}
         self._db.query_one("PRAGMA foreign_keys=ON")
-        self._db.apply_migrations(WORLD_MODEL_MIGRATIONS)
+        apply_current_world_model_schema(self._db)
         self._prime_existing_receipts()
 
     def close(self) -> None:
@@ -312,9 +310,7 @@ class WorldGraphStore:
     def append_entity_event(self, event: WorldEntityEvent) -> PersistedWorldRef[WorldEntityEventId]:
         return self._append_event(event, _ENTITY_LOG)
 
-    def append_identity_event(
-        self, event: WorldEntityIdentityEvent
-    ) -> PersistedWorldRef[WorldEntityIdentityEventId]:
+    def append_identity_event(self, event: WorldEntityIdentityEvent) -> PersistedWorldRef[WorldEntityIdentityEventId]:
         return self._append_event(event, _IDENTITY_LOG)
 
     def append_structural_relation_event(
@@ -629,7 +625,14 @@ class WorldGraphStore:
                         return int(existing["sequence"])
                     count = int(cur.execute(f"SELECT COUNT(*) FROM {log.table}").fetchone()[0])  # noqa: S608
                     sequence = count + 1
-                    columns = ("event_id", "event_type", *log.extra_columns, "sequence", "payload_json", "payload_sha256")
+                    columns = (
+                        "event_id",
+                        "event_type",
+                        *log.extra_columns,
+                        "sequence",
+                        "payload_json",
+                        "payload_sha256",
+                    )
                     values = {
                         "event_id": event.event_id,
                         "event_type": event.event_type,

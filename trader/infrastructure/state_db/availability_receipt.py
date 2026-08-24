@@ -17,9 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from trader.domain.world_availability import (
-    AVAILABILITY_RECEIPT_V1_SCHEMA,
-    AVAILABILITY_RECEIPT_V2_SCHEMA,
     PersistedWorldRef,
+    WORLD_AVAILABILITY_RECEIPT_SCHEMA,
     WorldAvailabilityReceipt,
     WorldAvailabilitySubjectRef,
     WorldStorageLocator,
@@ -34,8 +33,7 @@ from trader.domain.world_episode import canonical_sha256
 from trader.infrastructure.state_db._jsonl_store import jsonl_dumps, read_jsonl_objects
 
 
-AVAILABILITY_RECEIPT_SCHEMA = AVAILABILITY_RECEIPT_V1_SCHEMA
-AVAILABILITY_RECEIPT_SCHEMA_V2 = AVAILABILITY_RECEIPT_V2_SCHEMA
+AVAILABILITY_RECEIPT_SCHEMA = "availability_receipt.v1"
 AVAILABILITY_RECEIPT_DIRNAME = "availability_receipts"
 
 UtcClock = Callable[[], datetime]
@@ -217,14 +215,14 @@ def parse_world_availability_receipt(
     row: Mapping[str, Any] | None,
     payload: Mapping[str, Any] | None = None,
 ) -> WorldAvailabilityReceipt | None:
-    """Rehydrate generalized v2 receipts only. Legacy v1 rows stay dict-only."""
+    """Rehydrate the current World availability receipt schema only."""
 
     if payload is not None and not isinstance(payload, Mapping):
         return None
     if not isinstance(row, Mapping):
         return None
     schema = str(row.get("schema_version") or "").strip()
-    if schema != AVAILABILITY_RECEIPT_SCHEMA_V2:
+    if schema != WORLD_AVAILABILITY_RECEIPT_SCHEMA:
         return None
     try:
         return WorldAvailabilityReceipt.from_mapping(row)
@@ -265,7 +263,7 @@ def _seal_world_availability_receipt(
 
     stamped_at = _utc(ready_at)
     identity = _receipt_identity_payload(
-        schema_version=AVAILABILITY_RECEIPT_SCHEMA_V2,
+        schema_version=WORLD_AVAILABILITY_RECEIPT_SCHEMA,
         subject=subject,
         scope=scope,
         storage_locator=storage_locator,
@@ -502,7 +500,7 @@ def _assert_unique_compatible_receipt(
 __all__ = [
     "AVAILABILITY_RECEIPT_DIRNAME",
     "AVAILABILITY_RECEIPT_SCHEMA",
-    "AVAILABILITY_RECEIPT_SCHEMA_V2",
+    "WORLD_AVAILABILITY_RECEIPT_SCHEMA",
     "UtcClock",
     "WorldAvailabilityJsonlReceiptStore",
     "append_jsonl_and_fsync",

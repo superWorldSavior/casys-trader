@@ -12,8 +12,8 @@
 ## Décision
 
 Autoriser un **pilote `pipeline_pilot` d'une semaine**, shadow-only, sur
-l'état paper supervisé à partir du **2026-08-24 Asia/Taipei**. Le V1 World
-Model et les ombres cohorte / macro source-only / graphe V3 démarrent
+l'état paper supervisé à partir du **2026-08-24 Asia/Taipei**. Le World
+Model marché et les ombres cohorte / macro source-only / graphe démarrent
 **ensemble selon la config commitée**. Aucune promotion Trader.
 
 ## Exception à l'activation RFC
@@ -25,7 +25,7 @@ Les RFCs exigent une activation **explicite** (`register` / `arm` /
 `activation_policy=operator_authorized_on_boot` et `enabled: true`. Ce
 YAML versionné (`content_sha256`) **est** l'autorisation. Le flag
 `CASYS_WORLD_SHADOW_PILOT_ACTIVATION` (défaut `1`) l'honore ; `=0` saute
-register/arm/start et le OU des workers, le V1 reste.
+register/arm/start et le OU des workers, le marché reste.
 
 Ce n'est pas un feu vert `prospective_evaluation`. Ce n'est pas une
 activation implicite « parce que le code existe ».
@@ -46,11 +46,11 @@ Pas une date de fin déjà expirée dans le YAML (volontairement aucune
 
 | Surface | Comment c'est allumé |
 |---|---|
-| V1 marché (Markov + GRU 12 pas) | `CASYS_WORLD_MODEL_SHADOW_ENABLED` défaut `1` |
-| Contexte V2 | flag défaut `0` **OU** `workers.context_v2` du YAML si le pilote s'active |
-| Macro source-only | flag défaut `0` **OU** `workers.macro_source_only` |
-| Graphe V3 | flag défaut `0` **OU** `workers.graph_v3` |
-| Cohortes C1 + graph_v3 | `activate_world_shadow_pilot` au boot V1 si activation on |
+| Marché (Markov + GRU) | `CASYS_WORLD_MODEL_SHADOW_ENABLED` défaut `1` |
+| Contexte | flag défaut `0` **OU** `workers.context` du YAML si le pilote s'active |
+| Macro source-only | flag défaut `0` **OU** `workers.macro_source` |
+| Graphe | flag défaut `0` **OU** `workers.graph` |
+| Cohortes C1 + graph | `activate_world_shadow_pilot` au boot marché si activation on |
 
 Deux cohortes, `study_kind=pipeline_pilot`, `authority=shadow_only`,
 `decision_effect=none`, `recommendation=NO_GO`, `causal_claim=false`,
@@ -58,8 +58,8 @@ Deux cohortes, `study_kind=pipeline_pilot`, `authority=shadow_only`,
 
 1. **technical_c1** — lanes Markov + GRU froid (`sequence_length=4`) :
    `market`, `status_only`, `company`, `macro`, `joint`. **Pas de graphe.**
-2. **graph_v3** — `markov.graph` (`topology_status_only`) + `gru.graph`
-   (`graph_content`). `config/world_graph_v3.yaml` garde `cohort_id: null` ;
+2. **graph** — `markov.graph` (`topology_status_only`) + `gru.graph`
+   (`graph_content`). `config/world_graph.yaml` garde `cohort_id: null` ;
    l'id est injecté au compose.
 
 NetworkX = projection fraîche, jamais persistée, jamais autorité. Pas

@@ -97,11 +97,11 @@ class ScriptedTransport:
         return MacroHttpResponse(status=200, body=str(item), headers={})
 
 
-def test_macro_lane_identity_is_distinct_from_v1_and_context_v2() -> None:
+def test_macro_lane_identity_is_distinct_from_market_and_context() -> None:
     from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY, MACRO_THREAD_NAME
 
     assert MACRO_LANE_IDENTITY == "world.context.macro"
-    assert MACRO_LANE_IDENTITY != "context.v2"
+    assert MACRO_LANE_IDENTITY != "context.v1"
     assert MACRO_THREAD_NAME != "world-model-shadow"
     assert "macro" in MACRO_THREAD_NAME
 
@@ -431,7 +431,7 @@ def test_live_bridge_lineage_binds_derived_ontology_and_collection_plan() -> Non
     assert spec == committed_macro_graph_bridge_spec()
 
 
-def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
+def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from tests.application.test_world_scope_universe_coverage import COMMITTED_UNIVERSE_ANCHORS
@@ -442,7 +442,7 @@ def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
 
     operator = load_world_macro_operator_configs(config_dir=CONFIG_DIR)
     mapping = operator.scope_mapping
-    assert mapping.mapping_id == "world_scope_mapping.v2"
+    assert mapping.mapping_id == "world_scope_mapping.v1"
     assert len(COMMITTED_UNIVERSE_ANCHORS) == 33
     for market_venue, instrument in COMMITTED_UNIVERSE_ANCHORS:
         resolved = mapping.resolve(WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument))
@@ -496,7 +496,7 @@ def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
         transport=UrlFixtureTransport(),
         clock=FakeClock(NOW),
         sleeper=lambda _seconds: None,
-        graph_v3_enabled=True,
+        graph_enabled=True,
     )
     first = bundle.runner.trigger(now=NOW, reason="full-mapping")
     assert first["triggered"] is True
@@ -721,23 +721,23 @@ def test_wired_restart_replays_correction_leaf_then_extends_chain(tmp_path: Path
     assert value_c.supersedes_fact_version_id == value_b.fact_version_id.value
 
 
-def test_graph_v3_flag_defaults_off_and_collect_does_not_create_graph_relations(
+def test_graph_flag_defaults_off_and_collect_does_not_create_graph_relations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from trader.runtime.world_macro_runtime import collect_world_macro, wire_world_macro_runtime
 
-    monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", raising=False)
+    monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_ENABLED", raising=False)
     collect_source = inspect.getsource(collect_world_macro)
     assert "RegisterMacroObservationKnowledge" not in collect_source
     assert "OBSERVES" not in collect_source
     runtime_source = (REPO_ROOT / "trader" / "runtime" / "world_macro_runtime.py").read_text(encoding="utf-8")
-    assert "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED" in runtime_source
-    assert 'env.get(GRAPH_V3_FLAG, "0")' in runtime_source
-    from trader.runtime.world_macro_runtime import graph_v3_enabled
+    assert "CASYS_WORLD_MODEL_GRAPH_ENABLED" in runtime_source
+    assert 'env.get(GRAPH_FLAG, "0")' in runtime_source
+    from trader.runtime.world_macro_runtime import graph_enabled
 
-    assert graph_v3_enabled({}) is False
-    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "0"}) is False
-    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "1"}) is True
+    assert graph_enabled({}) is False
+    assert graph_enabled({"CASYS_WORLD_MODEL_GRAPH_ENABLED": "0"}) is False
+    assert graph_enabled({"CASYS_WORLD_MODEL_GRAPH_ENABLED": "1"}) is True
     bundle = wire_world_macro_runtime(
         config_dir=CONFIG_DIR,
         state_dir=tmp_path,
@@ -775,12 +775,12 @@ def _stub_ontology_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
+def test_graph_enabled_runs_in_macro_worker_not_episode_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from trader.runtime.world_macro_runtime import collect_world_macro, wire_world_macro_runtime
 
-    monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", "1")
+    monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_ENABLED", "1")
     _stub_ontology_bootstrap(monkeypatch)
     calls: list[str] = []
 
@@ -810,7 +810,7 @@ def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
         transport=UrlFixtureTransport(),
         clock=FakeClock(NOW),
         sleeper=lambda _seconds: None,
-        graph_v3_enabled=True,
+        graph_enabled=True,
     )
     first = bundle.runner.trigger(now=NOW, reason="first")
     assert first["triggered"] is True
@@ -878,7 +878,7 @@ def test_default_macro_runtime_with_mocked_urlopen_yields_typed_facts(
     wire_source = inspect.getsource(wire_world_macro_runtime)
     assert "UrllibMacroTransport()" in wire_source
     assert "transport or urllib_macro_transport" not in wire_source
-    assert "graph_v3_enabled()" not in wire_source
+    assert "graph_enabled()" not in wire_source
 
     clock = FakeClock(NOW)
     bundle = wire_world_macro_runtime(
@@ -928,10 +928,10 @@ def test_default_macro_runtime_with_mocked_urlopen_yields_typed_facts(
     assert len(remaining_failures) == failed_count
 
 
-def test_graph_v3_yaml_only_enables_macro_graph_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_graph_yaml_only_enables_macro_graph_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from trader.runtime.world_macro_runtime import wire_world_macro_runtime
 
-    monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", raising=False)
+    monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_ENABLED", raising=False)
     _stub_ontology_bootstrap(monkeypatch)
     calls: list[str] = []
 
@@ -961,7 +961,7 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(tmp_path: Path, monkeypat
         transport=UrlFixtureTransport(),
         clock=FakeClock(NOW),
         sleeper=lambda _seconds: None,
-        graph_v3_enabled=True,
+        graph_enabled=True,
     )
     first = bundle.runner.trigger(now=NOW, reason="yaml-only")
     assert first["triggered"] is True
@@ -1022,7 +1022,7 @@ def test_graph_bridge_ensure_then_reconcile_never_activates_every_tick(
         transport=UrlFixtureTransport(),
         clock=FakeClock(NOW),
         sleeper=lambda _seconds: None,
-        graph_v3_enabled=True,
+        graph_enabled=True,
     )
     first = bundle.runner.trigger(now=NOW, reason="align")
     assert first["triggered"] is True
@@ -1089,7 +1089,7 @@ def test_bridge_lifecycle_aligns_before_collection_even_when_every_provider_fail
         transport=FailAll(),
         clock=FakeClock(NOW),
         sleeper=lambda _seconds: None,
-        graph_v3_enabled=True,
+        graph_enabled=True,
     )
     first = bundle.runner.trigger(now=NOW, reason="post_cycle")
     assert first["triggered"] is True
@@ -1135,7 +1135,7 @@ def test_bridge_lifecycle_aligns_before_collection_even_when_every_provider_fail
 def test_typed_graph_flag_false_does_not_reread_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from trader.runtime.world_macro_runtime import MACRO_THREAD_NAME, wire_world_macro_runtime
 
-    monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", "1")
+    monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_ENABLED", "1")
     calls: list[str] = []
     monkeypatch.setattr(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
@@ -1150,7 +1150,7 @@ def test_typed_graph_flag_false_does_not_reread_env(tmp_path: Path, monkeypatch:
         transport=UrlFixtureTransport(),
         clock=FakeClock(NOW),
         sleeper=lambda _seconds: None,
-        graph_v3_enabled=False,
+        graph_enabled=False,
     )
     first = bundle.runner.trigger(now=NOW, reason="env-ignored")
     assert first["triggered"] is True

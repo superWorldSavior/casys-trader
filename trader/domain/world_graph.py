@@ -1,4 +1,4 @@
-"""Typed V3 temporal graph records: namespaced entities, relations, identity map, revisions.
+"""Typed temporal graph records: namespaced entities, relations, identity map, revisions.
 
 Stdlib-only. Structural and knowledge overlays are distinct; generic ``CAUSES``
 edges are forbidden. Availability is store-assigned and is never a caller field
@@ -80,7 +80,7 @@ FORBIDDEN_RELATION_KINDS = frozenset(
     }
 )
 SNAPSHOT_STATUSES = frozenset({"complete", "partial", "missing", "stale"})
-IDENTITY_MAPPABLE_V2_KINDS = frozenset({"world", "region", "country", "venue", "family", "company", "instrument"})
+CONTEXT_IDENTITY_MAPPABLE_KINDS = frozenset({"world", "region", "country", "venue", "family", "company", "instrument"})
 _COMPANY_PREFIXES = ("lei:", "cik:", "issuer:")
 _INSTRUMENT_ID_RE = re.compile(r"^mic:[A-Z0-9]{4}:symbol:.+$")
 _LOCATED_IN_PAIRS = frozenset({("country", "region"), ("venue", "country"), ("venue", "region")})
@@ -321,7 +321,7 @@ def evaluate_world_graph_point_in_time(
 
 @dataclass(frozen=True)
 class WorldEntityRef:
-    """Namespaced V3 world-entity identity. Not a knowledge overlay node."""
+    """Namespaced world-entity identity. Not a knowledge overlay node."""
 
     kind: str
     entity_id: str
@@ -1240,7 +1240,7 @@ def parse_world_entity_event(value: Mapping[str, Any] | WorldEntityEvent) -> Wor
     return parser(value)
 
 
-def _as_v2_entity(value: EntityRef | Mapping[str, Any]) -> EntityRef:
+def _as_context_entity(value: EntityRef | Mapping[str, Any]) -> EntityRef:
     return value if isinstance(value, EntityRef) else EntityRef.from_mapping(value)
 
 
@@ -1267,10 +1267,10 @@ class WorldEntityIdentityLinkRef:
 
 @dataclass(frozen=True)
 class WorldEntityIdentityLink:
-    """Proven V2 EntityRef → V3 WorldEntityRef correspondence. Never rewritten in place."""
+    """Proven context EntityRef → graph WorldEntityRef correspondence. Never rewritten in place."""
 
-    v2_ref: EntityRef | Mapping[str, Any]
-    v3_ref: WorldEntityRef | Mapping[str, Any]
+    context_ref: EntityRef | Mapping[str, Any]
+    graph_ref: WorldEntityRef | Mapping[str, Any]
     source_refs: Sequence[str]
     effective_from: datetime | str
     effective_until: datetime | str | None = None
@@ -1283,14 +1283,14 @@ class WorldEntityIdentityLink:
         schema_version = _required_text(self.schema_version, "schema_version")
         if schema_version != WORLD_IDENTITY_LINK_SCHEMA:
             raise ValueError(f"schema_version must be {WORLD_IDENTITY_LINK_SCHEMA}")
-        v2_ref = _as_v2_entity(self.v2_ref)
-        v3_ref = WorldEntityRef.from_mapping(self.v3_ref)
-        if v2_ref.kind == "sensor":
-            raise ValueError("sensor is not a V2 world entity that can be linked to V3")
-        if v2_ref.kind not in IDENTITY_MAPPABLE_V2_KINDS:
-            raise ValueError(f"V2 identity kind {v2_ref.kind} cannot be linked to V3")
-        if v2_ref.kind != v3_ref.kind:
-            raise ValueError("identity link kind mismatch between V2 and V3 refs")
+        context_ref = _as_context_entity(self.context_ref)
+        graph_ref = WorldEntityRef.from_mapping(self.graph_ref)
+        if context_ref.kind == "sensor":
+            raise ValueError("sensor is not a context world entity that can be linked to graph")
+        if context_ref.kind not in CONTEXT_IDENTITY_MAPPABLE_KINDS:
+            raise ValueError(f"context identity kind {context_ref.kind} cannot be linked to graph")
+        if context_ref.kind != graph_ref.kind:
+            raise ValueError("identity link kind mismatch between context and graph refs")
         source_refs = _require_source_refs(self.source_refs)
         effective_from = parse_utc_timestamp(self.effective_from, "effective_from")
         effective_until = _optional_utc(self.effective_until, "effective_until")
@@ -1301,8 +1301,8 @@ class WorldEntityIdentityLink:
         )
         identity = {
             "schema_version": schema_version,
-            "v2_ref": v2_ref.to_dict(),
-            "v3_ref": v3_ref.to_dict(),
+            "context_ref": context_ref.to_dict(),
+            "graph_ref": graph_ref.to_dict(),
             "source_refs": list(source_refs),
             "effective_from": _iso(effective_from),
             "effective_until": _iso(effective_until),
@@ -1315,8 +1315,8 @@ class WorldEntityIdentityLink:
         if self.content_sha256 is not None and _required_text(self.content_sha256, "content_sha256") != digest:
             raise ValueError("content_sha256 does not match the canonical identity link")
         object.__setattr__(self, "schema_version", schema_version)
-        object.__setattr__(self, "v2_ref", v2_ref)
-        object.__setattr__(self, "v3_ref", v3_ref)
+        object.__setattr__(self, "context_ref", context_ref)
+        object.__setattr__(self, "graph_ref", graph_ref)
         object.__setattr__(self, "source_refs", source_refs)
         object.__setattr__(self, "effective_from", effective_from)
         object.__setattr__(self, "effective_until", effective_until)
@@ -1331,8 +1331,8 @@ class WorldEntityIdentityLink:
         return {
             "schema_version": self.schema_version,
             "link_id": self.link_id,
-            "v2_ref": self.v2_ref.to_dict(),
-            "v3_ref": self.v3_ref.to_dict(),
+            "context_ref": self.context_ref.to_dict(),
+            "graph_ref": self.graph_ref.to_dict(),
             "source_refs": list(self.source_refs),
             "effective_from": _iso(self.effective_from),
             "effective_until": _iso(self.effective_until),
@@ -1347,8 +1347,8 @@ class WorldEntityIdentityLink:
         if not isinstance(value, Mapping):
             raise TypeError("identity link must be WorldEntityIdentityLink or a mapping")
         return cls(
-            v2_ref=value.get("v2_ref"),
-            v3_ref=value.get("v3_ref"),
+            context_ref=value.get("context_ref"),
+            graph_ref=value.get("graph_ref"),
             source_refs=value.get("source_refs") or (),
             effective_from=value.get("effective_from"),
             effective_until=value.get("effective_until"),
@@ -1534,7 +1534,7 @@ def parse_world_entity_identity_event(value: Mapping[str, Any] | WorldEntityIden
     return parser(value)
 
 
-def _assert_v2_uniqueness(
+def _assert_context_identity_uniqueness(
     states: Mapping[str, tuple[WorldEntityIdentityLink, datetime | None]],
     incoming: WorldEntityIdentityLink,
 ) -> None:
@@ -1544,13 +1544,13 @@ def _assert_v2_uniqueness(
             if link.content_sha256 != incoming.content_sha256:
                 raise ValueError("conflict: same identity link id with different content")
             continue
-        if link.v2_ref != incoming.v2_ref:
+        if link.context_ref != incoming.context_ref:
             continue
         if not _intervals_overlap(link.effective_from, until, incoming.effective_from, incoming_until):
             continue
-        if link.v3_ref != incoming.v3_ref:
-            raise ValueError("ambiguous active V2 identity already linked to a different V3 entity")
-        raise ValueError("ambiguous duplicate V2 identity link")
+        if link.graph_ref != incoming.graph_ref:
+            raise ValueError("ambiguous active context identity already linked to a different graph entity")
+        raise ValueError("ambiguous duplicate context identity link")
 
 
 def _fold_identity_events(
@@ -1565,7 +1565,7 @@ def _fold_identity_events(
                 if existing[0].content_sha256 != link.content_sha256:
                     raise ValueError("conflict: same identity link id with different content")
                 continue
-            _assert_v2_uniqueness(states, link)
+            _assert_context_identity_uniqueness(states, link)
             states[link.link_id] = (link, link.effective_until)
             continue
         if isinstance(event, WorldEntityIdentityUnlinked):
@@ -1585,8 +1585,8 @@ def _fold_identity_events(
                 raise ValueError("unknown identity link")
             predecessor, until = current
             successor = event.successor
-            if successor.v2_ref != predecessor.v2_ref:
-                raise ValueError("identity supersession must keep the V2 ref")
+            if successor.context_ref != predecessor.context_ref:
+                raise ValueError("identity supersession must keep the context ref")
             if successor.effective_from <= predecessor.effective_from:
                 raise ValueError("successor effective_from must be later than the predecessor")
             if until is not None and until <= successor.effective_from:
@@ -1597,7 +1597,7 @@ def _fold_identity_events(
                 if existing_successor[0].content_sha256 != successor.content_sha256:
                     raise ValueError("conflict: same identity link id with different content")
                 continue
-            _assert_v2_uniqueness(states, successor)
+            _assert_context_identity_uniqueness(states, successor)
             states[successor.link_id] = (successor, successor.effective_until)
             continue
         raise TypeError(f"unsupported identity event: {type(event).__name__}")
@@ -1606,7 +1606,7 @@ def _fold_identity_events(
 
 @dataclass(frozen=True)
 class WorldEntityIdentityMap:
-    """Event-sourced V2→V3 identity aggregate. Corrections append; they never rewrite."""
+    """Event-sourced context→graph identity aggregate. Corrections append; they never rewrite."""
 
     events: Sequence[WorldEntityIdentityEvent | Mapping[str, Any]] = ()
     schema_version: str = WORLD_IDENTITY_MAP_SCHEMA
@@ -1639,7 +1639,7 @@ class WorldEntityIdentityMap:
             if existing[0].content_sha256 != resolved.content_sha256:
                 raise ValueError("conflict: same identity link id with different content")
             return self
-        _assert_v2_uniqueness(states, resolved)
+        _assert_context_identity_uniqueness(states, resolved)
         return WorldEntityIdentityMap(events=(*self.events, WorldEntityIdentityLinked(link=resolved)))
 
     def unlink(
@@ -1673,8 +1673,8 @@ class WorldEntityIdentityMap:
         if current is None:
             raise ValueError("unknown identity link")
         predecessor, until = current
-        if resolved.v2_ref != predecessor.v2_ref:
-            raise ValueError("identity supersession must keep the V2 ref")
+        if resolved.context_ref != predecessor.context_ref:
+            raise ValueError("identity supersession must keep the context ref")
         if resolved.effective_from <= predecessor.effective_from:
             raise ValueError("successor effective_from must be later than the predecessor")
         if until is not None and until <= resolved.effective_from:
@@ -2357,7 +2357,7 @@ def world_instrument_root_for_resolution(
 
 @dataclass(frozen=True)
 class WorldGraphSnapshot:
-    """Immutable V3 subgraph at a cutoff. Structural and knowledge refs stay two sets.
+    """Immutable graph subgraph at a cutoff. Structural and knowledge refs stay two sets.
 
     Unmapped/ambiguous missingness forbids a world-entity root and graph members.
     ``root_entity=None`` is a backward-compatible widening of
@@ -3987,6 +3987,7 @@ __all__ = [
     "MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA",
     "MACRO_GRAPH_SKIP_REASONS",
     "STRUCTURAL_RELATION_KINDS",
+    "CONTEXT_IDENTITY_MAPPABLE_KINDS",
     "WORLD_ENTITY_KINDS",
     "WORLD_GRAPH_SNAPSHOT_SCHEMA",
     "ancestry_distance_from_instrument_root",

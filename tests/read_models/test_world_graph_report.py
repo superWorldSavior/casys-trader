@@ -18,9 +18,9 @@ from trader.domain.world_cohort import (
 from trader.domain.world_feature_contract import (
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
-    world_v3_feature_contract,
-    world_v3_graph_content_mask,
-    world_v3_topology_status_only_mask,
+    graph_feature_contract,
+    graph_content_mask,
+    topology_status_only_mask,
 )
 from trader.infrastructure.state_db.world_model_query import read_world_cohort_catalog
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
@@ -28,9 +28,9 @@ from trader.reporting.read_models.world_graph import read_world_graph_report, re
 
 
 GRAPH_COHORT_ID = "world_cohort:v1:" + "d" * 64
-V3 = world_v3_feature_contract()
-TOPOLOGY = world_v3_topology_status_only_mask()
-CONTENT = world_v3_graph_content_mask()
+V3 = graph_feature_contract()
+TOPOLOGY = topology_status_only_mask()
+CONTENT = graph_content_mask()
 
 _CLAIM = {
     "authority": "shadow_only",
@@ -54,7 +54,7 @@ def _graph_manifest(**overrides: object):
             WorldSensorRequirement(
                 sensor_id="graph",
                 source_contract_id=V3.contract_id,
-                projection_contract_id="graph_v3_projection.v1",
+                projection_contract_id="graph_projection.v1",
                 mode="required",
                 lane_ids=("markov.graph", "gru.graph"),
             ),

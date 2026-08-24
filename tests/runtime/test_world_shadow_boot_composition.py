@@ -10,7 +10,7 @@ from trader.application.world_model.cohort_service import WorldCohortService
 from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
 from trader.domain.world_cohort import CohortPhase, WorldCohortId
 from trader.domain.world_feature_contract import (
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -35,16 +35,13 @@ def _activate(store: WorldModelStore, *, ontology_proof=None):
 
 
 def _phases(store: WorldModelStore, report) -> dict[str, CohortPhase]:
-    return {
-        item["key"]: store.load(WorldCohortId(item["cohort_id"])).phase
-        for item in report.cohorts
-    }
+    return {item["key"]: store.load(WorldCohortId(item["cohort_id"])).phase for item in report.cohorts}
 
 
 def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_path: Path) -> None:
     from trader.runtime import daemon
     from trader.runtime.world_model_runtime import (
-        compose_local_graph_v3_lanes,
+        compose_local_graph_lanes,
         compose_world_ontology_attestation,
     )
 
@@ -53,7 +50,7 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         first = _activate(store, ontology_proof=None)
         phases = _phases(store, first)
         assert phases["technical_c1"] is CohortPhase.COLLECTING
-        assert phases["graph_v3"] is CohortPhase.REGISTERED
+        assert phases["graph"] is CohortPhase.REGISTERED
         assert first.decision_effect == "none"
         assert first.authority == "shadow_only"
 
@@ -67,7 +64,7 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         published = attestation.ensure_published(now=BOOT)
         assert published.status == "ready"
         proof = attestation.proven_heads(
-            revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+            revision_id=MARKET_ONTOLOGY_REVISION,
             scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
             scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
             at=BOOT,
@@ -78,12 +75,12 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         repaired = _activate(store, ontology_proof=attestation)
         repaired_phases = _phases(store, repaired)
         assert repaired_phases["technical_c1"] is CohortPhase.COLLECTING
-        assert repaired_phases["graph_v3"] is CohortPhase.COLLECTING
+        assert repaired_phases["graph"] is CohortPhase.COLLECTING
         assert repaired.decision_effect == "none"
         assert store.counts()["episodes"] == 0
 
         guard = compose_world_resource_guard(db_path=store.path, config_dir=CONFIG_DIR, clock=lambda: BOOT)
-        predictors, enricher = compose_local_graph_v3_lanes(
+        predictors, enricher = compose_local_graph_lanes(
             enabled=True,
             store=store,
             config_dir=CONFIG_DIR,
@@ -117,7 +114,7 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
             "activate_world_shadow_pilot("
         )
         assert world_boot.index("ensure_published") < world_boot.index("activate_world_shadow_pilot(")
-        assert "graph_v3_enabled=_world_model_graph_v3" in boot
+        assert "graph_enabled=_world_model_graph" in boot
         assert "compose_world_resource_guard(" in world_boot
         assert "resource_guard=" in world_boot
         assert "trader_callback" not in world_boot

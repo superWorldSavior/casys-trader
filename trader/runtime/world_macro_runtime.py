@@ -29,7 +29,7 @@ from trader.domain.world_macro import (
 
 
 MACRO_THREAD_NAME = "world-macro-source-only"
-GRAPH_V3_FLAG = "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
+GRAPH_FLAG = "CASYS_WORLD_MODEL_GRAPH_ENABLED"
 _BRIDGE_KEY = "macro_graph_bridge.v1"
 
 
@@ -204,9 +204,9 @@ class WorldMacroBackgroundRunner:
             pass
 
 
-def graph_v3_enabled(environ: Mapping[str, str] | None = None) -> bool:
+def graph_enabled(environ: Mapping[str, str] | None = None) -> bool:
     env = os.environ if environ is None else environ
-    return str(env.get(GRAPH_V3_FLAG, "0")).strip() == "1"
+    return str(env.get(GRAPH_FLAG, "0")).strip() == "1"
 
 
 def collection_plan(bundle: object) -> MacroCollectionPlan:
@@ -308,11 +308,11 @@ def wire_world_macro_runtime(
     transport: object | None = None,
     clock: Callable[[], datetime] | None = None,
     sleeper: Callable[[float], None] | None = None,
-    graph_v3_enabled: bool = False,
+    graph_enabled: bool = False,
 ) -> WorldMacroRuntimeBundle:
     """Build store, ports, pipeline, and coalescing worker. No fetch at wire time.
 
-    ``graph_v3_enabled`` is the already-resolved activation bit (env OR pilot YAML).
+    ``graph_enabled`` is the already-resolved activation bit (env OR pilot YAML).
     This composer does not reread the process environment.
     """
 
@@ -355,7 +355,7 @@ def wire_world_macro_runtime(
     )
     plan = collection_plan(operator)
     targets = plan.targets
-    graph_enabled = bool(graph_v3_enabled)
+    graph_enabled = bool(graph_enabled)
     graph_store = None
     if graph_enabled:
         from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
@@ -398,9 +398,13 @@ def wire_world_macro_runtime(
             errors = report.get("errors")
             if isinstance(errors, list):
                 errors.append(graph_error)
-            report["status"] = "failed" if fail_closed else _collection_report_status(
-                list(report.get("runs") or []),
-                list(errors) if isinstance(errors, list) else [graph_error],
+            report["status"] = (
+                "failed"
+                if fail_closed
+                else _collection_report_status(
+                    list(report.get("runs") or []),
+                    list(errors) if isinstance(errors, list) else [graph_error],
+                )
             )
         if graph_store is None or graph_report is None or fail_closed:
             return report
@@ -523,7 +527,7 @@ def _reconcile_macro_graph_bridge(
 
 
 __all__ = [
-    "GRAPH_V3_FLAG",
+    "GRAPH_FLAG",
     "MACRO_LANE_IDENTITY",
     "MACRO_THREAD_NAME",
     "WorldMacroBackgroundRunner",
@@ -531,6 +535,6 @@ __all__ = [
     "collect_world_macro",
     "collection_plan",
     "collection_scopes",
-    "graph_v3_enabled",
+    "graph_enabled",
     "wire_world_macro_runtime",
 ]

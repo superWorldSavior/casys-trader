@@ -12,7 +12,7 @@ from trader.domain.world_context import SensorEvidence
 from trader.domain.world_episode import SamplingSlotCapture, SamplingSlotCaptureKind, WorldEpisode
 from trader.infrastructure.state_db.world_model_store import WorldModelConflictError, WorldModelStore
 
-from tests.application.test_world_context_capture import _FakeSource, _v1_episode
+from tests.application.test_world_context_capture import _FakeSource, _market_episode
 from tests.application.test_world_context_lanes import (
     FilteringPredictor,
     GraphFilteringPredictor,
@@ -20,12 +20,12 @@ from tests.application.test_world_context_lanes import (
     RecordingPredictor,
     _cohort_market_episode,
     _collecting_cohort_service,
-    _v2_context_pair,
-    _v3_companion,
+    _context_pair,
+    _graph_companion,
 )
 from tests.application.test_world_cohort_service import ANCHOR_TS, START_READY, V1
 from tests.application.test_world_graph_capture import _attach, _unpublished_config
-from tests.application.test_world_graph_snapshot import _episode as _graph6_v1_episode
+from tests.application.test_world_graph_snapshot import _episode as _graph6_market_episode
 
 
 NOW = datetime(2026, 8, 22, 10, 30, tzinfo=timezone.utc)
@@ -66,7 +66,7 @@ def _capture_service(store: WorldModelStore, predictor, *extra) -> WorldModelSer
 
 
 def test_sampling_slot_capture_kinds_are_explicit_lifecycle_values() -> None:
-    episode = _v1_episode()
+    episode = _market_episode()
     appended = SamplingSlotCapture.appended(episode)
     reused = SamplingSlotCapture.reused_canonical(episode)
     missing = SamplingSlotCapture.missing()
@@ -82,8 +82,8 @@ def test_sampling_slot_capture_kinds_are_explicit_lifecycle_values() -> None:
         SamplingSlotCapture(kind=SamplingSlotCaptureKind.MISSING, episode=episode)
 
 
-def test_v1_later_available_at_and_revised_ohlcv_reuse_canonical_episode(tmp_path) -> None:
-    first = _v1_episode()
+def test_market_later_available_at_and_revised_ohlcv_reuse_canonical_episode(tmp_path) -> None:
+    first = _market_episode()
     later = _later_poll_episode(first, close=150.0)
     assert first.episode_id == later.episode_id
     assert later.observation.available_at > first.observation.available_at
@@ -125,15 +125,15 @@ def test_v1_later_available_at_and_revised_ohlcv_reuse_canonical_episode(tmp_pat
     assert store.counts() == {"episodes": 1, "outcome_events": 0, "predictions": prediction_count}
 
 
-def test_v2_later_poll_with_revised_ohlcv_reuses_first_canonical_slot(tmp_path) -> None:
-    first, divergent_context = _v2_context_pair()
+def test_context_later_poll_with_revised_ohlcv_reuses_first_canonical_slot(tmp_path) -> None:
+    first, divergent_context = _context_pair()
     later = _later_poll_episode(first, close=150.0)
     revised_context = _later_poll_episode(divergent_context, close=175.0)
     store = WorldModelStore(Path(tmp_path) / "world_model.db")
     recorder = FilteringPredictor()
     gru = OnlineGRUWorldChallenger(
-        model_version="context.v2",
-        encoder_version="world_gru_encoder.v2",
+        model_version="context.v1",
+        encoder_version="world_gru_encoder.context.v1",
         include_context=True,
         hidden_size=4,
         sequence_len=4,
@@ -154,14 +154,14 @@ def test_v2_later_poll_with_revised_ohlcv_reuses_first_canonical_slot(tmp_path) 
     assert store.counts()["predictions"] == prediction_count
     assert recorder.seen == [first.episode_id]
     assert _stored_close(store, first.episode_id) == first.observation.anchor.close
-    with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+    with pytest.raises(WorldModelConflictError, match="context market slot"):
         store.append_episode(later)
-    with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+    with pytest.raises(WorldModelConflictError, match="context market slot"):
         store.append_episode(revised_context)
 
 
-def test_v3_later_poll_with_revised_ohlcv_reuses_first_canonical_slot(tmp_path) -> None:
-    first = _attach((_graph6_v1_episode(),), _unpublished_config())[0]
+def test_graph_later_poll_with_revised_ohlcv_reuses_first_canonical_slot(tmp_path) -> None:
+    first = _attach((_graph6_market_episode(),), _unpublished_config())[0]
     later = _later_poll_episode(first, close=150.0)
     store = WorldModelStore(Path(tmp_path) / "world_model.db")
     recorder = GraphFilteringPredictor()
@@ -177,12 +177,12 @@ def test_v3_later_poll_with_revised_ohlcv_reuses_first_canonical_slot(tmp_path) 
     assert store.counts()["predictions"] == prediction_count
     assert recorder.seen == [first.episode_id]
     assert _stored_close(store, first.episode_id) == first.observation.anchor.close
-    with pytest.raises(WorldModelConflictError, match="V3 market slot"):
+    with pytest.raises(WorldModelConflictError, match="graph market slot"):
         store.append_episode(later)
 
 
 def test_repeated_background_polls_do_not_duplicate_observations_or_predictions(tmp_path) -> None:
-    first = _v1_episode()
+    first = _market_episode()
     polls = (
         first,
         _later_poll_episode(first, minutes=5, close=150.0),
@@ -192,7 +192,9 @@ def test_repeated_background_polls_do_not_duplicate_observations_or_predictions(
     recorder = RecordingPredictor()
     gru = OnlineGRUWorldChallenger(hidden_size=4, sequence_len=4)
     service = _capture_service(store, recorder, gru)
-    reports = [service.capture_and_predict((poll,), now=NOW + timedelta(minutes=index)) for index, poll in enumerate(polls)]
+    reports = [
+        service.capture_and_predict((poll,), now=NOW + timedelta(minutes=index)) for index, poll in enumerate(polls)
+    ]
     assert all(report["errors"] == [] for report in reports)
     assert reports[0]["episodes_appended"] == 1
     assert reports[0]["predictions_appended"] == 2
@@ -236,8 +238,8 @@ def test_canonical_replay_still_admits_the_first_durable_episode_to_a_collecting
     assert store.counts()["episodes"] == 1
 
 
-def test_v1_v2_v3_companions_each_reuse_their_own_canonical_slot(tmp_path) -> None:
-    v1 = _v1_episode()
+def test_market_context_graph_companions_each_reuse_their_own_canonical_slot(tmp_path) -> None:
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -245,7 +247,7 @@ def test_v1_v2_v3_companions_each_reuse_their_own_canonical_slot(tmp_path) -> No
             SensorEvidence(status="missing", reason="no_artifact"),
         ),
     )[0]
-    v3 = _v3_companion()
+    v3 = _graph_companion()
     later = (
         _later_poll_episode(v1, close=150.0),
         _later_poll_episode(v2, close=150.0),

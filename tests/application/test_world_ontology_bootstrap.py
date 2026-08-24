@@ -89,10 +89,10 @@ def test_derive_market_ontology_uses_exact_mapping_heads_without_issuer_or_suffi
     assert revision.revision_id == MARKET_ONTOLOGY_REVISION_ID
     assert revision.scope_mapping_id == mapping.mapping_id
     assert revision.scope_mapping_hash == mapping.content_sha256
-    from trader.domain.world_feature_contract import WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    from trader.domain.world_feature_contract import MARKET_ONTOLOGY_SHA256
     from trader.domain.world_ontology_lifecycle import require_committed_ontology_revision
 
-    assert revision.content_sha256 == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    assert revision.content_sha256 == MARKET_ONTOLOGY_SHA256
     require_committed_ontology_revision(revision, mapping)
     assert revision.identity_link_refs == ()
     second = derive_market_ontology(mapping)[2]
@@ -157,7 +157,7 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
 ) -> None:
     from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
     from trader.domain.world_feature_contract import (
-        WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        MARKET_ONTOLOGY_REVISION,
         WORLD_SCOPE_MAPPING_ID,
         WORLD_SCOPE_MAPPING_SHA256,
     )
@@ -173,7 +173,7 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
         attestation = WorldOntologyAttestation(store, mapping)
         assert (
             attestation.proven_heads(
-                revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+                revision_id=MARKET_ONTOLOGY_REVISION,
                 scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
                 scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
                 at=CUTOFF,
@@ -184,13 +184,13 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
         ready = attestation.ensure_published(now=CUTOFF)
         assert ready.status == "ready"
         proof = attestation.proven_heads(
-            revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+            revision_id=MARKET_ONTOLOGY_REVISION,
             scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
             scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
             at=CUTOFF,
         )
         assert isinstance(proof, WorldOntologyHeadsProof)
-        assert proof.revision_id == WORLD_GRAPH_V3_ONTOLOGY_REVISION
+        assert proof.revision_id == MARKET_ONTOLOGY_REVISION
         assert proof.scope_mapping_id == mapping.mapping_id
         assert proof.scope_mapping_hash == mapping.content_sha256
         assert proof.content_sha256 == ready.ontology_hash
@@ -250,7 +250,7 @@ def test_published_different_identity_is_drifted_and_never_superseded(tmp_path: 
         ),
     )
     live_mapping = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v2",
+        mapping_id="world_scope_mapping.v1",
         entries=(
             _entry(
                 market_venue="TW",
@@ -297,7 +297,7 @@ def test_published_different_identity_is_drifted_and_never_superseded(tmp_path: 
 
 def test_same_revision_id_hash_drift_stays_a_conflict(tmp_path: Path) -> None:
     first_mapping = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v2",
+        mapping_id="world_scope_mapping.v1",
         entries=(
             _entry(
                 market_venue="TW",
@@ -309,7 +309,7 @@ def test_same_revision_id_hash_drift_stays_a_conflict(tmp_path: Path) -> None:
         ),
     )
     drifted = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v2",
+        mapping_id="world_scope_mapping.v1",
         entries=(
             _entry(
                 market_venue="TW",
@@ -343,7 +343,7 @@ def test_same_revision_id_hash_drift_stays_a_conflict(tmp_path: Path) -> None:
 
 
 def test_committed_bootstrap_binds_frozen_ontology_hash_and_refuses_synthetic_v2(tmp_path: Path) -> None:
-    from trader.domain.world_feature_contract import WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    from trader.domain.world_feature_contract import MARKET_ONTOLOGY_SHA256
 
     mapping = WorldScopeResolver.load(CONFIG_DIR).mapping
     path = tmp_path / "world_model.db"
@@ -351,15 +351,15 @@ def test_committed_bootstrap_binds_frozen_ontology_hash_and_refuses_synthetic_v2
     try:
         service = WorldOntologyBootstrapService(store, mapping)
         expected = service.expected_revision()
-        assert expected.content_sha256 == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+        assert expected.content_sha256 == MARKET_ONTOLOGY_SHA256
         ready = service.ensure_published(now=CUTOFF)
         assert ready.status == "ready"
-        assert ready.ontology_hash == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+        assert ready.ontology_hash == MARKET_ONTOLOGY_SHA256
     finally:
         store.close()
 
     synthetic = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v2",
+        mapping_id="world_scope_mapping.v1",
         entries=(
             _entry(
                 market_venue="TW",

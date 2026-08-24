@@ -15,7 +15,13 @@ from trader.domain.market.features import DEFAULT_INDICATORS, build_indicator_sn
 from trader.market import market_data as market
 from trader.runtime import daemon, news_macro_runtime, universe_intelligence_runtime
 from trader.runtime.company_intelligence_runtime import CompanyIntelligenceRuntime
-from trader.domain.semantic.catalog import FAMILIES, describe_semantic_layer, find_indicators, list_indicators, normalize_temporal_query
+from trader.domain.semantic.catalog import (
+    FAMILIES,
+    describe_semantic_layer,
+    find_indicators,
+    list_indicators,
+    normalize_temporal_query,
+)
 from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.bench import decision_bench
 from trader.reporting import attribution
@@ -107,11 +113,7 @@ def _cmd_company_intelligence_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_news_macro_refresh(args: argparse.Namespace) -> int:
-    selected_venues = (
-        (*news_macro_runtime.VENUES, "GLOBAL")
-        if args.all
-        else tuple(dict.fromkeys(args.venue or ()))
-    )
+    selected_venues = (*news_macro_runtime.VENUES, "GLOBAL") if args.all else tuple(dict.fromkeys(args.venue or ()))
     regional_venues = tuple(venue for venue in selected_venues if venue != "GLOBAL")
     result = news_macro_runtime.tick_news_macro_analysis(
         config_dir=daemon.ROOT / "config",
@@ -131,11 +133,7 @@ def _cmd_news_macro_refresh(args: argparse.Namespace) -> int:
 
 
 def _cmd_universe_refresh(args: argparse.Namespace) -> int:
-    selected_venues = (
-        universe_intelligence_runtime.VENUES
-        if args.all
-        else tuple(dict.fromkeys(args.venue or ()))
-    )
+    selected_venues = universe_intelligence_runtime.VENUES if args.all else tuple(dict.fromkeys(args.venue or ()))
     result = universe_intelligence_runtime.refresh_universe_intelligence(
         config_dir=daemon.ROOT / "config",
         state_dir=daemon.STATE_DIR,
@@ -480,7 +478,12 @@ def _cmd_dashboards_decisions(args: argparse.Namespace) -> int:
 
 
 def _cmd_dashboards_all(args: argparse.Namespace) -> int:
-    from trader.interfaces.dashboards import decision_charts, decision_dashboard, portfolio_allocation, portfolio_timeline
+    from trader.interfaces.dashboards import (
+        decision_charts,
+        decision_dashboard,
+        portfolio_allocation,
+        portfolio_timeline,
+    )
 
     allocation = portfolio_allocation.build_and_render()
     timeline = portfolio_timeline.build_and_render()
@@ -1090,12 +1093,12 @@ def build_parser() -> argparse.ArgumentParser:
     macro_status.add_argument("--json", action="store_true")
     macro_status.set_defaults(func=_cmd_world_macro)
 
-    graph = world_sub.add_parser("graph", help="graphe V3 shadow")
+    graph = world_sub.add_parser("graph", help="graphe shadow")
     graph_sub = graph.add_subparsers(dest="graph_command", required=True)
-    graph_status = graph_sub.add_parser("status", help="budgets et gaps graphe V3")
+    graph_status = graph_sub.add_parser("status", help="budgets et gaps graphe")
     graph_status.add_argument("--json", action="store_true")
     graph_status.set_defaults(func=_cmd_world_graph)
-    graph_report = graph_sub.add_parser("report", help="rapport graphe V3 sans claim causal")
+    graph_report = graph_sub.add_parser("report", help="rapport graphe sans claim causal")
     graph_report.add_argument("cohort_id", nargs="?")
     graph_report.add_argument("--json", action="store_true")
     graph_report.set_defaults(func=_cmd_world_graph)
@@ -1321,6 +1324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args_list = list(argv) if argv is not None else None
     if args_list is None:
         import sys
+
         args_list = sys.argv[1:]
 
     if not args_list:

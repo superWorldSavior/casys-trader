@@ -1,4 +1,4 @@
-"""Reconstructible pattern assessments: matched V2/V3 sets, controls, multiplicity.
+"""Reconstructible pattern assessments: matched market/graph sets, controls, multiplicity.
 
 The report is a read model. It never creates, migrates, or writes ``world_model.db``.
 SQL stays in ``world_model_query``. Authority stays ``shadow_only`` with
@@ -28,9 +28,9 @@ from trader.domain.world_cohort import (
 )
 from trader.domain.world_episode import WorldOutcome, parse_utc_timestamp
 from trader.domain.world_feature_contract import (
-    CONTEXT_FEATURE_CONTRACT_VERSION,
-    GRAPH_FEATURE_CONTRACT_VERSION,
-    WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID,
+    CONTEXT_FEATURE_CONTRACT_ID,
+    GRAPH_FEATURE_CONTRACT_ID,
+    TOPOLOGY_STATUS_ONLY_MASK_ID,
 )
 from trader.domain.world_pattern import (
     PatternHypothesis,
@@ -66,7 +66,7 @@ _FORBIDDEN_FEATURE_KEYS = frozenset(
         "target",
     }
 )
-_GRAPH_V3_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "world_graph_v3.yaml"
+_GRAPH_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "world_graph.yaml"
 _CLAIM_FIELDS = {
     "authority": COHORT_AUTHORITY,
     "decision_effect": COHORT_DECISION_EFFECT,
@@ -86,16 +86,16 @@ class _ScoredPair:
     symbol: str
     cutoff_at: datetime
     horizon_id: str
-    v3_probabilities: tuple[float, float, float]
-    v2_probabilities: tuple[float, float, float]
+    graph_probabilities: tuple[float, float, float]
+    context_probabilities: tuple[float, float, float]
     topology_probabilities: tuple[float, float, float] | None
     target_index: int
     predicted_class: str
     label_class: str
-    v2_prediction_id: str
-    v3_prediction_id: str
-    v3_feature_contract_id: str
-    v3_feature_mask_id: str
+    context_prediction_id: str
+    graph_prediction_id: str
+    graph_feature_contract_id: str
+    graph_feature_mask_id: str
     path_signature: tuple[tuple[object, ...], ...]
     truncated_signature: tuple[tuple[object, ...], ...]
     world_outcome_event_id: str
@@ -119,7 +119,7 @@ def project_world_pattern_report(
 
     path = None if db_path is None else str(db_path)
     cohort_id = str(ledger.get("cohort_id") or "")
-    protocol = _graph_v3_protocol()
+    protocol = _graph_protocol()
     report = _bounded_base(path=path, cohort_id=cohort_id, protocol=protocol)
     status = str(ledger.get("status") or "unavailable")
     report["exists"] = bool(ledger.get("exists"))
@@ -140,11 +140,11 @@ def project_world_pattern_report(
     for prediction in predictions:
         if _contains_forbidden(prediction):
             integrity_failures.append("trader_feature_key")
-    v2_by_slot = _index_control_predictions(predictions, mask=None, contract=CONTEXT_FEATURE_CONTRACT_VERSION)
+    context_by_slot = _index_control_predictions(predictions, mask=None, contract=CONTEXT_FEATURE_CONTRACT_ID)
     topology_by_slot = _index_control_predictions(
         predictions,
-        mask=WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID,
-        contract=GRAPH_FEATURE_CONTRACT_VERSION,
+        mask=TOPOLOGY_STATUS_ONLY_MASK_ID,
+        contract=GRAPH_FEATURE_CONTRACT_ID,
     )
 
     scored: list[_ScoredPair] = []
@@ -160,7 +160,7 @@ def project_world_pattern_report(
             occurrence,
             hypotheses=hypotheses,
             outcome_by_event=outcome_by_event,
-            v2_by_slot=v2_by_slot,
+            context_by_slot=context_by_slot,
             topology_by_slot=topology_by_slot,
             excluded=excluded,
             canonical_by_hypothesis=canonical_by_hypothesis,
@@ -176,12 +176,12 @@ def project_world_pattern_report(
                 "symbol": pair.symbol,
                 "as_of_bar_ts": pair.cutoff_at.isoformat(),
                 "horizon_id": pair.horizon_id,
-                "v2_prediction_id": pair.v2_prediction_id,
-                "v3_prediction_id": pair.v3_prediction_id,
-                "v2_feature_contract_id": CONTEXT_FEATURE_CONTRACT_VERSION,
-                "v3_feature_contract_id": pair.v3_feature_contract_id,
-                "v3_feature_mask_id": pair.v3_feature_mask_id,
-                "lane_ids": ["v2", "v3"],
+                "context_prediction_id": pair.context_prediction_id,
+                "graph_prediction_id": pair.graph_prediction_id,
+                "context_feature_contract_id": CONTEXT_FEATURE_CONTRACT_ID,
+                "graph_feature_contract_id": pair.graph_feature_contract_id,
+                "graph_feature_mask_id": pair.graph_feature_mask_id,
+                "lane_ids": ["context", "graph"],
             }
         )
 
@@ -255,13 +255,13 @@ def _bounded_base(*, path: str | None, cohort_id: str, protocol: Mapping[str, An
     }
 
 
-def _graph_v3_protocol() -> dict[str, Any]:
-    config = yaml.safe_load(_GRAPH_V3_CONFIG_PATH.read_text(encoding="utf-8"))
+def _graph_protocol() -> dict[str, Any]:
+    config = yaml.safe_load(_GRAPH_CONFIG_PATH.read_text(encoding="utf-8"))
     if not isinstance(config, Mapping):
-        raise ValueError("world_graph_v3.yaml must be a mapping")
+        raise ValueError("world_graph.yaml must be a mapping")
     multiplicity = config.get("multiplicity")
     if not isinstance(multiplicity, Mapping):
-        raise ValueError("world_graph_v3.yaml multiplicity is required")
+        raise ValueError("world_graph.yaml multiplicity is required")
     method = str(multiplicity.get("method") or "")
     if method != "holm_bonferroni":
         raise ValueError("GRAPH-11 multiplicity method is holm_bonferroni")
@@ -375,7 +375,7 @@ def _score_occurrence(
     *,
     hypotheses: Mapping[str, PatternHypothesis],
     outcome_by_event: Mapping[str, Mapping[str, Any]],
-    v2_by_slot: Mapping[tuple[str, str, datetime, str], Sequence[Mapping[str, Any]]],
+    context_by_slot: Mapping[tuple[str, str, datetime, str], Sequence[Mapping[str, Any]]],
     topology_by_slot: Mapping[tuple[str, str, datetime, str], Sequence[Mapping[str, Any]]],
     excluded: defaultdict[str, int],
     canonical_by_hypothesis: defaultdict[str, list[dict[str, Any]]],
@@ -434,16 +434,16 @@ def _score_occurrence(
         excluded["outcome_not_observed"] += 1
         return None
     target_index = CLASSES.index(outcome.direction)
-    v2_rows = list(v2_by_slot.get(slot, ()))
-    if not v2_rows:
-        excluded["absent_v2_member"] += 1
+    context_rows = list(context_by_slot.get(slot, ()))
+    if not context_rows:
+        excluded["absent_context_member"] += 1
         return None
-    if len(v2_rows) > 1:
-        excluded["ambiguous_v2_member"] += len(v2_rows)
+    if len(context_rows) > 1:
+        excluded["ambiguous_context_member"] += len(context_rows)
         return None
-    v2_probabilities = _probabilities(v2_rows[0])
-    v3_probabilities = _forecast_probabilities(occurrence.spec.forecast.probabilities)
-    if v2_probabilities is None or v3_probabilities is None:
+    context_probabilities = _probabilities(context_rows[0])
+    graph_probabilities = _forecast_probabilities(occurrence.spec.forecast.probabilities)
+    if context_probabilities is None or graph_probabilities is None:
         excluded["invalid_score_payload"] += 1
         return None
     topology_rows = list(topology_by_slot.get(slot, ()))
@@ -464,16 +464,16 @@ def _score_occurrence(
         symbol=symbol,
         cutoff_at=occurrence.cutoff_at,
         horizon_id=horizon_id,
-        v3_probabilities=v3_probabilities,
-        v2_probabilities=v2_probabilities,
+        graph_probabilities=graph_probabilities,
+        context_probabilities=context_probabilities,
         topology_probabilities=topology_probabilities,
         target_index=target_index,
         predicted_class=occurrence.spec.forecast.predicted_class,
         label_class=outcome.direction,
-        v2_prediction_id=_text(v2_rows[0].get("prediction_id")) or "",
-        v3_prediction_id=occurrence.spec.forecast.prediction_id,
-        v3_feature_contract_id=occurrence.feature_contract_id,
-        v3_feature_mask_id=occurrence.feature_mask_id,
+        context_prediction_id=_text(context_rows[0].get("prediction_id")) or "",
+        graph_prediction_id=occurrence.spec.forecast.prediction_id,
+        graph_feature_contract_id=occurrence.feature_contract_id,
+        graph_feature_mask_id=occurrence.feature_mask_id,
         path_signature=path_signature,
         truncated_signature=truncated_signature,
         world_outcome_event_id=outcome.event_id,
@@ -591,7 +591,7 @@ def _assess_hypotheses(
                 "log_loss": metrics["log_loss"],
                 "brier": metrics["brier"],
                 "calibration": {"ece_5_bins": metrics["ece_5_bins"]},
-                "lift_vs_v2": {
+                "lift_vs_context": {
                     "mean_delta": metrics["mean_delta"],
                     "median_delta": metrics["median_delta"],
                     "pair_unit": "unique_market_anchor",
@@ -662,30 +662,33 @@ def _pair_metrics(pairs: Sequence[_ScoredPair]) -> dict[str, Any]:
         return {
             "mean_delta": None,
             "median_delta": None,
-            "log_loss": {"v3": None, "v2": None, "delta": None},
-            "brier": {"v3": None, "v2": None, "delta": None},
+            "log_loss": {"graph": None, "context": None, "delta": None},
+            "brier": {"graph": None, "context": None, "delta": None},
             "ece_5_bins": None,
         }
-    v3_losses = [_log_loss(item.v3_probabilities, item.target_index) for item in pairs]
-    v2_losses = [_log_loss(item.v2_probabilities, item.target_index) for item in pairs]
-    v3_brier = [_brier(item.v3_probabilities, item.target_index) for item in pairs]
-    v2_brier = [_brier(item.v2_probabilities, item.target_index) for item in pairs]
-    deltas = [left - right for left, right in zip(v3_losses, v2_losses, strict=True)]
-    mean_v3 = sum(v3_losses) / len(v3_losses)
-    mean_v2 = sum(v2_losses) / len(v2_losses)
+    graph_losses = [_log_loss(item.graph_probabilities, item.target_index) for item in pairs]
+    context_losses = [_log_loss(item.context_probabilities, item.target_index) for item in pairs]
+    graph_brier = [_brier(item.graph_probabilities, item.target_index) for item in pairs]
+    context_brier = [_brier(item.context_probabilities, item.target_index) for item in pairs]
+    deltas = [left - right for left, right in zip(graph_losses, context_losses, strict=True)]
+    mean_graph = sum(graph_losses) / len(graph_losses)
+    mean_context = sum(context_losses) / len(context_losses)
     mean_delta = sum(deltas) / len(deltas)
     return {
         "mean_delta": round(mean_delta, 8),
         "median_delta": round(_median(deltas), 8),
         "log_loss": {
-            "v3": round(mean_v3, 8),
-            "v2": round(mean_v2, 8),
+            "graph": round(mean_graph, 8),
+            "context": round(mean_context, 8),
             "delta": round(mean_delta, 8),
         },
         "brier": {
-            "v3": round(sum(v3_brier) / len(v3_brier), 8),
-            "v2": round(sum(v2_brier) / len(v2_brier), 8),
-            "delta": round(sum(left - right for left, right in zip(v3_brier, v2_brier, strict=True)) / len(v3_brier), 8),
+            "graph": round(sum(graph_brier) / len(graph_brier), 8),
+            "context": round(sum(context_brier) / len(context_brier), 8),
+            "delta": round(
+                sum(left - right for left, right in zip(graph_brier, context_brier, strict=True)) / len(graph_brier),
+                8,
+            ),
         },
         "ece_5_bins": round(_ece(pairs), 8),
     }
@@ -762,8 +765,8 @@ def _sampled_block_permutation_deltas(blocks: Sequence[Sequence[_ScoredPair]], *
 def _mean_delta_from_assignment(blocks: Sequence[Sequence[_ScoredPair]], assigned: Sequence[_ScoredPair]) -> float:
     original = [item for block in blocks for item in block]
     deltas = [
-        _log_loss(shuffled.v3_probabilities, original.target_index)
-        - _log_loss(original.v2_probabilities, original.target_index)
+        _log_loss(shuffled.graph_probabilities, original.target_index)
+        - _log_loss(original.context_probabilities, original.target_index)
         for original, shuffled in zip(original, assigned, strict=True)
     ]
     return sum(deltas) / len(deltas)
@@ -790,7 +793,7 @@ def _block_time_shift(pairs: Sequence[_ScoredPair]) -> dict[str, Any]:
         shifted_targets = [ordered[(index - 1) % len(ordered)].target_index for index in range(len(ordered))]
         for pair, target_index in zip(ordered, shifted_targets, strict=True):
             deltas.append(
-                _log_loss(pair.v3_probabilities, target_index) - _log_loss(pair.v2_probabilities, target_index)
+                _log_loss(pair.graph_probabilities, target_index) - _log_loss(pair.context_probabilities, target_index)
             )
     if not deltas:
         return payload
@@ -808,7 +811,7 @@ def _topology_control(pairs: Sequence[_ScoredPair]) -> dict[str, Any]:
     payload = {
         "control_id": "topology_status_only",
         "status": "unavailable",
-        "mask_id": WORLD_V3_TOPOLOGY_STATUS_ONLY_MASK_ID,
+        "mask_id": TOPOLOGY_STATUS_ONLY_MASK_ID,
         "mean_delta": None,
         "explains_association": False,
         "causal_claim": False,
@@ -817,7 +820,8 @@ def _topology_control(pairs: Sequence[_ScoredPair]) -> dict[str, Any]:
     if not usable:
         return payload
     topology_delta = sum(
-        _log_loss(item.topology_probabilities, item.target_index) - _log_loss(item.v2_probabilities, item.target_index)
+        _log_loss(item.topology_probabilities, item.target_index)
+        - _log_loss(item.context_probabilities, item.target_index)
         for item in usable
     ) / len(usable)
     graph_delta = _mean_delta(usable)
@@ -860,7 +864,7 @@ def _population_without_event(
     without = 0
     for prediction in predictions:
         contract = _text(prediction.get("feature_contract_id") or prediction.get("feature_contract_version"))
-        if contract != CONTEXT_FEATURE_CONTRACT_VERSION:
+        if contract != CONTEXT_FEATURE_CONTRACT_ID:
             continue
         slot = _prediction_slot(prediction)
         if slot is None:
@@ -966,7 +970,8 @@ def _counter_examples(pairs: Sequence[_ScoredPair]) -> list[dict[str, Any]]:
 
 def _mean_delta(pairs: Sequence[_ScoredPair]) -> float:
     deltas = [
-        _log_loss(item.v3_probabilities, item.target_index) - _log_loss(item.v2_probabilities, item.target_index)
+        _log_loss(item.graph_probabilities, item.target_index)
+        - _log_loss(item.context_probabilities, item.target_index)
         for item in pairs
     ]
     return sum(deltas) / len(deltas)
@@ -977,14 +982,13 @@ def _ece(pairs: Sequence[_ScoredPair]) -> float:
     hits: list[list[float]] = [[] for _ in range(5)]
     for pair in pairs:
         predicted_index = CLASSES.index(pair.predicted_class)
-        confidence = pair.v3_probabilities[predicted_index]
+        confidence = pair.graph_probabilities[predicted_index]
         bin_index = min(int(confidence * 5), 4)
         bins[bin_index].append(confidence)
         hits[bin_index].append(1.0 if predicted_index == pair.target_index else 0.0)
     count = len(pairs)
     return sum(
-        (len(confidences) / count)
-        * abs(sum(confidences) / len(confidences) - sum(hits[index]) / len(hits[index]))
+        (len(confidences) / count) * abs(sum(confidences) / len(confidences) - sum(hits[index]) / len(hits[index]))
         for index, confidences in enumerate(bins)
         if confidences
     )
@@ -1059,7 +1063,9 @@ def _log_loss(probabilities: Sequence[float], target_index: int) -> float:
 
 
 def _brier(probabilities: Sequence[float], target_index: int) -> float:
-    return sum((probability - (1.0 if index == target_index else 0.0)) ** 2 for index, probability in enumerate(probabilities))
+    return sum(
+        (probability - (1.0 if index == target_index else 0.0)) ** 2 for index, probability in enumerate(probabilities)
+    )
 
 
 def _median(values: Sequence[float]) -> float:

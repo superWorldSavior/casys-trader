@@ -37,14 +37,14 @@ from types import MappingProxyType
 import numpy as np
 
 from trader.application.world_model.encoding import (
-    CONTEXT_FEATURE_CONTRACT_VERSION,
-    CONTEXT_V2_CATEGORICAL_FEATURES,
-    CONTEXT_V2_COARSE_FEATURES,
-    CONTEXT_V2_NUMERIC_FEATURES,
+    CONTEXT_FEATURE_CONTRACT_ID,
+    CONTEXT_CATEGORICAL_FEATURES,
+    CONTEXT_COARSE_FEATURES,
+    CONTEXT_NUMERIC_FEATURES,
     FEATURE_CONTRACT_FINGERPRINT,
-    FEATURE_CONTRACT_FINGERPRINT_V2,
-    GRAPH_V3_CATEGORICAL_FEATURES,
-    MARKET_FEATURE_CONTRACT_VERSION,
+    FEATURE_CONTRACT_FINGERPRINT_CONTEXT,
+    GRAPH_CATEGORICAL_FEATURES,
+    MARKET_FEATURE_CONTRACT_ID,
     FeatureBoundaryError,
     FutureLabelLeakageError,
     ModelUpdate,
@@ -64,7 +64,7 @@ from trader.application.world_model.encoding import (
     revalidate_context_observation,
     revalidate_graph_observation,
     training_event_signature,
-    world_encoder_profile_for_include_context,
+    world_lane_encoder_profile,
 )
 from trader.domain.world_cohort import ModelFamily, WorldLaneDefinition
 from trader.domain.world_episode import (
@@ -77,7 +77,7 @@ from trader.domain.world_episode import (
     parse_utc_timestamp,
 )
 from trader.domain.world_feature_contract import (
-    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_CONTRACT_ID,
     WorldFeatureContract,
     WorldFeatureMask,
 )
@@ -87,7 +87,8 @@ OUTCOME_CLASSES: tuple[str, str, str] = PREDICTION_CLASSES
 MODEL_ID = "online_gru_world_challenger"
 MODEL_VERSION = "v1"
 ENCODER_VERSION = "world_gru_encoder.v1"
-ENCODER_VERSION_V3 = "world_gru_encoder.v3"
+CONTEXT_GRU_ENCODER_IDENTITY = "world_gru_encoder.context.v1"
+GRAPH_GRU_ENCODER_IDENTITY = "world_gru_encoder.graph.v1"
 DEFAULT_DIRECTION_BAND = 0.005
 
 # These are fixed, reviewed market inputs.  There is no corpus-fitted mean,
@@ -382,36 +383,40 @@ class OnlineGRUWorldChallenger:
         self.lane_identity = lane_identity
         extra_keys = extra_categorical_keys or frozenset()
         if self._include_context:
-            extra_keys = extra_keys | CONTEXT_V2_CATEGORICAL_FEATURES
-        if self._profile is not None and self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
-            extra_keys = extra_keys | GRAPH_V3_CATEGORICAL_FEATURES
+            extra_keys = extra_keys | CONTEXT_CATEGORICAL_FEATURES
+        if self._profile is not None and self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_ID:
+            extra_keys = extra_keys | GRAPH_CATEGORICAL_FEATURES
         categorical_keys = _CATEGORICAL_KEYS | extra_keys
         if self._profile is not None:
             categorical_keys = frozenset(name for name in categorical_keys if name in self._profile.allowed_categorical)
         self._categorical_keys = categorical_keys
         if encoder_version is not None:
             self.encoder_version = encoder_version
-        elif self._profile is not None and self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
-            self.encoder_version = ENCODER_VERSION_V3
+        elif self._profile is not None and self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_ID:
+            self.encoder_version = GRAPH_GRU_ENCODER_IDENTITY
+        elif self._include_context:
+            self.encoder_version = CONTEXT_GRU_ENCODER_IDENTITY
         else:
             self.encoder_version = ENCODER_VERSION
         self._feature_contract_fingerprint = feature_contract_fingerprint or (
             self._profile.encoder_fingerprint
             if self._profile is not None
-            else FEATURE_CONTRACT_FINGERPRINT_V2 if self._include_context else FEATURE_CONTRACT_FINGERPRINT
+            else FEATURE_CONTRACT_FINGERPRINT_CONTEXT
+            if self._include_context
+            else FEATURE_CONTRACT_FINGERPRINT
         )
 
     @property
     def feature_contract(self) -> WorldFeatureContract:
         if self._profile is not None:
             return self._profile.contract
-        return world_encoder_profile_for_include_context(self._include_context).contract
+        return world_lane_encoder_profile("joint" if self._include_context else "market").contract
 
     @property
     def feature_mask(self) -> WorldFeatureMask:
         if self._profile is not None:
             return self._profile.mask
-        return world_encoder_profile_for_include_context(self._include_context).mask
+        return world_lane_encoder_profile("joint" if self._include_context else "market").mask
 
     def reset_for_replay(self) -> None:
         """Clear learned state and sequence caches before ledger reconciliation."""
@@ -427,7 +432,9 @@ class OnlineGRUWorldChallenger:
         expected = (
             self._profile.contract.accepted_episode_contract
             if self._profile is not None
-            else CONTEXT_FEATURE_CONTRACT_VERSION if self._include_context else MARKET_FEATURE_CONTRACT_VERSION
+            else CONTEXT_FEATURE_CONTRACT_ID
+            if self._include_context
+            else MARKET_FEATURE_CONTRACT_ID
         )
         return version == expected
 
@@ -440,7 +447,7 @@ class OnlineGRUWorldChallenger:
         if self._profile is not None:
             if self._profile.include_context:
                 revalidate_context_observation(observation)
-            elif self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
+            elif self._profile.contract.contract_id == GRAPH_FEATURE_CONTRACT_ID:
                 revalidate_graph_observation(observation)
             return build_feature_state(
                 observation,
@@ -451,10 +458,10 @@ class OnlineGRUWorldChallenger:
             revalidate_context_observation(observation)
             return build_feature_state(
                 observation,
-                allowed_categorical=CONTEXT_V2_CATEGORICAL_FEATURES,
-                allowed_numeric=CONTEXT_V2_NUMERIC_FEATURES,
+                allowed_categorical=CONTEXT_CATEGORICAL_FEATURES,
+                allowed_numeric=CONTEXT_NUMERIC_FEATURES,
                 include_context=True,
-                coarse_features=CONTEXT_V2_COARSE_FEATURES,
+                coarse_features=CONTEXT_COARSE_FEATURES,
             )
         return build_feature_state(observation)
 
@@ -1180,9 +1187,10 @@ def cold_gru_challenger(
 
 
 __all__ = [
+    "CONTEXT_GRU_ENCODER_IDENTITY",
     "DEFAULT_DIRECTION_BAND",
     "ENCODER_VERSION",
-    "ENCODER_VERSION_V3",
+    "GRAPH_GRU_ENCODER_IDENTITY",
     "MODEL_ID",
     "MODEL_VERSION",
     "OUTCOME_CLASSES",

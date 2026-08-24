@@ -1,6 +1,6 @@
 """Shared kernel for logical market anchors and canonical world/region/country/venue scopes.
 
-Resolution is a pure lookup of mapping entries. Logical V1/V2 market venues are
+Resolution is a pure lookup of mapping entries. Logical market venues are
 never converted to a MIC by default.
 """
 
@@ -42,7 +42,7 @@ def _immutable_text_tuple(value: Sequence[str] | None, field_name: str) -> tuple
 
 @dataclass(frozen=True)
 class WorldCanonicalScopeRef:
-    """Namespaced world/region/country/venue identity. Not a V2 logical venue."""
+    """Namespaced world/region/country/venue identity. Not a logical market venue."""
 
     kind: str
     entity_id: str
@@ -77,7 +77,7 @@ class WorldCanonicalScopeRef:
 
 @dataclass(frozen=True)
 class WorldMarketAnchorRef:
-    """V1/V2 logical market venue plus an explicit instrument selector."""
+    """Logical market venue plus an explicit instrument selector."""
 
     market_venue: str
     instrument: str
@@ -171,7 +171,10 @@ def _entry_tuple(value: Sequence[Any] | None) -> tuple[WorldScopeMappingEntry, .
         return ()
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise TypeError("entries must be a sequence of WorldScopeMappingEntry")
-    return tuple(item if isinstance(item, WorldScopeMappingEntry) else WorldScopeMappingEntry.from_mapping(item) for item in value)
+    return tuple(
+        item if isinstance(item, WorldScopeMappingEntry) else WorldScopeMappingEntry.from_mapping(item)
+        for item in value
+    )
 
 
 def _canonical_entries(entries: Sequence[WorldScopeMappingEntry]) -> tuple[WorldScopeMappingEntry, ...]:

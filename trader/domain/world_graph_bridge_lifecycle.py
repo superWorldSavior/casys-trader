@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from trader.domain.world_feature_contract import (
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
-    WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+    MARKET_ONTOLOGY_REVISION,
+    MARKET_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -45,8 +45,8 @@ MACRO_GRAPH_BRIDGE_LIFECYCLE_STATUSES = frozenset(
 COMMITTED_MACRO_GRAPH_BRIDGE_SPEC = MacroGraphBridgeRunSpec(
     scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
     scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
-    ontology_revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
-    ontology_revision_hash=WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+    ontology_revision_id=MARKET_ONTOLOGY_REVISION,
+    ontology_revision_hash=MARKET_ONTOLOGY_SHA256,
     schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
     collection_plan_id=WORLD_MACRO_COLLECTION_PLAN_ID,
     collection_plan_hash=WORLD_MACRO_COLLECTION_PLAN_SHA256,

@@ -99,10 +99,7 @@ def label_episode(
     """
 
     materialized_bars = tuple(bars)
-    return [
-        label_horizon(episode, materialized_bars, horizon, now=now)
-        for horizon in horizons
-    ]
+    return [label_horizon(episode, materialized_bars, horizon, now=now) for horizon in horizons]
 
 
 def label_horizon(
@@ -223,16 +220,8 @@ def label_horizon(
         fallback_price_basis=anchor.price_basis,
     )
     compatible_bars = [bar for bar in evidence_bars if _same_market_series(anchor, bar)]
-    window_bars = [
-        bar
-        for bar in compatible_bars
-        if target_at <= bar.end_at <= deadline_at
-    ]
-    available_endpoints = [
-        bar
-        for bar in window_bars
-        if bar.end_at <= bar.available_at <= computed_at
-    ]
+    window_bars = [bar for bar in compatible_bars if target_at <= bar.end_at <= deadline_at]
+    available_endpoints = [bar for bar in window_bars if bar.end_at <= bar.available_at <= computed_at]
     endpoint = min(
         available_endpoints,
         key=lambda bar: (bar.end_at, bar.available_at, bar.evidence_id),
@@ -276,11 +265,7 @@ def label_horizon(
             target_at=target_at,
             deadline_at=deadline_at,
             max_lateness=interval_duration,
-            reason=(
-                "endpoint_not_yet_available"
-                if status == "pending"
-                else "endpoint_missing_within_lateness"
-            ),
+            reason=("endpoint_not_yet_available" if status == "pending" else "endpoint_missing_within_lateness"),
         )
 
     if not _valid_price(endpoint.close):
@@ -543,11 +528,7 @@ def _evidence_from(
         return None
     source = _text(_first_field(raw, names=("source", "data_source"))) or fallback_source
     interval = _text(_first_field(raw, names=("interval", "bar_interval"))) or fallback_interval
-    semantics = (
-        _text(_first_field(raw, names=("timestamp_semantics",)))
-        or fallback_semantics
-        or "unknown"
-    )
+    semantics = _text(_first_field(raw, names=("timestamp_semantics",))) or fallback_semantics or "unknown"
     price_basis = _text(_first_field(raw, names=("price_basis",))) or fallback_price_basis
     explicit_end = _parse_datetime(_first_field(raw, names=("bar_end_at", "end_at", "completed_at")))
     end_at = explicit_end or completed_bar_cutoff(
@@ -644,10 +625,10 @@ def _path_extremes(
 
 def _direction(simple_return: float) -> str:
     if simple_return >= DIRECTION_BAND:
-        return "up"
+        return "UP"
     if simple_return <= -DIRECTION_BAND:
-        return "down"
-    return "flat"
+        return "DOWN"
+    return "FLAT"
 
 
 def _ineligibility_reason(episode_training_eligible: bool, endpoint: _BarEvidence) -> str:
@@ -712,9 +693,7 @@ def _with_event_id(result: dict[str, object]) -> dict[str, object]:
         horizon_id=str(result["horizon_id"]),
         status=str(result["status"]),
         source_raw_sha256=(
-            str(source_raw_sha256)
-            if isinstance(source_raw_sha256, str) and source_raw_sha256
-            else None
+            str(source_raw_sha256) if isinstance(source_raw_sha256, str) and source_raw_sha256 else None
         ),
     )
     result["event_id"] = event_id
@@ -730,9 +709,7 @@ def _horizon_payload(horizon_id: str, max_lateness: timedelta | None) -> dict[st
         "horizon_id": spec.horizon_id,
         "duration_seconds": int(spec.duration.total_seconds()),
         "endpoint_rule": "first_fully_available_bar_at_or_after_target.v1",
-        "max_lateness_seconds": (
-            int(max_lateness.total_seconds()) if max_lateness is not None else None
-        ),
+        "max_lateness_seconds": (int(max_lateness.total_seconds()) if max_lateness is not None else None),
     }
 
 

@@ -110,8 +110,8 @@ def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
 
 def _link(**overrides: object) -> WorldEntityIdentityLink:
     values: dict[str, object] = {
-        "v2_ref": EntityRef(kind="instrument", entity_id="2330"),
-        "v3_ref": _entity(),
+        "context_ref": EntityRef(kind="instrument", entity_id="2330"),
+        "graph_ref": _entity(),
         "source_refs": ("provider:instrument-master:2330",),
         "effective_from": T0,
     }
@@ -145,7 +145,7 @@ def _attested_receipt(
     subject = WorldAvailabilitySubjectRef(kind=kind, subject_id=subject_id, content_sha256=content_sha256)
     locator = WorldStorageLocator(kind="jsonl", store_id="world-graph-jsonl.v1", path="events/2026-08-23.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope="world_graph",
         storage_locator=locator,
@@ -375,7 +375,7 @@ def test_typed_commands_append_entity_identity_relation_and_revision_events() ->
     revision = _revision()
     service.publish_revision(PublishWorldOntologyRevision(revision=revision))
     service.supersede_revision(
-        SupersedeWorldOntologyRevision(revision_id=revision.revision_id, successor_revision_id="market_ontology.v2")
+        SupersedeWorldOntologyRevision(revision_id=revision.revision_id, successor_revision_id="market_ontology.other")
     )
     kinds = [kind for kind, _event in ledger.append_calls]
     assert kinds.count("entity") == 3
@@ -450,7 +450,7 @@ def test_structural_and_knowledge_resolvers_are_distinct_pit_authors() -> None:
     assert relation in view.structural_relations
     assert _entity() in view.entities
     assert isinstance(view.identity_map, WorldEntityIdentityMap)
-    assert view.identity_links[0].v3_ref == _entity()
+    assert view.identity_links[0].graph_ref == _entity()
     assert view.published_revision == revision
     assert "knowledge_relations" not in view.__dataclass_fields__
     with pytest.raises(FrozenInstanceError):
@@ -584,7 +584,7 @@ def test_knowledge_overlay_does_not_enter_structural_heads_or_foreign_revisions(
     structural_before = WorldOntologyResolver(ledger).at_cutoff(CUTOFF)
     service.assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=_knowledge()))
     foreign = _knowledge(
-        ontology_revision="market_ontology.v2",
+        ontology_revision="market_ontology.other",
         source_refs=("macro_world_observation:v1:" + "c" * 64, "producer:world_macro_source.v1"),
         source=WorldObservationRef(observation_id=f"world_observation:v1:{'c' * 64}"),
     )
@@ -633,7 +633,9 @@ def test_identity_map_at_cutoff_is_authored_by_structural_resolver_and_ignores_a
     second = _InMemoryWorldGraphLedger()
     left = WorldOntologyService(first)
     right = WorldOntologyService(second)
-    venue_link = _link(v2_ref=EntityRef(kind="venue", entity_id="XTAI"), v3_ref=_venue(), source_refs=("mic:XTAI",))
+    venue_link = _link(
+        context_ref=EntityRef(kind="venue", entity_id="XTAI"), graph_ref=_venue(), source_refs=("mic:XTAI",)
+    )
     left.assert_entity(
         AssertWorldEntity(entity=_entity(), source_refs=("provider:instrument-master:2330",), effective_from=T0)
     )
@@ -688,7 +690,7 @@ def test_identity_unlink_then_relink_at_same_cutoff_is_deterministic_across_appe
 
     original = _link()
     replacement = _link(
-        v3_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
+        graph_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
         effective_from=T1,
         source_refs=("provider:instrument-master:2330:corrected",),
     )
@@ -726,10 +728,10 @@ def test_identity_unlink_then_relink_at_same_cutoff_is_deterministic_across_appe
         view = WorldOntologyResolver(ledger).at_cutoff(CUTOFF)
         views.append(view)
         assert [link.link_id for link in view.identity_links] == [replacement.link_id]
-        assert view.identity_links[0].v3_ref == replacement.v3_ref
+        assert view.identity_links[0].graph_ref == replacement.graph_ref
         at_t0 = view.identity_map.active_links_at(T0)
         assert [link.link_id for link in at_t0] == [original.link_id]
-        assert at_t0[0].v3_ref == original.v3_ref
+        assert at_t0[0].graph_ref == original.graph_ref
         assert original.to_dict() == original_payload
 
     assert {view.identity_map_hash for view in views} == {views[0].identity_map_hash}
@@ -768,7 +770,7 @@ def test_identity_supersede_stays_non_retroactive_across_append_order() -> None:
 
     original = _link()
     successor = _link(
-        v3_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
+        graph_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
         effective_from=T1,
         supersedes=original.link_id,
         source_refs=("provider:instrument-master:2330:corrected",),
@@ -810,7 +812,7 @@ def test_late_identity_unlink_relink_is_not_visible_at_earlier_cutoff() -> None:
 
     original = _link()
     replacement = _link(
-        v3_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
+        graph_ref=WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330.TW"),
         effective_from=T1,
         source_refs=("provider:instrument-master:2330:corrected",),
     )

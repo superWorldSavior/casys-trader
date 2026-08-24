@@ -28,7 +28,12 @@ from trader.domain.world_cohort import (
     WorldCohortCompletionHorizonLeaf,
     WorldStatisticalProtocol,
 )
-from trader.domain.world_episode import canonical_sha256
+from trader.domain.world_episode import (
+    AnchorBar,
+    WorldEpisode,
+    WorldObservation,
+    canonical_sha256,
+)
 from trader.infrastructure.state_db.world_model_query import read_world_cohort_ledger, read_world_model_ledger
 from trader.reporting.read_models.world_cohort import project_world_cohort_report, read_world_cohort_report
 
@@ -51,6 +56,31 @@ _CLAIM_KEYS = {
 
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
+
+
+def _store_market_episode(*, venue: str, symbol: str, as_of: datetime, bar_interval: str = "1h") -> dict[str, Any]:
+    observation = WorldObservation(
+        venue=venue,
+        symbol=symbol,
+        bar_interval=bar_interval,
+        as_of_bar_ts=as_of,
+        feature_contract_version=V1.contract_id,
+        sampling_policy_version="active_tradable_completed_bar.v1",
+        anchor=AnchorBar(
+            ts=as_of,
+            open=100.0,
+            high=102.0,
+            low=99.0,
+            close=101.0,
+            volume=1_000.0,
+            source="fixture",
+        ),
+        available_at=as_of,
+        captured_at=as_of,
+        freshness="fresh",
+        numeric_features={"return": 0.01},
+    )
+    return WorldEpisode(observation=observation).to_dict()
 
 
 def _collecting(**manifest_overrides: object) -> WorldCohort:
@@ -375,7 +405,9 @@ def test_support_counts_unique_market_anchors_not_rows() -> None:
     cohort = _collecting(statistical_protocol=_protocol_small(), support_gates=_support(descriptive=2))
     later = ANCHOR_TS + timedelta(hours=2)
     first = _paired_bundle(cohort, symbol="AAPL", as_of=ANCHOR_TS, horizon_id="elapsed_1d.v1")
-    second = _paired_bundle(cohort, symbol="MSFT", as_of=later, horizon_id="elapsed_1d.v1", batch="batch:v1:anchor-msft")
+    second = _paired_bundle(
+        cohort, symbol="MSFT", as_of=later, horizon_id="elapsed_1d.v1", batch="batch:v1:anchor-msft"
+    )
     same_anchor_4h = _paired_bundle(cohort, symbol="AAPL", as_of=ANCHOR_TS, horizon_id="elapsed_4h.v1")
     episodes = first[0] + second[0] + same_anchor_4h[0]
     outcomes = first[1] + second[1] + same_anchor_4h[1]
@@ -428,7 +460,9 @@ def test_deterministic_block_bootstrap_is_stable_and_uses_venue_session_blocks()
     assert contrast["ci_low"] <= contrast["mean_delta"] <= contrast["ci_high"]
     assert contrast["ci_low"] == replay["ci_low"]
     assert contrast["ci_high"] == replay["ci_high"]
-    assert json.dumps(first_report["contrasts"], sort_keys=True) == json.dumps(second_report["contrasts"], sort_keys=True)
+    assert json.dumps(first_report["contrasts"], sort_keys=True) == json.dumps(
+        second_report["contrasts"], sort_keys=True
+    )
     market_loss = -math.log(0.6)
     status_loss = -math.log(0.9)
     assert contrast["mean_delta"] != status_loss - market_loss or contrast["unique_anchors"] == 2
@@ -528,23 +562,14 @@ def test_query_indexed_cohort_columns_override_nested_json(tmp_path: Path) -> No
         slot = _slot_for(cohort)
         evidence = store.envelope_for(started).require_proven()
         service.admit_slot(AdmitWorldCohortSlot(slot=slot, started_evidence=evidence))
-        v1_id = slot.episode_refs_by_contract[V1.contract_id]
-        assert store.append_episode(
-            {
-                "episode_id": v1_id,
-                "venue": slot.venue,
-                "symbol": slot.symbol,
-                "observed_at": _iso(slot.as_of_bar_ts),
-                "available_at": _iso(slot.as_of_bar_ts),
-                "as_of_bar_ts": _iso(slot.as_of_bar_ts),
-                "bar_interval": slot.bar_interval,
-                "feature_contract_version": V1.contract_id,
-                "sampling_policy_version": "active_tradable_completed_bar.v1",
-                "training_eligible": True,
-                "observation": {"symbol": slot.symbol, "features": {"return": 0.01}},
-                "source_evidence": {"source": "fixture"},
-            }
+        stored_episode = _store_market_episode(
+            venue=slot.venue,
+            symbol=slot.symbol,
+            as_of=slot.as_of_bar_ts,
+            bar_interval=slot.bar_interval,
         )
+        v1_id = stored_episode["episode_id"]
+        assert store.append_episode(stored_episode)
         lane = cohort.manifest.lane_by_id["markov.market"]
         payload = {
             "prediction_id": "pred-indexed",
@@ -646,11 +671,7 @@ def _leaf_digest_from_outcomes(
         and item["as_of_bar_ts"] == _iso(slot.as_of_bar_ts)
     }
     row = sorted(
-        (
-            item
-            for item in outcomes
-            if item["episode_id"] in episode_ids and item["horizon_id"] == horizon_id
-        ),
+        (item for item in outcomes if item["episode_id"] in episode_ids and item["horizon_id"] == horizon_id),
         key=lambda item: str(item["outcome_event_id"]),
     )[0]
     return world_cohort_horizon_leaf_digest(

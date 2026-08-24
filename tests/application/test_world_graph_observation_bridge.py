@@ -170,7 +170,7 @@ def _envelope(observation: MacroWorldObservation | None = None) -> MacroObservat
     )
     locator = WorldStorageLocator(kind="jsonl", store_id="world-macro-jsonl.v1", path="observations/2026-08-23.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope=f"{resolved.scope.kind}:{resolved.scope.entity_id}",
         storage_locator=locator,
@@ -240,8 +240,8 @@ def _revision(mapping: WorldScopeMapping) -> WorldOntologyRevision:
         source_refs=("provider:instrument-master:2330",),
     )
     link = WorldEntityIdentityLink(
-        v2_ref=EntityRef(kind="instrument", entity_id="2330"),
-        v3_ref=entity,
+        context_ref=EntityRef(kind="instrument", entity_id="2330"),
+        graph_ref=entity,
         source_refs=("provider:instrument-master:2330",),
         effective_from=T0,
     )
@@ -277,7 +277,7 @@ def _attested_event_receipt(event: Any, *, kind: str, ready: datetime = READY) -
     )
     locator = WorldStorageLocator(kind="jsonl", store_id="world-graph-jsonl.v1", path="events/2026-08-23.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope="world_graph",
         storage_locator=locator,
@@ -607,7 +607,7 @@ def test_config_drift_blocks_without_advancing_or_skipping() -> None:
     scan.seed(_envelope(_observation(scope=_scope(kind="country", entity_id="iso-3166:FR"))), 1)
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
 
-    drifted = WorldScopeMapping(mapping_id="world_scope_mapping.v2", entries=mapping.entries)
+    drifted = WorldScopeMapping(mapping_id="world_scope_mapping.drifted", entries=mapping.entries)
     drifted_case = RegisterMacroObservationKnowledge(
         scan=scan,
         graph=graph,
@@ -716,7 +716,7 @@ def test_ensure_unknown_drift_blocks_without_activate_and_fails_closed() -> None
     bridge = _Bridge()
     use_case = _use_case(scan, graph, bridge, mapping)
     use_case.ensure(REQUEST_ID)
-    drifted = WorldScopeMapping(mapping_id="world_scope_mapping.v2", entries=mapping.entries)
+    drifted = WorldScopeMapping(mapping_id="world_scope_mapping.drifted", entries=mapping.entries)
     drifted_case = _use_case(scan, graph, bridge, drifted)
     with pytest.raises(UnknownMacroGraphBridgeDrift, match="unknown_config_drift"):
         drifted_case.ensure(REQUEST_ID)

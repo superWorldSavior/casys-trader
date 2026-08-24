@@ -1,9 +1,9 @@
-# World Context / ontologie temporelle — V2 et ombre V3
+# World Context / ontologie temporelle — contexte et ombre graphe
 
 > **Type** : Explanation (Diataxis). Capacité **shadow-only** et **fail-open**
 > pour le trading, **fail-closed** pour la causalité et l'apprentissage
 > inter-voies. Elle n'a aucune autorité de trading et n'est jamais promue
-> automatiquement. Le contrat marché V1 reste
+> automatiquement. Le contrat marché reste
 > [world-model-shadow](world-model-shadow.md).
 
 ## Question à laquelle le graphe répond
@@ -14,7 +14,7 @@ Le graphe d'ontologie dit, pour un cutoff marché **prouvé** :
 > source, au plus tard à ce cutoff ? »
 
 Il relie un instrument à sa place, éventuellement une famille déjà gelée dans
-l'observation marché V1, éventuellement un émetteur *vérifié par identifiant
+l'observation marché, éventuellement un émetteur *vérifié par identifiant
 externe*, et aux capteurs (macro source-only, company) dont la disponibilité
 est prouvée par un reçu. C'est de la **provenance** et de la **traversée**.
 Ce n'est pas une découverte causale, pas un graphe de message passing, et
@@ -31,17 +31,16 @@ fait). Il ne dit pas si un trade était bon, et il ne produit ni PnL de
 portefeuille ni recommandation. Une ablation appariée ne mesure qu'un delta
 prédictif (log-loss, Brier), sans claim économique ni claim causal.
 
-La `venue` V1/V2 est un scope marché logique (`EU`, `TW`, `US`). Le mapping
-versionné `world_scope_mapping.v2` (hash gelé dans le YAML pilote ; successeur
-append-only de `world_scope_mapping.v1`) résout `(market_venue, instrument)`
+La `venue` marché/contexte est un scope marché logique (`EU`, `TW`, `US`). Le mapping
+versionné `world_scope_mapping.v1` (hash gelé dans le YAML pilote) résout `(market_venue, instrument)`
 vers les scopes canoniques (`mic`, pays, région). Aucun fallback `TW -> XTAI`
 silencieux. Un scope `unmapped` ou `ambiguous` produit une missingness
-canonique, pas une invention : snapshot V3 `world_graph_snapshot.v1` sans
+canonique, pas une invention : snapshot graphe `world_graph_snapshot.v1` sans
 racine ni membres (`root_entity` JSON `null` est un élargissement
 compatible de la missingness, pas un bump de schéma). L'ontologie
-structurelle commitée est `market_ontology.v2` ; son hash dérivé doit
-égaliser `WORLD_GRAPH_V3_ONTOLOGY_SHA256`. Un ledger qui a déjà publié
-`market_ontology.v1` la supersède, il ne réécrit pas `v1`.
+structurelle commitée est `market_ontology.v1` ; son hash dérivé doit
+égaliser `MARKET_ONTOLOGY_SHA256`. Un store qui a déjà publié une autre
+identité ou un autre hash est un conflit : cutover dur, pas de supersession.
 
 ## Horloges point-in-time
 
@@ -70,16 +69,16 @@ Séquence d'append (histoire brute JSONL ou SQLite) :
 
 Un crash avant le reçu laisse une ligne brute visible mais
 `availability_unproven`. Un restart est volontairement conservateur pour
-les anciens cutoffs, sauf si un épisode V2/V3 canonique existe déjà.
+les anciens cutoffs, sauf si un épisode contexte/graphe canonique existe déjà.
 
-Cutoff de contexte V2/V3 = horloge d'**achèvement de barre** :
+Cutoff de voie contexte/graphe = horloge d'**achèvement de barre** :
 
 - `bar_close` → timestamp d'ancre ;
 - `bar_start` → ancre + intervalle parsé ;
 - inconnu / inparsable → pas d'attache (fail closed, jamais de guess).
 
 Il doit rester `<= observation.available_at`. On ne réécrit pas le
-`available_at` marché V1 (heure de fetch).
+`available_at` voie marché (heure de fetch).
 
 Pour une cohorte : `anchor_end_at` du slot doit être **strictement après**
 l'`effective_ready_at` du `WorldCohortStarted` prouvé. Activation pilote :
@@ -116,12 +115,12 @@ mot `causal` ne qualifie jamais un résultat live.
 
 | Capteur | Source | Statut actuel |
 |---|---|---|
-| Marché OHLCV | capture V1 déjà gelée | contrôle, toujours émis si ancre valide |
+| Marché OHLCV | capture marché déjà gelée | contrôle, toujours émis si ancre valide |
 | Macro source-only | `MacroWorldObservation` (`world_macro_source.v1`) | éligible si envelope + reçu PIT **et** producteur admis live ; worker opt-in / OR YAML. Store frais uniquement. |
 | Macro Univers | `NewsMacroBrief` | **exclu** comme source modèle World Context (`policy_contaminated`) |
 | Événements GDELT | `state/gdelt/` | **exclu** du registre macro source-only |
 | Company micro | `CompanyIntelligenceBrief` | éligible seulement si sidecar-prouvé **et** action-free |
-| Famille | `categorical_features.asset_family` gelé dans V1 | topologie descriptive `MEMBER_OF_FAMILY`, pas une lookup catalogue courante |
+| Famille | `categorical_features.asset_family` gelé dans le marché | topologie descriptive `MEMBER_OF_FAMILY`, pas une lookup catalogue courante |
 
 `WorldContextReader.lookup_macro` consomme uniquement les envelopes
 source-only. Le constructeur peut encore recevoir un `news_store` pour
@@ -167,7 +166,7 @@ la traversée et la validation, clé par digest d'arête afin de conserver
 des arêtes temporelles / provenance parallèles. Muter ce graphe ne change
 pas les records. **Aucun objet NetworkX n'est persisté**
 (`world_graph_store` l'interdit). La topologie n'est pas encodée dans le
-Markov/GRU V1 ; la voie V3 encode un vecteur borné (`topology_status_only`
+Markov/GRU marché ; la voie graphe encode un vecteur borné (`topology_status_only`
 vs `graph_content`), pas un GNN.
 
 Relations structurelles : `PART_OF_WORLD`, `LOCATED_IN`, `TRADED_ON`,
@@ -177,58 +176,58 @@ Relations structurelles : `PART_OF_WORLD`, `LOCATED_IN`, `TRADED_ON`,
 
 Budgets de traversée (YAML + overlay status) : profondeur 4, 32 chemins
 par racine, cycles interdits. Un snapshot `missing` / `stale` / budget
-dépassé s'encode en missingness ; il ne droppe pas le V1.
+dépassé s'encode en missingness ; il ne droppe pas le marché.
 
 L'émetteur : LEI, CIK ou provider `issuer:` approuvé. Un ISIN identifie
 l'instrument, jamais l'entreprise. Un `issuer_name` n'est pas un
 identifiant.
 
-`config/world_graph_v3.yaml` conserve `cohort_id: null` (C1 n'a pas de
-voies graphe). `compose_local_graph_v3_lanes(..., study_cohort_id=...)`
-injecte l'id de la cohorte `graph_v3` matérialisée au boot. Le YAML n'est
+`config/world_graph.yaml` conserve `cohort_id: null` (C1 n'a pas de
+voies graphe). `compose_local_graph_lanes(..., study_cohort_id=...)`
+injecte l'id de la cohorte `graph` matérialisée au boot. Le YAML n'est
 pas une autorité de cohorte.
 
 Un graphe **câblé** au boot n'écrit rien (`writes=none_until_due_cycle`).
-Un cycle dû dont l'ancre est `unmapped` ou `ambiguous` écrit le V1 et un
-compagnon V3 missing/status-only, sans racine d'entité monde ni topologie
+Un cycle dû dont l'ancre est `unmapped` ou `ambiguous` écrit le marché et un
+compagnon graphe missing/status-only, sans racine d'entité monde ni topologie
 inventée. Un cycle idle ou un replay exact restent un no-op.
 
-## V1 gelée, V2 opt-in, V3 cohorte séparée
+## Marché, contexte et graphe comme capacités distinctes
 
 | Voie | Contrat | Identité typique |
 |---|---|---|
-| Markov / GRU marché V1 | `market_ohlcv_causal.v1` | baseline / challenger historiques |
-| Markov / GRU contexte V2 | `market_ohlcv_context.v2` | `context.v2` ou `context.v2.macro_source.v2` si le store macro est câblé |
+| Markov / GRU marché | `world_feature.market.v1` | baseline / challenger historiques |
+| Markov / GRU contexte | `world_feature.context.v1` | `context.v1` si le store macro est câblé |
 | Lanes C1 | masques market / status / company / macro / joint | GRU froid `sequence_length=4` |
-| Markov / GRU graphe V3 | `market_ohlcv_graph.v3` | `topology_status_only` vs `graph_content` |
+| Markov / GRU graphe | `world_feature.graph.v1` | `topology_status_only` vs `graph_content` |
 
-La V1 reste immuable : mêmes payloads, mêmes `episode_id` marché. La V2
-dérive l'observation du **même slot de barre**, y attache un snapshot au
-cutoff d'achèvement de barre, identité distincte incluant le digest du
-snapshot. Le V3 attache **un** compagnon graphe par slot V1, sans élargir
-V1/V2.
+Le marché reste immuable : mêmes payloads, mêmes `episode_id` marché. Le
+contexte dérive l'observation du **même slot de barre**, y attache un snapshot
+au cutoff d'achèvement de barre, identité distincte incluant le digest du
+snapshot. Le graphe attache **un** compagnon par slot marché, sans élargir
+marché ni contexte.
 
-La persistance V2/V3 est canonical-first-write. Un replay exact reste un
-no-op. Chaque entrée publique baseline / GRU enforce `accepts_episode()`.
-Une voie V1 n'apprend jamais d'un épisode V2/V3, et inversement.
+La persistance contexte/graphe est canonical-first-write. Un replay exact reste
+un no-op. Chaque entrée publique baseline / GRU enforce `accepts_episode()`.
+Une voie marché n'apprend jamais d'un épisode contexte/graphe, et inversement.
 
 Les features restent une **projection plate bornée**. Pas de GNN, pas de
 message passing, pas d'agrégat de voisinage comme claim de graphe.
 
 ## Cutoff, I/O, flags
 
-`WorldContextReader` n'est construit au boot que si V2 est on (flag ou OU
-YAML pilote). Le cycle trading ne freeze et n'enqueue que la cohorte V1.
-L'attache V2 a lieu dans `WorldContextEpisodeEnricher`, l'attache V3 dans
+`WorldContextReader` n'est construit au boot que si le contexte est on (flag ou OU
+YAML pilote). Le cycle trading ne freeze et n'enqueue que la cohorte marché.
+L'attache contexte a lieu dans `WorldContextEpisodeEnricher`, l'attache graphe dans
 `WorldGraphEpisodeEnricher`, avant `capture_and_predict`. Un échec
-d'enrichissement est `partial` et laisse la V1 continuer. Aucune I/O
+d'enrichissement est `partial` et laisse le marché continuer. Aucune I/O
 réseau ou LLM dans ces enrichers. Le fetch macro est un worker
 single-flight séparé, hors capture barre.
 
 ```bash
-CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED=0          # défaut
+CASYS_WORLD_MODEL_CONTEXT_ENABLED=0          # défaut
 CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED=0         # défaut
-CASYS_WORLD_MODEL_GRAPH_V3_ENABLED=0            # défaut
+CASYS_WORLD_MODEL_GRAPH_ENABLED=0            # défaut
 CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1           # honore le YAML ; 0 saute l'auto-start
 ```
 

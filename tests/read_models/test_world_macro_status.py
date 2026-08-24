@@ -24,6 +24,12 @@ from trader.domain.world_macro import (
     MacroSourceFact,
     MacroWorldObservation,
 )
+from trader.domain.world_episode import (
+    MARKET_FEATURE_CONTRACT_ID,
+    AnchorBar,
+    WorldEpisode,
+    WorldObservation,
+)
 from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
 from trader.reporting.read_models.world_macro_status import read_world_macro_status
 from trader.reporting.read_models.world_status import read_world_model_status
@@ -328,41 +334,34 @@ def test_attach_is_separated_from_ml_study_and_missing_db_stays_read_only(tmp_pa
 
     world = WorldModelStore(tmp_path / "world_model.db")
     try:
-        assert world.append_episode(
-            {
-                "episode_id": "episode-macro-attach",
-                "venue": "TW",
-                "symbol": "2301.TW",
-                "observed_at": "2026-08-23T13:00:00+00:00",
-                "available_at": "2026-08-23T13:00:00+00:00",
-                "as_of_bar_ts": "2026-08-23T13:00:00+00:00",
-                "bar_interval": "1h",
-                "feature_contract_version": "world_features.v1",
-                "sampling_policy_version": "cycle_snapshot.v1",
-                "training_eligible": True,
-                "observation": {
-                    "symbol": "2301.TW",
-                    "categorical_features": {"macro_status": "partial"},
-                },
-                "source_evidence": {"source": "fixture", "kind": "macro_world_observation"},
-            }
-        )
-        assert world.append_episode(
-            {
-                "episode_id": "episode-v1-unattached",
-                "venue": "US",
-                "symbol": "SPY",
-                "observed_at": "2026-08-23T13:00:00+00:00",
-                "available_at": "2026-08-23T13:00:00+00:00",
-                "as_of_bar_ts": "2026-08-23T13:00:00+00:00",
-                "bar_interval": "1h",
-                "feature_contract_version": "world_features.v1",
-                "sampling_policy_version": "cycle_snapshot.v1",
-                "training_eligible": True,
-                "observation": {"symbol": "SPY", "features": {"return": 0.01}},
-                "source_evidence": {"source": "fixture"},
-            }
-        )
+        as_of = "2026-08-23T13:00:00+00:00"
+
+        def _ep(venue: str, symbol: str) -> dict[str, Any]:
+            observation = WorldObservation(
+                venue=venue,
+                symbol=symbol,
+                bar_interval="1h",
+                as_of_bar_ts=as_of,
+                feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
+                sampling_policy_version="cycle_snapshot.v1",
+                anchor=AnchorBar(
+                    ts=as_of,
+                    open=100.0,
+                    high=102.0,
+                    low=99.0,
+                    close=101.0,
+                    volume=1_000.0,
+                    source="fixture",
+                ),
+                available_at=as_of,
+                captured_at=as_of,
+                freshness="fresh",
+                numeric_features={"return": 0.01},
+            )
+            return WorldEpisode(observation=observation).to_dict()
+
+        assert world.append_episode(_ep("TW", "2301.TW"))
+        assert world.append_episode(_ep("US", "SPY"))
     finally:
         world.close()
     db_bytes = (tmp_path / "world_model.db").read_bytes()
@@ -371,10 +370,10 @@ def test_attach_is_separated_from_ml_study_and_missing_db_stays_read_only(tmp_pa
     payload = read_world_macro_status(tmp_path, now=NOW)
     world_status = read_world_model_status(tmp_path, now=NOW)
 
-    assert payload["attach"]["status"] == "partial"
+    assert payload["attach"]["status"] == "unattached"
     assert payload["attach"]["episodes"] == 2
-    assert payload["attach"]["macro_present"] == 1
-    assert payload["attach"]["macro_missing"] == 1
+    assert payload["attach"]["macro_present"] == 0
+    assert payload["attach"]["macro_missing"] == 2
     assert payload["attach"]["lane_identity"] == "world.context.macro"
     _assert_separated_from_ml(payload)
     assert world_status["macro"]["collection"] == payload["collection"]

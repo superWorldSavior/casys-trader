@@ -12,7 +12,7 @@ from trader.application.world_model.encoding import world_lane_encoder_profile
 from trader.application.world_model.service import WorldModelService
 from trader.domain.world_cohort import RegisterWorldCohort, WorldCohortId
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     AnchorBar,
     WorldEpisode,
     WorldObservation,
@@ -96,7 +96,7 @@ def _episode(
             symbol="AAPL",
             bar_interval=interval,
             as_of_bar_ts=as_of,
-            feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
+            feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
             sampling_policy_version="active_tradable_completed_bar.v1",
             anchor=AnchorBar(
                 ts=as_of,

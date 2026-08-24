@@ -30,6 +30,15 @@ ou le portefeuille.
 | `runtime/world_model_runtime` | composition | adapter background fail-open et façade `WorldModelRuntime` |
 | `interfaces/cli/world_model` | surface | adaptateur mince vers le projector reporting |
 
+Les voies de capacité live sont `market`, `context`, `macro_source` et
+`graph`. Les suffixes `.v1` des schémas payload (`world_feature.market.v1`,
+`world_availability_receipt.v1`, `world_episode.v1`, …) sont des révisions
+de sérialisation, pas des générations de capacité.
+
+Cutover dur : arrêter le daemon, archiver hors ligne `state/world_model.db`
+et `state/world_macro/`, démarrer un store frais. Le runtime ne lit jamais
+un ledger héritage. Pas de contrat tombstone actif.
+
 `application/world_model` n'importe ni `runtime`, ni `infrastructure`. Ses
 modules canoniques n'importent pas `reporting` ; seuls les chemins historiques
 `application.world_model.evaluation` et `.impact` sont des shims de

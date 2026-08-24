@@ -1,4 +1,4 @@
-"""Fresh in-memory NetworkX projection of resolved V3 world-graph views.
+"""Fresh in-memory NetworkX projection of resolved world-graph views.
 
 The projector is a traversal helper, never a persistence or lifecycle
 authority. It reads only point-in-time structural and knowledge views; it never
@@ -181,7 +181,9 @@ def _bind_knowledge_overlay(structural: _StructuralView, knowledge: _KnowledgeVi
         raise ValueError("knowledge overlay revision hash does not match the published structural revision")
 
 
-def _admit_structural(relations: Sequence[StructuralWorldRelation], cutoff: datetime) -> tuple[StructuralWorldRelation, ...]:
+def _admit_structural(
+    relations: Sequence[StructuralWorldRelation], cutoff: datetime
+) -> tuple[StructuralWorldRelation, ...]:
     admitted: list[StructuralWorldRelation] = []
     for relation in relations:
         _reject_forbidden_kind(relation.kind)
@@ -313,7 +315,7 @@ def _build_adjacency(
 
 
 class WorldTemporalGraph:
-    """Deterministic throw-away MultiDiGraph over resolved V3 graph views."""
+    """Deterministic throw-away MultiDiGraph over resolved graph views."""
 
     def __init__(
         self,
@@ -390,8 +392,12 @@ class WorldTemporalGraph:
             "cutoff_at": self._cutoff.isoformat(),
             "traversal_policy_version": GRAPH_TRAVERSAL_POLICY_VERSION,
             "entities": [item.to_dict() for item in sorted(self._entities, key=lambda item: item.node_id)],
-            "structural_relations": [item.to_dict() for item in sorted(self._structural, key=lambda item: item.relation_id or "")],
-            "knowledge_relations": [item.to_dict() for item in sorted(self._knowledge, key=lambda item: item.relation_id or "")],
+            "structural_relations": [
+                item.to_dict() for item in sorted(self._structural, key=lambda item: item.relation_id or "")
+            ],
+            "knowledge_relations": [
+                item.to_dict() for item in sorted(self._knowledge, key=lambda item: item.relation_id or "")
+            ],
         }
 
     def enumerate_paths(

@@ -60,7 +60,7 @@ def _resolver() -> WorldScopeResolver:
 
 def test_committed_universe_anchors_are_exactly_mapped_without_suffix_fallback() -> None:
     payload = yaml.safe_load(MAPPING_PATH.read_text(encoding="utf-8"))
-    assert payload["mapping_id"] == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
+    assert payload["mapping_id"] == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v1"
     assert "supersedes_mapping_id" not in payload
     assert payload["no_logical_venue_mic_fallback"] is True
     resolver = _resolver()

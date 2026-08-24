@@ -24,8 +24,8 @@ from trader.domain.world_availability import (
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import (
     WorldFeatureMask,
-    world_v1_feature_contract,
-    world_v2_feature_contract,
+    market_feature_contract,
+    context_feature_contract,
 )
 from trader.domain.world_scope import (
     WorldCanonicalScopeRef,
@@ -47,15 +47,13 @@ GIT = "a" * 40
 COHORT_ID = "world_cohort:v1:" + "c" * 64
 MODULE_PATH = REPO_ROOT / "trader" / "domain" / "world_cohort.py"
 
-V1 = world_v1_feature_contract()
-V2 = world_v2_feature_contract()
+V1 = market_feature_contract()
+V2 = context_feature_contract()
 MARKET_MASK = WorldFeatureMask.bind(V1, mask_id="market.v1", selected_groups=("market",))
 STATUS_MASK = WorldFeatureMask.bind(V2, mask_id="status_only.v1", selected_groups=("market", "status"))
 COMPANY_MASK = WorldFeatureMask.bind(V2, mask_id="company.v1", selected_groups=("market", "status", "company"))
 MACRO_MASK = WorldFeatureMask.bind(V2, mask_id="macro.v1", selected_groups=("market", "status", "macro"))
-JOINT_MASK = WorldFeatureMask.bind(
-    V2, mask_id="joint.v1", selected_groups=("market", "status", "company", "macro")
-)
+JOINT_MASK = WorldFeatureMask.bind(V2, mask_id="joint.v1", selected_groups=("market", "status", "company", "macro"))
 
 
 def _runtime(**overrides: object) -> Any:
@@ -74,10 +72,10 @@ def _runtime(**overrides: object) -> Any:
 def test_runtime_identity_intent_never_carries_git_commit_and_gates_measured_identity() -> None:
     from trader.domain.world_cohort import WorldRuntimeIdentityIntent
 
-    intent = WorldRuntimeIdentityIntent(application_build_id="casys-trader.world.shadow_pilot.v2")
+    intent = WorldRuntimeIdentityIntent(application_build_id="casys-trader.world.shadow_pilot.v1")
     assert "git_commit" not in intent.to_dict()
     assert intent.accepts(_runtime()) is False
-    matching = _runtime(application_build_id="casys-trader.world.shadow_pilot.v2")
+    matching = _runtime(application_build_id="casys-trader.world.shadow_pilot.v1")
     assert intent.accepts(matching) is True
     with pytest.raises(ValueError, match="latest"):
         WorldRuntimeIdentityIntent(application_build_id="latest")
@@ -224,7 +222,7 @@ def _manifest(**overrides: object) -> Any:
 def _attested_receipt(*, subject: WorldAvailabilitySubjectRef, ready: datetime, scope: str) -> WorldAvailabilityReceipt:
     locator = WorldStorageLocator(kind="jsonl", store_id="world-cohort-jsonl.v1", path="cohort/events.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope=scope,
         storage_locator=locator,
@@ -247,7 +245,9 @@ def _attested_receipt(*, subject: WorldAvailabilitySubjectRef, ready: datetime, 
     )
 
 
-def _evidence_for(event: Any, *, ready: datetime = START_READY, first_seen: datetime = START_SEEN) -> AvailabilityEvidence:
+def _evidence_for(
+    event: Any, *, ready: datetime = START_READY, first_seen: datetime = START_SEEN
+) -> AvailabilityEvidence:
     from trader.domain.world_cohort import world_cohort_event_payload_hash
 
     subject = WorldAvailabilitySubjectRef(
@@ -658,7 +658,9 @@ def test_support_gates_reject_null_formal_minimum_and_placeholder() -> None:
     fixed = _support(mode="fixed_minimum", formal=80)
     assert fixed.formal_minimum_unique_anchors == 80
     with pytest.raises(ValueError, match="formal"):
-        WorldSupportGates(mode="fixed_minimum", descriptive_minimum_unique_anchors=20, formal_minimum_unique_anchors=None)
+        WorldSupportGates(
+            mode="fixed_minimum", descriptive_minimum_unique_anchors=20, formal_minimum_unique_anchors=None
+        )
     with pytest.raises(ValueError, match="formal"):
         WorldSupportGates(mode="fixed_minimum", descriptive_minimum_unique_anchors=20, formal_minimum_unique_anchors=0)
     with pytest.raises(ValueError, match="formal"):
@@ -716,10 +718,7 @@ def test_prospective_evaluation_requires_fixed_minimum_and_core_lanes() -> None:
 def test_scope_mapping_is_required_when_macro_or_graph_lanes_exist() -> None:
     with pytest.raises(ValueError, match="scope_mapping"):
         _manifest(
-            lanes=_pilot_lanes()
-            + (
-                _lane("markov.macro", contract=V2, mask=MACRO_MASK, role="primary_treatment"),
-            ),
+            lanes=_pilot_lanes() + (_lane("markov.macro", contract=V2, mask=MACRO_MASK, role="primary_treatment"),),
             contrasts=_pilot_contrasts()
             + (
                 type(_pilot_contrasts()[0])(

@@ -33,7 +33,7 @@ from trader.domain.world_availability import (
 )
 from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     AnchorBar,
     WorldEpisode,
     WorldObservation,
@@ -165,8 +165,8 @@ def _about() -> KnowledgeWorldRelation:
 
 def _link(**overrides: object) -> WorldEntityIdentityLink:
     values: dict[str, object] = {
-        "v2_ref": EntityRef(kind="instrument", entity_id="2330"),
-        "v3_ref": _instrument(),
+        "context_ref": EntityRef(kind="instrument", entity_id="2330"),
+        "graph_ref": _instrument(),
         "source_refs": ("provider:instrument-master:2330",),
         "effective_from": T0,
     }
@@ -263,7 +263,7 @@ def _episode() -> WorldEpisode:
             symbol="2330",
             bar_interval="1h",
             as_of_bar_ts=CUTOFF,
-            feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
+            feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
             sampling_policy_version="active_tradable_completed_bar.v1",
             anchor=AnchorBar(
                 ts=CUTOFF,
@@ -294,7 +294,7 @@ def _attested_receipt(
     subject = WorldAvailabilitySubjectRef(kind=kind, subject_id=subject_id, content_sha256=content_sha256)
     locator = WorldStorageLocator(kind="jsonl", store_id="world-graph-jsonl.v1", path="events/2026-08-23.jsonl")
     identity = _receipt_identity_payload(
-        schema_version="availability_receipt.v2",
+        schema_version="world_availability_receipt.v1",
         subject=subject,
         scope="world_graph",
         storage_locator=locator,
@@ -876,7 +876,7 @@ def test_later_structural_relation_is_visible_only_after_superseding_revision() 
     assert extra_ref not in before.snapshot.structural_relation_refs
 
     successor = WorldOntologyRevision(
-        revision_id="market_ontology.v2",
+        revision_id="market_ontology.other",
         entities=_rfc_entities() + (extra_family,),
         structural_relation_refs=tuple(
             WorldStructuralRelationRef.from_relation(item) for item in _rfc_structural() + (extra,)
@@ -890,7 +890,7 @@ def test_later_structural_relation_is_visible_only_after_superseding_revision() 
     )
     ontology.publish_revision(PublishWorldOntologyRevision(revision=successor))
     after = _service(ledger).build(_request(mapping))
-    assert after.snapshot.ontology_revision == "market_ontology.v2"
+    assert after.snapshot.ontology_revision == successor.revision_id == "market_ontology.other"
     assert after.snapshot.ontology_hash == successor.content_sha256
     assert extra_ref in after.snapshot.structural_relation_refs
     assert extra in after.structural_relations

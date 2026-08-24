@@ -180,7 +180,7 @@ def test_append_fact_writes_history_then_store_attested_receipt(tmp_path: Path) 
     assert isinstance(ref.identity, MacroSourceFactVersionId)
     assert ref.identity == fact.fact_version_id
     assert ref.receipt.ready_at == READY
-    assert ref.receipt.schema_version == "availability_receipt.v2"
+    assert ref.receipt.schema_version == "world_availability_receipt.v1"
     assert ref.receipt._store_attested is True
     assert ref.receipt.subject.kind == "macro_source_fact"
     assert ref.receipt.subject.subject_id == fact.fact_version_id.value
@@ -244,14 +244,20 @@ def test_append_is_idempotent_and_does_not_rewrite_history(tmp_path: Path, monke
     assert len(_history_rows(tmp_path / "observations" / "2026-08-23.jsonl")) == 1
     assert len(load_receipts(tmp_path / "facts" / "availability_receipts" / "2026-08-23.jsonl")) == 1
     assert len(load_receipts(tmp_path / "observations" / "availability_receipts" / "2026-08-23.jsonl")) == 1
-    history_writes = [path for path in events if path.endswith("2026-08-23.jsonl") and "availability_receipts" not in path]
+    history_writes = [
+        path for path in events if path.endswith("2026-08-23.jsonl") and "availability_receipts" not in path
+    ]
     assert len(history_writes) == 2
 
 
 def test_list_facts_returns_proven_facts_in_version_order(tmp_path: Path) -> None:
     store = _store(tmp_path)
     first = _fact()
-    second = _fact(period="2026-07", occurred_at="2026-07-01T00:00:00Z", source=_source(source_record_id="stable-provider-id:2026-07"))
+    second = _fact(
+        period="2026-07",
+        occurred_at="2026-07-01T00:00:00Z",
+        source=_source(source_record_id="stable-provider-id:2026-07"),
+    )
     store.append_fact(second)
     store.append_fact(first)
     listed = store.list_facts()
@@ -317,9 +323,7 @@ def test_fsyncs_history_then_clock_then_receipt(tmp_path: Path, monkeypatch) -> 
     assert ref.receipt.ready_at == READY
 
 
-def test_crash_between_history_and_receipt_is_unproven_until_idempotent_retry(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_crash_between_history_and_receipt_is_unproven_until_idempotent_retry(tmp_path: Path, monkeypatch) -> None:
     observation = _observation()
     history_abs = (tmp_path / "observations" / "2026-08-23.jsonl").resolve()
     receipt_abs = (tmp_path / "observations" / "availability_receipts" / "2026-08-23.jsonl").resolve()
@@ -683,10 +687,13 @@ def test_reconstructible_status_is_not_pit_authority(tmp_path: Path) -> None:
     candidates = WorldMacroStore(tmp_path, clock=lambda: READY).list_candidates_available_through(_scope(), CUTOFF)
     assert len(candidates) == 1
     assert candidates[0].evidence.first_seen_at == READY
-    assert AvailabilityEvidence(
-        receipt=candidates[0].persisted.receipt,
-        first_seen_at=candidates[0].evidence.first_seen_at,
-    ).effective_ready_at == READY
+    assert (
+        AvailabilityEvidence(
+            receipt=candidates[0].persisted.receipt,
+            first_seen_at=candidates[0].evidence.first_seen_at,
+        ).effective_ready_at
+        == READY
+    )
 
 
 def test_store_does_not_import_runtime_frontend_or_news_brief() -> None:
@@ -819,9 +826,7 @@ def test_load_reads_shared_history_file_a_bounded_constant_times(tmp_path: Path,
     assert loaded[-1].event_type == "macro_source_failed"
 
 
-def test_load_published_envelope_does_not_reread_observation_history_per_event(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_load_published_envelope_does_not_reread_observation_history_per_event(tmp_path: Path, monkeypatch) -> None:
     store = _store(tmp_path)
     fact = _fact()
     observation = _observation(fact=fact)

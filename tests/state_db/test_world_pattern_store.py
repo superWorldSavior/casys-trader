@@ -19,7 +19,7 @@ from trader.application.world_model.pattern_ports import (
 )
 from trader.domain.world_availability import AvailabilityEvidence
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     WorldOutcome,
     WorldPrediction,
     canonical_sha256,
@@ -65,7 +65,7 @@ EPISODE_ID = f"world-episode:v1:{'b' * 64}"
 FORMATION_FP = canonical_sha256({"dataset": "formation-pilot"})
 EVAL_FP = canonical_sha256({"dataset": "prospective-confirm"})
 SOURCE_SHA = "c" * 64
-COHORT_ID = "world_cohort:graph_v3_pilot"
+COHORT_ID = "world_cohort:graph_pilot"
 
 _PATTERN_TABLES = (
     "world_pattern_hypothesis_events",
@@ -76,10 +76,10 @@ _PATTERN_TABLES = (
 
 def _contract() -> WorldFeatureContract:
     return WorldFeatureContract(
-        contract_id="market_ohlcv_graph.v3",
-        accepted_episode_contract=MARKET_FEATURE_CONTRACT_VERSION,
+        contract_id="world_feature.graph.v1",
+        accepted_episode_contract=MARKET_FEATURE_CONTRACT_ID,
         projection_version="graph_projection.v3",
-        encoder_identity="world_feature_encoder.v3",
+        encoder_identity="world_feature_encoder.graph.v1",
         groups=(
             WorldFeatureGroup(
                 group_id="market",
@@ -129,7 +129,7 @@ def _spec(**overrides: object) -> PatternHypothesisSpec:
         "feature_contract_fingerprint": contract.fingerprint,
         "feature_mask_id": mask.mask_id,
         "feature_mask_fingerprint": mask.fingerprint,
-        "model_identity": "online_gru_world_challenger@graph.v3",
+        "model_identity": "online_gru_world_challenger@graph.v1",
         "ontology_revision": "market_ontology.v1",
         "source_refs": (),
         "causal_claim": False,
@@ -176,8 +176,8 @@ def _prediction(**overrides: object) -> WorldPrediction:
     values: dict[str, object] = {
         "episode_id": EPISODE_ID,
         "horizon_id": "elapsed_1d.v1",
-        "model_id": "online_gru_world_challenger@graph.v3",
-        "model_version": "graph.v3",
+        "model_id": "online_gru_world_challenger@graph.v1",
+        "model_version": "graph.v1",
         "feature_hash": "feature-view",
         "created_at": CUTOFF,
         "probabilities": {"DOWN": 0.20, "FLAT": 0.30, "UP": 0.50},
@@ -352,9 +352,7 @@ def test_identical_event_repairs_missing_receipt_after_head_advances(
     assert store._db.query_one("SELECT COUNT(*) FROM world_pattern_hypothesis_events")[0] == 2
     sequences = [
         int(row["sequence"])
-        for row in store._db.query_all(
-            "SELECT sequence FROM world_pattern_hypothesis_events ORDER BY sequence"
-        )
+        for row in store._db.query_all("SELECT sequence FROM world_pattern_hypothesis_events ORDER BY sequence")
     ]
     assert sequences == [1, 2]
     assert store.evidence_for(started) is not None
@@ -419,6 +417,7 @@ def test_new_event_id_does_not_insert_when_unique_sequence_conflicts(
 
         def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
             if "COUNT(*)" in sql:
+
                 class _CountResult:
                     def fetchone(self) -> tuple[int, ...]:
                         return (0,)
@@ -444,10 +443,13 @@ def test_new_event_id_does_not_insert_when_unique_sequence_conflicts(
         store.append_event(started)
     monkeypatch.undo()
     assert store._db.query_one("SELECT COUNT(*) FROM world_pattern_hypothesis_events")[0] == 1
-    assert store._db.query_one(
-        "SELECT COUNT(*) FROM world_pattern_hypothesis_events WHERE event_id=?",
-        (started.event_id,),
-    )[0] == 0
+    assert (
+        store._db.query_one(
+            "SELECT COUNT(*) FROM world_pattern_hypothesis_events WHERE event_id=?",
+            (started.event_id,),
+        )[0]
+        == 0
+    )
     recovered = store.append_event(started)
     assert recovered.event.event_id == started.event_id
     assert store._db.query_one("SELECT COUNT(*) FROM world_pattern_hypothesis_events")[0] == 2
@@ -528,10 +530,7 @@ def test_occurrence_and_outcome_link_round_trip_with_cohort_cutoff_horizon_index
     assert occ_row["cohort_id"] == COHORT_ID
     assert "2026-09-02T13:00:00" in occ_row["cutoff_at"]
     assert occ_row["horizon_id"] == "elapsed_1d.v1"
-    indexes = {
-        row["name"]
-        for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='index'")
-    }
+    indexes = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='index'")}
     assert any("cohort" in name and "cutoff" in name for name in indexes)
     assert any("horizon" in name for name in indexes)
 
@@ -638,22 +637,21 @@ def test_concurrent_identical_append_is_idempotent(tmp_path: Path) -> None:
 def test_migration_creates_append_only_pattern_schema_and_reuses_receipts(tmp_path: Path) -> None:
     store = _store(tmp_path)
     versions = {row["version"] for row in store._db.query_all("SELECT version FROM schema_migrations")}
-    assert 8 in versions
-    assert 9 in versions
+    assert versions == {1}
     names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
     for table in _PATTERN_TABLES:
         assert table in names
         assert table in WORLD_PATTERN_TABLES
     assert "world_availability_receipts" in names
-    v9_sql = "\n".join(WORLD_MODEL_MIGRATIONS[8][1])
+    current_sql = "\n".join(WORLD_MODEL_MIGRATIONS[0][1])
     for table in _PATTERN_TABLES:
-        assert table in v9_sql
-        assert f"{table}_no_update" in v9_sql
-        assert f"{table}_no_delete" in v9_sql
-    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" not in v9_sql
-    assert "idx_world_pattern_occurrence_events_cohort_cutoff" in v9_sql
-    assert "idx_world_pattern_outcome_links_horizon" in v9_sql
-    compact = v9_sql.replace(" ", "").replace("\n", "")
+        assert table in current_sql
+        assert f"{table}_no_update" in current_sql
+        assert f"{table}_no_delete" in current_sql
+    assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" in current_sql
+    assert "idx_world_pattern_occurrence_events_cohort_cutoff" in current_sql
+    assert "idx_world_pattern_outcome_links_horizon" in current_sql
+    compact = current_sql.replace(" ", "").replace("\n", "")
     assert "UNIQUE(hypothesis_id,sequence)" in compact
     assert "UNIQUE(occurrence_id,sequence)" in compact
     store.append_event(_registered())

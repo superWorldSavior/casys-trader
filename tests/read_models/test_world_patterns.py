@@ -19,8 +19,14 @@ from tests.domain.test_world_pattern import (
     _spec,
     _step,
 )
-from trader.domain.world_episode import canonical_sha256
-from trader.domain.world_feature_contract import WORLD_GRAPH_V3_CONFIG_SHA256
+from trader.domain.world_episode import (
+    MARKET_FEATURE_CONTRACT_ID,
+    AnchorBar,
+    WorldEpisode,
+    WorldObservation,
+    canonical_sha256,
+)
+from trader.domain.world_feature_contract import WORLD_GRAPH_CONFIG_SHA256
 from trader.domain.world_graph import WorldEntityRef
 from trader.domain.world_pattern import PatternHypothesis, PatternMatchedHop, PatternOccurrence
 from trader.infrastructure.state_db.world_model_query import (
@@ -34,10 +40,10 @@ from trader.reporting.read_models.world_patterns import (
 
 
 UTC = timezone.utc
-COHORT_ID = "world_cohort:graph_v3_pilot"
+COHORT_ID = "world_cohort:graph_pilot"
 CLOSED_AT = datetime(2026, 9, 4, tzinfo=UTC)
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GRAPH_V3_CONFIG = yaml.safe_load((REPO_ROOT / "config" / "world_graph_v3.yaml").read_text(encoding="utf-8"))
+GRAPH_CONFIG = yaml.safe_load((REPO_ROOT / "config" / "world_graph.yaml").read_text(encoding="utf-8"))
 ASSESSMENT_CONCLUSIONS = frozenset(
     {
         "predictive_association_observed",
@@ -46,7 +52,7 @@ ASSESSMENT_CONCLUSIONS = frozenset(
         "invalidated",
     }
 )
-YAML_NEGATIVE_CONTROLS = tuple(GRAPH_V3_CONFIG["negative_controls"])
+YAML_NEGATIVE_CONTROLS = tuple(GRAPH_CONFIG["negative_controls"])
 _CLAIM_KEYS = {
     "authority": "shadow_only",
     "decision_effect": "none",
@@ -63,7 +69,7 @@ _INSTRUMENTS = (
     ("3711", {"DOWN": 0.05, "FLAT": 0.05, "UP": 0.90}, 103.0),
     ("2308", {"DOWN": 0.90, "FLAT": 0.05, "UP": 0.05}, 96.0),
 )
-_V2_POOR = {
+_CONTEXT_POOR = {
     "2330": {"DOWN": 0.80, "FLAT": 0.10, "UP": 0.10},
     "2454": {"DOWN": 0.10, "FLAT": 0.10, "UP": 0.80},
     "2303": {"DOWN": 0.80, "FLAT": 0.10, "UP": 0.10},
@@ -74,6 +80,31 @@ _V2_POOR = {
 
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
+
+
+def _store_market_episode(symbol: str, *, as_of: datetime = CUTOFF) -> dict[str, Any]:
+    observation = WorldObservation(
+        venue="XTAI",
+        symbol=symbol,
+        bar_interval="1h",
+        as_of_bar_ts=as_of,
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
+        sampling_policy_version="active_tradable_completed_bar.v1",
+        anchor=AnchorBar(
+            ts=as_of,
+            open=100.0,
+            high=102.0,
+            low=99.0,
+            close=101.0,
+            volume=1_000.0,
+            source="fixture",
+        ),
+        available_at=as_of,
+        captured_at=as_of,
+        freshness="fresh",
+        numeric_features={"return": 0.01},
+    )
+    return WorldEpisode(observation=observation).to_dict()
 
 
 def _episode_id(symbol: str, *, contract: str) -> str:
@@ -134,7 +165,7 @@ def _linked_occurrence(
     return linked, outcome.to_dict()
 
 
-def _v2_prediction(
+def _context_prediction(
     *,
     symbol: str,
     probabilities: dict[str, float],
@@ -147,12 +178,12 @@ def _v2_prediction(
         "episode_id": episode_id,
         "horizon_id": "elapsed_1d.v1",
         "horizon_code": "elapsed_1d.v1",
-        "feature_contract_id": "market_ohlcv_context.v2",
-        "feature_contract_version": "market_ohlcv_context.v2",
+        "feature_contract_id": "world_feature.context.v1",
+        "feature_contract_version": "world_feature.context.v1",
         "feature_mask_id": "status_only.v1",
-        "model_id": "hierarchical_dirichlet_world_baseline@context.v2",
-        "model_kind": "hierarchical_dirichlet_world_baseline@context.v2",
-        "model_version": "context.v2",
+        "model_id": "hierarchical_dirichlet_world_baseline@context.v1",
+        "model_kind": "hierarchical_dirichlet_world_baseline@context.v1",
+        "model_version": "context.v1",
         "probabilities": probabilities,
         "venue": "XTAI",
         "symbol": symbol,
@@ -167,18 +198,20 @@ def _v2_prediction(
     return payload
 
 
-def _topology_prediction(*, symbol: str, probabilities: dict[str, float], cutoff_at: datetime = CUTOFF) -> dict[str, Any]:
-    payload = _v2_prediction(symbol=symbol, probabilities=probabilities, cutoff_at=cutoff_at)
+def _topology_prediction(
+    *, symbol: str, probabilities: dict[str, float], cutoff_at: datetime = CUTOFF
+) -> dict[str, Any]:
+    payload = _context_prediction(symbol=symbol, probabilities=probabilities, cutoff_at=cutoff_at)
     payload.update(
         {
             "prediction_id": f"world-prediction:v1:{canonical_sha256({'topo': symbol, 'cutoff': _iso(cutoff_at)})}",
             "episode_id": _episode_id(symbol, contract="v3-status"),
-            "feature_contract_id": "market_ohlcv_graph.v3",
-            "feature_contract_version": "market_ohlcv_graph.v3",
+            "feature_contract_id": "world_feature.graph.v1",
+            "feature_contract_version": "world_feature.graph.v1",
             "feature_mask_id": "topology_status_only.v1",
-            "model_id": "hierarchical_dirichlet_world_baseline@graph.v3",
-            "model_kind": "hierarchical_dirichlet_world_baseline@graph.v3",
-            "model_version": "graph.v3",
+            "model_id": "hierarchical_dirichlet_world_baseline@graph.v1",
+            "model_kind": "hierarchical_dirichlet_world_baseline@graph.v1",
+            "model_version": "graph.v1",
         }
     )
     return payload
@@ -217,12 +250,12 @@ def _matched_family(
         if mismatch_outcome:
             outcome_payload = {**outcome_payload, "source_raw_sha256": "d" * 64}
         outcomes.append(outcome_payload)
-        predictions.append(_v2_prediction(symbol=symbol, probabilities=_V2_POOR[symbol]))
+        predictions.append(_context_prediction(symbol=symbol, probabilities=_CONTEXT_POOR[symbol]))
         if include_topology:
-            predictions.append(_topology_prediction(symbol=symbol, probabilities=_V2_POOR[symbol]))
+            predictions.append(_topology_prediction(symbol=symbol, probabilities=_CONTEXT_POOR[symbol]))
     if include_without_event:
         predictions.append(
-            _v2_prediction(
+            _context_prediction(
                 symbol="2317",
                 probabilities={"DOWN": 0.33, "FLAT": 0.34, "UP": 0.33},
                 extra={"prediction_id": f"world-prediction:v1:{canonical_sha256({'v2': '2317'})}"},
@@ -231,19 +264,17 @@ def _matched_family(
     if second_hypothesis:
         other = _evaluating(
             spec=_spec(
-                steps=(
-                    _step(0, subject_kind="macro_indicator", predicate="state_changed", object_kind="country"),
-                ),
-                model_identity="hierarchical_dirichlet_world_baseline@graph.v3",
+                steps=(_step(0, subject_kind="macro_indicator", predicate="state_changed", object_kind="country"),),
+                model_identity="hierarchical_dirichlet_world_baseline@graph.v1",
             )
         )
         noise = _linked_occurrence(
             other,
             symbol="2330",
-            probabilities=_V2_POOR["2330"],
+            probabilities=_CONTEXT_POOR["2330"],
             endpoint_close=102.0,
             exact_path=_short_path(),
-            model_id="hierarchical_dirichlet_world_baseline@graph.v3",
+            model_id="hierarchical_dirichlet_world_baseline@graph.v1",
         )
         hypothesis_events.extend(event.to_dict() for event in _closed(other).events)
         occurrence_events.extend(event.to_dict() for event in noise[0].events)
@@ -330,24 +361,24 @@ def test_report_schema_keeps_shadow_only_claims_and_closed_conclusions() -> None
         assert "move_class" not in assessment.get("outcome_links", [{}])[0] if assessment.get("outcome_links") else True
 
 
-def test_matched_v2_v3_sets_pair_same_anchor_and_horizon() -> None:
+def test_matched_context_graph_sets_pair_same_anchor_and_horizon() -> None:
     report = project_world_pattern_report(_matched_family())
     assert report["matched_sets"]
     for row in report["matched_sets"]:
         assert row["venue"] == "XTAI"
         assert row["horizon_id"] == "elapsed_1d.v1"
-        assert row["v2_feature_contract_id"] == "market_ohlcv_context.v2"
-        assert row["v3_feature_contract_id"] == "market_ohlcv_graph.v3"
-        assert row["v3_feature_mask_id"] == "graph_content.v1"
-        assert row["v2_prediction_id"]
+        assert row["context_feature_contract_id"] == "world_feature.context.v1"
+        assert row["graph_feature_contract_id"] == "world_feature.graph.v1"
+        assert row["graph_feature_mask_id"] == "graph_content.v1"
+        assert row["context_prediction_id"]
         assert row["occurrence_id"].startswith("pattern_occurrence:v1:")
-        assert set(row["lane_ids"]) >= {"v2", "v3"}
+        assert set(row["lane_ids"]) >= {"context", "graph"}
     symbols = {row["symbol"] for row in report["matched_sets"]}
     assert symbols == {"2330", "2454", "2303", "3711", "2308"}
     assessment = _assessment(report)
     assert assessment["unique_support"] == 5
-    assert assessment["lift_vs_v2"]["mean_delta"] < 0.0
-    assert assessment["log_loss"]["v3"] < assessment["log_loss"]["v2"]
+    assert assessment["lift_vs_context"]["mean_delta"] < 0.0
+    assert assessment["log_loss"]["graph"] < assessment["log_loss"]["context"]
 
 
 def test_canonical_world_outcome_is_verified_id_digest_horizon() -> None:
@@ -410,7 +441,7 @@ def test_sparse_support_is_inconclusive() -> None:
     assert assessment["conclusion"] == "inconclusive"
 
 
-def test_negative_controls_come_from_world_graph_v3_yaml() -> None:
+def test_negative_controls_come_from_world_graph_yaml() -> None:
     assert YAML_NEGATIVE_CONTROLS == (
         "topology_status_only",
         "entity_permutation_within_venue_session",
@@ -448,10 +479,10 @@ def test_negative_controls_come_from_world_graph_v3_yaml() -> None:
 
 
 def test_holm_bonferroni_multiplicity_uses_frozen_yaml_family() -> None:
-    assert GRAPH_V3_CONFIG["multiplicity"]["method"] == "holm_bonferroni"
-    assert GRAPH_V3_CONFIG["multiplicity"]["family_wise_alpha"] == 0.05
-    assert GRAPH_V3_CONFIG["multiplicity"]["frozen_before"] == "GRAPH-7"
-    assert GRAPH_V3_CONFIG["content_sha256"] == WORLD_GRAPH_V3_CONFIG_SHA256
+    assert GRAPH_CONFIG["multiplicity"]["method"] == "holm_bonferroni"
+    assert GRAPH_CONFIG["multiplicity"]["family_wise_alpha"] == 0.05
+    assert GRAPH_CONFIG["multiplicity"]["frozen_before"] == "GRAPH-7"
+    assert GRAPH_CONFIG["content_sha256"] == WORLD_GRAPH_CONFIG_SHA256
 
     alone = project_world_pattern_report(_matched_family(include_without_event=False))
     family = project_world_pattern_report(_matched_family(second_hypothesis=True, include_without_event=False))
@@ -459,7 +490,7 @@ def test_holm_bonferroni_multiplicity_uses_frozen_yaml_family() -> None:
     assert multiplicity["method"] == "holm_bonferroni"
     assert multiplicity["family_wise_alpha"] == 0.05
     assert multiplicity["frozen_before"] == "GRAPH-7"
-    assert multiplicity["config_sha256"] == WORLD_GRAPH_V3_CONFIG_SHA256
+    assert multiplicity["config_sha256"] == WORLD_GRAPH_CONFIG_SHA256
     assert multiplicity["family_size"] == 2
     assert len(multiplicity["adjusted"]) == 2
     alone_assessment = _assessment(alone)
@@ -468,21 +499,24 @@ def test_holm_bonferroni_multiplicity_uses_frozen_yaml_family() -> None:
     assert alone["multiplicity"]["adjusted"][0]["holm_rejected"] is True
     # The same raw association is not a family-wise win once a second hypothesis is tested.
     assert family["conclusion"] in {"inconclusive", "not_supported"}
-    assert all(item["holm_rejected"] is False for item in multiplicity["adjusted"]) or family["conclusion"] != "predictive_association_observed"
+    assert (
+        all(item["holm_rejected"] is False for item in multiplicity["adjusted"])
+        or family["conclusion"] != "predictive_association_observed"
+    )
 
 
-def test_not_supported_when_v3_does_not_beat_v2() -> None:
+def test_not_supported_when_graph_does_not_beat_context() -> None:
     hypothesis = _evaluating()
     occurrence, outcome_payload = _linked_occurrence(
         hypothesis,
         symbol="2330",
-        probabilities=_V2_POOR["2330"],
+        probabilities=_CONTEXT_POOR["2330"],
         endpoint_close=102.0,
     )
     second, second_outcome = _linked_occurrence(
         hypothesis,
         symbol="2454",
-        probabilities=_V2_POOR["2454"],
+        probabilities=_CONTEXT_POOR["2454"],
         endpoint_close=97.0,
     )
     ledger = {
@@ -495,16 +529,16 @@ def test_not_supported_when_v3_does_not_beat_v2() -> None:
         "outcome_links": [],
         "outcomes": [outcome_payload, second_outcome],
         "predictions": [
-            _v2_prediction(symbol="2330", probabilities=_V2_POOR["2330"]),
-            _v2_prediction(symbol="2454", probabilities=_V2_POOR["2454"]),
+            _context_prediction(symbol="2330", probabilities=_CONTEXT_POOR["2330"]),
+            _context_prediction(symbol="2454", probabilities=_CONTEXT_POOR["2454"]),
         ],
         "episodes": [],
     }
     report = project_world_pattern_report(ledger)
     assessment = _assessment(report)
-    assert assessment["lift_vs_v2"]["mean_delta"] == 0.0 or assessment["lift_vs_v2"]["mean_delta"] >= 0.0
+    assert assessment["lift_vs_context"]["mean_delta"] == 0.0 or assessment["lift_vs_context"]["mean_delta"] >= 0.0
     assert assessment["conclusion"] in {"not_supported", "inconclusive"}
-    if assessment["unique_support"] >= 2 and assessment["lift_vs_v2"]["mean_delta"] >= 0.0:
+    if assessment["unique_support"] >= 2 and assessment["lift_vs_context"]["mean_delta"] >= 0.0:
         assert assessment["conclusion"] == "not_supported"
 
 
@@ -539,49 +573,14 @@ def test_query_indexed_pattern_columns_override_nested_json(tmp_path: Path) -> N
         )
         for event in occurrence.events:
             pattern.append_event(event)
-        world.append_episode(
-            {
-                "episode_id": outcome_payload["episode_id"],
-                "venue": "XTAI",
-                "symbol": "2330",
-                "observed_at": _iso(CUTOFF),
-                "available_at": _iso(CUTOFF),
-                "as_of_bar_ts": _iso(CUTOFF),
-                "bar_interval": "1h",
-                "feature_contract_version": "market_ohlcv_causal.v1",
-                "sampling_policy_version": "active_tradable_completed_bar.v1",
-                "training_eligible": True,
-                "observation": {"symbol": "2330", "features": {"return": 0.01}},
-                "source_evidence": {"source": "fixture"},
-            }
-        )
-        world.append_outcome_event(_outcome(episode_id=outcome_payload["episode_id"], endpoint_close=102.0))
-        v2 = _v2_prediction(symbol="2330", probabilities=_V2_POOR["2330"])
-        world.append_episode(
-            {
-                "episode_id": v2["episode_id"],
-                "venue": "XTAI",
-                "symbol": "2330",
-                "observed_at": _iso(CUTOFF),
-                "available_at": _iso(CUTOFF),
-                "as_of_bar_ts": _iso(CUTOFF),
-                "bar_interval": "1h",
-                "feature_contract_version": "market_ohlcv_causal.v1",
-                "sampling_policy_version": "active_tradable_completed_bar.v1",
-                "training_eligible": True,
-                "observation": {
-                    "venue": "XTAI",
-                    "symbol": "2330",
-                    "bar_interval": "1h",
-                    "as_of_bar_ts": _iso(CUTOFF),
-                    "features": {"return": 0.01},
-                },
-                "source_evidence": {"source": "fixture"},
-            }
-        )
+        stored_episode = _store_market_episode("2330")
+        world.append_episode(stored_episode)
+        world.append_outcome_event(_outcome(episode_id=stored_episode["episode_id"], endpoint_close=102.0))
+        v2 = _context_prediction(symbol="2330", probabilities=_CONTEXT_POOR["2330"])
         world.append_legacy_prediction(
             {
                 **v2,
+                "episode_id": stored_episode["episode_id"],
                 "run_id": "run-1",
                 "predicted_at": v2["predicted_at"],
                 "prediction": {

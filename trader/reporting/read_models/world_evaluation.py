@@ -34,7 +34,7 @@ DIRECTIONAL_SHADOW_DRAWDOWN_CAVEAT = (
 
 
 MARKET_MODEL_VERSION = "v1"
-CONTEXT_MODEL_VERSION = "context.v2"
+CONTEXT_MODEL_VERSION = "context.v1"
 
 # Same causal identity the strict cohort report requires before a matched pair.
 _COMPARISON_PROOF_FIELDS = (
@@ -287,7 +287,7 @@ def evaluate_context_ablation_from_scores(
     baseline_model_id: str = BASELINE_MODEL_ID,
     gru_model_id: str = GRU_MODEL_ID,
 ) -> dict[str, Any]:
-    """Compare context V2 vs market V1 within each model family, not across families."""
+    """Compare context vs market within each model family, not across families."""
 
     excluded: defaultdict[str, int] = defaultdict(int)
     coverage: defaultdict[str, int] = defaultdict(int)
@@ -434,11 +434,11 @@ def _group_ablation_anchors(
 
 
 def _market_lane_contract(row: _ScoredPrediction) -> bool:
-    return row.feature_contract_version == "market_ohlcv_causal.v1" and row.model_version == MARKET_MODEL_VERSION
+    return row.feature_contract_version == "world_feature.market.v1" and row.model_version == MARKET_MODEL_VERSION
 
 
 def _context_lane_contract(row: _ScoredPrediction) -> bool:
-    return row.feature_contract_version == "market_ohlcv_context.v2" and row.model_version == CONTEXT_MODEL_VERSION
+    return row.feature_contract_version == "world_feature.context.v1" and row.model_version == CONTEXT_MODEL_VERSION
 
 
 def _label_evidence(outcome: object, horizon_id: str) -> tuple[Any, ...]:

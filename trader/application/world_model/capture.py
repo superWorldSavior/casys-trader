@@ -22,6 +22,7 @@ import math
 from trader.domain.world_episode import (
     AnchorBar,
     Freshness,
+    MARKET_FEATURE_CONTRACT_ID,
     WorldEpisode,
     WorldObservation,
     completed_bar_cutoff,
@@ -32,7 +33,7 @@ from trader.domain.world_episode import (
 
 
 UTC = timezone.utc
-FEATURE_CONTRACT_VERSION = "market_ohlcv_causal.v1"
+FEATURE_CONTRACT_VERSION = MARKET_FEATURE_CONTRACT_ID
 SAMPLING_POLICY_VERSION = "active_tradable_completed_bar.v1"
 
 _CATEGORICAL_METADATA_ALIASES: tuple[tuple[str, str], ...] = (
@@ -398,11 +399,7 @@ def _numeric_features(
         bar
         for bar in bars
         if (bar.end_at or bar.ts) <= anchor_end
-        and (
-            anchor.available_at is None
-            or bar.available_at is None
-            or bar.available_at <= anchor.available_at
-        )
+        and (anchor.available_at is None or bar.available_at is None or bar.available_at <= anchor.available_at)
     ]
     candidates.sort(key=lambda value: value.order_key)
     deduped: dict[tuple[datetime, datetime], _MarketBar] = {}
@@ -428,9 +425,7 @@ def _numeric_features(
 
     closes = [bar.close for bar in history]
     simple_returns = [
-        closes[index] / closes[index - 1] - 1.0
-        for index in range(1, len(closes))
-        if closes[index - 1] > 0.0
+        closes[index] / closes[index - 1] - 1.0 for index in range(1, len(closes)) if closes[index - 1] > 0.0
     ]
     if simple_returns:
         _set_finite(features, "return", simple_returns[-1])

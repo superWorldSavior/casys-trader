@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.application.test_world_context_capture import V1_EPISODE_ID, _FakeSource, _v1_episode
+from tests.application.test_world_context_capture import V1_EPISODE_ID, _FakeSource, _market_episode
 from tests.application.test_world_graph_snapshot import (
     _InMemorySnapshotLedger,
     _InMemoryWorldGraphLedger,
-    _episode as _graph6_v1_episode,
+    _episode as _graph6_market_episode,
     _mapping,
     _seed_rfc_graph,
     _service,
@@ -21,14 +21,14 @@ from trader.application.world_model.capture import capture_world_episodes
 from trader.application.world_model.context_capture import attach_world_context
 from trader.application.world_model.graph_snapshot import WorldGraphSnapshotService
 from trader.domain.world_context import SensorEvidence
-from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_VERSION, WorldEpisode
+from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_ID, WorldEpisode
 from trader.domain.world_feature_contract import (
     GRAPH_CONTENT_CATEGORICAL_FEATURES,
-    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_CONTRACT_ID,
     GRAPH_STATUS_CATEGORICAL_FEATURES,
-    WORLD_GRAPH_V3_CONFIG_SHA256,
-    world_v3_graph_content_mask,
-    world_v3_topology_status_only_mask,
+    WORLD_GRAPH_CONFIG_SHA256,
+    graph_content_mask,
+    topology_status_only_mask,
 )
 from trader.domain.world_graph import (
     StructuralWorldRelation,
@@ -65,14 +65,18 @@ def _import_violations(path: Path) -> list[str]:
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
-            if any(node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+            if any(
+                node.module == prefix or node.module.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+            ):
                 violations.append(f"{rel_path}: from {node.module} import ...")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if any(alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES):
+                if any(
+                    alias.name == prefix or alias.name.startswith(f"{prefix}.") for prefix in _FORBIDDEN_IMPORT_PREFIXES
+                ):
                     violations.append(f"{rel_path}: import {alias.name}")
     source = path.read_text(encoding="utf-8")
-    for marker in ("world_graph_store", "world_temporal_networkx", "world_graph_v3.yaml"):
+    for marker in ("world_graph_store", "world_temporal_networkx", "world_graph.yaml"):
         if marker in source:
             violations.append(f"{rel_path}: {marker} mentioned")
     return violations
@@ -287,17 +291,17 @@ def test_graph_capture_does_not_import_store_runtime_or_yaml_config() -> None:
     assert _import_violations(_GRAPH_CAPTURE) == []
     source = _GRAPH_CAPTURE.read_text(encoding="utf-8")
     assert "study_cohort_id" in source
-    assert WORLD_GRAPH_V3_CONFIG_SHA256 == "e8d1df0df1badfdd9c2004ae4cf9eacb9605347abacbd63563a844dcfe16ab84"
+    assert WORLD_GRAPH_CONFIG_SHA256 == "68fedcb7fa12d6b2e7c2467b5e33e5211db60aafe880233a32c20606ba6d29df"
 
 
-def test_v1_identity_stays_frozen_and_v3_companion_shares_the_market_slot() -> None:
-    v1 = _v1_episode()
+def test_market_identity_stays_frozen_and_graph_companion_shares_the_market_slot() -> None:
+    v1 = _market_episode()
     v3 = _attach((v1,), _unmapped_config())[0]
     assert v1.episode_id == V1_EPISODE_ID
     assert v1.observation.context is None
-    assert v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_VERSION
+    assert v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_ID
     assert "graph_features" not in v1.observation.to_dict()
-    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_ID
     assert v3.episode_id != v1.episode_id
     assert v3.observation.venue == v1.observation.venue
     assert v3.observation.symbol == v1.observation.symbol
@@ -314,14 +318,14 @@ def test_v1_identity_stays_frozen_and_v3_companion_shares_the_market_slot() -> N
         symbol=v3.observation.symbol,
         bar_interval=v3.observation.bar_interval,
         as_of_bar_ts=v3.observation.as_of_bar_ts,
-        feature_contract_version=GRAPH_FEATURE_CONTRACT_VERSION,
+        feature_contract_version=GRAPH_FEATURE_CONTRACT_ID,
         sampling_policy_version=v3.observation.sampling_policy_version,
         graph_snapshot_id=snapshot.snapshot_id,
     )
 
 
-def test_missing_unpublished_unmapped_and_budget_graph_are_neutral_v3_companions() -> None:
-    mapped_v1 = _graph6_v1_episode()
+def test_missing_unpublished_unmapped_and_budget_graph_are_neutral_graph_companions() -> None:
+    mapped_v1 = _graph6_market_episode()
     unmapped_v1 = _us_aaa_episode()
     unpublished = _attach((mapped_v1,), _unpublished_config())[0]
     unmapped = _attach((unmapped_v1,), _unmapped_config())[0]
@@ -341,10 +345,10 @@ def test_missing_unpublished_unmapped_and_budget_graph_are_neutral_v3_companions
     features = _graph_features(unpublished.observation)["categorical_features"]
     assert features["graph_status"] == "missing"
     assert features["graph_missingness_status"] == "unpublished"
-    assert mapped_v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_VERSION
+    assert mapped_v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_ID
 
     seeded = _complete_config(max_paths=1)
-    complete_v1 = _graph6_v1_episode()
+    complete_v1 = _graph6_market_episode()
     budget = _attach((complete_v1,), seeded)[0]
     budget_snapshot = _graph_snapshot(budget.observation)
     assert budget_snapshot.status in {"partial", "complete"}
@@ -352,7 +356,7 @@ def test_missing_unpublished_unmapped_and_budget_graph_are_neutral_v3_companions
         assert budget_snapshot.missingness["budget"] == "graph_budget_exceeded"
     budget_features = _graph_features(budget.observation)["categorical_features"]
     assert "graph_status" in budget_features
-    assert complete_v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_VERSION
+    assert complete_v1.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_ID
 
 
 def test_unmapped_us_aaa_never_selects_sole_us_mic_or_world_entity_root() -> None:
@@ -363,7 +367,7 @@ def test_unmapped_us_aaa_never_selects_sole_us_mic_or_world_entity_root() -> Non
     assert resolution.scopes == ()
     v3 = _attach((v1,), _us_gm_published_config())[0]
     snapshot = _graph_snapshot(v3.observation)
-    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_ID
     assert snapshot.status == "missing"
     assert snapshot.missingness["scope"] == "unmapped"
     assert snapshot.root_entity is None
@@ -496,11 +500,11 @@ def test_contaminated_unmapped_snapshot_hydrates_for_observation_without_selecti
     assert "mic:" not in json.dumps(dict(encoded.categorical_features))
 
 
-def test_exact_known_anchor_still_emits_normal_graph_v3() -> None:
-    v1 = _graph6_v1_episode()
+def test_exact_known_anchor_still_emits_normal_graph() -> None:
+    v1 = _graph6_market_episode()
     v3 = _attach((v1,), _complete_config())[0]
     snapshot = _graph_snapshot(v3.observation)
-    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_ID
     assert snapshot.root_entity is not None
     assert snapshot.root_entity.entity_id == "mic:XTAI:symbol:2330"
     assert snapshot.status == "complete"
@@ -515,7 +519,7 @@ def test_graph_cutoff_is_completed_bar_clock_and_unknown_semantics_fail_closed()
     from trader.application.world_model.capture import FEATURE_CONTRACT_VERSION
     from trader.domain.world_episode import AnchorBar, WorldObservation
 
-    v1 = _graph6_v1_episode()
+    v1 = _graph6_market_episode()
     v3 = _attach((v1,), _complete_config())[0]
     snapshot = _graph_snapshot(v3.observation)
     assert snapshot.cutoff_at == datetime(2026, 8, 23, 13, 0, tzinfo=timezone.utc)
@@ -550,12 +554,12 @@ def test_graph_cutoff_is_completed_bar_clock_and_unknown_semantics_fail_closed()
     assert _attach((unknown,), _complete_config()) == ()
 
 
-def test_encoded_graph_features_merge_into_v3_and_masks_are_not_contracts() -> None:
-    v1 = _graph6_v1_episode()
-    content = _attach((v1,), _complete_config(feature_mask=world_v3_graph_content_mask()))[0]
-    status = _attach((v1,), _complete_config(feature_mask=world_v3_topology_status_only_mask()))[0]
+def test_encoded_graph_features_merge_into_graph_and_masks_are_not_contracts() -> None:
+    v1 = _graph6_market_episode()
+    content = _attach((v1,), _complete_config(feature_mask=graph_content_mask()))[0]
+    status = _attach((v1,), _complete_config(feature_mask=topology_status_only_mask()))[0]
     assert content.observation.feature_contract_version == status.observation.feature_contract_version
-    assert content.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert content.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_ID
     content_cats = _graph_features(content.observation)["categorical_features"]
     status_cats = _graph_features(status.observation)["categorical_features"]
     assert GRAPH_STATUS_CATEGORICAL_FEATURES <= set(content_cats)
@@ -567,8 +571,8 @@ def test_encoded_graph_features_merge_into_v3_and_masks_are_not_contracts() -> N
     assert content_cats["graph_scope_status"] == "resolved"
 
 
-def test_v2_is_not_widened_and_v3_does_not_replace_v1() -> None:
-    v1 = _v1_episode()
+def test_context_is_not_widened_and_graph_does_not_replace_market() -> None:
+    v1 = _market_episode()
     v2 = attach_world_context(
         (v1,),
         _FakeSource(
@@ -576,13 +580,13 @@ def test_v2_is_not_widened_and_v3_does_not_replace_v1() -> None:
             SensorEvidence(status="missing", reason="no_artifact"),
         ),
     )[0]
-    v3_from_v2 = _attach((v2,), _unmapped_config())
+    graph_from_context = _attach((v2,), _unmapped_config())
     v3 = _attach((_us_aaa_episode(),), _unmapped_config())[0]
-    assert v3_from_v2 == ()
+    assert graph_from_context == ()
     assert v2.observation.context is not None
     assert "graph_features" not in v2.observation.to_dict()
     assert v1.observation.context is None
-    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert v3.observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_ID
 
 
 def test_snapshot_ledger_is_canonical_first_write_and_conflicts_on_payload_drift() -> None:
@@ -601,7 +605,7 @@ def test_snapshot_ledger_is_canonical_first_write_and_conflicts_on_payload_drift
         ),
         study_cohort_id="world_cohort:v1:" + "a" * 64,
     )
-    v1 = _graph6_v1_episode()
+    v1 = _graph6_market_episode()
     first = _attach((v1,), config)[0]
     assert len(snapshots.rows) == 1
     second = _attach((v1,), config)[0]
@@ -620,7 +624,7 @@ def test_graph_builder_failure_is_fail_open_and_does_not_drop_v1() -> None:
         def build(self, request):
             raise RuntimeError("graph boom")
 
-    v1 = _v1_episode()
+    v1 = _market_episode()
     config = WorldGraphCaptureConfig(
         scope_mapping=_empty_mapping(),
         snapshot_service=BoomService(),
@@ -682,7 +686,7 @@ def test_injected_study_cohort_id_does_not_invent_a_scope_mapping() -> None:
     assert config.scope_mapping is mapping
     resolution = mapping.resolve(WorldMarketAnchorRef(market_venue="TW", instrument="2330"))
     assert isinstance(resolution, WorldScopeResolution)
-    v1 = _v1_episode()
+    v1 = _market_episode()
     v3 = _attach((v1,), _unmapped_config(study_cohort_id=config.study_cohort_id))[0]
     payload = v3.to_dict()
     assert "study_cohort_id" not in payload

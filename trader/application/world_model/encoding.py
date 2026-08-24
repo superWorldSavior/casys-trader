@@ -20,10 +20,10 @@ from types import MappingProxyType
 from trader.domain.world_context import (
     ALLOWED_CONTEXT_CATEGORICAL_FEATURES,
     ALLOWED_CONTEXT_NUMERIC_FEATURES,
-    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_FEATURE_CONTRACT_ID,
 )
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     PREDICTION_CLASSES,
     WorldEpisode,
     WorldObservation,
@@ -34,21 +34,20 @@ from trader.domain.world_episode import (
 from trader.domain.world_feature_contract import (
     COMPANY_FEATURE_GROUP_ID,
     GRAPH_CONTENT_CATEGORICAL_FEATURES,
-    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_CONTRACT_ID,
     GRAPH_STATUS_CATEGORICAL_FEATURES,
     MACRO_FEATURE_GROUP_ID,
     MARKET_FEATURE_GROUP_ID,
     STATUS_FEATURE_GROUP_ID,
-    WORLD_GRAPH_V3_PATH_RULE_VERSION,
-    WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
+    GRAPH_PATH_RULE_VERSION,
+    GRAPH_WINDOWS_AND_DECAY,
     WorldFeatureContract,
     WorldFeatureMask,
-    world_feature_contract_for_include_context,
-    world_v1_feature_contract,
-    world_v2_feature_contract,
-    world_v3_feature_contract,
-    world_v3_graph_content_mask,
-    world_v3_topology_status_only_mask,
+    market_feature_contract,
+    context_feature_contract,
+    graph_feature_contract,
+    graph_content_mask,
+    topology_status_only_mask,
 )
 
 
@@ -263,7 +262,6 @@ _STRUCTURAL_KEYS = frozenset(
 
 _MISSING = object()
 _StateKey = tuple[tuple[str, str], ...]
-_LEGACY_MOVE_CLASS = {"up": "UP", "down": "DOWN", "flat": "FLAT"}
 
 
 def _feature_contract_fingerprint() -> str:
@@ -282,9 +280,9 @@ def _feature_contract_fingerprint() -> str:
 
 FEATURE_CONTRACT_FINGERPRINT = _feature_contract_fingerprint()
 
-CONTEXT_V2_CATEGORICAL_FEATURES = ALLOWED_CATEGORICAL_FEATURES | ALLOWED_CONTEXT_CATEGORICAL_FEATURES
-CONTEXT_V2_NUMERIC_FEATURES = ALLOWED_NUMERIC_FEATURES | ALLOWED_CONTEXT_NUMERIC_FEATURES
-CONTEXT_V2_COARSE_FEATURES = _COARSE_FEATURES | frozenset(
+CONTEXT_CATEGORICAL_FEATURES = ALLOWED_CATEGORICAL_FEATURES | ALLOWED_CONTEXT_CATEGORICAL_FEATURES
+CONTEXT_NUMERIC_FEATURES = ALLOWED_NUMERIC_FEATURES | ALLOWED_CONTEXT_NUMERIC_FEATURES
+CONTEXT_COARSE_FEATURES = _COARSE_FEATURES | frozenset(
     {
         "context_status",
         "macro_status",
@@ -297,27 +295,27 @@ CONTEXT_V2_COARSE_FEATURES = _COARSE_FEATURES | frozenset(
 )
 
 
-def _context_v2_feature_contract_fingerprint() -> str:
+def _context_feature_contract_fingerprint() -> str:
     payload = {
-        "categorical": sorted(CONTEXT_V2_CATEGORICAL_FEATURES),
-        "numeric": sorted(CONTEXT_V2_NUMERIC_FEATURES),
+        "categorical": sorted(CONTEXT_CATEGORICAL_FEATURES),
+        "numeric": sorted(CONTEXT_NUMERIC_FEATURES),
         "numeric_buckets": {
             key: {"bucket_key": bucket_key, "thresholds": thresholds}
             for key, (bucket_key, thresholds) in sorted(_NUMERIC_BUCKETS.items())
         },
-        "coarse_features": sorted(CONTEXT_V2_COARSE_FEATURES),
-        "feature_contract_version": CONTEXT_FEATURE_CONTRACT_VERSION,
+        "coarse_features": sorted(CONTEXT_COARSE_FEATURES),
+        "feature_contract_version": CONTEXT_FEATURE_CONTRACT_ID,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
-FEATURE_CONTRACT_FINGERPRINT_V2 = _context_v2_feature_contract_fingerprint()
+FEATURE_CONTRACT_FINGERPRINT_CONTEXT = _context_feature_contract_fingerprint()
 
-GRAPH_V3_CATEGORICAL_FEATURES = (
-    CONTEXT_V2_CATEGORICAL_FEATURES | GRAPH_STATUS_CATEGORICAL_FEATURES | GRAPH_CONTENT_CATEGORICAL_FEATURES
+GRAPH_CATEGORICAL_FEATURES = (
+    CONTEXT_CATEGORICAL_FEATURES | GRAPH_STATUS_CATEGORICAL_FEATURES | GRAPH_CONTENT_CATEGORICAL_FEATURES
 )
-GRAPH_V3_COARSE_FEATURES = CONTEXT_V2_COARSE_FEATURES | frozenset(
+GRAPH_COARSE_FEATURES = CONTEXT_COARSE_FEATURES | frozenset(
     {
         "graph_status",
         "graph_scope_status",
@@ -327,24 +325,24 @@ GRAPH_V3_COARSE_FEATURES = CONTEXT_V2_COARSE_FEATURES | frozenset(
 )
 
 
-def _graph_v3_feature_contract_fingerprint() -> str:
+def _graph_feature_contract_fingerprint() -> str:
     payload = {
-        "categorical": sorted(GRAPH_V3_CATEGORICAL_FEATURES),
-        "numeric": sorted(CONTEXT_V2_NUMERIC_FEATURES),
+        "categorical": sorted(GRAPH_CATEGORICAL_FEATURES),
+        "numeric": sorted(CONTEXT_NUMERIC_FEATURES),
         "numeric_buckets": {
             key: {"bucket_key": bucket_key, "thresholds": thresholds}
             for key, (bucket_key, thresholds) in sorted(_NUMERIC_BUCKETS.items())
         },
-        "coarse_features": sorted(GRAPH_V3_COARSE_FEATURES),
-        "feature_contract_version": GRAPH_FEATURE_CONTRACT_VERSION,
-        "path_rule_version": WORLD_GRAPH_V3_PATH_RULE_VERSION,
-        "windows_and_decay": canonical_payload(WORLD_GRAPH_V3_WINDOWS_AND_DECAY),
+        "coarse_features": sorted(GRAPH_COARSE_FEATURES),
+        "feature_contract_version": GRAPH_FEATURE_CONTRACT_ID,
+        "path_rule_version": GRAPH_PATH_RULE_VERSION,
+        "windows_and_decay": canonical_payload(GRAPH_WINDOWS_AND_DECAY),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
-FEATURE_CONTRACT_FINGERPRINT_V3 = _graph_v3_feature_contract_fingerprint()
+FEATURE_CONTRACT_FINGERPRINT_GRAPH = _graph_feature_contract_fingerprint()
 
 _LANE_MASK_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "market": ("market.v1", (MARKET_FEATURE_GROUP_ID,)),
@@ -415,30 +413,30 @@ def _unselected_feature_names(contract: WorldFeatureContract, mask: WorldFeature
 
 
 def resolve_encoder_profile(contract: WorldFeatureContract, mask: WorldFeatureMask) -> WorldEncoderProfile:
-    """Intersect a domain mask with the frozen V1/V2/V3 encoder vocabulary."""
+    """Intersect a domain mask with the frozen market/context/graph encoder vocabulary."""
 
     if not isinstance(contract, WorldFeatureContract):
         raise TypeError("encoder profile requires a WorldFeatureContract")
     if not isinstance(mask, WorldFeatureMask):
         raise TypeError("encoder profile requires a WorldFeatureMask")
     mask.assert_compatible_with(contract)
-    if contract.contract_id == MARKET_FEATURE_CONTRACT_VERSION:
+    if contract.contract_id == MARKET_FEATURE_CONTRACT_ID:
         base_categorical = ALLOWED_CATEGORICAL_FEATURES
         base_numeric = ALLOWED_NUMERIC_FEATURES
         base_coarse = _COARSE_FEATURES
         encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT
         include_context = False
-    elif contract.contract_id == CONTEXT_FEATURE_CONTRACT_VERSION:
-        base_categorical = CONTEXT_V2_CATEGORICAL_FEATURES
-        base_numeric = CONTEXT_V2_NUMERIC_FEATURES
-        base_coarse = CONTEXT_V2_COARSE_FEATURES
-        encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT_V2
+    elif contract.contract_id == CONTEXT_FEATURE_CONTRACT_ID:
+        base_categorical = CONTEXT_CATEGORICAL_FEATURES
+        base_numeric = CONTEXT_NUMERIC_FEATURES
+        base_coarse = CONTEXT_COARSE_FEATURES
+        encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT_CONTEXT
         include_context = True
-    elif contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION:
-        base_categorical = GRAPH_V3_CATEGORICAL_FEATURES
-        base_numeric = CONTEXT_V2_NUMERIC_FEATURES
-        base_coarse = GRAPH_V3_COARSE_FEATURES
-        encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT_V3
+    elif contract.contract_id == GRAPH_FEATURE_CONTRACT_ID:
+        base_categorical = GRAPH_CATEGORICAL_FEATURES
+        base_numeric = CONTEXT_NUMERIC_FEATURES
+        base_coarse = GRAPH_COARSE_FEATURES
+        encoder_fingerprint = FEATURE_CONTRACT_FINGERPRINT_GRAPH
         include_context = False
     else:
         raise ValueError(f"unsupported WorldFeatureContract: {contract.contract_id}")
@@ -457,18 +455,18 @@ def resolve_encoder_profile(contract: WorldFeatureContract, mask: WorldFeatureMa
 def world_lane_encoder_profile(kind: str) -> WorldEncoderProfile:
     key = kind.strip() if isinstance(kind, str) else ""
     if key == "topology_status_only":
-        contract = world_v3_feature_contract()
-        mask = world_v3_topology_status_only_mask()
+        contract = graph_feature_contract()
+        mask = topology_status_only_mask()
         return resolve_encoder_profile(contract, mask)
     if key == "graph_content":
-        contract = world_v3_feature_contract()
-        mask = world_v3_graph_content_mask()
+        contract = graph_feature_contract()
+        mask = graph_content_mask()
         return resolve_encoder_profile(contract, mask)
     spec = _LANE_MASK_SPECS.get(key)
     if spec is None:
         raise ValueError(f"unknown world lane encoder profile: {kind!r}")
     mask_id, selected_groups = spec
-    contract = world_v1_feature_contract() if key == "market" else world_v2_feature_contract()
+    contract = market_feature_contract() if key == "market" else context_feature_contract()
     mask = WorldFeatureMask.bind(contract, mask_id=mask_id, selected_groups=selected_groups)
     return resolve_encoder_profile(contract, mask)
 
@@ -486,16 +484,6 @@ def bound_encoder_profile(
     profile = resolve_encoder_profile(contract, mask)
     if include_context and not profile.include_context:
         raise ValueError("include_context contradicts WorldFeatureMask")
-    return profile
-
-
-def world_encoder_profile_for_include_context(include_context: bool) -> WorldEncoderProfile:
-    """V1/V2 compatibility facade: False is market, True is the V2 joint mask."""
-
-    profile = world_lane_encoder_profile("joint" if include_context else "market")
-    expected = world_feature_contract_for_include_context(include_context)
-    if profile.contract != expected:
-        raise ValueError("include_context facade drifted from WorldFeatureContract")
     return profile
 
 
@@ -688,15 +676,15 @@ def _graph_feature_maps(source: object) -> tuple[dict[str, object], dict[str, ob
 
 
 def revalidate_context_observation(observation: object) -> None:
-    """Replay V2 mappings through the domain object before encoding/training."""
+    """Replay context mappings through the domain object before encoding/training."""
 
     if isinstance(observation, WorldEpisode):
         if observation.observation.context is None:
-            raise FeatureBoundaryError("V2 World model requires a context snapshot")
+            raise FeatureBoundaryError("context World model requires a context snapshot")
         return
     if isinstance(observation, WorldObservation):
         if observation.context is None:
-            raise FeatureBoundaryError("V2 World model requires a context snapshot")
+            raise FeatureBoundaryError("context World model requires a context snapshot")
         return
     if not isinstance(observation, Mapping):
         return
@@ -708,10 +696,10 @@ def revalidate_context_observation(observation: object) -> None:
 
 
 def revalidate_graph_observation(observation: object) -> None:
-    """Replay V3 mappings through the domain snapshot before encoding/training.
+    """Replay graph mappings through the domain snapshot before encoding/training.
 
     Unmapped/ambiguous missingness is a valid observation: hydrate projects it
-    to a rootless snapshot instead of selecting another entity. A V3 contract
+    to a rootless snapshot instead of selecting another entity. A graph contract
     without a graph payload stays valid status-only evidence.
     """
 
@@ -856,9 +844,9 @@ def build_feature_state(
 
     Unknown keys are deliberately ignored; forbidden control/critic/target keys
     raise.  This lets a WorldEpisode retain provenance annotations without
-    accidentally growing the model feature surface.  V1 callers must keep the
+    accidentally growing the model feature surface.  Market callers must keep the
     default allow-lists so ``FEATURE_CONTRACT_FINGERPRINT`` stays frozen.
-    ``include_context`` remains the V1/V2 facade; cohort lanes pass a frozen
+    ``include_context`` selects context features; cohort lanes pass a frozen
     ``WorldFeatureContract`` + ``WorldFeatureMask`` instead.
     """
 
@@ -873,9 +861,9 @@ def build_feature_state(
         coarse = profile.coarse_features
         include_context = profile.include_context
     elif include_context:
-        allowed_cats = allowed_categorical or CONTEXT_V2_CATEGORICAL_FEATURES
-        allowed_nums = allowed_numeric or CONTEXT_V2_NUMERIC_FEATURES
-        coarse = coarse_features or CONTEXT_V2_COARSE_FEATURES
+        allowed_cats = allowed_categorical or CONTEXT_CATEGORICAL_FEATURES
+        allowed_nums = allowed_numeric or CONTEXT_NUMERIC_FEATURES
+        coarse = coarse_features or CONTEXT_COARSE_FEATURES
     else:
         allowed_cats = allowed_categorical or ALLOWED_CATEGORICAL_FEATURES
         allowed_nums = allowed_numeric or ALLOWED_NUMERIC_FEATURES
@@ -892,7 +880,7 @@ def build_feature_state(
         | GRAPH_CONTENT_CATEGORICAL_FEATURES
     )
     pull_context = include_context or (
-        feature_contract is not None and feature_contract.contract_id == GRAPH_FEATURE_CONTRACT_VERSION
+        feature_contract is not None and feature_contract.contract_id == GRAPH_FEATURE_CONTRACT_ID
     )
     categorical, numeric = _feature_maps(observation, include_context=pull_context)
     _assert_no_forbidden_keys(categorical, path="categorical_features", known_feature_keys=known_keys)
@@ -955,16 +943,13 @@ def move_class_from_simple_return(value: float, *, band: float = DIRECTION_BAND)
 
 
 def canonical_move_class(value: object) -> str:
-    """Return DOWN/FLAT/UP, including an explicit adapter for legacy lowercase."""
+    """Return only the current DOWN/FLAT/UP classes."""
 
     if isinstance(value, str):
         stripped = value.strip()
-        if not stripped:
-            raise ValueError("World outcome class must be a non-empty string")
-        mapped = _LEGACY_MOVE_CLASS.get(stripped.lower(), stripped.upper())
-        if mapped not in OUTCOME_CLASSES:
+        if stripped not in OUTCOME_CLASSES:
             raise ValueError(f"unsupported World outcome class: {value!r}")
-        return mapped
+        return stripped
     raise ValueError("World outcome class must be a string")
 
 
@@ -1061,7 +1046,7 @@ def _text_or_none(value: object) -> str | None:
 
 
 def observation_market_anchor(observation: object) -> tuple[str, str, str, str] | None:
-    """Return ``(venue, symbol, bar_interval, as_of_bar_ts)`` independent of V2 context."""
+    """Return ``(venue, symbol, bar_interval, as_of_bar_ts)`` independent of context payload."""
 
     source = observation
     if isinstance(observation, WorldEpisode):
@@ -1190,7 +1175,7 @@ def common_training_replay_key(
     outcome: object,
     episode: object | None = None,
 ) -> tuple[datetime, str, str, str, str, str, str]:
-    """Lane-independent replay order for V1/V2 training updates."""
+    """Lane-independent replay order for capability training updates."""
 
     available_at: datetime | None = None
     for name in ("label_available_at", "available_at", "sealed_at"):
@@ -1239,17 +1224,17 @@ def normalise_horizon_id(value: object, allowed_horizons: frozenset[str] | None)
 __all__ = [
     "ALLOWED_CATEGORICAL_FEATURES",
     "ALLOWED_NUMERIC_FEATURES",
-    "CONTEXT_FEATURE_CONTRACT_VERSION",
-    "CONTEXT_V2_CATEGORICAL_FEATURES",
-    "CONTEXT_V2_COARSE_FEATURES",
-    "CONTEXT_V2_NUMERIC_FEATURES",
+    "CONTEXT_FEATURE_CONTRACT_ID",
+    "CONTEXT_CATEGORICAL_FEATURES",
+    "CONTEXT_COARSE_FEATURES",
+    "CONTEXT_NUMERIC_FEATURES",
     "DIRECTION_BAND",
     "FEATURE_CONTRACT_FINGERPRINT",
-    "FEATURE_CONTRACT_FINGERPRINT_V2",
-    "FEATURE_CONTRACT_FINGERPRINT_V3",
-    "GRAPH_V3_CATEGORICAL_FEATURES",
-    "GRAPH_V3_COARSE_FEATURES",
-    "MARKET_FEATURE_CONTRACT_VERSION",
+    "FEATURE_CONTRACT_FINGERPRINT_CONTEXT",
+    "FEATURE_CONTRACT_FINGERPRINT_GRAPH",
+    "GRAPH_CATEGORICAL_FEATURES",
+    "GRAPH_COARSE_FEATURES",
+    "MARKET_FEATURE_CONTRACT_ID",
     "OUTCOME_CLASSES",
     "FeatureBoundaryError",
     "FeatureState",
@@ -1281,6 +1266,5 @@ __all__ = [
     "revalidate_context_observation",
     "revalidate_graph_observation",
     "training_event_signature",
-    "world_encoder_profile_for_include_context",
     "world_lane_encoder_profile",
 ]

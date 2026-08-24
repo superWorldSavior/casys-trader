@@ -19,7 +19,7 @@ from trader.domain.world_cohort import (
 )
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import (
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -68,7 +68,7 @@ def _identity(git_commit: str = "b" * 40) -> WorldRuntimeIdentity:
         git_commit=git_commit,
         python_version="3.11.9",
         numpy_version="1.26.4",
-        application_build_id="casys-trader.world.shadow_pilot.v2",
+        application_build_id="casys-trader.world.shadow_pilot.v1",
     )
 
 
@@ -91,10 +91,10 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     )
 
     payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v2"
-    assert payload["pilot_id"] == "world_shadow_pilot.v2"
-    assert payload["supersedes_pilot_id"] == "world_shadow_pilot.v1"
-    assert payload["lifecycle_generation"] == 5
+    assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v1"
+    assert payload["pilot_id"] == "world_shadow_pilot.v1"
+    assert "supersedes_pilot_id" not in payload
+    assert payload["lifecycle_generation"] == 1
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -111,11 +111,11 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert config is not None
     assert config.content_sha256 == claimed
     assert config.activation_policy == "operator_authorized_on_boot"
-    assert config.runtime_identity_intent.application_build_id == "casys-trader.world.shadow_pilot.v2"
-    assert config.workers["v1_shadow"] is True
-    assert config.workers["context_v2"] is True
-    assert config.workers["macro_source_only"] is True
-    assert config.workers["graph_v3"] is True
+    assert config.runtime_identity_intent.application_build_id == "casys-trader.world.shadow_pilot.v1"
+    assert config.workers["market"] is True
+    assert config.workers["context"] is True
+    assert config.workers["macro_source"] is True
+    assert config.workers["graph"] is True
     assert config.window["planned_start"] == "boot_event_time"
     assert config.window["duration_days"] == 7
     assert config.window["collection_stop_kind"] == "fixed_end"
@@ -177,7 +177,7 @@ def test_boot_materializes_a_usable_seven_day_window_from_start_not_an_expired_d
     assert len(report.cohorts) == 2
     by_key = {item["key"]: item for item in report.cohorts}
     c1 = store.load(WorldCohortId(by_key["technical_c1"]["cohort_id"]))
-    graph = store.load(WorldCohortId(by_key["graph_v3"]["cohort_id"]))
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
     assert c1.phase is CohortPhase.COLLECTING
     assert graph.phase is CohortPhase.REGISTERED
     assert c1.started_event is not None
@@ -206,7 +206,7 @@ def test_second_boot_is_idempotent_repairs_receipts_and_never_moves_the_window()
     assert second.backfill is False
     by_key = {item["key"]: item for item in second.cohorts}
     c1 = store.load(WorldCohortId(by_key["technical_c1"]["cohort_id"]))
-    graph = store.load(WorldCohortId(by_key["graph_v3"]["cohort_id"]))
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
     assert c1.phase is CohortPhase.COLLECTING
     assert graph.phase is CohortPhase.REGISTERED
     assert c1.manifest.planned_start_not_before == BOOT
@@ -215,13 +215,13 @@ def test_second_boot_is_idempotent_repairs_receipts_and_never_moves_the_window()
     assert store.envelope_for(c1.started_event).availability_status == "eligible"
 
 
-def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_v3_lane() -> None:
+def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_graph_lane() -> None:
     service, store = _service()
     report = _activate(cohort_service=service)
     by_key = {item["key"]: item for item in report.cohorts}
-    assert set(by_key) == {"technical_c1", "graph_v3"}
+    assert set(by_key) == {"technical_c1", "graph"}
     c1 = store.load(WorldCohortId(by_key["technical_c1"]["cohort_id"]))
-    graph = store.load(WorldCohortId(by_key["graph_v3"]["cohort_id"]))
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
     c1_ids = {lane.lane_id for lane in c1.manifest.lanes}
     graph_ids = {lane.lane_id for lane in graph.manifest.lanes}
     expected_c1 = {f"{family}.{logical}" for family in ("markov", "gru") for logical in C1_LOGICAL}
@@ -240,7 +240,7 @@ def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_v3_lane() -> No
     assert graph_masks["markov.graph"] == "topology_status_only.v1"
     assert graph_masks["gru.graph"] == "graph_content.v1"
     assert c1.manifest.ontology_revision == "semantic_catalog.v1"
-    assert graph.manifest.ontology_revision == WORLD_GRAPH_V3_ONTOLOGY_REVISION
+    assert graph.manifest.ontology_revision == MARKET_ONTOLOGY_REVISION
     assert graph.phase is CohortPhase.REGISTERED
     from trader.domain.world_macro import MACRO_PRODUCER_VERSION
 
@@ -344,11 +344,11 @@ def test_lifecycle_generation_bump_mints_new_ids_and_does_not_revive_terminal_co
         now=LATER_BOOT,
     )
     next_ids = {item["key"]: item["cohort_id"] for item in next_report.cohorts}
-    assert set(next_ids) == {"technical_c1", "graph_v3"}
+    assert set(next_ids) == {"technical_c1", "graph"}
     assert set(next_ids.values()).isdisjoint(first_ids.values())
     assert next_report.window["planned_start_not_before"] == LATER_BOOT
     assert next_report.window["collection_stop_at"] == LATER_BOOT + timedelta(days=7)
     assert store.load(WorldCohortId(next_ids["technical_c1"])).phase is CohortPhase.COLLECTING
-    assert store.load(WorldCohortId(next_ids["graph_v3"])).phase is CohortPhase.REGISTERED
+    assert store.load(WorldCohortId(next_ids["graph"])).phase is CohortPhase.REGISTERED
     for cohort_id in first_ids.values():
         assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.INVALIDATED

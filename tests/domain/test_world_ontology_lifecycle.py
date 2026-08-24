@@ -6,8 +6,8 @@ import pytest
 
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_feature_contract import (
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
-    WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+    MARKET_ONTOLOGY_REVISION,
+    MARKET_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -57,15 +57,15 @@ def test_lifecycle_module_is_stdlib_domain() -> None:
 
 def test_committed_spec_is_the_current_identity() -> None:
     spec = committed_world_ontology_lifecycle_spec()
-    assert spec.revision_id == WORLD_GRAPH_V3_ONTOLOGY_REVISION == "market_ontology.v2"
-    assert spec.mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
-    assert spec.revision_hash == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    assert spec.revision_id == MARKET_ONTOLOGY_REVISION == "market_ontology.v1"
+    assert spec.mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v1"
+    assert spec.revision_hash == MARKET_ONTOLOGY_SHA256
     assert spec.mapping_sha256 == WORLD_SCOPE_MAPPING_SHA256
     payload = spec.to_dict()
     assert payload == {
-        "revision_id": WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        "revision_id": MARKET_ONTOLOGY_REVISION,
         "mapping_id": WORLD_SCOPE_MAPPING_ID,
-        "revision_hash": WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+        "revision_hash": MARKET_ONTOLOGY_SHA256,
         "mapping_sha256": WORLD_SCOPE_MAPPING_SHA256,
     }
     assert WorldOntologyLifecycleSpec.from_mapping(payload) == spec
@@ -75,7 +75,7 @@ def test_committed_spec_is_the_current_identity() -> None:
 
 def test_empty_store_publishes_current_revision() -> None:
     expected = _revision(
-        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        revision_id=MARKET_ONTOLOGY_REVISION,
         mapping_id=WORLD_SCOPE_MAPPING_ID,
         mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
     )
@@ -89,7 +89,7 @@ def test_empty_store_publishes_current_revision() -> None:
 
 def test_matching_current_revision_is_ready_and_other_identity_conflicts() -> None:
     expected = _revision(
-        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        revision_id=MARKET_ONTOLOGY_REVISION,
         mapping_id=WORLD_SCOPE_MAPPING_ID,
         mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
     )
@@ -145,7 +145,7 @@ def test_require_committed_ontology_revision_rejects_mapping_id_with_drifted_has
         ),
     )
     revision = _revision(
-        revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        revision_id=MARKET_ONTOLOGY_REVISION,
         mapping_id=WORLD_SCOPE_MAPPING_ID,
         mapping_hash=mapping.content_sha256,
     )

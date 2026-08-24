@@ -1,10 +1,10 @@
-"""Prospective V2 World-context capture. V1 ``capture_world_episodes`` stays frozen.
+"""Prospective World-context capture. Market ``capture_world_episodes`` stays frozen.
 
-The market control observation is derived from an already-captured V1 episode
-at the same bar slot.  Context cutoff is the deterministic completed-bar clock,
-never the later poll time.  A missing, late, or unproven sensor is represented
-explicitly; it does not drop a trainable market episode.  An unparseable bar
-clock fails closed: no V2 companion is attached.
+The market control observation is derived from an already-captured market
+episode at the same bar slot. Context cutoff is the deterministic completed-bar
+clock, never the later poll time. A missing, late, or unproven sensor is
+represented explicitly; it does not drop a trainable market episode. An
+unparseable bar clock fails closed: no context companion is attached.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from trader.application.world_model.capture import (
 )
 from trader.domain.company import CompanyIntelligenceBrief
 from trader.domain.world_context import (
-    CONTEXT_FEATURE_CONTRACT_VERSION,
+    CONTEXT_FEATURE_CONTRACT_ID,
     EntityRef,
     ONTOLOGY_REVISION,
     SensorEvidence,
@@ -54,7 +54,7 @@ def attach_world_context(
     episodes: Sequence[WorldEpisode],
     context_source: WorldContextSource,
 ) -> tuple[WorldEpisode, ...]:
-    """Project one V2 context episode per V1 market episode without widening V1."""
+    """Project one context episode per market episode without widening the market observation."""
 
     attached: list[WorldEpisode] = []
     for episode in episodes:
@@ -88,7 +88,7 @@ def attach_world_context(
             symbol=observation.symbol,
             bar_interval=observation.bar_interval,
             as_of_bar_ts=observation.as_of_bar_ts,
-            feature_contract_version=CONTEXT_FEATURE_CONTRACT_VERSION,
+            feature_contract_version=CONTEXT_FEATURE_CONTRACT_ID,
             sampling_policy_version=observation.sampling_policy_version,
             anchor=observation.anchor,
             available_at=observation.available_at,
@@ -235,12 +235,12 @@ def build_world_context_snapshot(
         numeric_features={},
         status=status,
         sensor_statuses=sensor_statuses,
-        feature_contract_version=CONTEXT_FEATURE_CONTRACT_VERSION,
+        feature_contract_version=CONTEXT_FEATURE_CONTRACT_ID,
     )
 
 
 def _frozen_asset_family(observation: WorldObservation) -> str | None:
-    """Return the V1-frozen family label, or None when the observation has none."""
+    """Return the market-frozen family label, or None when the observation has none."""
 
     raw = observation.categorical_features.get("asset_family")
     if not isinstance(raw, str):
@@ -364,7 +364,7 @@ def _structured_text(container: Mapping[str, object] | object, *names: str) -> s
 
 
 __all__ = [
-    "CONTEXT_FEATURE_CONTRACT_VERSION",
+    "CONTEXT_FEATURE_CONTRACT_ID",
     "WorldContextSource",
     "attach_world_context",
     "build_world_context_snapshot",

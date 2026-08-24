@@ -12,7 +12,7 @@ from trader.application.world_model.gru import OnlineGRUWorldChallenger
 from trader.application.world_model.labeler import DEFAULT_HORIZONS as LABEL_HORIZONS
 from trader.application.world_model.labeler import label_horizon
 from trader.domain.world_episode import (
-    MARKET_FEATURE_CONTRACT_VERSION,
+    MARKET_FEATURE_CONTRACT_ID,
     AnchorBar,
     WorldEpisode,
     WorldObservation,
@@ -34,7 +34,7 @@ def _domain_episode(at: datetime, *, symbol: str = "SPY", market_return: float =
             symbol=symbol,
             bar_interval="1h",
             as_of_bar_ts=at,
-            feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
+            feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
             sampling_policy_version="fresh-active-v1",
             anchor=AnchorBar(
                 ts=at,
@@ -613,7 +613,7 @@ def test_real_domain_store_labeler_and_restart_rehydrate_all_models(tmp_path) ->
         symbol="MSFT",
         bar_interval="1h",
         as_of_bar_ts=started,
-        feature_contract_version=MARKET_FEATURE_CONTRACT_VERSION,
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
         sampling_policy_version="fresh-active-v1",
         anchor=AnchorBar(
             ts=started,
@@ -1142,16 +1142,16 @@ def test_runtime_restart_keeps_cohort_fingerprints_and_does_not_backfill_downtim
         store.close()
 
 
-def test_graph_v3_status_overlay_is_wiring_only_and_does_not_claim_ledger_activation() -> None:
+def test_graph_status_overlay_is_wiring_only_and_does_not_claim_ledger_activation() -> None:
     from pathlib import Path
 
     from trader.interfaces.cli.world_model import read_world_graph_status as cli_status
     from trader.reporting.read_models.world_graph import read_world_graph_status
     from trader.runtime import world_model_runtime
-    from trader.runtime.world_model_runtime import graph_v3_status_overlay
+    from trader.runtime.world_model_runtime import graph_status_overlay
 
     assert cli_status is read_world_graph_status
-    overlay = graph_v3_status_overlay(wired=True)
+    overlay = graph_status_overlay(wired=True)
     assert overlay["wired"] is True
     assert overlay["gaps"]["writes"] == "none_until_due_cycle"
     assert overlay["gaps"]["cohort_activation"] == "not_read_from_ledger"
@@ -1162,8 +1162,8 @@ def test_graph_v3_status_overlay_is_wiring_only_and_does_not_claim_ledger_activa
     assert overlay["recommendation"] == "NO_GO"
     assert "schema_version" not in overlay
     source = Path(world_model_runtime.__file__).read_text(encoding="utf-8")
-    assert source.count("graph_v3_status_overlay(") == 2
-    assert 'payload["graph"] = graph_v3_status_overlay(wired=True)' in source
+    assert source.count("graph_status_overlay(") == 2
+    assert 'payload["graph"] = graph_status_overlay(wired=True)' in source
     assert "read_world_graph_status" not in source
     assert 'cohort_activation": "not_started"' not in source
 
@@ -1172,12 +1172,12 @@ def test_wired_runner_overlay_does_not_mirror_persisted_graph_collecting(tmp_pat
     from tests.application.test_world_graph_capture import _unpublished_config
     from tests.read_models.test_world_graph_report import _graph_manifest, _persist
     from trader.reporting.read_models.world_graph import read_world_graph_status
-    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+    from trader.runtime.world_model_runtime import compose_local_graph_lanes
 
     _persist(tmp_path, _graph_manifest(), phase="collecting")
     store = WorldModelStore(tmp_path / "world_model.db")
     try:
-        predictors, enricher = compose_local_graph_v3_lanes(
+        predictors, enricher = compose_local_graph_lanes(
             enabled=True,
             capture=_unpublished_config(),
         )
@@ -1205,36 +1205,35 @@ def test_wired_runner_overlay_does_not_mirror_persisted_graph_collecting(tmp_pat
         store.close()
 
 
-def test_graph_v3_flag_reuses_macro_runtime_name_and_defaults_off() -> None:
+def test_graph_flag_reuses_macro_runtime_name_and_defaults_off() -> None:
     from pathlib import Path
 
-    from trader.runtime.world_macro_runtime import GRAPH_V3_FLAG, graph_v3_enabled
+    from trader.runtime.world_macro_runtime import GRAPH_FLAG, graph_enabled
     from trader.runtime import world_model_runtime
 
-    assert GRAPH_V3_FLAG == "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
-    assert graph_v3_enabled({}) is False
-    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "0"}) is False
-    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "1"}) is True
+    assert GRAPH_FLAG == "CASYS_WORLD_MODEL_GRAPH_ENABLED"
+    assert graph_enabled({}) is False
+    assert graph_enabled({"CASYS_WORLD_MODEL_GRAPH_ENABLED": "0"}) is False
+    assert graph_enabled({"CASYS_WORLD_MODEL_GRAPH_ENABLED": "1"}) is True
     source = Path(world_model_runtime.__file__).read_text(encoding="utf-8")
-    assert "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED" in source
-    assert "def graph_v3_enabled" not in source
-    assert "graph_v3_enabled" in source
-    assert "CASYS_WORLD_MODEL_GRAPH_ENABLED" not in source
+    assert "CASYS_WORLD_MODEL_GRAPH_ENABLED" in source
+    assert "def graph_enabled" not in source
+    assert "graph_enabled" in source
 
 
-def test_compose_local_graph_v3_lanes_requires_flag_and_capture_and_predictors() -> None:
+def test_compose_local_graph_lanes_requires_flag_and_capture_and_predictors() -> None:
     from tests.application.test_world_graph_capture import _unpublished_config
     from trader.runtime.world_model_runtime import (
         WorldGraphEpisodeEnricher,
-        compose_local_graph_v3_lanes,
+        compose_local_graph_lanes,
     )
 
     capture = _unpublished_config()
     dummy = object()
-    assert compose_local_graph_v3_lanes(enabled=False, capture=capture, predictors=(dummy,)) == ((), None)
-    assert compose_local_graph_v3_lanes(enabled=True, capture=None, predictors=(dummy,)) == ((), None)
-    assert compose_local_graph_v3_lanes(enabled=True, capture=capture, predictors=()) == ((), None)
-    predictors, enricher = compose_local_graph_v3_lanes(
+    assert compose_local_graph_lanes(enabled=False, capture=capture, predictors=(dummy,)) == ((), None)
+    assert compose_local_graph_lanes(enabled=True, capture=None, predictors=(dummy,)) == ((), None)
+    assert compose_local_graph_lanes(enabled=True, capture=capture, predictors=()) == ((), None)
+    predictors, enricher = compose_local_graph_lanes(
         enabled=True,
         capture=capture,
         predictors=(dummy,),
@@ -1244,25 +1243,25 @@ def test_compose_local_graph_v3_lanes_requires_flag_and_capture_and_predictors()
     assert enricher.config is capture
 
 
-def test_graph_enricher_appends_v3_without_mutating_v1() -> None:
-    from tests.application.test_world_context_capture import V1_EPISODE_ID, _v1_episode
+def test_graph_enricher_appends_graph_without_mutating_market() -> None:
+    from tests.application.test_world_context_capture import V1_EPISODE_ID, _market_episode
     from tests.application.test_world_graph_capture import _unpublished_config
-    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_ID
     from trader.runtime.world_model_runtime import WorldGraphEpisodeEnricher
 
-    v1 = _v1_episode()
+    v1 = _market_episode()
     original_id = v1.episode_id
     enricher = WorldGraphEpisodeEnricher(_unpublished_config())
     out = enricher.enrich((v1,))
     assert v1.episode_id == original_id == V1_EPISODE_ID
-    assert v1.observation.feature_contract_version == "market_ohlcv_causal.v1"
+    assert v1.observation.feature_contract_version == "world_feature.market.v1"
     assert len(out) == 2
     assert out[0].episode_id == V1_EPISODE_ID
-    assert out[1].observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert out[1].observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_ID
     assert out[1].observation.symbol == v1.observation.symbol
 
 
-def test_background_graph_enrich_failure_keeps_v1_capture() -> None:
+def test_background_graph_enrich_failure_keeps_market_capture() -> None:
     class BrokenGraphEnricher:
         def enrich(self, _episodes):
             raise OSError("graph snapshot unavailable")
@@ -1299,12 +1298,12 @@ def test_background_graph_enrich_failure_keeps_v1_capture() -> None:
 
 def test_compose_and_runner_wire_graph_without_writing_until_due_cycle(tmp_path) -> None:
     from tests.application.test_world_graph_capture import _unpublished_config
-    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
-    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_ID
+    from trader.runtime.world_model_runtime import compose_local_graph_lanes
 
     store = WorldModelStore(tmp_path / "world_model.db")
     try:
-        predictors, enricher = compose_local_graph_v3_lanes(
+        predictors, enricher = compose_local_graph_lanes(
             enabled=True,
             capture=_unpublished_config(),
         )
@@ -1330,13 +1329,13 @@ def test_compose_and_runner_wire_graph_without_writing_until_due_cycle(tmp_path)
         assert wired["graph"]["budgets"]["max_paths_per_root"] == 32
         assert store.counts()["episodes"] == 0
 
-        from tests.application.test_world_context_capture import _v1_episode
+        from tests.application.test_world_context_capture import _market_episode
 
-        triggered = runner.trigger(episodes=[_v1_episode()], now=NOW)
+        triggered = runner.trigger(episodes=[_market_episode()], now=NOW)
         triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
         versions = {row["observation"]["feature_contract_version"] for row in store.list_eligible_episodes()}
-        assert "market_ohlcv_causal.v1" in versions
-        assert GRAPH_FEATURE_CONTRACT_VERSION in versions
+        assert "world_feature.market.v1" in versions
+        assert GRAPH_FEATURE_CONTRACT_ID in versions
         assert store.list_collecting_cohort_ids() == ()
         capture = runner.status()["capture"]
         assert all(
@@ -1348,14 +1347,14 @@ def test_compose_and_runner_wire_graph_without_writing_until_due_cycle(tmp_path)
         store.close()
 
 
-def test_compose_graph_v3_accepts_frozen_study_cohort_id_without_a_second_scope_mapping() -> None:
+def test_compose_graph_accepts_frozen_study_cohort_id_without_a_second_scope_mapping() -> None:
     from tests.application.test_world_graph_capture import _unpublished_config
     from trader.application.world_model.graph_capture import WorldGraphCaptureConfig
-    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+    from trader.runtime.world_model_runtime import compose_local_graph_lanes
 
     cohort_id = "world_cohort:v1:" + "c" * 64
     capture = _unpublished_config(study_cohort_id=cohort_id)
-    predictors, enricher = compose_local_graph_v3_lanes(
+    predictors, enricher = compose_local_graph_lanes(
         enabled=True,
         capture=capture,
         study_cohort_id="world_cohort:v1:" + "d" * 64,
@@ -1370,12 +1369,12 @@ def test_compose_local_graph_injects_study_cohort_id_when_capture_is_composed(tm
     from pathlib import Path
 
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
-    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+    from trader.runtime.world_model_runtime import compose_local_graph_lanes
 
     store = WorldModelStore(tmp_path / "world_model.db")
     cohort_id = "world_cohort:v1:" + "e" * 64
     try:
-        predictors, enricher = compose_local_graph_v3_lanes(
+        predictors, enricher = compose_local_graph_lanes(
             enabled=True,
             store=store,
             config_dir=Path(__file__).resolve().parents[2] / "config",
@@ -1462,15 +1461,15 @@ def _persist_historical_unmapped_v3(store: WorldModelStore, payload: dict[str, o
         )
 
 
-def test_gru_replay_observes_historical_unmapped_v3_without_selecting_a_root(tmp_path) -> None:
+def test_gru_replay_observes_historical_unmapped_graph_without_selecting_a_root(tmp_path) -> None:
     from tests.application.test_world_graph_capture import _attach, _us_aaa_episode, _us_gm_published_config
     from trader.application.world_model.encoding import world_lane_encoder_profile
     from trader.application.world_model.gru import OnlineGRUWorldChallenger
     from trader.domain.world_feature_contract import (
-        GRAPH_FEATURE_CONTRACT_VERSION,
-        WORLD_V3_GRU_MODEL_IDENTITY,
-        WORLD_V3_MARKOV_MODEL_IDENTITY,
-        WORLD_V3_MODEL_VERSION,
+        GRAPH_FEATURE_CONTRACT_ID,
+        GRAPH_GRU_MODEL_IDENTITY,
+        GRAPH_MARKOV_MODEL_IDENTITY,
+        GRAPH_MODEL_VERSION,
     )
     from trader.domain.world_graph import WorldGraphSnapshot
 
@@ -1492,18 +1491,18 @@ def test_gru_replay_observes_historical_unmapped_v3_without_selecting_a_root(tmp
         status_profile = world_lane_encoder_profile("topology_status_only")
         content_profile = world_lane_encoder_profile("graph_content")
         markov = HierarchicalDirichletWorldBaseline(
-            model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
-            model_version=WORLD_V3_MODEL_VERSION,
+            model_id=GRAPH_MARKOV_MODEL_IDENTITY,
+            model_version=GRAPH_MODEL_VERSION,
             feature_contract=status_profile.contract,
             feature_mask=status_profile.mask,
-            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_ID}),
         )
         gru = OnlineGRUWorldChallenger(
-            model_id=WORLD_V3_GRU_MODEL_IDENTITY,
-            model_version=WORLD_V3_MODEL_VERSION,
+            model_id=GRAPH_GRU_MODEL_IDENTITY,
+            model_version=GRAPH_MODEL_VERSION,
             feature_contract=content_profile.contract,
             feature_mask=content_profile.mask,
-            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_ID}),
         )
         runtime = WorldModelRuntime(
             store=store,
@@ -1520,7 +1519,9 @@ def test_gru_replay_observes_historical_unmapped_v3_without_selecting_a_root(tmp
         assert result["_thread"].is_alive() is False
         status = runner.status()
         errors = status.get("errors") or []
-        assert not any("unmapped/ambiguous snapshot must not select a world entity root" in str(item) for item in errors)
+        assert not any(
+            "unmapped/ambiguous snapshot must not select a world entity root" in str(item) for item in errors
+        )
         observed = gru.observe_episode(store.list_eligible_episodes()[0]["episode"])
         assert observed == payload["episode_id"]
         again = gru.observe_episode(store.list_eligible_episodes()[0]["episode"])
@@ -1536,10 +1537,10 @@ def test_gru_replay_observes_historical_unmapped_v3_without_selecting_a_root(tmp
         assert features["graph_missingness_status"] == "unmapped"
         forecast = markov.predict(canonical, horizon_id="elapsed_4h.v1", prediction_at=NOW)
         assert forecast.status in {"warming_up", "shadow_only"}
-        assert forecast.model_id == WORLD_V3_MARKOV_MODEL_IDENTITY
+        assert forecast.model_id == GRAPH_MARKOV_MODEL_IDENTITY
         gru_forecast = gru.predict(canonical, horizon_id="elapsed_4h.v1", prediction_at=NOW)
         assert gru_forecast.status in {"warming_up", "shadow_only"}
-        assert gru_forecast.model_id == WORLD_V3_GRU_MODEL_IDENTITY
+        assert gru_forecast.model_id == GRAPH_GRU_MODEL_IDENTITY
     finally:
         if runner is not None:
             runner.stop()

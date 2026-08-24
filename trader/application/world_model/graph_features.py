@@ -1,4 +1,4 @@
-"""Bounded deterministic V3 graph features with per-feature provenance.
+"""Bounded deterministic graph features with per-feature provenance.
 
 Computed only from a PIT snapshot bundle. No network, LLM, or graph-library I/O.
 """
@@ -15,15 +15,15 @@ from trader.application.world_model.graph_snapshot import WorldGraphSnapshotBund
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import (
     GRAPH_CONTENT_CATEGORICAL_FEATURES,
-    GRAPH_FEATURE_CONTRACT_VERSION,
+    GRAPH_FEATURE_CONTRACT_ID,
     GRAPH_FEATURE_GROUP_ID,
     GRAPH_STATUS_CATEGORICAL_FEATURES,
     GRAPH_STATUS_FEATURE_GROUP_ID,
-    WORLD_V3_ENCODER_IDENTITY,
+    GRAPH_ENCODER_IDENTITY,
     WorldFeatureContract,
     WorldFeatureMask,
-    world_v3_feature_contract,
-    world_v3_graph_content_mask,
+    graph_feature_contract,
+    graph_content_mask,
 )
 from trader.domain.world_graph import KnowledgeWorldRelation, StructuralWorldRelation
 
@@ -200,14 +200,14 @@ def encode_world_graph_features(
 ) -> WorldGraphFeatureVector:
     if not isinstance(bundle, WorldGraphSnapshotBundle):
         raise TypeError("graph features require a WorldGraphSnapshotBundle")
-    resolved_contract = world_v3_feature_contract() if contract is None else contract
-    resolved_mask = world_v3_graph_content_mask() if mask is None else mask
+    resolved_contract = graph_feature_contract() if contract is None else contract
+    resolved_mask = graph_content_mask() if mask is None else mask
     if not isinstance(resolved_contract, WorldFeatureContract):
         raise TypeError("contract must be WorldFeatureContract")
     if not isinstance(resolved_mask, WorldFeatureMask):
         raise TypeError("mask must be WorldFeatureMask")
-    if resolved_contract.contract_id != GRAPH_FEATURE_CONTRACT_VERSION:
-        raise ValueError("graph feature contract must be market_ohlcv_graph.v3")
+    if resolved_contract.contract_id != GRAPH_FEATURE_CONTRACT_ID:
+        raise ValueError("graph feature contract must be world_feature.graph.v1")
     resolved_mask.assert_compatible_with(resolved_contract)
 
     snapshot = bundle.snapshot
@@ -256,12 +256,23 @@ def encode_world_graph_features(
         "graph_window_older_count_bucket": _count_bucket(window_counts["older"]),
     }
     provenance_by_name = {
-        "graph_status": _provenance("graph_status", source_kind="snapshot", source_refs=(snapshot.snapshot_id,), snapshot_id=snapshot.snapshot_id),
+        "graph_status": _provenance(
+            "graph_status",
+            source_kind="snapshot",
+            source_refs=(snapshot.snapshot_id,),
+            snapshot_id=snapshot.snapshot_id,
+        ),
         "graph_scope_status": _provenance(
-            "graph_scope_status", source_kind="snapshot", source_refs=(snapshot.snapshot_id,), snapshot_id=snapshot.snapshot_id
+            "graph_scope_status",
+            source_kind="snapshot",
+            source_refs=(snapshot.snapshot_id,),
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_coverage_status": _provenance(
-            "graph_coverage_status", source_kind="snapshot", source_refs=(snapshot.snapshot_id,), snapshot_id=snapshot.snapshot_id
+            "graph_coverage_status",
+            source_kind="snapshot",
+            source_refs=(snapshot.snapshot_id,),
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_freshness_status": _provenance(
             "graph_freshness_status",
@@ -279,22 +290,40 @@ def encode_world_graph_features(
             snapshot_id=snapshot.snapshot_id,
         ),
         "graph_missingness_status": _provenance(
-            "graph_missingness_status", source_kind="snapshot", source_refs=(snapshot.snapshot_id,), snapshot_id=snapshot.snapshot_id
+            "graph_missingness_status",
+            source_kind="snapshot",
+            source_refs=(snapshot.snapshot_id,),
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_path_count_bucket": _provenance(
-            "graph_path_count_bucket", source_kind="path", source_refs=path_relation_ids, snapshot_id=snapshot.snapshot_id
+            "graph_path_count_bucket",
+            source_kind="path",
+            source_refs=path_relation_ids,
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_depth_min_bucket": _provenance(
-            "graph_depth_min_bucket", source_kind="path", source_refs=path_relation_ids, snapshot_id=snapshot.snapshot_id
+            "graph_depth_min_bucket",
+            source_kind="path",
+            source_refs=path_relation_ids,
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_depth_max_bucket": _provenance(
-            "graph_depth_max_bucket", source_kind="path", source_refs=path_relation_ids, snapshot_id=snapshot.snapshot_id
+            "graph_depth_max_bucket",
+            source_kind="path",
+            source_refs=path_relation_ids,
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_path_freshness_min_bucket": _provenance(
-            "graph_path_freshness_min_bucket", source_kind="path", source_refs=path_relation_ids, snapshot_id=snapshot.snapshot_id
+            "graph_path_freshness_min_bucket",
+            source_kind="path",
+            source_refs=path_relation_ids,
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_path_freshness_max_bucket": _provenance(
-            "graph_path_freshness_max_bucket", source_kind="path", source_refs=path_relation_ids, snapshot_id=snapshot.snapshot_id
+            "graph_path_freshness_max_bucket",
+            source_kind="path",
+            source_refs=path_relation_ids,
+            snapshot_id=snapshot.snapshot_id,
         ),
         "graph_path_signature": _provenance(
             "graph_path_signature", source_kind="path", source_refs=path_relation_ids, snapshot_id=snapshot.snapshot_id
@@ -341,7 +370,7 @@ def encode_world_graph_features(
         contract_fingerprint=resolved_contract.fingerprint,
         mask_id=resolved_mask.mask_id,
         mask_fingerprint=resolved_mask.fingerprint,
-        encoder_identity=WORLD_V3_ENCODER_IDENTITY,
+        encoder_identity=GRAPH_ENCODER_IDENTITY,
         categorical_features=categorical,
         numeric_features={},
         provenance=provenance,

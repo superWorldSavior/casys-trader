@@ -8,6 +8,7 @@ import pytest
 
 from trader.domain.world_availability import (
     PersistedWorldRef,
+    WORLD_AVAILABILITY_RECEIPT_SCHEMA,
     WorldAvailabilityReceipt,
     WorldAvailabilitySubjectRef,
     WorldStorageLocator,
@@ -139,7 +140,7 @@ def test_validate_fails_closed_on_empty_wrong_and_malformed_refs() -> None:
     assert validate_availability_receipt(malformed, PAYLOAD, **kwargs) is None
 
 
-def test_legacy_brief_id_receipts_remain_v1_and_are_not_world_evidence() -> None:
+def test_legacy_brief_id_receipts_remain_brief_schema_and_are_not_world_evidence() -> None:
     row = _receipt()
     kwargs = {
         "expected_artifact_id": "brief-1",
@@ -166,7 +167,7 @@ def test_store_stamp_assigns_ready_at_from_clock(tmp_path) -> None:
     receipt = ref.receipt
     assert isinstance(ref, PersistedWorldRef)
     assert receipt.ready_at == STORE_READY
-    assert receipt.schema_version == "availability_receipt.v2"
+    assert receipt.schema_version == WORLD_AVAILABILITY_RECEIPT_SCHEMA
     assert receipt.storage_locator == WorldStorageLocator(kind="jsonl", store_id=STORE_ID, path=HISTORY_REL)
     assert receipt._store_attested is True
     assert receipt.receipt_id
@@ -185,7 +186,7 @@ def test_store_stamp_assigns_ready_at_from_clock(tmp_path) -> None:
     assert parse_world_availability_receipt(forged_time) is None
 
 
-def test_world_parse_never_promotes_v1_or_forged_legacy_rows() -> None:
+def test_world_parse_never_promotes_brief_receipts_or_forged_legacy_rows() -> None:
     kwargs = {
         "expected_artifact_id": "brief-1",
         "expected_scope": "2026-08-22",
@@ -207,17 +208,23 @@ def test_world_parse_never_promotes_v1_or_forged_legacy_rows() -> None:
     assert parse_world_availability_receipt(forged_ready, payload=PAYLOAD) is None
     forged_digest = _receipt(payload_sha256="0" * 64)
     assert parse_world_availability_receipt(forged_digest, payload=PAYLOAD) is None
+    for old in ("availability_receipt.v1", "availability_receipt.v2"):
+        assert parse_world_availability_receipt({"schema_version": old, "receipt_id": "x"}) is None
     assert validate_availability_receipt(forged_digest, PAYLOAD, **kwargs) is None
 
 
 def test_parse_fails_closed_on_non_mapping_nested_subject(tmp_path) -> None:
-    receipt = _store(tmp_path).append(
-        _subject(),
-        scope="mic:XTAI",
-        payload=SUBJECT_PAYLOAD,
-        history_path=HISTORY_REL,
-        receipt_path=RECEIPT_REL,
-    ).receipt
+    receipt = (
+        _store(tmp_path)
+        .append(
+            _subject(),
+            scope="mic:XTAI",
+            payload=SUBJECT_PAYLOAD,
+            history_path=HISTORY_REL,
+            receipt_path=RECEIPT_REL,
+        )
+        .receipt
+    )
     row = receipt.to_dict()
     row.pop("subject_kind")
     row.pop("subject_id")
@@ -509,13 +516,11 @@ def _reseal_receipt(receipt: WorldAvailabilityReceipt, *, ready_at: datetime) ->
         **identity,
         "receipt_id": receipt_id,
         "ready_at": _iso(ready_at),
-        "receipt_sha256": canonical_sha256(
-            _receipt_hash_payload(identity, receipt_id=receipt_id, ready_at=ready_at)
-        ),
+        "receipt_sha256": canonical_sha256(_receipt_hash_payload(identity, receipt_id=receipt_id, ready_at=ready_at)),
     }
 
 
-def test_mapping_content_payload_round_trips_through_v2_store(tmp_path) -> None:
+def test_mapping_content_payload_round_trips_through_world_store(tmp_path) -> None:
     from trader.domain.world_scope import (
         WorldCanonicalScopeRef,
         WorldMarketAnchorRef,

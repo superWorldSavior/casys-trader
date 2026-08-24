@@ -9,8 +9,8 @@ import pytest
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_context import EntityRef
 from trader.domain.world_feature_contract import (
-    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
-    WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+    MARKET_ONTOLOGY_REVISION,
+    MARKET_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
@@ -87,8 +87,8 @@ def _revision(mapping: WorldScopeMapping, *, revision_id: str = "market_ontology
         source_refs=("provider:instrument-master:2330",),
     )
     link = WorldEntityIdentityLink(
-        v2_ref=EntityRef(kind="instrument", entity_id="2330"),
-        v3_ref=entity,
+        context_ref=EntityRef(kind="instrument", entity_id="2330"),
+        graph_ref=entity,
         source_refs=("provider:instrument-master:2330",),
         effective_from=T0,
     )
@@ -316,10 +316,10 @@ def test_committed_spec_is_the_frozen_live_lineage() -> None:
     spec = committed_macro_graph_bridge_spec()
     assert spec == COMMITTED_MACRO_GRAPH_BRIDGE_SPEC
     assert spec.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
-    assert spec.scope_mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v2"
+    assert spec.scope_mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v1"
     assert spec.scope_mapping_hash == WORLD_SCOPE_MAPPING_SHA256
-    assert spec.ontology_revision_id == WORLD_GRAPH_V3_ONTOLOGY_REVISION == "market_ontology.v2"
-    assert spec.ontology_revision_hash == WORLD_GRAPH_V3_ONTOLOGY_SHA256
+    assert spec.ontology_revision_id == MARKET_ONTOLOGY_REVISION == "market_ontology.v1"
+    assert spec.ontology_revision_hash == MARKET_ONTOLOGY_SHA256
     assert spec.collection_plan_id == WORLD_MACRO_COLLECTION_PLAN_ID
     assert spec.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_SHA256
     assert spec.collection_plan_id == f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_SHA256}"
