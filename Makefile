@@ -28,7 +28,7 @@ logs:  ## Lit les logs du daemon dans Gonzo (TUI ; touche 'd' → dashboard web 
 	gonzo -f state/daemon_console.log --follow
 
 live-logs:  ## Démarre le daemon DÉTACHÉ (supervisé, anti-doublon) puis ouvre les logs ; quitter Gonzo NE tue PAS le daemon.
-	@uv run python -c "from pathlib import Path; from trader.cockpit.supervisor import launch_daemon as L; r=L(pid_file=Path('state/daemon.pid'), log_file=Path('state/daemon_console.log'), root=Path('.'), status_file=Path('state/daemon_status.json')); print('daemon:', r.reason, '(pid', r.pid, ')')"
+	@uv run python -c "from pathlib import Path; from trader.interfaces.cockpit.supervisor import launch_daemon as L; r=L(pid_file=Path('state/daemon.pid'), log_file=Path('state/daemon_console.log'), root=Path('.'), status_file=Path('state/daemon_status.json')); print('daemon:', r.reason, '(pid', r.pid, ')')"
 	gonzo -f state/daemon_console.log --follow
 
 dash:  ## Régénère tous les dashboards HTML/PNG (index: state/dashboards.html)
