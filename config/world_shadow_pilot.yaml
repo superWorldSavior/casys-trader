@@ -1,5 +1,5 @@
 schema_version: world_shadow_pilot.v2
-content_sha256: "55e5f4d52f32848c0fcb159b460b2930039bdfbe3cd3ad049a8b17920f931848"
+content_sha256: "4e757b5469d4ef2e668bc723ae4b2203dcd63b53ae4233bd5c73a6864fe1ae70"
 pilot_id: world_shadow_pilot.v2
 supersedes_pilot_id: world_shadow_pilot.v1
 lifecycle_generation: 5
@@ -34,8 +34,8 @@ scope_mapping:
 macro_producer:
   producer_version: macro_source_only.v2
   lane_identity: context.v2.macro_source.v2
-  collection_plan_id: "macro_collection_plan:v1:74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
-  collection_plan_sha256: "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
+  collection_plan_id: "macro_collection_plan:v1:32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d"
+  collection_plan_sha256: "32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d"
 
 runtime_identity_intent:
   schema_version: world_runtime_identity_intent.v1

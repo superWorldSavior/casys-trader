@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tests.application.test_world_graph_observation_bridge import _envelope, _observation, _scope
+from tests.domain.test_world_graph_bridge_lifecycle import _collection_plan_predecessor_spec
 from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
 from trader.application.world_model.ontology_bootstrap import derive_market_ontology
@@ -466,7 +467,6 @@ def test_handoff_inherits_ordinal_16_and_reconcile_consumes_only_17(tmp_path: Pa
         if event.relation.kind == "OBSERVES" and event.relation.relation_id == successor_links[0].relation_id
     ]
     assert len(new_observes) == 1
-
     store.close()
     restarted = _store(tmp_path)
     scan_again = _Scan()
@@ -492,3 +492,44 @@ def test_handoff_inherits_ordinal_16_and_reconcile_consumes_only_17(tmp_path: Pa
     ]
     assert replay_links == successor_links
     restarted.close()
+
+
+def test_activated_collection_plan_predecessor_handoffs_to_live_successor(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    mapping = _mapping()
+    revision = _revision(mapping)
+    successor_mapping, successor_revision, successor_plan = _live_successor()
+    persisted, owned_ids, about_id, _last, skip_cursor = _persist_v1_contaminated(
+        store,
+        mapping=mapping,
+        revision=revision,
+        spec=_collection_plan_predecessor_spec(),
+    )
+    assert persisted.active_run.spec == _collection_plan_predecessor_spec()
+    scan = _Scan()
+    handed = _use_case(
+        store,
+        scan,
+        successor_mapping,
+        successor_plan,
+        structural_revision=successor_revision,
+    ).ensure(REQUEST_ID)
+    assert handed.active_run is not None
+    assert handed.active_run.status == "active"
+    assert handed.active_run.epoch == 2
+    assert handed.active_run.cursor == skip_cursor
+    assert handed.active_run.spec == committed_macro_graph_bridge_successor_spec()
+    events = [envelope.event for envelope in store.list_knowledge_relation_events_available_through(LATER)]
+    retired = [event for event in events if isinstance(event, KnowledgeWorldRelationRetired)]
+    assert {event.relation_id for event in retired} == set(owned_ids)
+    assert about_id not in {event.relation_id for event in retired}
+    retried = _use_case(
+        store,
+        scan,
+        successor_mapping,
+        successor_plan,
+        structural_revision=successor_revision,
+    ).ensure(REQUEST_ID)
+    assert retried.events == handed.events
+    assert scan.reserve_calls == 0
+    store.close()

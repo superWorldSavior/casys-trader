@@ -24,6 +24,7 @@ from trader.domain.world_macro import (
     MacroScope,
     MacroSourceRegistry,
     committed_macro_collection_plan,
+    compatible_macro_source_leaves,
 )
 
 
@@ -328,13 +329,14 @@ def wire_world_macro_runtime(
     if operator.budgets.fetch_in_run_cycle or operator.budgets.fetch_in_world_capture_worker:
         raise ValueError("source-only macro collection cannot fetch in run_cycle or world capture worker")
     resolved_clock = clock or (lambda: datetime.now(timezone.utc))
+    store = WorldMacroStore(Path(state_dir) / "world_macro", clock=resolved_clock)
     ports = build_macro_source_ports(
         operator,
         transport=transport or UrllibMacroTransport(),
         clock=resolved_clock,
         sleeper=sleeper,
+        leaves=compatible_macro_source_leaves(operator.registry, store.list_facts()),
     )
-    store = WorldMacroStore(Path(state_dir) / "world_macro", clock=resolved_clock)
     source_timeouts = {
         entry.source_id: source_deadline_s(
             operator.budgets.providers[entry.provider_id],

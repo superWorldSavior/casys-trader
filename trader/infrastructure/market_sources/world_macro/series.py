@@ -29,6 +29,7 @@ from trader.domain.world_macro import (
     MacroSourceRegistry,
     MacroSourceRegistryEntry,
     derive_macro_source_fact_valid_until,
+    latest_compatible_macro_source_leaf,
 )
 from trader.domain.world_scope import WorldScopeMapping
 from trader.infrastructure.market_sources.commodity_prices import parse_yahoo_last_close
@@ -474,16 +475,24 @@ def _parse_dbnomics(body: str) -> tuple[str, float, datetime | None] | None:
     return period, float(value), published
 
 
-def _series_url(entry: MacroSourceRegistryEntry, budget: ProviderBudget) -> str:
+def macro_source_resource_ref(entry: MacroSourceRegistryEntry, budget: ProviderBudget) -> str:
+    """Canonical series resource identity. Fetch optimization params are not provenance."""
+
+    if entry.provider_id == "dbnomics":
+        return f"{budget.base.rstrip('/')}/series/{entry.provider_entity_id}"
+    return f"{budget.base}{entry.provider_entity_id}"
+
+
+def macro_source_fetch_url(entry: MacroSourceRegistryEntry, budget: ProviderBudget) -> str:
+    """Transport URL. Observations/metadata/range/interval may change without a new fact identity."""
+
+    resource = macro_source_resource_ref(entry, budget)
     if entry.provider_id == "dbnomics":
         observations = 1 if budget.observations is None else budget.observations
-        return (
-            f"{budget.base.rstrip('/')}/series/{entry.provider_entity_id}"
-            f"?observations={observations}&metadata=0"
-        )
+        return f"{resource}?observations={observations}&metadata=0"
     range_value = budget.range or "5d"
     interval = budget.interval or "1d"
-    return f"{budget.base}{entry.provider_entity_id}?range={range_value}&interval={interval}"
+    return f"{resource}?range={range_value}&interval={interval}"
 
 
 class BoundMacroSourceAdapter:
@@ -507,6 +516,16 @@ class BoundMacroSourceAdapter:
         self._cache: tuple[datetime, tuple[MacroSourceFact, ...]] | None = None
         self._last_leaf: MacroSourceFact | None = None
 
+    def seed_compatible_leaf(self, leaf: MacroSourceFact | None) -> None:
+        """Hydrate the in-process correction leaf from persisted compatible history."""
+
+        if leaf is None:
+            return
+        if latest_compatible_macro_source_leaf(self._entry, (leaf,)) is None:
+            raise ValueError("incompatible macro source leaf")
+        with self._cache_lock:
+            self._last_leaf = leaf
+
     def read_facts(self, scope: MacroScope, observed_at: datetime) -> tuple[MacroSourceFact, ...]:
         del scope
         now = self._clock()
@@ -515,7 +534,7 @@ class BoundMacroSourceAdapter:
                 cached_at, facts = self._cache
                 if (now - cached_at).total_seconds() < self._budget.cooldown_h * 3600.0:
                     return facts
-        url = _series_url(self._entry, self._budget)
+        url = macro_source_fetch_url(self._entry, self._budget)
         headers = {"User-Agent": _YAHOO_UA} if self._entry.provider_id == "yahoo_finance" else {}
         response = self._limiter.get(url, headers=headers)
         body = _decode_body(response.body)
@@ -524,7 +543,13 @@ class BoundMacroSourceAdapter:
             raise MacroSourceFetchError("unavailable", "unavailable")
         period, value, published_at = parsed
         observed = _utc(observed_at)
-        fact = self._to_fact(period, value, published_at, observed, url)
+        fact = self._to_fact(
+            period,
+            value,
+            published_at,
+            observed,
+            macro_source_resource_ref(self._entry, self._budget),
+        )
         with self._cache_lock:
             if self._last_leaf is not None and self._last_leaf.fact_key == fact.fact_key:
                 if self._last_leaf.fact_version_id == fact.fact_version_id:
@@ -535,6 +560,8 @@ class BoundMacroSourceAdapter:
                             value=fact.value,
                             published_at=fact.published_at,
                             ingested_at=fact.ingested_at,
+                            valid_until=fact.valid_until,
+                            source=fact.source,
                         ),
                     )
             else:
@@ -611,9 +638,15 @@ def build_macro_source_ports(
     transport: MacroHttpTransport,
     clock: Callable[[], datetime] | None = None,
     sleeper: Callable[[float], None] | None = None,
+    leaves: Mapping[str, MacroSourceFact] | None = None,
 ) -> dict[str, BoundMacroSourceAdapter]:
     resolved_clock = clock or (lambda: datetime.now(timezone.utc))
     resolved_sleeper = sleeper or time.sleep
+    resolved_leaves = {} if leaves is None else dict(leaves)
+    known = {entry.source_id for entry in bundle.registry.entries}
+    extra = set(resolved_leaves) - known
+    if extra:
+        raise ValueError(f"unknown source leaf: {sorted(extra)}")
     limiters: dict[str, ProviderRateLimiter] = {}
     for provider_id, budget in bundle.budgets.providers.items():
         limiters[provider_id] = ProviderRateLimiter(
@@ -635,13 +668,16 @@ def build_macro_source_ports(
     for entry in bundle.registry.entries:
         budget = bundle.budgets.providers[entry.provider_id]
         adapter_cls = adapters[entry.provider_id]
-        ports[entry.source_id] = adapter_cls(
+        adapter = adapter_cls(
             entry=entry,
             limiter=limiters[entry.provider_id],
             budget=budget,
             ttl=bundle.ttl,
             clock=resolved_clock,
         )
+        if entry.source_id in resolved_leaves:
+            adapter.seed_compatible_leaf(resolved_leaves[entry.source_id])
+        ports[entry.source_id] = adapter
     return ports
 
 
@@ -659,6 +695,8 @@ __all__ = [
     "YahooCommodityAdapter",
     "build_macro_source_ports",
     "load_world_macro_operator_configs",
+    "macro_source_fetch_url",
+    "macro_source_resource_ref",
     "source_deadline_s",
     "urllib_macro_transport",
 ]

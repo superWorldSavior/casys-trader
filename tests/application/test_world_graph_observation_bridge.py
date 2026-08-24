@@ -10,7 +10,10 @@ from typing import Any
 
 import pytest
 
-from tests.domain.test_world_graph_bridge_lifecycle import _drifted_committed_specs
+from tests.domain.test_world_graph_bridge_lifecycle import (
+    _collection_plan_predecessor_spec,
+    _drifted_committed_specs,
+)
 from tests.package_layout._helpers import REPO_ROOT
 from trader.domain.world_availability import (
     AvailabilityEvidence,
@@ -810,6 +813,30 @@ def test_ensure_admitted_migration_retires_owned_observes_then_handoffs() -> Non
     bridge = _Bridge()
     mapping, link, about = _seed_predecessor_owned_observes(
         scan, graph, bridge, committed_macro_graph_bridge_predecessor_spec()
+    )
+    successor = _use_case(scan, graph, bridge, mapping)
+    successor._spec = committed_macro_graph_bridge_successor_spec  # type: ignore[method-assign]
+    handed = successor.ensure(REQUEST_ID)
+    assert handed.active_run is not None
+    assert handed.active_run.epoch == 2
+    assert handed.active_run.spec == committed_macro_graph_bridge_successor_spec()
+    retired = [item for item in graph.knowledge if isinstance(item, KnowledgeWorldRelationRetired)]
+    assert len(retired) == 1
+    assert retired[0].relation_id == link.relation.relation_id
+    assert about.event_id in {item.event_id for item in graph.knowledge}
+    assert scan.reserve_calls == 1
+    assert not any(
+        isinstance(event, MacroGraphObservationLinked) and event.run_id == handed.active_run.run_id
+        for event in handed.events
+    )
+
+
+def test_ensure_admits_activated_collection_plan_predecessor_then_handoffs() -> None:
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    mapping, link, about = _seed_predecessor_owned_observes(
+        scan, graph, bridge, _collection_plan_predecessor_spec()
     )
     successor = _use_case(scan, graph, bridge, mapping)
     successor._spec = committed_macro_graph_bridge_successor_spec  # type: ignore[method-assign]

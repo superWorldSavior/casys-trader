@@ -166,6 +166,9 @@ def test_public_append_surface_does_not_accept_ready_at() -> None:
     assert list(list_params) == ["self", "scope", "cutoff_at"]
     load_params = inspect.signature(WorldMacroStore.load).parameters
     assert list(load_params) == ["self", "run_id"]
+    facts_params = inspect.signature(WorldMacroStore.list_facts).parameters
+    assert list(facts_params) == ["self"]
+    assert "ready_at" not in facts_params
 
 
 def test_append_fact_writes_history_then_store_attested_receipt(tmp_path: Path) -> None:
@@ -243,6 +246,16 @@ def test_append_is_idempotent_and_does_not_rewrite_history(tmp_path: Path, monke
     assert len(load_receipts(tmp_path / "observations" / "availability_receipts" / "2026-08-23.jsonl")) == 1
     history_writes = [path for path in events if path.endswith("2026-08-23.jsonl") and "availability_receipts" not in path]
     assert len(history_writes) == 2
+
+
+def test_list_facts_returns_proven_facts_in_version_order(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    first = _fact()
+    second = _fact(period="2026-07", occurred_at="2026-07-01T00:00:00Z", source=_source(source_record_id="stable-provider-id:2026-07"))
+    store.append_fact(second)
+    store.append_fact(first)
+    listed = store.list_facts()
+    assert listed == tuple(sorted((first, second), key=lambda item: item.fact_version_id.value))
 
 
 def test_same_identity_different_content_is_an_explicit_conflict(tmp_path: Path) -> None:

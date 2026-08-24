@@ -35,6 +35,8 @@ from trader.domain.world_graph import (
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
     WORLD_MACRO_COLLECTION_PLAN_ID,
+    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID,
+    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256,
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroCollectionPlan,
     require_committed_macro_collection_plan,
@@ -66,6 +68,16 @@ COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC = MacroGraphBridgeRunSpec(
     schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
     collection_plan_id=WORLD_MACRO_COLLECTION_PLAN_ID,
     collection_plan_hash=WORLD_MACRO_COLLECTION_PLAN_SHA256,
+    producer_version=MACRO_PRODUCER_VERSION,
+)
+COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC = MacroGraphBridgeRunSpec(
+    scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
+    scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+    ontology_revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+    ontology_revision_hash=WORLD_GRAPH_V3_ONTOLOGY_SHA256,
+    schema_version=MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2,
+    collection_plan_id=WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID,
+    collection_plan_hash=WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256,
     producer_version=MACRO_PRODUCER_VERSION,
 )
 
@@ -132,10 +144,22 @@ COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATION = MacroGraphBridgeMigration(
     predecessor_spec=COMMITTED_MACRO_GRAPH_BRIDGE_PREDECESSOR_SPEC,
     successor_spec=COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC,
 )
+COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION = MacroGraphBridgeMigration(
+    predecessor_spec=COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC,
+    successor_spec=COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC,
+)
+COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATIONS = (
+    COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATION,
+    COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION,
+)
 
 
 def committed_macro_graph_bridge_predecessor_spec() -> MacroGraphBridgeRunSpec:
     return COMMITTED_MACRO_GRAPH_BRIDGE_PREDECESSOR_SPEC
+
+
+def committed_macro_graph_bridge_collection_plan_predecessor_spec() -> MacroGraphBridgeRunSpec:
+    return COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC
 
 
 def committed_macro_graph_bridge_successor_spec() -> MacroGraphBridgeRunSpec:
@@ -199,9 +223,15 @@ class MacroGraphBridgeLifecycleDecision:
 
 
 def committed_macro_graph_bridge_migration() -> MacroGraphBridgeMigration:
-    """Admit only the frozen live v1 → v2 lineage. Callers cannot inject another pair."""
+    """Admit the frozen mapping/ontology v1 → latest successor. Callers cannot inject a pair."""
 
     return COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATION
+
+
+def committed_macro_graph_bridge_migrations() -> tuple[MacroGraphBridgeMigration, ...]:
+    """Admit only frozen predecessor → current successor pairs. Callers cannot inject a pair."""
+
+    return COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATIONS
 
 
 def classify_macro_graph_bridge(
@@ -215,7 +245,6 @@ def classify_macro_graph_bridge(
         raise TypeError("registry must be MacroGraphBridgeRegistry")
     if not isinstance(desired, MacroGraphBridgeRunSpec):
         raise TypeError("desired must be MacroGraphBridgeRunSpec")
-    migration = committed_macro_graph_bridge_migration()
     run = registry.active_run
     if run is None:
         return MacroGraphBridgeLifecycleDecision(status="missing", reason="no_active_generation")
@@ -225,13 +254,14 @@ def classify_macro_graph_bridge(
         return MacroGraphBridgeLifecycleDecision(status="matched_active", reason="spec_matches", run=run)
     if run.status == "active":
         return MacroGraphBridgeLifecycleDecision(status="drifted_active", reason="config_drift", run=run)
-    if migration.admits(durable=run.spec, desired=desired):
-        return MacroGraphBridgeLifecycleDecision(
-            status="drifted_blocked_admitted",
-            reason="admitted_predecessor_successor_migration",
-            run=run,
-            migration=migration,
-        )
+    for migration in committed_macro_graph_bridge_migrations():
+        if migration.admits(durable=run.spec, desired=desired):
+            return MacroGraphBridgeLifecycleDecision(
+                status="drifted_blocked_admitted",
+                reason="admitted_predecessor_successor_migration",
+                run=run,
+                migration=migration,
+            )
     return MacroGraphBridgeLifecycleDecision(status="unknown_drift", reason="unknown_config_drift", run=run)
 
 
@@ -285,7 +315,10 @@ def remaining_owned_observes(
 
 
 __all__ = [
+    "COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION",
+    "COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC",
     "COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATION",
+    "COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATIONS",
     "COMMITTED_MACRO_GRAPH_BRIDGE_PREDECESSOR_SPEC",
     "COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC",
     "MACRO_GRAPH_BRIDGE_LIFECYCLE_STATUSES",
@@ -293,7 +326,9 @@ __all__ = [
     "MacroGraphBridgeMigration",
     "UnknownMacroGraphBridgeDrift",
     "classify_macro_graph_bridge",
+    "committed_macro_graph_bridge_collection_plan_predecessor_spec",
     "committed_macro_graph_bridge_migration",
+    "committed_macro_graph_bridge_migrations",
     "committed_macro_graph_bridge_predecessor_spec",
     "committed_macro_graph_bridge_successor_spec",
     "require_committed_live_bridge_lineage",

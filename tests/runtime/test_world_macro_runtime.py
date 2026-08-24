@@ -609,6 +609,118 @@ def test_wired_worker_honors_adapter_24h_cooldown_without_extra_http(tmp_path: P
     assert not any(thread.name == MACRO_THREAD_NAME and thread.is_alive() for thread in threading.enumerate())
 
 
+class MutableMacroTransport:
+    def __init__(self, *, db_period: str, db_value: float, indexed_at: str) -> None:
+        self.db_period = db_period
+        self.db_value = db_value
+        self.indexed_at = indexed_at
+        self.calls: list[str] = []
+        self.lock = threading.Lock()
+
+    def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> object:
+        from trader.infrastructure.market_sources.world_macro.series import MacroHttpResponse
+
+        del timeout_s, headers
+        with self.lock:
+            self.calls.append(url)
+        if "finance.yahoo.com" in url:
+            return MacroHttpResponse(status=200, body=_yahoo_body("2026-08-21", 91.22), headers={})
+        body = json.dumps(
+            {
+                "series": {
+                    "docs": [
+                        {
+                            "period": [self.db_period],
+                            "value": [self.db_value],
+                            "indexed_at": self.indexed_at,
+                        }
+                    ]
+                }
+            }
+        )
+        return MacroHttpResponse(status=200, body=body, headers={})
+
+
+def _ecb_facts(root: Path, clock: FakeClock) -> list:
+    from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
+
+    prefix = "ECB/FM/B.U2.EUR.4F.KR.DFR.LEV:"
+    return [
+        fact
+        for fact in WorldMacroStore(root / "world_macro", clock=clock).list_facts()
+        if fact.source.source_record_id.startswith(prefix)
+    ]
+
+
+def test_wired_restart_replays_correction_leaf_then_extends_chain(tmp_path: Path) -> None:
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    clock = FakeClock(NOW)
+    transport = MutableMacroTransport(db_period="2026-08", db_value=4.25, indexed_at="2026-08-20T12:00:00Z")
+    live = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=transport,
+        clock=clock,
+        sleeper=lambda _seconds: None,
+    )
+    started_a = live.runner.trigger(now=clock(), reason="value-a")
+    assert started_a["triggered"] is True
+    started_a["_thread"].join(timeout=15.0)
+    clock.advance(hours=25)
+    transport.db_value = 4.50
+    transport.indexed_at = "2026-08-23T12:00:00Z"
+    started_b = live.runner.trigger(now=clock(), reason="value-b")
+    assert started_b["triggered"] is True
+    started_b["_thread"].join(timeout=15.0)
+    live.runner.stop()
+
+    ecb = _ecb_facts(tmp_path, clock)
+    assert len(ecb) == 2
+    value_a = next(fact for fact in ecb if fact.supersedes_fact_version_id is None)
+    value_b = next(fact for fact in ecb if fact.supersedes_fact_version_id is not None)
+    assert value_a.value.number == 4.25
+    assert value_b.value.number == 4.50
+    assert value_b.supersedes_fact_version_id == value_a.fact_version_id.value
+
+    clock.advance(hours=1)
+    rebuilt = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=transport,
+        clock=clock,
+        sleeper=lambda _seconds: None,
+    )
+    started_replay = rebuilt.runner.trigger(now=clock(), reason="replay-b")
+    assert started_replay["triggered"] is True
+    started_replay["_thread"].join(timeout=15.0)
+    rebuilt.runner.stop()
+    replayed = _ecb_facts(tmp_path, clock)
+    assert len(replayed) == 2
+    replayed_b = next(fact for fact in replayed if fact.fact_version_id == value_b.fact_version_id)
+    assert replayed_b.supersedes_fact_version_id == value_a.fact_version_id.value
+    assert replayed_b.content_sha256 == value_b.content_sha256
+
+    clock.advance(hours=25)
+    transport.db_value = 4.75
+    transport.indexed_at = "2026-08-24T12:00:00Z"
+    extended = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=transport,
+        clock=clock,
+        sleeper=lambda _seconds: None,
+    )
+    started_c = extended.runner.trigger(now=clock(), reason="value-c")
+    assert started_c["triggered"] is True
+    started_c["_thread"].join(timeout=15.0)
+    extended.runner.stop()
+    final_ecb = _ecb_facts(tmp_path, clock)
+    assert len(final_ecb) == 3
+    value_c = next(fact for fact in final_ecb if fact.value.number == 4.75)
+    assert value_c.supersedes_fact_version_id == value_b.fact_version_id.value
+
+
 def test_graph_v3_flag_defaults_off_and_collect_does_not_create_graph_relations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

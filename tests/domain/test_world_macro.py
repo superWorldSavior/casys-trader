@@ -35,10 +35,14 @@ from trader.domain.world_macro import (
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
     WORLD_MACRO_COLLECTION_PLAN_ID,
+    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID,
+    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256,
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroObservationProvenance,
     committed_macro_collection_plan,
+    compatible_macro_source_leaves,
     derive_macro_source_fact_valid_until,
+    latest_compatible_macro_source_leaf,
     require_committed_macro_collection_plan,
     MacroCategoryValue,
     MacroCollectionCompleted,
@@ -449,6 +453,43 @@ def test_fact_kind_and_value_vocabularies_are_closed() -> None:
         MacroNumericValue(number=float("nan"), unit="percent")
     with pytest.raises(ValueError, match="unit"):
         MacroSourceFact.from_mapping({**_fact().to_dict(), "value": {"number": 4.25}})
+
+
+def test_latest_compatible_leaf_ignores_other_adapter_and_follows_supersedes() -> None:
+    entry = MacroSourceRegistryEntry(
+        source_id="fed_policy_rate",
+        provider_id="official_provider",
+        provider_entity_id="FED/H15",
+        canonical_scope=_scope(),
+        adapter_version="official_provider.v2",
+        fact_kind="series_point",
+        metric_key="policy_rate",
+    )
+    v1 = _fact(source=_source(adapter_version="official_provider.v1", source_record_id="FED/H15:2026-08"))
+    first = _fact(
+        source=_source(adapter_version="official_provider.v2", source_record_id="FED/H15:2026-08"),
+        value=MacroNumericValue(number=4.25, unit="percent"),
+    )
+    correction = first.corrected(
+        value=MacroNumericValue(number=4.50, unit="percent"),
+        published_at="2026-08-23T18:00:00Z",
+        ingested_at="2026-08-23T18:01:00Z",
+        valid_until=datetime(2026, 9, 2, 18, 0, tzinfo=UTC),
+        source=_source(adapter_version="official_provider.v2", source_record_id="FED/H15:2026-08"),
+    )
+    older_period = _fact(
+        period="2026-07",
+        occurred_at="2026-07-01T00:00:00Z",
+        source=_source(adapter_version="official_provider.v2", source_record_id="FED/H15:2026-07"),
+        value=MacroNumericValue(number=4.10, unit="percent"),
+    )
+    assert latest_compatible_macro_source_leaf(entry, (v1,)) is None
+    assert latest_compatible_macro_source_leaf(entry, (v1, first, correction, older_period)) == correction
+    leaves = compatible_macro_source_leaves(
+        MacroSourceRegistry(registry_version=MACRO_SOURCE_REGISTRY_VERSION, entries=(entry,)),
+        (v1, first, correction, older_period),
+    )
+    assert leaves == {"fed_policy_rate": correction}
 
 
 def test_correction_keeps_fact_key_and_supersedes_previous_leaf() -> None:
@@ -1059,6 +1100,14 @@ def test_live_producer_contract_is_v2_and_keeps_v1_parseable() -> None:
     assert is_admitted_macro_producer(MACRO_PRODUCER_VERSION_V1) is False
     assert macro_observes_producer_ref(MACRO_PRODUCER_VERSION) == "producer:macro_source_only.v2"
     assert WORLD_MACRO_COLLECTION_PLAN_ID == f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_SHA256}"
+    assert WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID == (
+        f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256}"
+    )
+    assert WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256 != WORLD_MACRO_COLLECTION_PLAN_SHA256
+    assert (
+        WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
+        == "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
+    )
     v1 = _observation(producer_version=MACRO_PRODUCER_VERSION_V1)
     replayed = MacroWorldObservation.from_mapping(v1.to_dict())
     assert replayed.producer_version == MACRO_PRODUCER_VERSION_V1

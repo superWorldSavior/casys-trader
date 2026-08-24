@@ -191,6 +191,21 @@ class WorldMacroStore:
             self._write_status()
             return self._observation_envelope(observation, receipt, first_seen_at=first_seen)
 
+    def list_facts(self) -> tuple[MacroSourceFact, ...]:
+        """Proven facts only, ordered by fact_version_id. Used to hydrate adapters at composition."""
+
+        facts: list[MacroSourceFact] = []
+        for payload, receipt in self._iter_joined_subjects(MACRO_SOURCE_FACT_SUBJECT_KIND):
+            try:
+                fact = MacroSourceFact.from_mapping(payload)
+            except (TypeError, ValueError):
+                continue
+            if fact.fact_version_id.value != receipt.subject.subject_id:
+                continue
+            facts.append(fact)
+        facts.sort(key=lambda item: item.fact_version_id.value)
+        return tuple(facts)
+
     def list_candidates_available_through(
         self, scope: MacroScope, cutoff_at: datetime
     ) -> tuple[MacroObservationEnvelope, ...]:

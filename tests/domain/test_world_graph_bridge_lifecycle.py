@@ -39,7 +39,10 @@ from trader.domain.world_graph import (
     parse_macro_graph_bridge_event,
 )
 from trader.domain.world_graph_bridge_lifecycle import (
+    COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION,
+    COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC,
     COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATION,
+    COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATIONS,
     COMMITTED_MACRO_GRAPH_BRIDGE_PREDECESSOR_SPEC,
     COMMITTED_MACRO_GRAPH_BRIDGE_SUCCESSOR_SPEC,
     MACRO_GRAPH_BRIDGE_LIFECYCLE_STATUSES,
@@ -47,7 +50,9 @@ from trader.domain.world_graph_bridge_lifecycle import (
     MacroGraphBridgeMigration,
     UnknownMacroGraphBridgeDrift,
     classify_macro_graph_bridge,
+    committed_macro_graph_bridge_collection_plan_predecessor_spec,
     committed_macro_graph_bridge_migration,
+    committed_macro_graph_bridge_migrations,
     committed_macro_graph_bridge_predecessor_spec,
     committed_macro_graph_bridge_successor_spec,
     require_committed_live_bridge_lineage,
@@ -59,6 +64,8 @@ from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
     MACRO_PRODUCER_VERSION_V1,
     WORLD_MACRO_COLLECTION_PLAN_ID,
+    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID,
+    WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256,
     WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroCollectionPlan,
     MacroCollectionTarget,
@@ -340,15 +347,12 @@ def _replace_run_spec(spec: MacroGraphBridgeRunSpec, **changes: str) -> MacroGra
         return instance
 
 
-def _drifted_committed_specs() -> list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]]:
-    predecessor = committed_macro_graph_bridge_predecessor_spec()
-    successor = committed_macro_graph_bridge_successor_spec()
-    cases: list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]] = []
-    for field in ("scope_mapping_id", "scope_mapping_hash", "ontology_revision_id", "ontology_revision_hash"):
-        value = getattr(predecessor, field)
-        flipped = _flip_hex_bit(value) if field.endswith("_hash") else _flip_identity(value)
-        cases.append(("predecessor", field, _replace_run_spec(predecessor, **{field: flipped}), successor))
-    for field in (
+def _collection_plan_predecessor_spec() -> MacroGraphBridgeRunSpec:
+    return committed_macro_graph_bridge_collection_plan_predecessor_spec()
+
+
+def _v2_identity_fields() -> tuple[str, ...]:
+    return (
         "scope_mapping_id",
         "scope_mapping_hash",
         "ontology_revision_id",
@@ -356,16 +360,31 @@ def _drifted_committed_specs() -> list[tuple[str, str, MacroGraphBridgeRunSpec, 
         "collection_plan_id",
         "collection_plan_hash",
         "producer_version",
-    ):
-        value = getattr(successor, field)
-        if field.endswith("_hash"):
-            flipped = _flip_hex_bit(value)
-        elif field == "collection_plan_id":
-            prefix, digest = value.rsplit(":", 1)
-            flipped = f"{prefix}:{_flip_hex_bit(digest)}"
-        else:
-            flipped = _flip_identity(value)
-        cases.append(("successor", field, predecessor, _replace_run_spec(successor, **{field: flipped})))
+    )
+
+
+def _flip_spec_field(spec: MacroGraphBridgeRunSpec, field: str) -> MacroGraphBridgeRunSpec:
+    value = getattr(spec, field)
+    if field.endswith("_hash"):
+        flipped = _flip_hex_bit(value)
+    elif field == "collection_plan_id":
+        prefix, digest = value.rsplit(":", 1)
+        flipped = f"{prefix}:{_flip_hex_bit(digest)}"
+    else:
+        flipped = _flip_identity(value)
+    return _replace_run_spec(spec, **{field: flipped})
+
+
+def _drifted_committed_specs() -> list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]]:
+    predecessor = committed_macro_graph_bridge_predecessor_spec()
+    successor = committed_macro_graph_bridge_successor_spec()
+    plan_predecessor = _collection_plan_predecessor_spec()
+    cases: list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]] = []
+    for field in ("scope_mapping_id", "scope_mapping_hash", "ontology_revision_id", "ontology_revision_hash"):
+        cases.append(("predecessor", field, _flip_spec_field(predecessor, field), successor))
+    for field in _v2_identity_fields():
+        cases.append(("successor", field, predecessor, _flip_spec_field(successor, field)))
+        cases.append(("collection_plan_predecessor", field, _flip_spec_field(plan_predecessor, field), successor))
     return cases
 
 
@@ -396,8 +415,35 @@ def test_committed_migration_is_the_frozen_live_lineage() -> None:
     assert successor.producer_version == MACRO_PRODUCER_VERSION == "macro_source_only.v2"
     assert migration.predecessor_spec == predecessor
     assert migration.successor_spec == successor
+    plan_predecessor = committed_macro_graph_bridge_collection_plan_predecessor_spec()
+    plan_migration = COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION
+    assert inspect.signature(committed_macro_graph_bridge_migrations).parameters == {}
+    assert inspect.signature(committed_macro_graph_bridge_collection_plan_predecessor_spec).parameters == {}
+    assert plan_predecessor == COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_PREDECESSOR_SPEC
+    assert plan_predecessor.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2
+    assert plan_predecessor.scope_mapping_id == successor.scope_mapping_id
+    assert plan_predecessor.scope_mapping_hash == successor.scope_mapping_hash
+    assert plan_predecessor.ontology_revision_id == successor.ontology_revision_id
+    assert plan_predecessor.ontology_revision_hash == successor.ontology_revision_hash
+    assert plan_predecessor.producer_version == successor.producer_version
+    assert plan_predecessor.collection_plan_id == WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID
+    assert plan_predecessor.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
+    assert (
+        WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
+        == "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
+    )
+    assert plan_predecessor.collection_plan_id == (
+        f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256}"
+    )
+    assert plan_predecessor != successor
+    assert plan_migration.predecessor_spec == plan_predecessor
+    assert plan_migration.successor_spec == successor
+    assert committed_macro_graph_bridge_migrations() == COMMITTED_MACRO_GRAPH_BRIDGE_MIGRATIONS
+    assert committed_macro_graph_bridge_migrations() == (migration, plan_migration)
     with pytest.raises(TypeError):
         committed_macro_graph_bridge_migration(predecessor_spec=predecessor, successor_spec=successor)
+    with pytest.raises(TypeError):
+        committed_macro_graph_bridge_migrations(predecessor_spec=plan_predecessor, successor_spec=successor)
     with pytest.raises(ValueError, match="drifted from committed"):
         require_committed_live_bridge_lineage(
             mapping=_mapping(),
@@ -415,6 +461,30 @@ def test_classify_admits_only_the_committed_live_lineage() -> None:
     assert admitted.migration == committed_macro_graph_bridge_migration()
     rejected = classify_macro_graph_bridge(blocked, desired=_v2_spec())
     assert rejected.status == "unknown_drift"
+
+
+def test_classify_admits_activated_collection_plan_predecessor_to_committed_successor() -> None:
+    predecessor = _collection_plan_predecessor_spec()
+    successor = committed_macro_graph_bridge_successor_spec()
+    assert predecessor != successor
+    assert predecessor.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2
+    assert predecessor.scope_mapping_id == successor.scope_mapping_id
+    assert predecessor.ontology_revision_id == successor.ontology_revision_id
+    assert predecessor.producer_version == successor.producer_version
+    assert predecessor.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
+    assert predecessor.collection_plan_hash != successor.collection_plan_hash
+    active = classify_macro_graph_bridge(_activated(predecessor), desired=successor)
+    assert active.status == "drifted_active"
+    blocked = _activated(predecessor).block(reason="config_drift", expected_version=1)
+    admitted = classify_macro_graph_bridge(blocked, desired=successor)
+    assert admitted.status == "drifted_blocked_admitted"
+    assert admitted.reason == "admitted_predecessor_successor_migration"
+    assert admitted.migration is not None
+    assert admitted.migration.admits(durable=predecessor, desired=successor)
+    assert admitted.migration.predecessor_spec == predecessor
+    assert admitted.migration.successor_spec == successor
+    assert admitted.migration == COMMITTED_MACRO_GRAPH_BRIDGE_COLLECTION_PLAN_MIGRATION
+    assert admitted.migration != committed_macro_graph_bridge_migration()
 
 
 @pytest.mark.parametrize("side,field,durable,desired", _drifted_committed_specs())

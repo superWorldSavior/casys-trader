@@ -38,9 +38,11 @@ MACRO_LANE_IDENTITY_V1 = "context.v2.macro_source.v1"
 MACRO_LANE_IDENTITY = "context.v2.macro_source.v2"
 MACRO_ADMITTED_PRODUCER_VERSIONS = frozenset({MACRO_PRODUCER_VERSION})
 MACRO_TRANSFORM_VERSION = "macro_regimes.v1"
-MACRO_SOURCE_REGISTRY_VERSION = "macro_sources.v1"
-WORLD_MACRO_COLLECTION_PLAN_SHA256 = "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
+MACRO_SOURCE_REGISTRY_VERSION = "macro_sources.v2"
+WORLD_MACRO_COLLECTION_PLAN_SHA256 = "32757eebd0dd9dcd6e9459260f0483b96597e014e1d5feaadee042a99e63923d"
 WORLD_MACRO_COLLECTION_PLAN_ID = "macro_collection_plan:v1:" + WORLD_MACRO_COLLECTION_PLAN_SHA256
+WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256 = "74c6d12e6f41a920b6d00224de75cc1eeda47b6634720344fd48851dac7c04e5"
+WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID = "macro_collection_plan:v1:" + WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256
 
 MACRO_FACT_KINDS = frozenset({"series_point", "market_benchmark"})
 MACRO_SCOPE_KINDS = frozenset({"world", "region", "country", "venue"})
@@ -888,6 +890,65 @@ class MacroSourceRegistry:
             schema_version=_required_mapping_text(value, "schema_version"),
             content_sha256=value.get("content_sha256"),
         )
+
+
+def macro_source_fact_matches_registry_entry(fact: MacroSourceFact, entry: MacroSourceRegistryEntry) -> bool:
+    """True when a persisted fact belongs to the live adapter vintage of one registry source."""
+
+    if not isinstance(fact, MacroSourceFact):
+        raise TypeError("fact must be MacroSourceFact")
+    if not isinstance(entry, MacroSourceRegistryEntry):
+        raise TypeError("entry must be MacroSourceRegistryEntry")
+    prefix = f"{entry.provider_entity_id}:"
+    return (
+        fact.source.provider_id == entry.provider_id
+        and fact.source.adapter_version == entry.adapter_version
+        and fact.fact_kind == entry.fact_kind
+        and fact.metric_key == entry.metric_key
+        and fact.scope == entry.canonical_scope
+        and fact.source.source_record_id.startswith(prefix)
+    )
+
+
+def latest_compatible_macro_source_leaf(
+    entry: MacroSourceRegistryEntry,
+    facts: Sequence[MacroSourceFact],
+) -> MacroSourceFact | None:
+    """Latest correction-chain leaf for one registry source. Other adapter vintages are ignored."""
+
+    if not isinstance(entry, MacroSourceRegistryEntry):
+        raise TypeError("entry must be MacroSourceRegistryEntry")
+    matching = tuple(
+        fact
+        for fact in facts
+        if isinstance(fact, MacroSourceFact) and macro_source_fact_matches_registry_entry(fact, entry)
+    )
+    if not matching:
+        return None
+    superseded = {item for item in (fact.supersedes_fact_version_id for fact in matching) if item is not None}
+    leaves = tuple(fact for fact in matching if fact.fact_version_id.value not in superseded)
+    if not leaves:
+        return None
+    return max(
+        leaves,
+        key=lambda fact: (fact.period, fact.published_at, fact.ingested_at, fact.fact_version_id.value),
+    )
+
+
+def compatible_macro_source_leaves(
+    registry: MacroSourceRegistry,
+    facts: Sequence[MacroSourceFact],
+) -> dict[str, MacroSourceFact]:
+    """Map each registry source_id to its latest persisted compatible leaf, if any."""
+
+    if not isinstance(registry, MacroSourceRegistry):
+        raise TypeError("registry must be MacroSourceRegistry")
+    leaves: dict[str, MacroSourceFact] = {}
+    for entry in registry.entries:
+        leaf = latest_compatible_macro_source_leaf(entry, facts)
+        if leaf is not None:
+            leaves[entry.source_id] = leaf
+    return leaves
 
 
 @dataclass(frozen=True)
@@ -2567,6 +2628,8 @@ __all__ = [
     "MACRO_TRANSFORM_VERSION",
     "MACRO_WORLD_OBSERVATION_SUBJECT_KIND",
     "WORLD_MACRO_COLLECTION_PLAN_ID",
+    "WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_ID",
+    "WORLD_MACRO_COLLECTION_PLAN_PREDECESSOR_SHA256",
     "WORLD_MACRO_COLLECTION_PLAN_SHA256",
     "MacroObservationProvenance",
     "committed_macro_collection_plan",
@@ -2608,10 +2671,13 @@ __all__ = [
     "WorldScopeMapping",
     "WorldScopeResolution",
     "assert_source_only_payload",
+    "compatible_macro_source_leaves",
     "derive_macro_source_fact_valid_until",
     "evaluate_macro_point_in_time",
     "is_admitted_macro_producer",
+    "latest_compatible_macro_source_leaf",
     "macro_observes_producer_ref",
+    "macro_source_fact_matches_registry_entry",
     "parse_macro_collection_event",
     "parse_macro_value",
     "reconcile_macro_source_fact",

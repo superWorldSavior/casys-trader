@@ -121,7 +121,13 @@ def _bundle():
     return load_world_macro_operator_configs(config_dir=CONFIG_DIR)
 
 
-def _ports(transport: ScriptedTransport, *, clock: FakeClock | None = None, sleeper=None):
+def _ports(
+    transport: ScriptedTransport,
+    *,
+    clock: FakeClock | None = None,
+    sleeper=None,
+    leaves=None,
+):
     from trader.infrastructure.market_sources.world_macro import build_macro_source_ports
 
     return build_macro_source_ports(
@@ -129,6 +135,7 @@ def _ports(transport: ScriptedTransport, *, clock: FakeClock | None = None, slee
         transport=transport,
         clock=clock or FakeClock(OBSERVED_AT),
         sleeper=sleeper or (lambda _seconds: None),
+        leaves=leaves,
     )
 
 
@@ -151,7 +158,7 @@ def test_committed_registry_domain_and_operator_hashes_match() -> None:
     assert canonical_sha256(operator_payload) == claimed_operator
     assert bundle.registry.content_sha256 == raw["content_sha256"]
     assert bundle.registry_operator_config_sha256 == claimed_operator
-    assert bundle.registry.registry_version == "macro_sources.v1"
+    assert bundle.registry.registry_version == "macro_sources.v2"
 
 
 def test_committed_policy_full_content_hash_matches() -> None:
@@ -262,11 +269,14 @@ def test_dbnomics_adapter_emits_typed_fact_for_canonical_scope_not_run_scope() -
     assert fact.period == "2026-08-22"
     assert fact.value == MacroNumericValue(number=4.33, unit="percent")
     assert fact.source.provider_id == "dbnomics"
-    assert fact.source.adapter_version == "dbnomics_series.v1"
+    assert fact.source.adapter_version == "dbnomics_series.v2"
     published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
     assert fact.published_at == published
     assert fact.valid_until == published + timedelta(hours=72)
     assert fact.valid_until != OBSERVED_AT + timedelta(hours=72)
+    assert fact.source.source_ref == "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D"
+    assert "observations=" not in fact.source.source_ref
+    assert "metadata=" not in fact.source.source_ref
     assert "XTAI" not in json.dumps(fact.to_dict())
     assert transport.calls == [
         "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1&metadata=0"
@@ -287,6 +297,10 @@ def test_dbnomics_urls_add_metadata_zero_and_keep_period_value_indexed_at() -> N
         assert facts[0].period == "2026-08-22"
         assert facts[0].value.number == 4.33
         assert facts[0].published_at == datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+        assert facts[0].source.source_ref.endswith(entry.provider_entity_id)
+        assert "?" not in facts[0].source.source_ref
+        assert "metadata=" not in facts[0].source.source_ref
+        assert "observations=" not in facts[0].source.source_ref
     assert transport.calls
     assert all("metadata=0" in url for url in transport.calls)
     assert all("observations=" in url for url in transport.calls)
@@ -316,11 +330,14 @@ def test_yahoo_commodity_adapter_emits_front_month_benchmark() -> None:
     assert fact.period == "2026-08-21"
     assert fact.value == MacroNumericValue(number=91.22, unit="usd")
     assert fact.source.provider_id == "yahoo_finance"
-    assert fact.source.adapter_version == "yahoo_commodity.v1"
+    assert fact.source.adapter_version == "yahoo_commodity.v2"
     published = datetime(2026, 8, 21, tzinfo=UTC)
     assert fact.published_at == published
     assert fact.valid_until == published + timedelta(hours=72)
     assert fact.valid_until != OBSERVED_AT + timedelta(hours=72)
+    assert fact.source.source_ref == "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F"
+    assert "range=" not in fact.source.source_ref
+    assert "interval=" not in fact.source.source_ref
     assert transport.calls[0].endswith("BZ=F?range=5d&interval=1d")
 
 
@@ -340,6 +357,10 @@ def test_period_correction_keeps_fact_key_and_supersedes_previous_leaf() -> None
     assert second[0].fact_version_id != first[0].fact_version_id
     assert second[0].supersedes_fact_version_id == first[0].fact_version_id.value
     assert second[0].value == MacroNumericValue(number=4.50, unit="percent")
+    second_published = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+    assert second[0].valid_until == second_published + timedelta(days=40)
+    assert second[0].valid_until != first[0].valid_until
+    assert second[0].source.source_ref == first[0].source.source_ref
 
 
 def test_same_period_value_and_unit_is_replayed_not_a_new_vintage() -> None:
@@ -389,6 +410,162 @@ def test_adapter_reconstruction_replays_identical_external_data_across_runtime_r
     assert loaded.ingested_at == first_observed
     assert loaded.valid_until == published + timedelta(hours=72)
     assert loaded.content_sha256 == first[0].content_sha256
+
+
+def test_fetch_optimization_params_are_not_part_of_stable_source_ref() -> None:
+    from dataclasses import replace
+
+    from trader.infrastructure.market_sources.world_macro.series import (
+        macro_source_fetch_url,
+        macro_source_resource_ref,
+    )
+
+    bundle = _bundle()
+    db_entry = bundle.registry.entry_for("fed_funds_effective")
+    yahoo_entry = bundle.registry.entry_for("brent_crude_usd")
+    db_budget = bundle.budgets.providers["dbnomics"]
+    yahoo_budget = bundle.budgets.providers["yahoo_finance"]
+    db_alt = replace(db_budget, observations=100)
+    yahoo_alt = replace(yahoo_budget, range="1mo", interval="1wk")
+    db_ref = macro_source_resource_ref(db_entry, db_budget)
+    yahoo_ref = macro_source_resource_ref(yahoo_entry, yahoo_budget)
+    assert db_ref == macro_source_resource_ref(db_entry, db_alt)
+    assert yahoo_ref == macro_source_resource_ref(yahoo_entry, yahoo_alt)
+    assert db_ref == "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D"
+    assert yahoo_ref == "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F"
+    assert "?" not in db_ref
+    assert "?" not in yahoo_ref
+    assert macro_source_fetch_url(db_entry, db_budget).endswith("?observations=1&metadata=0")
+    assert macro_source_fetch_url(db_entry, db_alt).endswith("?observations=100&metadata=0")
+    assert "range=5d" in macro_source_fetch_url(yahoo_entry, yahoo_budget)
+    assert "interval=1d" in macro_source_fetch_url(yahoo_entry, yahoo_budget)
+    assert "range=1mo" in macro_source_fetch_url(yahoo_entry, yahoo_alt)
+    assert "interval=1wk" in macro_source_fetch_url(yahoo_entry, yahoo_alt)
+
+
+def _preexisting_v1_dbnomics_fact(
+    *,
+    observed_at: datetime,
+    period: str = "2026-08-22",
+    value: float = 4.33,
+    published_at: datetime | None = None,
+) -> MacroSourceFact:
+    published = published_at or datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    return MacroSourceFact(
+        fact_kind="series_point",
+        metric_key="policy_rate",
+        scope=MacroScope(kind="country", entity_id="iso-3166:US"),
+        value=MacroNumericValue(number=value, unit="percent"),
+        period=period,
+        occurred_at=datetime.fromisoformat(period).replace(tzinfo=UTC),
+        published_at=published,
+        ingested_at=observed_at,
+        source={
+            "provider_id": "dbnomics",
+            "adapter_version": "dbnomics_series.v1",
+            "source_record_id": f"FED/H15/RIFSPFF_N.D:{period}",
+            "source_ref": "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1",
+        },
+        valid_until=observed_at + timedelta(hours=72),
+    )
+
+
+def test_preexisting_v1_fact_appends_v2_collection_without_identity_collision(tmp_path: Path) -> None:
+    from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
+
+    observed = OBSERVED_AT
+    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    v1 = _preexisting_v1_dbnomics_fact(observed_at=observed, published_at=published)
+    store = WorldMacroStore(tmp_path, clock=lambda: observed)
+    store.append_fact(v1)
+    body = _dbnomics_body("2026-08-22", 4.33, indexed_at="2026-08-23T12:30:00Z")
+    v2 = _ports(ScriptedTransport([body]))["fed_funds_effective"].read_facts(RUN_SCOPE, observed)[0]
+    assert v1.source.adapter_version == "dbnomics_series.v1"
+    assert v2.source.adapter_version == "dbnomics_series.v2"
+    assert v1.fact_key == v2.fact_key
+    assert v2.fact_version_id != v1.fact_version_id
+    assert v2.content_sha256 != v1.content_sha256
+    assert v2.valid_until == published + timedelta(hours=72)
+    assert v2.valid_until != v1.valid_until
+    assert "metadata=" not in v2.source.source_ref
+    assert "?" not in v2.source.source_ref
+    replayed = store.append_fact(v2)
+    assert replayed.identity == v2.fact_version_id
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "facts" / "2026-08-23.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 2
+    loaded = [MacroSourceFact.from_mapping(row) for row in rows]
+    assert {item.source.adapter_version for item in loaded} == {"dbnomics_series.v1", "dbnomics_series.v2"}
+    drifted_v1 = _preexisting_v1_dbnomics_fact(
+        observed_at=observed,
+        published_at=published,
+    )
+    drifted_v1 = MacroSourceFact.from_mapping(
+        {**v1.to_dict(), "valid_until": (published + timedelta(hours=72)).isoformat(), "content_sha256": None}
+    )
+    assert drifted_v1.fact_version_id == v1.fact_version_id
+    assert drifted_v1.content_sha256 != v1.content_sha256
+    with pytest.raises(ValueError, match="conflict"):
+        store.append_fact(drifted_v1)
+
+
+def test_hydrated_correction_replays_then_extends_chain(tmp_path: Path) -> None:
+    from trader.domain.world_macro import compatible_macro_source_leaves
+    from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
+
+    first_body = _dbnomics_body("2026-08", 4.25, indexed_at="2026-08-20T12:00:00Z")
+    second_body = _dbnomics_body("2026-08", 4.50, indexed_at="2026-08-23T12:00:00Z")
+    third_body = _dbnomics_body("2026-08", 4.75, indexed_at="2026-08-24T12:00:00Z")
+    clock = FakeClock(OBSERVED_AT)
+    store = WorldMacroStore(tmp_path, clock=clock)
+    value_a = _ports(ScriptedTransport([first_body]), clock=clock)["ecb_deposit_rate"].read_facts(
+        RUN_SCOPE, clock()
+    )[0]
+    store.append_fact(value_a)
+    clock.advance(hours=25)
+    value_b = _ports(
+        ScriptedTransport([second_body]),
+        clock=clock,
+        leaves={"ecb_deposit_rate": value_a},
+    )["ecb_deposit_rate"].read_facts(RUN_SCOPE, clock())[0]
+    assert value_b.supersedes_fact_version_id == value_a.fact_version_id.value
+    store.append_fact(value_b)
+
+    rebuilt = WorldMacroStore(tmp_path, clock=clock)
+    unseeded = _ports(ScriptedTransport([second_body]), clock=clock)["ecb_deposit_rate"].read_facts(
+        RUN_SCOPE, clock()
+    )[0]
+    assert unseeded.fact_version_id == value_b.fact_version_id
+    assert unseeded.supersedes_fact_version_id is None
+    assert unseeded.content_sha256 != value_b.content_sha256
+    with pytest.raises(ValueError, match="conflict"):
+        rebuilt.append_fact(unseeded)
+
+    leaves = compatible_macro_source_leaves(_bundle().registry, rebuilt.list_facts())
+    assert leaves["ecb_deposit_rate"] == value_b
+    replayed_b = _ports(ScriptedTransport([second_body]), clock=clock, leaves=leaves)["ecb_deposit_rate"].read_facts(
+        RUN_SCOPE, clock()
+    )[0]
+    assert replayed_b == value_b
+    rebuilt.append_fact(replayed_b)
+    assert len(rebuilt.list_facts()) == 2
+
+    clock.advance(hours=25)
+    value_c = _ports(
+        ScriptedTransport([third_body]),
+        clock=clock,
+        leaves={"ecb_deposit_rate": replayed_b},
+    )["ecb_deposit_rate"].read_facts(RUN_SCOPE, clock())[0]
+    assert value_c.supersedes_fact_version_id == value_b.fact_version_id.value
+    rebuilt.append_fact(value_c)
+    loaded = rebuilt.list_facts()
+    assert len(loaded) == 3
+    by_id = {item.fact_version_id.value: item for item in loaded}
+    assert by_id[value_c.fact_version_id.value].supersedes_fact_version_id == value_b.fact_version_id.value
+    assert by_id[value_b.fact_version_id.value].supersedes_fact_version_id == value_a.fact_version_id.value
 
 
 def test_late_fetch_does_not_extend_valid_until_of_already_expired_provider_data() -> None:
