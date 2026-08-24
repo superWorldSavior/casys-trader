@@ -37,6 +37,7 @@ from trader.domain.world_pattern import (
     PatternOccurrence,
 )
 from trader.infrastructure.state_db.world_model_query import read_world_pattern_ledger
+from trader.reporting.read_models.world_prediction_integrity import contains_forbidden_trader_feature
 
 
 WORLD_PATTERN_REPORT_SCHEMA = "world_pattern_report.v1"
@@ -53,19 +54,6 @@ CLASSES = ("DOWN", "FLAT", "UP")
 _MIN_UNIQUE_SUPPORT = 2
 _PERMUTATION_SEED = 20260823
 _MAX_EXACT_PERMUTATIONS = 120
-_FORBIDDEN_FEATURE_KEYS = frozenset(
-    {
-        "decision",
-        "decision_id",
-        "fill",
-        "order_id",
-        "pnl",
-        "policy",
-        "portfolio",
-        "position",
-        "target",
-    }
-)
 _GRAPH_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "world_graph.yaml"
 _CLAIM_FIELDS = {
     "authority": COHORT_AUTHORITY,
@@ -138,7 +126,7 @@ def project_world_pattern_report(
     outcome_by_event = _index_outcomes(ledger.get("outcomes") or ())
     predictions = [item for item in ledger.get("predictions") or () if isinstance(item, Mapping)]
     for prediction in predictions:
-        if _contains_forbidden(prediction):
+        if contains_forbidden_trader_feature(prediction):
             integrity_failures.append("trader_feature_key")
     context_by_slot = _index_control_predictions(predictions, mask=None, contract=CONTEXT_FEATURE_CONTRACT_ID)
     topology_by_slot = _index_control_predictions(
@@ -1075,19 +1063,6 @@ def _median(values: Sequence[float]) -> float:
     if count % 2 == 1:
         return ordered[middle]
     return (ordered[middle - 1] + ordered[middle]) / 2.0
-
-
-def _contains_forbidden(value: object) -> bool:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            if str(key) in _FORBIDDEN_FEATURE_KEYS:
-                return True
-            if _contains_forbidden(item):
-                return True
-        return False
-    if isinstance(value, (list, tuple)):
-        return any(_contains_forbidden(item) for item in value)
-    return False
 
 
 def _timestamp(value: Mapping[str, Any], *names: str) -> datetime | None:

@@ -28,22 +28,10 @@ from trader.domain.world_cohort import (
 )
 from trader.domain.world_episode import canonical_sha256, parse_utc_timestamp
 from trader.infrastructure.state_db.world_model_query import read_world_cohort_ledger
+from trader.reporting.read_models.world_prediction_integrity import contains_forbidden_trader_feature
 
 CLASSES = ("DOWN", "FLAT", "UP")
 _ONE_WEEK = timedelta(days=8)
-_FORBIDDEN_FEATURE_KEYS = frozenset(
-    {
-        "decision",
-        "decision_id",
-        "fill",
-        "order_id",
-        "pnl",
-        "policy",
-        "portfolio",
-        "position",
-        "target",
-    }
-)
 _PAIRING_FIELDS = (
     ("study_cohort_id", "study_cohort_id_mismatch"),
     ("manifest_sha256", "manifest_sha256_mismatch"),
@@ -301,7 +289,7 @@ def _score_predictions(
         if not isinstance(prediction, Mapping):
             excluded["invalid_prediction_identity"] += 1
             continue
-        if _contains_forbidden(prediction):
+        if contains_forbidden_trader_feature(prediction):
             integrity_failures.append("trader_feature_key")
         lane_id = _text(prediction.get("lane_id"))
         episode_id = _text(prediction.get("episode_id"))
@@ -881,19 +869,6 @@ def _evidence_digest(outcome: Mapping[str, Any]) -> str:
     if isinstance(evidence, Mapping):
         return canonical_sha256(dict(evidence))
     return canonical_sha256({})
-
-
-def _contains_forbidden(value: object) -> bool:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            if str(key) in _FORBIDDEN_FEATURE_KEYS:
-                return True
-            if _contains_forbidden(item):
-                return True
-        return False
-    if isinstance(value, (list, tuple)):
-        return any(_contains_forbidden(item) for item in value)
-    return False
 
 
 def _timestamp(value: Mapping[str, Any], *names: str) -> datetime | None:
