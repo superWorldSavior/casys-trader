@@ -68,7 +68,7 @@ from trader.application.world_model.encoding import (
 )
 from trader.domain.world_cohort import ModelFamily, WorldLaneDefinition
 from trader.domain.world_episode import (
-    DEFAULT_WORLD_HORIZONS,
+    SUPPORTED_WORLD_HORIZONS,
     PREDICTION_CLASSES,
     WorldEpisode,
     WorldObservation,
@@ -131,7 +131,7 @@ _CATEGORICAL_KEYS = frozenset(
         "source_status",
     }
 )
-_DEFAULT_HORIZONS = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
+_DEFAULT_HORIZONS = tuple(item.horizon_id for item in SUPPORTED_WORLD_HORIZONS)
 _EPISODE_ENVELOPE_KEYS = frozenset(
     {
         "schema_version",

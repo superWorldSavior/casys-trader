@@ -49,13 +49,15 @@ def _capture_service(
     store: WorldModelStore,
     cohort_service: WorldCohortService,
     predictor: object | None = None,
+    *,
+    horizons: tuple[str, ...] = ("elapsed_4h.v1",),
 ) -> WorldModelService:
     return WorldModelService(
         store=store,
         predictor=HierarchicalDirichletWorldBaseline() if predictor is None else predictor,
         labeler=None,
         bar_provider=None,
-        horizons=("elapsed_4h.v1",),
+        horizons=horizons,
         cohort_service=cohort_service,
     )
 
@@ -284,5 +286,27 @@ def test_admitted_bar_start_is_visible_to_cohort_bound_predictor(tmp_path: Path)
             assert nested.get("lane_id") == "markov.market"
             assert record.get("study_cohort_id") == cohort.cohort_id
             assert record.get("lane_id") == "markov.market"
+    finally:
+        store.close()
+
+
+def test_cohort_bound_predictor_uses_only_its_manifest_horizons(tmp_path: Path) -> None:
+    store, cohort_service, cohort, _evidence = _collecting_15m_cohort(tmp_path)
+    try:
+        live = _episode(BAR_START_TS, timestamp_semantics="bar_start")
+        predictor = _cohort_bound_market_predictor(cohort)
+        service = _capture_service(
+            store,
+            cohort_service,
+            predictor=predictor,
+            horizons=("elapsed_4h.v1", "elapsed_3d.v1"),
+        )
+
+        report = service.capture_and_predict((live,), now=CAPTURE_TS)
+
+        assert report["errors"] == []
+        assert report["predictions_appended"] == 1
+        rows = [row for row in store.list_predictions() if row.get("episode_id") == live.episode_id]
+        assert {row["horizon_code"] for row in rows} == {"elapsed_4h.v1"}
     finally:
         store.close()

@@ -416,6 +416,7 @@ class WorldModelService:
         self._started_cutoffs: dict[str, datetime] | None = None
         self._admitted_ids_by_cohort: dict[str, set[str]] | None = None
         self._blocked_lanes_by_cohort: dict[str, set[str]] | None = None
+        self._horizons_by_cohort: dict[str, set[str]] | None = None
 
     def capture_and_predict(
         self,
@@ -754,7 +755,7 @@ class WorldModelService:
         for predictor in self.predictors:
             if not _predictor_accepts(predictor, episode):
                 continue
-            if not self._predictor_sees_episode(predictor, episode):
+            if not self._predictor_sees_episode(predictor, episode, horizon=horizon):
                 continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             key = (identifier, horizon, model_id, model_version)
@@ -1135,7 +1136,7 @@ class WorldModelService:
             for predictor in apply_predictors:
                 if not _predictor_accepts(predictor, episode):
                     continue
-                if not self._predictor_sees_episode(predictor, episode):
+                if not self._predictor_sees_episode(predictor, episode, horizon=_horizon_id(row)):
                     continue
                 model_id, model_version = self._predictor_identities[id(predictor)]
                 try:
@@ -1386,7 +1387,7 @@ class WorldModelService:
                 continue
             if not _predictor_accepts(predictor, episode):
                 continue
-            if not self._predictor_sees_episode(predictor, episode):
+            if not self._predictor_sees_episode(predictor, episode, horizon=horizon):
                 continue
             model_id, model_version = self._predictor_identities[id(predictor)]
             try:
@@ -1485,11 +1486,13 @@ class WorldModelService:
         self._started_cutoffs = None
         self._admitted_ids_by_cohort = None
         self._blocked_lanes_by_cohort = None
+        self._horizons_by_cohort = None
 
     def _refresh_cohort_runtime_state(self) -> None:
         cutoffs: dict[str, datetime] = {}
         admitted: dict[str, set[str]] = {}
         blocked: dict[str, set[str]] = {}
+        horizons: dict[str, set[str]] = {}
         list_ids = getattr(self.store, "list_collecting_cohort_ids", None)
         load = getattr(self.store, "load", None)
         query = getattr(self.cohort_service, "query", None)
@@ -1497,12 +1500,14 @@ class WorldModelService:
             self._started_cutoffs = cutoffs
             self._admitted_ids_by_cohort = admitted
             self._blocked_lanes_by_cohort = blocked
+            self._horizons_by_cohort = horizons
             return
         envelope_for = getattr(query, "envelope_for", None)
         if not callable(envelope_for):
             self._started_cutoffs = cutoffs
             self._admitted_ids_by_cohort = admitted
             self._blocked_lanes_by_cohort = blocked
+            self._horizons_by_cohort = horizons
             return
         for cohort_id in list_ids():
             try:
@@ -1516,6 +1521,7 @@ class WorldModelService:
                 for slot in getattr(cohort, "admitted_slots", ()):
                     refs.update(dict(slot.episode_refs_by_contract).values())
                 admitted[str(cohort.cohort_id)] = refs
+                horizons[str(cohort.cohort_id)] = set(cohort.manifest.horizons)
                 blocked[str(cohort.cohort_id)] = {
                     lane_id
                     for lane_id, state in dict(getattr(cohort, "lane_states", {})).items()
@@ -1526,24 +1532,34 @@ class WorldModelService:
         self._started_cutoffs = cutoffs
         self._admitted_ids_by_cohort = admitted
         self._blocked_lanes_by_cohort = blocked
+        self._horizons_by_cohort = horizons
 
-    def _cohort_runtime_state(self) -> tuple[dict[str, datetime], dict[str, set[str]], dict[str, set[str]]]:
+    def _cohort_runtime_state(
+        self,
+    ) -> tuple[dict[str, datetime], dict[str, set[str]], dict[str, set[str]], dict[str, set[str]]]:
         if (
             self._started_cutoffs is None
             or self._admitted_ids_by_cohort is None
             or self._blocked_lanes_by_cohort is None
+            or self._horizons_by_cohort is None
         ):
             self._refresh_cohort_runtime_state()
         assert self._started_cutoffs is not None
         assert self._admitted_ids_by_cohort is not None
         assert self._blocked_lanes_by_cohort is not None
-        return self._started_cutoffs, self._admitted_ids_by_cohort, self._blocked_lanes_by_cohort
+        assert self._horizons_by_cohort is not None
+        return (
+            self._started_cutoffs,
+            self._admitted_ids_by_cohort,
+            self._blocked_lanes_by_cohort,
+            self._horizons_by_cohort,
+        )
 
-    def _predictor_sees_episode(self, predictor: object, episode: object) -> bool:
+    def _predictor_sees_episode(self, predictor: object, episode: object, *, horizon: str | None = None) -> bool:
         identity = getattr(predictor, "lane_identity", None)
         if identity is None:
             return True
-        cutoffs, admitted, blocked = self._cohort_runtime_state()
+        cutoffs, admitted, blocked, horizons = self._cohort_runtime_state()
         cutoff = cutoffs.get(str(getattr(identity, "started_event_id", "") or ""))
         if cutoff is None:
             return False
@@ -1553,6 +1569,8 @@ class WorldModelService:
         cohort_id = str(getattr(identity, "study_cohort_id", "") or "")
         identifier = _episode_id(episode)
         if identifier is None or identifier not in admitted.get(cohort_id, set()):
+            return False
+        if horizon is not None and horizon not in horizons.get(cohort_id, set()):
             return False
         lane_id = str(getattr(identity, "lane_id", "") or "")
         if lane_id in blocked.get(cohort_id, set()):

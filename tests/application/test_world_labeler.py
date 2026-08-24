@@ -7,6 +7,7 @@ import math
 import pytest
 
 from trader.application.world_model.labeler import (
+    DEFAULT_HORIZONS,
     DIRECTION_BAND,
     DIRECTION_SEMANTICS_VERSION,
     is_eligible_completed_bar,
@@ -84,6 +85,24 @@ def test_elapsed_horizons_are_strictly_independent() -> None:
     assert labels["elapsed_4h.v1"]["training_eligibility_reason"] == "target_available_at_inferred"
     assert labels["elapsed_1d.v1"]["status"] == "missing"
     assert labels["elapsed_1d.v1"]["target_bar"] is None
+
+
+def test_three_day_swing_horizon_is_supported_but_not_in_the_active_default() -> None:
+    anchor_at = datetime(2026, 8, 1, 10, tzinfo=UTC)
+    target_at = anchor_at + timedelta(days=3)
+
+    result = label_horizon(
+        _episode(anchor_at),
+        [_bar(target_at, 103.0, available_at=target_at)],
+        "elapsed_3d.v1",
+        now=target_at,
+    )
+
+    assert tuple(item.horizon_id for item in DEFAULT_HORIZONS) == ("elapsed_4h.v1", "elapsed_1d.v1")
+    assert result["status"] == "observed"
+    assert result["horizon_id"] == "elapsed_3d.v1"
+    assert result["target_at"] == target_at.isoformat()
+    assert result["simple_return"] == pytest.approx(0.03)
 
 
 def test_before_target_bar_is_never_used_as_a_horizon_fallback() -> None:

@@ -2094,6 +2094,7 @@ def main(
     _world_macro_runner: object | None = None
     _world_macro_store: object | None = None
     _world_macro_mapping: object | None = None
+    _world_model_horizons: tuple[str, ...] | None = None
     try:
         from trader.application.world_model.pilot_activation import load_world_shadow_pilot_config
 
@@ -2101,6 +2102,7 @@ def main(
     except Exception:  # noqa: BLE001 - missing/invalid pilot config cannot block trading
         _pilot_config = None
     if _world_shadow_pilot_activation and _pilot_config is not None and _pilot_config.enabled:
+        _world_model_horizons = tuple(str(item) for item in _pilot_config.payload["horizons"])
         _world_model_context = _world_model_context or bool(_pilot_config.workers.get("context"))
         _world_model_graph = _world_model_graph or bool(_pilot_config.workers.get("graph"))
         _world_macro_source_only = _world_macro_source_only or bool(_pilot_config.workers.get("macro_source"))
@@ -2161,6 +2163,7 @@ def main(
             from trader.application.world_model.cohort_service import WorldCohortService
             from trader.infrastructure.state_db.world_model_store import WorldModelStore
             from trader.runtime.world_model_runtime import (
+                DEFAULT_HORIZONS,
                 CallableWorldBarProvider,
                 WorldContextEpisodeEnricher,
                 WorldModelBackgroundRunner,
@@ -2281,6 +2284,7 @@ def main(
                 logger=log,
                 lookback=DEFAULT_RUNTIME_LOOKBACK,
                 cohort_service=_world_cohort_service,
+                horizons=_world_model_horizons or DEFAULT_HORIZONS,
             )
             _world_resource_guard = None
             try:

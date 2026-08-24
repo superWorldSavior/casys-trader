@@ -41,8 +41,10 @@ class HorizonSpec:
 
 ELAPSED_4H = HorizonSpec("elapsed_4h.v1", timedelta(hours=4))
 ELAPSED_1D = HorizonSpec("elapsed_1d.v1", timedelta(days=1))
+ELAPSED_3D = HorizonSpec("elapsed_3d.v1", timedelta(days=3))
 DEFAULT_HORIZONS: tuple[HorizonSpec, ...] = (ELAPSED_4H, ELAPSED_1D)
-_HORIZONS_BY_ID = {spec.horizon_id: spec for spec in DEFAULT_HORIZONS}
+SUPPORTED_HORIZONS: tuple[HorizonSpec, ...] = (*DEFAULT_HORIZONS, ELAPSED_3D)
+_HORIZONS_BY_ID = {spec.horizon_id: spec for spec in SUPPORTED_HORIZONS}
 
 
 @dataclass(frozen=True)
@@ -790,9 +792,11 @@ __all__ = [
     "DIRECTION_BAND",
     "DIRECTION_SEMANTICS_VERSION",
     "ELAPSED_1D",
+    "ELAPSED_3D",
     "ELAPSED_4H",
     "HorizonSpec",
     "LABEL_SEMANTICS_VERSION",
+    "SUPPORTED_HORIZONS",
     "label_episode",
     "label_horizon",
 ]

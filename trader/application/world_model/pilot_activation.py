@@ -53,7 +53,7 @@ from trader.domain.world_cohort import (
     WorldRuntimeIdentityIntent,
     WorldSensorRequirement,
 )
-from trader.domain.world_episode import canonical_sha256, parse_utc_timestamp
+from trader.domain.world_episode import SUPPORTED_WORLD_HORIZONS, canonical_sha256, parse_utc_timestamp
 from trader.domain.world_feature_contract import (
     GRAPH_FEATURE_CONTRACT_ID,
     MARKET_ONTOLOGY_REVISION,
@@ -213,6 +213,19 @@ def _parse_world_shadow_pilot_config(path: Path) -> WorldShadowPilotConfig:
         raise ValueError("window.duration_days must be a positive int")
     if window.get("collection_stop_kind") != "fixed_end":
         raise ValueError("window.collection_stop_kind must be fixed_end")
+    raw_horizons = payload.get("horizons")
+    if isinstance(raw_horizons, (str, bytes)) or not isinstance(raw_horizons, Sequence):
+        raise TypeError("horizons must be a sequence")
+    horizons = tuple(_required_text(item, "horizons[]") for item in raw_horizons)
+    if not horizons or len(set(horizons)) != len(horizons):
+        raise ValueError("horizons must be non-empty and unique")
+    supported_horizons = {item.horizon_id for item in SUPPORTED_WORLD_HORIZONS}
+    unsupported = sorted(set(horizons) - supported_horizons)
+    if unsupported:
+        raise ValueError(f"unsupported World shadow-pilot horizons: {', '.join(unsupported)}")
+    primary_horizon = _required_text(payload.get("primary_horizon"), "primary_horizon")
+    if primary_horizon not in horizons:
+        raise ValueError("primary_horizon must be one of horizons")
     scope = _mapping(payload.get("scope_mapping"), "scope_mapping")
     if scope.get("mapping_id") != WORLD_SCOPE_MAPPING_ID:
         raise ValueError(f"scope_mapping must reuse the committed {WORLD_SCOPE_MAPPING_ID}")

@@ -102,6 +102,8 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["pnl_claim"] is False
     assert payload["activation_policy"] == "operator_authorized_on_boot"
     assert payload["enabled"] is True
+    assert payload["horizons"] == ["elapsed_4h.v1", "elapsed_1d.v1"]
+    assert payload["primary_horizon"] == "elapsed_1d.v1"
     assert "runtime_identity" not in payload
     assert "git_commit" not in payload["runtime_identity_intent"]
     hashed = dict(payload)
@@ -259,6 +261,27 @@ def test_env_and_config_disable_skip_register_without_raising() -> None:
     assert missing.status == "skipped"
     assert missing.reason in {"config_missing", "config_invalid"}
     assert store.manifests == {}
+
+
+def test_next_cohort_can_add_three_day_metric_while_one_day_stays_primary(tmp_path: Path) -> None:
+    payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    payload["lifecycle_generation"] = 2
+    payload["horizons"] = ["elapsed_4h.v1", "elapsed_1d.v1", "elapsed_3d.v1"]
+    payload["primary_horizon"] = "elapsed_1d.v1"
+    config_dir = _write_hashed_pilot_config(tmp_path / "next", payload)
+    service, store = _service()
+
+    report = _activate(
+        cohort_service=service,
+        config_dir=config_dir,
+        runtime_identity=_FixedIdentity(_identity()),
+    )
+
+    assert report.status == "started"
+    for item in report.cohorts:
+        cohort = store.load(WorldCohortId(item["cohort_id"]))
+        assert cohort.manifest.horizons == ("elapsed_4h.v1", "elapsed_1d.v1", "elapsed_3d.v1")
+        assert cohort.manifest.primary_horizon == "elapsed_1d.v1"
 
 
 def test_invalid_or_disabled_config_is_fail_open(tmp_path) -> None:

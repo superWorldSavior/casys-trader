@@ -68,6 +68,14 @@ Horizons **fixes**, sans fallback silencieux :
 |---|---|---|
 | 4 h | `timedelta(hours=4)` | `elapsed_4h.v1` |
 | 1 j | `timedelta(days=1)` | `elapsed_1d.v1` |
+| 3 j | `timedelta(days=3)` | `elapsed_3d.v1` |
+
+`elapsed_3d.v1` est supporté pour la prochaine cohorte comme métrique swing
+supplémentaire. La cohorte active conserve `4 h + 1 j`, avec `1 j` primaire ;
+un manifeste futur peut déclarer `4 h + 1 j + 3 j` tout en gardant `1 j`
+primaire. Les prédicteurs liés à une cohorte ne calculent que les horizons de
+leur propre manifeste, ce qui permet aux cohortes de se chevaucher sans fuite
+de protocole.
 
 `anchor_end_at` est l'horloge de transition : la barre d'ancrage doit être
 close. `target_at = anchor_end_at + duration`. Un intervalle source plus long

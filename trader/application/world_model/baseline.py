@@ -55,7 +55,7 @@ from trader.application.world_model.encoding import (
 )
 from trader.domain.world_cohort import ModelFamily, WorldLaneDefinition
 from trader.domain.world_episode import (
-    DEFAULT_WORLD_HORIZONS,
+    SUPPORTED_WORLD_HORIZONS,
     WorldEpisode,
     WorldPrediction,
 )
@@ -66,7 +66,7 @@ MODEL_ID = "hierarchical_dirichlet_world_baseline"
 MODEL_VERSION = "v1"
 _MISSING = world_encoding._MISSING
 _StateKey = tuple[tuple[str, str], ...]
-_DEFAULT_HORIZONS = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
+_DEFAULT_HORIZONS = tuple(item.horizon_id for item in SUPPORTED_WORLD_HORIZONS)
 
 
 @dataclass(frozen=True)

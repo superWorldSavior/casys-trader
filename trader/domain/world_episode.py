@@ -149,6 +149,7 @@ __all__ = [
     "ALLOWED_CATEGORICAL_FEATURES",
     "ALLOWED_NUMERIC_FEATURES",
     "DEFAULT_WORLD_HORIZONS",
+    "SUPPORTED_WORLD_HORIZONS",
     "FRESHNESS_STATUSES",
     "OUTCOME_EVENT_TYPES",
     "OUTCOME_STATUSES",
@@ -1069,10 +1070,12 @@ class OutcomeHorizon:
         }
 
 
-DEFAULT_WORLD_HORIZONS = (
+SUPPORTED_WORLD_HORIZONS = (
     OutcomeHorizon("elapsed_4h.v1", 4 * 60 * 60),
     OutcomeHorizon("elapsed_1d.v1", 24 * 60 * 60),
+    OutcomeHorizon("elapsed_3d.v1", 3 * 24 * 60 * 60),
 )
+DEFAULT_WORLD_HORIZONS = SUPPORTED_WORLD_HORIZONS[:2]
 
 
 def _finite_optional(value: float | None, field_name: str) -> float | None:
@@ -1336,7 +1339,7 @@ class WorldOutcome:
                 nested_horizon,
                 names=("horizon_id", "horizon_code"),
             )
-            known = {item.horizon_id: item for item in DEFAULT_WORLD_HORIZONS}
+            known = {item.horizon_id: item for item in SUPPORTED_WORLD_HORIZONS}
             match = known.get(str(horizon_id or "").strip())
             if match is not None:
                 horizon = match

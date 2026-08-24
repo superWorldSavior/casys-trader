@@ -15,8 +15,8 @@ from typing import Any
 
 from trader.domain.world_availability import AvailabilityEvidence
 from trader.domain.world_episode import (
-    DEFAULT_WORLD_HORIZONS,
     OUTCOME_STATUSES,
+    SUPPORTED_WORLD_HORIZONS,
     canonical_sha256,
     parse_utc_timestamp,
 )
@@ -44,7 +44,7 @@ _EVENT_ID_PREFIX = "world_cohort_event:v1"
 _SLOT_ID_PREFIX = "world_cohort_slot:v1"
 _EVENT_SUBJECT_KIND = "world_cohort_event"
 
-_KNOWN_HORIZONS = frozenset(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
+_KNOWN_HORIZONS = frozenset(item.horizon_id for item in SUPPORTED_WORLD_HORIZONS)
 _TERMINAL_OUTCOME_STATUSES = frozenset(status for status in OUTCOME_STATUSES if status != "pending")
 _PRIMARY_LANE_ROLES: frozenset[str] = frozenset({"primary_control", "primary_treatment", "pilot_treatment"})
 _SCOPE_LANE_NAMES = frozenset({"macro", "joint", "graph"})
@@ -816,7 +816,7 @@ class WorldCohortManifest:
         horizons = _non_empty_text_tuple(self.horizons, "horizons")
         unknown_horizons = [item for item in horizons if item not in _KNOWN_HORIZONS]
         if unknown_horizons:
-            raise ValueError("horizons must be declared elapsed_4h.v1/elapsed_1d.v1 identities")
+            raise ValueError("horizons must use supported elapsed-time identities")
         primary_horizon = _required_text(self.primary_horizon, "primary_horizon")
         if primary_horizon not in set(horizons):
             raise ValueError("primary_horizon must be one of the declared horizons")
