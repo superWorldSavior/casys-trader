@@ -1,8 +1,9 @@
 """Persistance SQLite des verdicts d'attribution des sélections d'univers.
 
 Le store reçoit une StateDb déjà ouverte (casys.db partagé). Il n'ouvre pas
-de connexion séparée. Les migrations v6+v7 doivent être appliquées avant
-construction. La v6 n'est pas mutée : la v7 recrée la table.
+de connexion séparée. Les migrations v6+v7+v8 doivent être appliquées avant
+construction. La v6 n'est pas mutée : la v7 recrée la table. La v8 est
+additive (``direction_source``).
 """
 
 from __future__ import annotations
@@ -75,6 +76,7 @@ def _row_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
         "bench_median_opportunity": _optional_float(row["bench_median_opportunity"]),
         "allocation_excess": _optional_float(row["allocation_excess"]),
         "bench_n": _optional_int(row["bench_n"]),
+        "direction_source": str(row["direction_source"] or ""),
     }
 
 
@@ -82,7 +84,7 @@ class UniverseSelectionStore:
     """Upsert / lecture de ``universe_selection_outcomes``.
 
     Args:
-        db: StateDb ouverte avec les migrations v6+v7 appliquées.
+        db: StateDb ouverte avec les migrations v6+v7+v8 appliquées.
     """
 
     def __init__(self, db: StateDb) -> None:
@@ -99,8 +101,9 @@ class UniverseSelectionStore:
                         mandate_id, symbol, family, role, allowed_sides, as_of, venue,
                         horizon_sessions, forward_return, verdict, flair_score, evaluated_at,
                         verdict_basis, candidate_scope_id, selector,
-                        opportunity, bench_median_opportunity, allocation_excess, bench_n
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                        opportunity, bench_median_opportunity, allocation_excess, bench_n,
+                        direction_source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(mandate_id, symbol, as_of, horizon_sessions, verdict_basis)
                     DO UPDATE SET
                         family=excluded.family,
@@ -115,7 +118,8 @@ class UniverseSelectionStore:
                         opportunity=excluded.opportunity,
                         bench_median_opportunity=excluded.bench_median_opportunity,
                         allocation_excess=excluded.allocation_excess,
-                        bench_n=excluded.bench_n
+                        bench_n=excluded.bench_n,
+                        direction_source=excluded.direction_source
                     """,
                     (
                         str(row.get("mandate_id") or ""),
@@ -136,6 +140,7 @@ class UniverseSelectionStore:
                         row.get("bench_median_opportunity"),
                         row.get("allocation_excess"),
                         row.get("bench_n"),
+                        str(row.get("direction_source") or "") or None,
                     ),
                 )
 
@@ -145,7 +150,8 @@ class UniverseSelectionStore:
             SELECT id, mandate_id, symbol, family, role, allowed_sides, as_of, venue,
                    horizon_sessions, forward_return, verdict, flair_score, evaluated_at,
                    verdict_basis, candidate_scope_id, selector,
-                   opportunity, bench_median_opportunity, allocation_excess, bench_n
+                   opportunity, bench_median_opportunity, allocation_excess, bench_n,
+                   direction_source
               FROM universe_selection_outcomes
              ORDER BY id
             """
@@ -201,14 +207,16 @@ class UniverseSelectionStore:
 
 
 def try_open_universe_selection_store(state_dir: str | Path) -> UniverseSelectionStore:
-    """Ouvre le store sur casys.db, applique v6+v7, et aligne la sémantique."""
+    """Open casys.db and apply v6+v7+v8. Does not bump or purge semantics.
+
+    Readers (digest, ``summary``) must not wipe derived outcomes. The
+    rejudge path calls ``ensure_selection_semantics`` itself.
+    """
     from trader.infrastructure.state_db.connection import open_state_db
 
     db = open_state_db(Path(state_dir) / "casys.db")
     db.apply_migrations(list(UNIVERSE_SELECTION_MIGRATIONS))
-    store = UniverseSelectionStore(db)
-    store.ensure_selection_semantics()
-    return store
+    return UniverseSelectionStore(db)
 
 
 __all__ = ["UniverseSelectionStore", "try_open_universe_selection_store"]

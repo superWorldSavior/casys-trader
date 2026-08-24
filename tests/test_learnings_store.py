@@ -981,6 +981,54 @@ def test_search_memrl_departage_des_notes_equivalentes(tmp_path: Path) -> None:
     assert result[1]["q_value"] == -0.1
 
 
+def test_search_exclut_une_note_memrl_nuisible_mesuree(tmp_path: Path) -> None:
+    from trader.domain.learnings.scoring import MEMRL_MIN_UPDATES
+
+    rows = [
+        {**_ROWS[0], "decision_id": "ok-setup", "note": "même setup", "symbol": "SPY"},
+        {**_ROWS[0], "decision_id": "hurt-setup", "note": "même setup", "symbol": "SPY"},
+    ]
+    jsonl = tmp_path / "hurt.jsonl"
+    _write_jsonl(jsonl, rows)
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    ok_id, hurt_id = [row[0] for row in store._conn.execute("SELECT id FROM notes ORDER BY id")]
+    store._conn.execute(
+        "UPDATE notes SET q_value=?, q_updates=? WHERE id=?",
+        (0.05, 3, ok_id),
+    )
+    store._conn.execute(
+        "UPDATE notes SET q_value=?, q_updates=? WHERE id=?",
+        (-0.4, MEMRL_MIN_UPDATES, hurt_id),
+    )
+    store._conn.commit()
+
+    result = store.search(symbol="SPY", limit=8, now=datetime(2026, 7, 10, tzinfo=timezone.utc))
+    ids = [row["id"] for row in result]
+    assert ok_id in ids
+    assert hurt_id not in ids
+
+
+def test_search_vide_si_tous_les_matchs_sont_nuisibles_mesures(tmp_path: Path) -> None:
+    from trader.domain.learnings.scoring import MEMRL_MIN_UPDATES
+
+    jsonl = tmp_path / "only-hurt.jsonl"
+    _write_jsonl(
+        jsonl,
+        [{**_ROWS[0], "decision_id": "only-hurt", "note": "setup toxique", "symbol": "SPY"}],
+    )
+    store = LearningsStore(tmp_path / "learnings.db")
+    store.ingest_jsonl(jsonl, source="test")
+    note_id = store._conn.execute("SELECT id FROM notes").fetchone()[0]
+    store._conn.execute(
+        "UPDATE notes SET q_value=?, q_updates=? WHERE id=?",
+        (-0.5, MEMRL_MIN_UPDATES, note_id),
+    )
+    store._conn.commit()
+
+    assert store.search(symbol="SPY", now=datetime(2026, 7, 10, tzinfo=timezone.utc)) == []
+
+
 # ---------------------------------------------------------------------------
 # Findings review Codex 2026-07-02 : thread-safety, query restriction, verdict
 # ---------------------------------------------------------------------------

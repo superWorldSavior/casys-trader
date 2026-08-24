@@ -12,8 +12,12 @@ Usage :
     uv run python scripts/universe_selection_analytics.py trader --json
     uv run python scripts/universe_selection_analytics.py --state-dir PATH --horizon 5
 
+``summary`` (défaut) agrège allocation + direction dure, comme le digest ;
+les vues souples sont uniquement dans ``direction_by_source``.
+
 ``bench`` compare ``selector=agent`` et ``selector=baseline_fallback`` par
-base (beat_bench_rate allocation, win_rate directionnel, n).
+base (beat_bench_rate allocation, win_rate directionnel dur, n) et split
+``direction_by_source`` (hard ``allowed_sides`` vs soft ``directional_view``).
 
 ``evaluate`` juge les mandats de ``state/universe_mandates/history.jsonl`` via
 le port ``DataSource`` (YFinance par défaut), upsert les verdicts, recalcule
@@ -108,6 +112,7 @@ def run_evaluate(
     )
 
     store = _open_store(state_dir)
+    store.ensure_selection_semantics()
     source = data_source if data_source is not None else build_script_data_source()
     from trader.infrastructure.state_db.candidate_scope_store import CandidateScopeStore
 

@@ -419,6 +419,17 @@ Le premier rejugement complet a lieu au prochain sync daemon (purge `bench_v2`
 puis replay). Le digest allocation n'entre dans le prompt univers qu'une fois
 `min_n=5` atteint sur une base.
 
+**Addendum (2026-08-16).** Mesure de `directional_view` quand `allowed_sides`
+n'est pas strictement directionnel (`long_bias`→BUY, `short_bias`→SELL ;
+`two_sided`/`neutral`/absent → pas de ligne direction). Tag
+`direction_source` en migration **v8 additive** (pas de recréation, pas de
+bump `bench_v3` : le dénominateur vu par l'agent ne change pas). Le digest et
+le FLAIR live ne voient que `allowed_sides` — aucun gradient d'incitation sur
+la forme. Trois pools FLAIR (`allocation`, `direction`, `direction_view`).
+L'analytics (`summary` et `bench`) split hard vs soft
+(`direction_by_source`). Trancher l'incitation à verrouiller les sides reste
+une décision séparée, une fois ce split mesuré.
+
 ---
 
 ## D17 — Boucles de feedback fermées : le marché note la mémoire, les sélections et les briefs  🛠 implémenté (rétrospectif, 2026-08-16)

@@ -6,10 +6,13 @@ import pytest
 
 from trader.application.universe.selection_attribution import (
     MIN_FEEDBACK_N,
+    EvaluatedSelection,
     UniverseSelection,
+    compare_selection_selectors,
     evaluate_selection,
     evaluate_selections,
     load_mandate_selections,
+    persist_and_score,
     refresh_selection_outcomes,
     resolve_bench,
     selection_feedback_digest,
@@ -18,7 +21,7 @@ from trader.application.universe.selection_attribution import (
     summarize_outcomes,
 )
 from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
-from trader.domain.market_data import Bar
+from trader.domain.market_data import Bar, MarketError
 from trader.domain.universe.selection_attribution import (
     MIN_BENCH_EVALUATED,
     SELECTION_SEMANTICS_VERSION,
@@ -37,6 +40,11 @@ class _FakeSource:
     def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
         self.calls.append((symbol, lookback, interval))
         return list(self.bars_by_symbol.get(symbol, []))
+
+
+class _ErrorSource:
+    def get_bars(self, symbol: str, lookback: str, interval: str) -> list[Bar]:
+        raise MarketError("fetch_failed", f"{symbol}: 429")
 
 
 def _selection(**overrides) -> UniverseSelection:
@@ -104,6 +112,53 @@ def test_selection_non_directionnelle_n_a_pas_de_ligne_direction() -> None:
     assert both[0].verdict == "non_evaluable"
 
 
+def test_long_bias_sides_ouverts_produit_une_ligne_direction_taguee_vue() -> None:
+    rows = evaluate_selection(
+        _selection(allowed_sides=("long", "short"), directional_view="long_bias"),
+        _path_bars(100.0, 110.0),
+        horizon_sessions=5,
+    )
+    direction = _direction(rows)
+    assert direction.verdict == "gagnant"
+    assert direction.direction_source == "directional_view"
+
+
+def test_short_bias_sides_ouverts_juge_sell() -> None:
+    rows = evaluate_selection(
+        _selection(allowed_sides=("long", "short"), directional_view="short_bias"),
+        _path_bars(100.0, 110.0),
+        horizon_sessions=5,
+    )
+    assert _direction(rows).verdict == "perdant"
+    assert _direction(rows).direction_source == "directional_view"
+
+
+def test_two_sided_ou_neutral_ne_produisent_pas_de_ligne_direction() -> None:
+    two = evaluate_selection(
+        _selection(allowed_sides=("long", "short"), directional_view="two_sided"),
+        _path_bars(100.0, 110.0),
+        horizon_sessions=5,
+    )
+    neutral = evaluate_selection(
+        _selection(allowed_sides=("long", "short"), directional_view="neutral"),
+        _path_bars(100.0, 110.0),
+        horizon_sessions=5,
+    )
+    assert [row.verdict_basis for row in two] == ["allocation"]
+    assert [row.verdict_basis for row in neutral] == ["allocation"]
+
+
+def test_sides_durs_gardent_le_tag_allowed_sides_meme_si_vue_presente() -> None:
+    rows = evaluate_selection(
+        _selection(allowed_sides=("long",), directional_view="short_bias"),
+        _path_bars(100.0, 90.0),
+        horizon_sessions=5,
+    )
+    direction = _direction(rows)
+    assert direction.verdict == "perdant"
+    assert direction.direction_source == "allowed_sides"
+
+
 def test_selections_from_active_slice_and_full_mandate() -> None:
     slice_rows = selections_from_mandate_payload(
         {
@@ -139,6 +194,29 @@ def test_selections_from_active_slice_and_full_mandate() -> None:
     assert slice_rows[0].family == "defense_aero_eu"
     assert slice_rows[0].allowed_sides == ("long",)
     assert full_rows == slice_rows
+
+
+def test_selections_extrait_directional_view_du_symbol_mandate() -> None:
+    rows = selections_from_mandate_payload(
+        {
+            "mandate_id": "m-eu",
+            "venue": "EU",
+            "as_of": "2026-07-11T08:00:00+00:00",
+            "status": "active",
+            "symbols": {
+                "AIR.PA": {
+                    "symbol": "AIR.PA",
+                    "role": "core_candidate",
+                    "allowed_sides": ["long", "short"],
+                    "directional_view": "long_bias",
+                    "family_context": {"family": "defense_aero_eu"},
+                }
+            },
+        }
+    )
+    assert len(rows) == 1
+    assert rows[0].directional_view == "long_bias"
+    assert rows[0].allowed_sides == ("long", "short")
 
 
 def test_summarize_outcomes_ignore_les_groupes_sous_le_plancher() -> None:
@@ -198,6 +276,44 @@ def test_summarize_outcomes_separe_pays_et_decoit_au_plancher() -> None:
     summary = summarize_outcomes(rows)
     assert summary["pays"]["families"] == ["alpha"]
     assert summary["decoit"]["families"] == ["beta"]
+
+
+def test_summarize_outcomes_n_exclut_les_vues_souples_du_top_level() -> None:
+    live = [
+        {
+            "family": "tw_consumer",
+            "venue": "TW",
+            "role": "core_candidate",
+            "verdict": "perdant",
+            "flair_score": -0.04,
+            "horizon_sessions": 5,
+            "verdict_basis": "direction",
+            "direction_source": "allowed_sides",
+        }
+    ]
+    soft = [
+        {
+            "family": "eu_tech",
+            "venue": "EU",
+            "role": "core_candidate",
+            "verdict": "gagnant",
+            "flair_score": 0.08,
+            "horizon_sessions": 5,
+            "verdict_basis": "direction",
+            "direction_source": "directional_view",
+        }
+        for _ in range(MIN_FEEDBACK_N)
+    ]
+    summary = summarize_outcomes(live + soft)
+    assert summary["n"] == 1
+    assert summary["n_gagnant"] == 0
+    assert summary["n_perdant"] == 1
+    assert {item["family"] for item in summary["by_family"]} == {"tw_consumer"}
+    assert summary["pays"]["families"] == []
+    assert summary["direction_by_source"]["allowed_sides"]["n"] == 1
+    assert summary["direction_by_source"]["allowed_sides"]["win_rate"] == 0.0
+    assert summary["direction_by_source"]["directional_view"]["n"] == MIN_FEEDBACK_N
+    assert summary["direction_by_source"]["directional_view"]["win_rate"] == 1.0
 
 
 def test_selection_feedback_digest_reste_comparatif_et_filtre_la_venue() -> None:
@@ -365,6 +481,130 @@ def test_selection_feedback_digest_ignore_le_baseline_et_min_n_par_base() -> Non
     assert digest["families"][0]["allocation"]["n"] == MIN_FEEDBACK_N
     assert "direction" not in digest["families"][0]
     assert digest["n_evaluated"] == MIN_FEEDBACK_N + (MIN_FEEDBACK_N - 1)
+    assert digest["allocation"]["n"] == MIN_FEEDBACK_N
+    assert digest["allocation"]["vs_baseline"]["n"] == MIN_FEEDBACK_N
+    assert digest["allocation"]["vs_baseline"]["lift"] == 0.0
+
+
+def test_digest_allocation_venue_parle_sans_min_n_famille() -> None:
+    rows = []
+    for family, n in (("eu_tech", 2), ("eu_industrials", 2), ("defense", 1)):
+        rows.extend(
+            {
+                "family": family,
+                "venue": "EU",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.03,
+                "horizon_sessions": 5,
+                "verdict_basis": "allocation",
+                "selector": "agent",
+            }
+            for _ in range(n)
+        )
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["status"] == "observed"
+    assert digest["families"] == []
+    assert digest["allocation"]["n"] == MIN_FEEDBACK_N
+    assert digest["allocation"]["beat_bench_rate"] == 1.0
+    assert "vs_baseline" not in digest["allocation"]
+
+
+def test_digest_ignore_les_vues_souples_meme_au_dessus_du_plancher() -> None:
+    rows = [
+        {
+            "family": "eu_tech",
+            "venue": "EU",
+            "role": "core_candidate",
+            "verdict": "gagnant",
+            "flair_score": 0.08,
+            "horizon_sessions": 5,
+            "verdict_basis": "direction",
+            "selector": "agent",
+            "direction_source": "directional_view",
+        }
+        for _ in range(MIN_FEEDBACK_N)
+    ]
+    digest = selection_feedback_digest(rows, venue="EU")
+    assert digest["status"] == "insufficient"
+    assert digest["families"] == []
+    assert digest["n_evaluated"] == 0
+    dumped = json.dumps(digest)
+    assert "directional_view" not in dumped
+    assert "direction_source" not in dumped
+
+
+def test_digest_garde_les_appels_durs_quand_des_vues_souples_cohabitent() -> None:
+    rows = [
+        *(
+            {
+                "family": "tw_consumer",
+                "venue": "TW",
+                "role": "core_candidate",
+                "verdict": "gagnant",
+                "flair_score": 0.05,
+                "horizon_sessions": 5,
+                "verdict_basis": "direction",
+                "selector": "agent",
+                "direction_source": "allowed_sides",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+        *(
+            {
+                "family": "eu_tech",
+                "venue": "TW",
+                "role": "core_candidate",
+                "verdict": "perdant",
+                "flair_score": -0.04,
+                "horizon_sessions": 5,
+                "verdict_basis": "direction",
+                "selector": "agent",
+                "direction_source": "directional_view",
+            }
+            for _ in range(MIN_FEEDBACK_N)
+        ),
+    ]
+    digest = selection_feedback_digest(rows, venue="TW")
+    assert digest["status"] == "observed"
+    assert [item["family"] for item in digest["families"]] == ["tw_consumer"]
+    assert digest["families"][0]["direction"]["n"] == MIN_FEEDBACK_N
+    assert digest["families"][0]["direction"]["win_rate"] == 1.0
+    assert digest["n_evaluated"] == MIN_FEEDBACK_N
+
+
+def test_compare_selectors_direction_est_dur_only_avec_split_source() -> None:
+    compared = compare_selection_selectors(
+        [
+            {
+                "selector": "agent",
+                "verdict_basis": "direction",
+                "verdict": "gagnant",
+                "direction_source": "allowed_sides",
+                "flair_score": 0.1,
+            },
+            {
+                "selector": "agent",
+                "verdict_basis": "direction",
+                "verdict": "perdant",
+                "direction_source": "directional_view",
+                "flair_score": -0.1,
+            },
+            {
+                "selector": "agent",
+                "verdict_basis": "allocation",
+                "verdict": "gagnant",
+                "flair_score": 0.05,
+            },
+        ]
+    )
+    assert compared["agent"]["direction"]["n"] == 1
+    assert compared["agent"]["direction"]["win_rate"] == 1.0
+    by_source = compared["agent"]["direction_by_source"]
+    assert by_source["allowed_sides"]["n"] == 1
+    assert by_source["allowed_sides"]["win_rate"] == 1.0
+    assert by_source["directional_view"]["n"] == 1
+    assert by_source["directional_view"]["win_rate"] == 0.0
 
 
 def _mandate(
@@ -577,6 +817,7 @@ def test_refresh_ouvre_le_store_par_injection(tmp_path) -> None:
     assert bases["direction"]["verdict"] == "gagnant"
     assert bases["allocation"]["verdict"] == "non_evaluable"
     assert bases["direction"]["selector"] == "agent"
+    assert bases["direction"]["direction_source"] == "allowed_sides"
 
 
 class _ScopeReader:
@@ -612,6 +853,107 @@ def test_pick_sans_barres_allocation_non_evaluable_definitive() -> None:
     rows = evaluate_selection(_selection(), [], horizon_sessions=5, bench_opportunities=[0.01] * MIN_BENCH_EVALUATED)
     assert [row.verdict_basis for row in rows] == ["allocation"]
     assert rows[0].verdict == "non_evaluable"
+
+
+def test_market_error_ne_persiste_pas_de_non_evaluable() -> None:
+    rows = evaluate_selections(
+        [_selection(candidate_scope_id="scope-eu")],
+        _ErrorSource(),
+        horizon_sessions=5,
+        scope_reader=_ScopeReader({"scope-eu": _fat_scope()}),
+    )
+    assert rows == []
+
+
+def test_refresh_reessaie_apres_market_error(tmp_path) -> None:
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = try_open_universe_selection_store(tmp_path)
+    first = refresh_selection_outcomes(
+        tmp_path,
+        _ErrorSource(),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+    assert first["evaluated"] == 0
+    assert store.count() == 0
+    second = refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)}),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+    assert second["evaluated"] >= 1
+    assert store.count() >= 1
+    assert any(row["verdict_basis"] == "direction" for row in store.load_outcomes())
+
+
+def test_refresh_complete_la_direction_quand_allocation_existe(tmp_path) -> None:
+    from datetime import datetime, timezone
+
+    from trader.infrastructure.state_db.universe_selection_store import (
+        try_open_universe_selection_store,
+    )
+
+    history = tmp_path / "universe_mandates" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text(
+        json.dumps(
+            _mandate(
+                status="active",
+                mandate_id="m-eu",
+                symbols=("AIR.PA",),
+                as_of="2026-01-01T08:00:00+00:00",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = try_open_universe_selection_store(tmp_path)
+    persist_and_score(
+        store,
+        [
+            EvaluatedSelection(
+                mandate_id="m-eu",
+                symbol="AIR.PA",
+                role="core_candidate",
+                allowed_sides=("long",),
+                as_of="2026-01-01T08:00:00+00:00",
+                venue="EU",
+                family="defense_aero_eu",
+                horizon_sessions=5,
+                forward_return=0.02,
+                verdict="non_evaluable",
+                verdict_basis="allocation",
+                selector="agent",
+            )
+        ],
+        now=datetime(2026, 1, 10, tzinfo=timezone.utc),
+    )
+    assert {row["verdict_basis"] for row in store.load_outcomes()} == {"allocation"}
+    refresh_selection_outcomes(
+        tmp_path,
+        _FakeSource({"AIR.PA": _path_bars(100.0, 110.0)}),
+        store_opener=lambda _state_dir: store,
+        scope_store_opener=lambda _state_dir: _ScopeReader({}),
+    )
+    bases = {row["verdict_basis"] for row in store.load_outcomes()}
+    assert bases == {"allocation", "direction"}
 
 
 def test_allocation_gagne_contre_le_banc() -> None:

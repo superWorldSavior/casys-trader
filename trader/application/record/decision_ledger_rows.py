@@ -71,10 +71,16 @@ def _optional_mandate_ref(value: Any) -> dict | None:
 
 
 def decision_row_mandate_ref(row: Any) -> dict | None:
-    """Read root-level ``mandate_ref``; missing or non-dict values are ``None``."""
+    """Read ``mandate_ref`` at root, then legacy ``decision.mandate_ref``."""
     if not isinstance(row, dict):
         return None
-    return _optional_mandate_ref(row.get("mandate_ref"))
+    found = _optional_mandate_ref(row.get("mandate_ref"))
+    if found is not None:
+        return found
+    nested = row.get("decision")
+    if isinstance(nested, dict):
+        return _optional_mandate_ref(nested.get("mandate_ref"))
+    return None
 
 
 def collect_session_by_symbol(

@@ -57,6 +57,8 @@ def test_commande_analytics_imprime_json(tmp_path: Path, capsys) -> None:
     assert "by_venue" in payload and "by_role" in payload
     assert payload["pays"]["families"] == []
     assert payload["decoit"]["families"] == []
+    assert payload["direction_by_source"]["allowed_sides"]["n"] == 2
+    assert payload["direction_by_source"]["directional_view"]["n"] == 0
 
 
 def test_commande_bench_compare_agent_et_baseline(tmp_path: Path, capsys) -> None:
@@ -123,6 +125,8 @@ def test_commande_bench_compare_agent_et_baseline(tmp_path: Path, capsys) -> Non
     assert payload["selectors"]["baseline_fallback"]["allocation"]["beat_bench_rate"] == 0.0
     assert payload["selectors"]["baseline_fallback"]["direction"]["n"] == 0
     assert payload["selectors"]["baseline_fallback"]["direction"]["win_rate"] is None
+    assert payload["selectors"]["agent"]["direction_by_source"]["allowed_sides"]["n"] == 1
+    assert payload["selectors"]["agent"]["direction_by_source"]["directional_view"]["n"] == 0
 
 
 def test_commande_evaluate_juge_via_datasource(tmp_path: Path, capsys, monkeypatch) -> None:

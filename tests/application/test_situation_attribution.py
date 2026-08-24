@@ -234,3 +234,71 @@ def test_refresh_ne_fige_pas_une_note_immature(tmp_path) -> None:
     assert result["evaluated"] == 0
     assert store.load_outcomes() == []
     assert store.load_pending_notes()[0]["verdict"] is None
+
+
+def test_refresh_saute_les_immatures_en_tete_pour_juger_une_note_mature(tmp_path) -> None:
+    from trader.domain.situation import NewsMacroBrief
+    from trader.infrastructure.state_db.situation_memory_store import SituationMemoryStore
+
+    store = SituationMemoryStore(tmp_path / "situation_memory.db")
+    immature = NewsMacroBrief.from_mapping(
+        {
+            "brief_id": "2026-01-01T08:00:00+00:00|EU|weeks",
+            "venue": "EU",
+            "as_of": "2026-01-01T08:00:00+00:00",
+            "valid_until": "2026-01-02T08:00:00+00:00",
+            "symbols": {
+                "AIR.PA": [
+                    {
+                        "point": "Long-horizon industrial bid",
+                        "sources": ["Reuters"],
+                        "source_refs": ["u1"],
+                        "symbols": ["AIR.PA"],
+                        "direction": "bullish",
+                        "horizon": "trimestre",
+                    }
+                ]
+            },
+        }
+    )
+    mature = NewsMacroBrief.from_mapping(
+        {
+            "brief_id": "2026-01-01T08:01:00+00:00|EU|session",
+            "venue": "EU",
+            "as_of": "2026-01-01T08:00:00+00:00",
+            "valid_until": "2026-01-02T08:00:00+00:00",
+            "symbols": {
+                "MC.PA": [
+                    {
+                        "point": "Near-term luxury bounce",
+                        "sources": ["Reuters"],
+                        "source_refs": ["u2"],
+                        "symbols": ["MC.PA"],
+                        "direction": "bullish",
+                        "horizon": "session",
+                    }
+                ]
+            },
+        }
+    )
+    assert immature is not None and mature is not None
+    store.ingest_brief(immature)
+    store.ingest_brief(mature)
+
+    result = refresh_situation_outcomes(
+        store,
+        _FakeSource(
+            {
+                "AIR.PA": _path_bars(100.0, 110.0),
+                "MC.PA": _path_bars(100.0, 110.0),
+            }
+        ),
+        families={"eu_industrials": ["AIR.PA"], "eu_luxury": ["MC.PA"]},
+        limit=1,
+    )
+    assert result["evaluated"] == 1
+    judged = store.load_outcomes()
+    assert len(judged) == 1
+    assert judged[0]["section_name"] == "MC.PA"
+    still_pending = {row["section_name"] for row in store.load_pending_notes()}
+    assert "AIR.PA" in still_pending

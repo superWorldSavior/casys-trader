@@ -4,12 +4,19 @@ from trader.domain.learnings.scoring import SIGNIFICANT_RETURN_BAND
 from trader.domain.market_data import Bar
 from trader.domain.universe.selection_attribution import (
     DEFAULT_FORWARD_SESSIONS,
+    FLAIR_GROUP_ALLOCATION,
+    FLAIR_GROUP_DIRECTION,
+    FLAIR_GROUP_DIRECTION_VIEW,
     MIN_BENCH_EVALUATED,
     classify_allocation_quality,
     classify_selection_quality,
+    direction_claim,
     directional_action,
+    directional_view_action,
+    flair_scoring_group,
     forward_return_over_sessions,
     has_as_of_session,
+    is_live_feedback_row,
     opportunity,
     score_selection_outcomes,
 )
@@ -49,6 +56,33 @@ def test_allowed_sides_vide_ou_bidirectionnel_non_evaluable() -> None:
     assert directional_action(["long"]) == "BUY"
     assert directional_action(["short"]) == "SELL"
     assert directional_action(["long", "short"]) is None
+
+
+def test_vue_long_bias_juge_buy_si_sides_ouverts() -> None:
+    assert directional_view_action("long_bias") == "BUY"
+    assert directional_view_action("short_bias") == "SELL"
+    assert directional_view_action("two_sided") is None
+    assert directional_view_action("neutral") is None
+    assert directional_view_action("") is None
+    assert classify_selection_quality(
+        ("long", "short"), 0.02, directional_view="long_bias"
+    ) == "gagnant"
+    assert classify_selection_quality(
+        ("long", "short"), -0.02, directional_view="long_bias"
+    ) == "perdant"
+    assert classify_selection_quality(
+        ("long", "short"), -0.02, directional_view="short_bias"
+    ) == "gagnant"
+    assert classify_selection_quality(
+        ("long", "short"), 0.02, directional_view="two_sided"
+    ) == "non_evaluable"
+
+
+def test_sides_durs_prioritaires_sur_la_vue() -> None:
+    assert direction_claim(("long",), "short_bias") == ("BUY", "allowed_sides")
+    assert direction_claim(("long", "short"), "long_bias") == ("BUY", "directional_view")
+    assert direction_claim(("long", "short"), "two_sided") is None
+    assert classify_selection_quality(["long"], -0.02, directional_view="short_bias") == "perdant"
 
 
 def test_flair_lift_famille_gagnante_superieur_a_famille_perdante() -> None:
@@ -171,3 +205,41 @@ def test_flair_ids_restent_uniques_a_travers_les_groupes() -> None:
     result = score_selection_outcomes(rows, shrinkage_k=5.0)
     assert set(result["scores"]) == {10, 11, 12}
     assert result["scored"] == 3
+
+
+def test_flair_vue_souple_ne_contamine_pas_le_base_rate_dur() -> None:
+    hard = [
+        {
+            "id": index,
+            "symbol": f"H{index}",
+            "family": "tw",
+            "verdict": "perdant",
+            "verdict_basis": "direction",
+            "direction_source": "allowed_sides",
+        }
+        for index in range(1, 4)
+    ]
+    soft = [
+        {
+            "id": index,
+            "symbol": f"S{index}",
+            "family": "eu",
+            "verdict": "gagnant",
+            "verdict_basis": "direction",
+            "direction_source": "directional_view",
+        }
+        for index in range(4, 7)
+    ]
+    hard_only = score_selection_outcomes(hard, shrinkage_k=5.0)
+    mixed = score_selection_outcomes(hard + soft, shrinkage_k=5.0)
+    assert hard_only["base_rates"]["direction"]["H1"] == 0.0
+    assert mixed["base_rates"]["direction"]["H1"] == 0.0
+    assert mixed["base_rates"][FLAIR_GROUP_DIRECTION_VIEW]["S4"] == 1.0
+    assert hard_only["scores"][1] == mixed["scores"][1]
+    assert "direction:directional_view" not in mixed["base_rates"]
+    assert flair_scoring_group(hard[0]) == FLAIR_GROUP_DIRECTION
+    assert flair_scoring_group(soft[0]) == FLAIR_GROUP_DIRECTION_VIEW
+    assert flair_scoring_group({"verdict_basis": "allocation"}) == FLAIR_GROUP_ALLOCATION
+    assert is_live_feedback_row(hard[0])
+    assert not is_live_feedback_row(soft[0])
+    assert is_live_feedback_row({"verdict_basis": "allocation"})

@@ -11,18 +11,23 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Protocol
 
+from trader.domain.learnings.scoring import classify_decision_quality
 from trader.domain.market_data import MarketError
 from trader.domain.universe.intelligence import UNCLASSIFIED_FAMILY
 from trader.domain.universe.selection_attribution import (
     DEFAULT_FORWARD_SESSIONS,
     DEFAULT_SHRINKAGE_K,
+    DIRECTION_SOURCE_ALLOWED_SIDES,
+    DIRECTION_SOURCE_DIRECTIONAL_VIEW,
     classify_allocation_quality,
-    classify_selection_quality,
-    directional_action,
+    direction_claim,
+    direction_source_of,
     forward_return_over_sessions,
     has_as_of_session,
+    is_live_feedback_row,
     opportunity,
     score_selection_outcomes,
+    verdict_basis_of,
 )
 from trader.market.protocols import DataSource
 
@@ -72,6 +77,7 @@ class UniverseSelection:
     status: str = ""
     selector: str = "agent"
     selected_symbols: tuple[str, ...] = ()
+    directional_view: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,7 @@ class EvaluatedSelection:
     allocation_excess: float | None = None
     bench_n: int | None = None
     scope_missing: bool = False
+    direction_source: str = ""
 
 
 class SelectionOutcomeStore(Protocol):
@@ -130,6 +137,13 @@ def _allowed_sides(raw: object) -> tuple[str, ...]:
     return tuple(
         dict.fromkeys(str(side).strip() for side in raw if str(side).strip() in {"long", "short"})
     )
+
+
+def _directional_view(raw: object) -> str:
+    view = str(raw or "").strip().lower()
+    if view in {"long_bias", "short_bias", "two_sided", "neutral"}:
+        return view
+    return ""
 
 
 def _family_of(symbol_mandate: Mapping[str, Any]) -> str:
@@ -207,6 +221,7 @@ def _selection(
         status=status,
         selector=selector,
         selected_symbols=picks,
+        directional_view=_directional_view(symbol_mandate.get("directional_view")),
     )
 
 
@@ -328,6 +343,7 @@ def _evaluated(
     allocation_excess: float | None = None,
     bench_n: int | None = None,
     scope_missing: bool = False,
+    direction_source: str = "",
 ) -> EvaluatedSelection:
     return EvaluatedSelection(
         mandate_id=selection.mandate_id,
@@ -348,6 +364,7 @@ def _evaluated(
         allocation_excess=allocation_excess,
         bench_n=bench_n,
         scope_missing=scope_missing,
+        direction_source=direction_source,
     )
 
 
@@ -364,14 +381,17 @@ def evaluate_selection(
     if has_as_of_session(bars, selection.as_of) and forward is None:
         return []
     rows: list[EvaluatedSelection] = []
-    if directional_action(selection.allowed_sides) is not None and forward is not None:
+    claim = direction_claim(selection.allowed_sides, selection.directional_view)
+    if claim is not None and forward is not None:
+        action, source = claim
         rows.append(
             _evaluated(
                 selection,
                 horizon_sessions=horizon_sessions,
                 forward_return=forward,
-                verdict=classify_selection_quality(selection.allowed_sides, forward),
+                verdict=classify_decision_quality(action, forward),
                 verdict_basis="direction",
+                direction_source=source,
             )
         )
     pick_opp = opportunity(forward)
@@ -442,11 +462,16 @@ def evaluate_selections(
     materialized = list(selections)
     bars_by_symbol: dict[str, list[Any]] = {}
 
+    failed_symbols: set[str] = set()
+
     def bars_for(symbol: str) -> list[Any]:
+        if symbol in failed_symbols:
+            return []
         if symbol not in bars_by_symbol:
             try:
                 bars_by_symbol[symbol] = list(data_source.get_bars(symbol, lookback, interval))
             except MarketError:
+                failed_symbols.add(symbol)
                 bars_by_symbol[symbol] = []
         return bars_by_symbol[symbol]
 
@@ -472,6 +497,8 @@ def evaluate_selections(
         return scope
 
     for selection in materialized:
+        if selection.symbol in failed_symbols:
+            continue
         pick_bars = bars_for(selection.symbol)
         if _is_pending(pick_bars, selection.as_of, horizon_sessions):
             continue
@@ -526,6 +553,7 @@ def evaluated_to_row(item: EvaluatedSelection, *, evaluated_at: str) -> dict[str
         "bench_median_opportunity": item.bench_median_opportunity,
         "allocation_excess": item.allocation_excess,
         "bench_n": item.bench_n,
+        "direction_source": item.direction_source,
     }
 
 
@@ -542,11 +570,22 @@ def persist_and_score(
     if evaluated:
         store.upsert_outcomes([evaluated_to_row(item, evaluated_at=evaluated_at) for item in evaluated])
     rows = store.load_outcomes()
-    result = score_selection_outcomes(rows, shrinkage_k=shrinkage_k)
-    store.update_flair_scores(result.get("scores") or {})
+    scores: dict[int, float] = {}
+    base_rates: dict[str, dict] = {}
+    scored = 0
+    buckets: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        bucket = "agent" if _is_agent_selector(row) else "baseline"
+        buckets[bucket].append(row)
+    for bucket, group in buckets.items():
+        result = score_selection_outcomes(group, shrinkage_k=shrinkage_k)
+        scores.update(result.get("scores") or {})
+        base_rates[bucket] = result.get("base_rates") or {}
+        scored += int(result.get("scored") or 0)
+    store.update_flair_scores(scores)
     return {
-        "scored": result.get("scored", 0),
-        "base_rates": result.get("base_rates", {}),
+        "scored": scored,
+        "base_rates": base_rates,
         "n_stored": len(rows),
     }
 
@@ -648,9 +687,29 @@ def _is_agent_selector(row: Mapping[str, Any]) -> bool:
     return selector in {"", "agent"}
 
 
-def _verdict_basis_of(row: Mapping[str, Any]) -> str:
-    basis = str(row.get("verdict_basis") or "").strip()
-    return basis or "direction"
+def _decisive_rates(items: Sequence[Mapping[str, Any]], *, rate_key: str) -> dict[str, Any]:
+    n_gagnant = sum(1 for row in items if row.get("verdict") == "gagnant")
+    n_perdant = sum(1 for row in items if row.get("verdict") == "perdant")
+    decisive = n_gagnant + n_perdant
+    scores = [float(row["flair_score"]) for row in items if row.get("flair_score") is not None]
+    return {
+        "n": decisive,
+        rate_key: (n_gagnant / decisive) if decisive else None,
+        "mean_flair_score": _mean(scores),
+    }
+
+
+def _direction_by_source_rates(items: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {
+        DIRECTION_SOURCE_ALLOWED_SIDES: [],
+        DIRECTION_SOURCE_DIRECTIONAL_VIEW: [],
+    }
+    for row in items:
+        grouped[direction_source_of(row)].append(row)
+    return {
+        source: _decisive_rates(source_rows, rate_key="win_rate")
+        for source, source_rows in grouped.items()
+    }
 
 
 def _basis_block(
@@ -686,7 +745,7 @@ def _two_basis_feedback(
     )
     for row in rows:
         name = str(row.get(key) or "")
-        basis = _verdict_basis_of(row)
+        basis = verdict_basis_of(row)
         if not name or basis not in {"allocation", "direction"}:
             continue
         groups[name][basis].append(row)
@@ -712,6 +771,45 @@ def _two_basis_feedback(
     return feedback
 
 
+def _venue_matches(row: Mapping[str, Any], venue: str | None) -> bool:
+    if venue is None:
+        return True
+    return str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
+
+
+def _venue_allocation_block(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    venue: str | None,
+    min_n: int,
+) -> dict[str, Any] | None:
+    """Venue-grain allocation for the agent, plus a standing baseline control."""
+    if venue is None:
+        return None
+    in_venue = [row for row in rows if _venue_matches(row, venue)]
+    agent_alloc = [
+        row
+        for row in in_venue
+        if _is_agent_selector(row) and verdict_basis_of(row) == "allocation"
+    ]
+    block = _basis_block(agent_alloc, rate_key="beat_bench_rate", min_n=min_n)
+    if block is None:
+        return None
+    baseline_alloc = [
+        row
+        for row in in_venue
+        if not _is_agent_selector(row) and verdict_basis_of(row) == "allocation"
+    ]
+    control = _basis_block(baseline_alloc, rate_key="beat_bench_rate", min_n=min_n)
+    if control is not None:
+        block["vs_baseline"] = {
+            "n": control["n"],
+            "beat_bench_rate": control["beat_bench_rate"],
+            "lift": float(block["beat_bench_rate"]) - float(control["beat_bench_rate"]),
+        }
+    return block
+
+
 def selection_feedback_digest(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -724,21 +822,20 @@ def selection_feedback_digest(
         row
         for row in rows
         if _is_agent_selector(row)
-        and (
-            venue is None
-            or str(row.get("venue") or "").strip().upper() == str(venue).strip().upper()
-        )
+        and is_live_feedback_row(row)
+        and _venue_matches(row, venue)
     ]
     families = _two_basis_feedback(scoped, "family", min_n=min_n)
     roles = _two_basis_feedback(scoped, "role", min_n=min_n)
+    allocation = _venue_allocation_block(rows, venue=venue, min_n=min_n)
     n_evaluated = sum(1 for row in scoped if row.get("verdict") in {"gagnant", "perdant"})
     n_non_evaluable = sum(1 for row in scoped if row.get("verdict") == "non_evaluable")
     horizons = sorted(
         {int(row["horizon_sessions"]) for row in scoped if row.get("horizon_sessions") is not None}
     )
-    return {
+    payload: dict[str, Any] = {
         "role": SELECTION_FEEDBACK_ROLE,
-        "status": "observed" if families or roles else "insufficient",
+        "status": "observed" if families or roles or allocation else "insufficient",
         "horizon_sessions": horizons[0] if len(horizons) == 1 else None,
         "min_n": min_n,
         "n_evaluated": n_evaluated,
@@ -746,6 +843,9 @@ def selection_feedback_digest(
         "families": families,
         "roles": roles,
     }
+    if allocation is not None:
+        payload["allocation"] = allocation
+    return payload
 
 
 def compare_selection_selectors(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -759,26 +859,23 @@ def compare_selection_selectors(rows: Sequence[Mapping[str, Any]]) -> dict[str, 
         selector = str(row.get("selector") or "").strip() or "agent"
         if selector not in buckets:
             continue
-        basis = _verdict_basis_of(row)
+        basis = verdict_basis_of(row)
         if basis not in {"allocation", "direction"}:
             continue
         buckets[selector][basis].append(row)
 
-    def _rates(items: Sequence[Mapping[str, Any]], *, rate_key: str) -> dict[str, Any]:
-        n_gagnant = sum(1 for row in items if row.get("verdict") == "gagnant")
-        n_perdant = sum(1 for row in items if row.get("verdict") == "perdant")
-        decisive = n_gagnant + n_perdant
-        scores = [float(row["flair_score"]) for row in items if row.get("flair_score") is not None]
-        return {
-            "n": decisive,
-            rate_key: (n_gagnant / decisive) if decisive else None,
-            "mean_flair_score": _mean(scores),
-        }
-
     return {
         selector: {
-            "allocation": _rates(by_basis["allocation"], rate_key="beat_bench_rate"),
-            "direction": _rates(by_basis["direction"], rate_key="win_rate"),
+            "allocation": _decisive_rates(by_basis["allocation"], rate_key="beat_bench_rate"),
+            "direction": _decisive_rates(
+                [
+                    row
+                    for row in by_basis["direction"]
+                    if direction_source_of(row) == DIRECTION_SOURCE_ALLOWED_SIDES
+                ],
+                rate_key="win_rate",
+            ),
+            "direction_by_source": _direction_by_source_rates(by_basis["direction"]),
         }
         for selector, by_basis in buckets.items()
     }
@@ -818,6 +915,13 @@ def load_mandate_selections(state_dir: str | Path) -> list[UniverseSelection]:
     return selections_from_mandate_payloads(iter_mandate_payloads(state_dir))
 
 
+def _needed_verdict_bases(selection: UniverseSelection) -> tuple[str, ...]:
+    bases = ["allocation"]
+    if direction_claim(selection.allowed_sides, selection.directional_view) is not None:
+        bases.append("direction")
+    return tuple(bases)
+
+
 def refresh_selection_outcomes(
     state_dir: str | Path,
     data_source: DataSource,
@@ -839,13 +943,24 @@ def refresh_selection_outcomes(
             str(row.get("symbol") or ""),
             str(row.get("as_of") or ""),
             int(row.get("horizon_sessions") or 0),
+            str(row.get("verdict_basis") or "direction"),
         )
         for row in store.load_outcomes()
     }
     pending: list[UniverseSelection] = []
     for selection in load_mandate_selections(state_dir):
-        key = (selection.mandate_id, selection.symbol, selection.as_of, int(horizon_sessions))
-        if key in existing:
+        missing = any(
+            (
+                selection.mandate_id,
+                selection.symbol,
+                selection.as_of,
+                int(horizon_sessions),
+                basis,
+            )
+            not in existing
+            for basis in _needed_verdict_bases(selection)
+        )
+        if not missing:
             continue
         pending.append(selection)
         if len(pending) >= max(0, int(limit)):
@@ -867,17 +982,23 @@ def refresh_selection_outcomes(
 
 
 def summarize_outcomes(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """JSON-ready answer: which families / venues / roles pay or disappoint."""
-    horizons = sorted({int(row["horizon_sessions"]) for row in rows if row.get("horizon_sessions") is not None})
-    n_gagnant = sum(1 for row in rows if row.get("verdict") == "gagnant")
-    n_perdant = sum(1 for row in rows if row.get("verdict") == "perdant")
-    n_neutre = sum(1 for row in rows if row.get("verdict") == "neutre")
-    n_non_evaluable = sum(1 for row in rows if row.get("verdict") == "non_evaluable")
-    by_family = _group_summary(rows, "family")
-    by_venue = _group_summary(rows, "venue")
-    by_role = _group_summary(rows, "role")
+    """JSON-ready answer: which families / venues / roles pay or disappoint.
+
+    Top-level aggregates match the live digest (allocation + hard direction).
+    Soft views are only in ``direction_by_source``.
+    """
+    live = [row for row in rows if is_live_feedback_row(row)]
+    direction_rows = [row for row in rows if verdict_basis_of(row) == "direction"]
+    horizons = sorted({int(row["horizon_sessions"]) for row in live if row.get("horizon_sessions") is not None})
+    n_gagnant = sum(1 for row in live if row.get("verdict") == "gagnant")
+    n_perdant = sum(1 for row in live if row.get("verdict") == "perdant")
+    n_neutre = sum(1 for row in live if row.get("verdict") == "neutre")
+    n_non_evaluable = sum(1 for row in live if row.get("verdict") == "non_evaluable")
+    by_family = _group_summary(live, "family")
+    by_venue = _group_summary(live, "venue")
+    by_role = _group_summary(live, "role")
     return {
-        "n": len(rows),
+        "n": len(live),
         "n_gagnant": n_gagnant,
         "n_perdant": n_perdant,
         "n_neutre": n_neutre,
@@ -887,6 +1008,7 @@ def summarize_outcomes(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "by_family": by_family,
         "by_venue": by_venue,
         "by_role": by_role,
+        "direction_by_source": _direction_by_source_rates(direction_rows),
         "pays": {
             "families": _split_pays_decoit(by_family, "family")["pays"],
             "venues": _split_pays_decoit(by_venue, "venue")["pays"],

@@ -11,6 +11,7 @@ Contient :
 - LLM_GATE_MIGRATION : cadence last_llm_at du gate de pertinence (v5)
 - UNIVERSE_SELECTION_MIGRATION : attribution des sélections d'univers (v6)
 - UNIVERSE_SELECTION_V7_MIGRATION : verdict à deux bases (recréation, ne mute pas v6)
+- UNIVERSE_SELECTION_V8_MIGRATION : direction_source additive (ne mute pas v7)
 - SITUATION_MEMORY_OUTCOME_MIGRATION : verdict FLAIR des notes de situation
   (espace de version local à situation_memory.db, pas le flux casys.db)
 """
@@ -631,9 +632,17 @@ UNIVERSE_SELECTION_V7_MIGRATION: tuple[int, list[str]] = (
     ],
 )
 
+UNIVERSE_SELECTION_V8_MIGRATION: tuple[int, list[str]] = (
+    8,
+    [
+        "ALTER TABLE universe_selection_outcomes ADD COLUMN direction_source TEXT",
+    ],
+)
+
 UNIVERSE_SELECTION_MIGRATIONS: tuple[tuple[int, list[str]], ...] = (
     UNIVERSE_SELECTION_MIGRATION,
     UNIVERSE_SELECTION_V7_MIGRATION,
+    UNIVERSE_SELECTION_V8_MIGRATION,
 )
 
 

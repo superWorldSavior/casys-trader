@@ -398,6 +398,8 @@ def run_learning_sync(
                 limit=outcome_batch_size,
                 now=now,
             )
+        universe = outcomes.get("universe_selections") if isinstance(outcomes, dict) else None
+        situation = outcomes.get("situation_notes") if isinstance(outcomes, dict) else None
         more_outcomes = bool(
             isinstance(outcomes, dict)
             and int(outcomes.get("pending_notes") or 0) >= outcome_batch_size
@@ -408,6 +410,12 @@ def run_learning_sync(
                 int(outcomes.get("recalls_updated") or 0) >= outcome_batch_size
                 or int(outcomes.get("global_rule_citations_updated") or 0) >= outcome_batch_size
             )
+        ) or bool(
+            isinstance(universe, dict) and int(universe.get("pending") or 0) >= outcome_batch_size
+        ) or bool(
+            isinstance(situation, dict)
+            and int(situation.get("evaluated") or 0) > 0
+            and int(situation.get("pending") or 0) >= outcome_batch_size
         )
         return {
             "as_of": _utc(now).isoformat(),

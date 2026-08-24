@@ -26,21 +26,38 @@ MIN_BENCH_EVALUATED = 8
 SELECTION_SEMANTICS_VERSION = "bench_v2"
 SELECTION_SEMANTICS_KEY = "selection_semantics_version"
 _DEFAULT_VERDICT_BASIS = "direction"
+DIRECTION_SOURCE_ALLOWED_SIDES = "allowed_sides"
+DIRECTION_SOURCE_DIRECTIONAL_VIEW = "directional_view"
+FLAIR_GROUP_ALLOCATION = "allocation"
+FLAIR_GROUP_DIRECTION = "direction"
+FLAIR_GROUP_DIRECTION_VIEW = "direction_view"
+_DIRECTION_VIEW_ACTIONS = {"long_bias": "BUY", "short_bias": "SELL"}
 
 __all__ = [
     "DEFAULT_FORWARD_SESSIONS",
     "DEFAULT_SHRINKAGE_K",
+    "DIRECTION_SOURCE_ALLOWED_SIDES",
+    "DIRECTION_SOURCE_DIRECTIONAL_VIEW",
+    "FLAIR_GROUP_ALLOCATION",
+    "FLAIR_GROUP_DIRECTION",
+    "FLAIR_GROUP_DIRECTION_VIEW",
     "MIN_BENCH_EVALUATED",
     "SELECTION_SEMANTICS_KEY",
     "SELECTION_SEMANTICS_VERSION",
     "classify_allocation_quality",
     "classify_selection_quality",
+    "direction_claim",
+    "direction_source_of",
     "directional_action",
+    "directional_view_action",
+    "flair_scoring_group",
     "forward_return_over_sessions",
     "has_as_of_session",
+    "is_live_feedback_row",
     "opportunity",
     "score_selection_outcomes",
     "to_flair_verdict",
+    "verdict_basis_of",
 ]
 
 
@@ -67,6 +84,36 @@ def directional_action(allowed_sides: Sequence[str] | None) -> str | None:
     if sides == {"short"}:
         return "SELL"
     return None
+
+
+def directional_view_action(directional_view: str | None) -> str | None:
+    """Translate an advisory view into a scoring action, or ``None``."""
+    view = str(directional_view or "").strip().lower()
+    return _DIRECTION_VIEW_ACTIONS.get(view)
+
+
+def direction_claim(
+    allowed_sides: Sequence[str] | None,
+    directional_view: str | None = None,
+) -> tuple[str, str] | None:
+    """Hard sides win. A directional view is a claim only when sides are not locked."""
+    hard = directional_action(allowed_sides)
+    if hard is not None:
+        return hard, DIRECTION_SOURCE_ALLOWED_SIDES
+    view = directional_view_action(directional_view)
+    if view is not None:
+        return view, DIRECTION_SOURCE_DIRECTIONAL_VIEW
+    return None
+
+
+def direction_source_of(row: Mapping[str, Any]) -> str:
+    """Resolve the direction source; legacy NULL direction rows are hard sides."""
+    source = str(row.get("direction_source") or "").strip()
+    if source in {DIRECTION_SOURCE_ALLOWED_SIDES, DIRECTION_SOURCE_DIRECTIONAL_VIEW}:
+        return source
+    if verdict_basis_of(row) == "direction":
+        return DIRECTION_SOURCE_ALLOWED_SIDES
+    return ""
 
 
 def _dated_bars(bars: Sequence[Bar]) -> list[tuple[datetime, Bar]]:
@@ -156,12 +203,13 @@ def classify_selection_quality(
     forward_return: float | None,
     *,
     band: float = SIGNIFICANT_RETURN_BAND,
+    directional_view: str | None = None,
 ) -> str:
     """Verdict of one selection. Non-directional sides are ``non_evaluable``."""
-    action = directional_action(allowed_sides)
-    if action is None:
+    claim = direction_claim(allowed_sides, directional_view)
+    if claim is None:
         return "non_evaluable"
-    return classify_decision_quality(action, forward_return, band)
+    return classify_decision_quality(claim[0], forward_return, band)
 
 
 def to_flair_verdict(verdict: str) -> str:
@@ -173,9 +221,24 @@ def to_flair_verdict(verdict: str) -> str:
     return verdict
 
 
-def _verdict_basis(row: Mapping[str, Any]) -> str:
+def verdict_basis_of(row: Mapping[str, Any]) -> str:
     basis = str(row.get("verdict_basis") or "").strip()
     return basis or _DEFAULT_VERDICT_BASIS
+
+
+def flair_scoring_group(row: Mapping[str, Any]) -> str:
+    """FLAIR pool for one outcome row. Soft views never share the hard-direction rate."""
+    basis = verdict_basis_of(row)
+    if basis == "allocation":
+        return FLAIR_GROUP_ALLOCATION
+    if basis == "direction" and direction_source_of(row) == DIRECTION_SOURCE_DIRECTIONAL_VIEW:
+        return FLAIR_GROUP_DIRECTION_VIEW
+    return FLAIR_GROUP_DIRECTION
+
+
+def is_live_feedback_row(row: Mapping[str, Any]) -> bool:
+    """True for rows the universe agent may see (allocation + hard direction)."""
+    return flair_scoring_group(row) != FLAIR_GROUP_DIRECTION_VIEW
 
 
 def score_selection_outcomes(
@@ -183,10 +246,10 @@ def score_selection_outcomes(
     *,
     shrinkage_k: float = DEFAULT_SHRINKAGE_K,
 ) -> dict:
-    """Run FLAIR per ``verdict_basis`` so allocation and direction keep separate base rates."""
+    """Run FLAIR per scoring group so allocation, hard direction and views stay separate."""
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        groups[_verdict_basis(row)].append(
+        groups[flair_scoring_group(row)].append(
             {
                 "id": int(row["id"]),
                 "symbol": row.get("symbol") or "",
