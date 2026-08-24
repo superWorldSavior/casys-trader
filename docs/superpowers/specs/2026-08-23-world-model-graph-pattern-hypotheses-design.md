@@ -286,30 +286,26 @@ run, via les méthodes du registry, `MacroGraphBridgeBlocked(reason=config_drift
 aucune observation n'est skippée et le cursor n'avance plus.
 `MacroGraphBridgeResumed` exige les mêmes ID/hash.
 
-Changer de mapping ou de révision passe exclusivement par
-`MacroGraphBridgeRegistry.handoff(active_run_id, next_run_spec,
-expected_version)`. Le domaine valide active run, état `blocked`, dernier cursor
-contigu et génération, puis produit un unique event métier
-`MacroGraphBridgeRunHandedOff` avec ancien run, nouveau run, nouvelles versions
-et epoch incrémenté. Le ledger append cet event avec compare-and-swap sur la
-version du registry ; un seul payload et un seul reçu font basculer les deux
-états. Le reader n'observe jamais une moitié du handoff et l'agrégat garantit
-exactement un run actif par `bridge_key`.
+Un changement de mapping, de révision, de plan ou de producteur n'est jamais
+migré dans le runtime. Le drift bloque le run et clôt sa capacité d'écriture.
+Comme ce contexte reste `shadow_only`, l'opérateur arrête le daemon, archive
+hors ligne le store et redémarre sur un store frais portant le contrat courant.
+Le runtime ne parse ni ne convertit le contrat archivé.
 
 Chaque travail possède un `MacroGraphBridgeFence(bridge_key, run_id, epoch)`.
 L'append du payload relation, la création de son reçu, l'event terminal et
 l'avancement du cursor revalident atomiquement ce fence contre le registry
-actif et non bloqué dans `world_model.db`. Dès qu'un block ou handoff est
+actif et non bloqué dans `world_model.db`. Dès qu'un block est
 visible, un ancien worker reçoit `stale_bridge_epoch` et ne peut plus rendre une
 relation ou un terminal admissible. Un payload relation commité juste avant le
-handoff mais dont le reçu n'est pas encore créé reste
-`availability_unproven`. Une relation déjà reçue reste rattachée à l'ancienne
-révision structurelle et n'entre pas dans l'overlay de la nouvelle.
+block mais dont le reçu n'est pas encore créé reste
+`availability_unproven`. Une relation déjà reçue reste rattachée au run
+bloqué avec sa provenance d'origine ; elle n'est jamais réécrite.
 
 Le reconciler traite strictement en ordre et s'arrête au premier non-terminal :
-il n'existe donc aucun terminal au-delà du cursor transmis. Les observations
-arrivées pendant le blocage sont reprises par le nouveau run, sans gap et sans
-double ownership.
+il n'existe donc aucun terminal au-delà du cursor transmis. Lors d'un cutover,
+le journal bloqué reste dans l'archive hors ligne ; le store frais ne reprend
+aucune observation de cette ancienne identité.
 
 Le port `MacroObservationScanPort` rescane après restart les enveloppes à reçu
 durable, strictement après le cursor d'activation. `MacroObservationCursor` est
