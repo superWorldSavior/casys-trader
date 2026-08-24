@@ -529,6 +529,15 @@ def _adapt_world_bar_provider(provider: object | None) -> object | None:
     return CallableWorldBarProvider(provider)
 
 
+def _default_scope_resolver() -> object | None:
+    try:
+        from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+
+        return WorldScopeResolver.load(Path(__file__).resolve().parents[2] / "config")
+    except Exception:  # noqa: BLE001 - missing mapping never blocks V1 shadow
+        return None
+
+
 def _wire_cohort_service(store: object, cohort_service: object | None) -> object | None:
     if cohort_service is not None:
         return cohort_service
@@ -612,6 +621,7 @@ class WorldModelRuntime(WorldModelService):
         lookback: str = "5d",
         run_id: str = "world_shadow.v1",
         cohort_service: object | None = None,
+        scope_resolver: object | None = None,
     ) -> None:
         resolved = _wire_cohort_service(store, cohort_service)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
@@ -634,6 +644,7 @@ class WorldModelRuntime(WorldModelService):
             lookback=lookback,
             run_id=run_id,
             cohort_service=resolved,
+            scope_resolver=scope_resolver if scope_resolver is not None else _default_scope_resolver(),
         )
 
 

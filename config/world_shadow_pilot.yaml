@@ -1,6 +1,8 @@
-schema_version: world_shadow_pilot.v1
-content_sha256: "add6e7a82cc0e9b9363c102db6581f031d6fbabdbc0a56030315b16243fbc56e"
-pilot_id: world_shadow_pilot.v1
+schema_version: world_shadow_pilot.v2
+content_sha256: "a8549c8ff96b6f967f91fa735febb31947c383f64f4d09926584f7508526dd78"
+pilot_id: world_shadow_pilot.v2
+supersedes_pilot_id: world_shadow_pilot.v1
+lifecycle_generation: 2
 authority: shadow_only
 decision_effect: none
 recommendation: NO_GO
@@ -29,11 +31,9 @@ scope_mapping:
   mapping_id: world_scope_mapping.v1
   mapping_sha256: "b2393ea7d1812e4d3d82e37858b71c3cac19079ef35a23212b16914f1f8661c6"
 
-runtime_identity:
-  git_commit: "95bcb12d6aac83650ed7b5b3ed1e82a08663b823"
-  python_version: "3.11.9"
-  numpy_version: "1.26.4"
-  application_build_id: casys-trader.world.shadow_pilot.v1
+runtime_identity_intent:
+  schema_version: world_runtime_identity_intent.v1
+  application_build_id: casys-trader.world.shadow_pilot.v2
 
 workers:
   v1_shadow: true
@@ -63,5 +63,6 @@ cohorts:
   - key: graph_v3
     study_kind: pipeline_pilot
     question: "Can a matched V3 graph lane be captured live beside C1 without contaminating technical C1 or Trader decisions?"
+    ontology_revision: market_ontology.v1
     families: [markov, gru]
     logical_lanes: [graph]

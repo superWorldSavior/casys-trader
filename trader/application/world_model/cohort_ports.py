@@ -12,6 +12,8 @@ has advanced, and must reject a conflicting sequence on insertion.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from trader.domain.world_cohort import (
@@ -22,11 +24,15 @@ from trader.domain.world_cohort import (
     WorldCohortManifest,
     WorldCohortRegistered,
     WorldCohortSlot,
+    WorldRuntimeIdentity,
 )
 
 __all__ = [
     "WorldCohortQuery",
     "WorldCohortRepository",
+    "WorldOntologyHeadsProof",
+    "WorldOntologyProofQuery",
+    "WorldRuntimeIdentityPort",
 ]
 
 
@@ -66,3 +72,32 @@ class WorldCohortQuery(Protocol):
     def list_slots(self, cohort_id: WorldCohortId) -> tuple[WorldCohortSlot, ...]: ...
 
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope: ...
+
+
+class WorldRuntimeIdentityPort(Protocol):
+    """Measure the running git/build/Python/NumPy identity. Never reads a committed SHA."""
+
+    def measure(self) -> WorldRuntimeIdentity: ...
+
+
+@dataclass(frozen=True)
+class WorldOntologyHeadsProof:
+    """Durable proof that one published ontology revision matches the declared mapping heads."""
+
+    revision_id: str
+    content_sha256: str
+    scope_mapping_id: str
+    scope_mapping_hash: str
+    entity_heads_hash: str
+    structural_heads_hash: str
+
+
+class WorldOntologyProofQuery(Protocol):
+    def proven_heads(
+        self,
+        *,
+        revision_id: str,
+        scope_mapping_id: str,
+        scope_mapping_hash: str,
+        at: datetime,
+    ) -> WorldOntologyHeadsProof | None: ...

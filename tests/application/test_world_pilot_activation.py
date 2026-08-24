@@ -51,7 +51,10 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     )
 
     payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v1"
+    assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v2"
+    assert payload["pilot_id"] == "world_shadow_pilot.v2"
+    assert payload["supersedes_pilot_id"] == "world_shadow_pilot.v1"
+    assert payload["lifecycle_generation"] == 2
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -59,6 +62,8 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["pnl_claim"] is False
     assert payload["activation_policy"] == "operator_authorized_on_boot"
     assert payload["enabled"] is True
+    assert "runtime_identity" not in payload
+    assert "git_commit" not in payload["runtime_identity_intent"]
     hashed = dict(payload)
     claimed = hashed.pop("content_sha256")
     assert claimed == canonical_sha256(hashed)
@@ -66,6 +71,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert config is not None
     assert config.content_sha256 == claimed
     assert config.activation_policy == "operator_authorized_on_boot"
+    assert config.runtime_identity_intent.application_build_id == "casys-trader.world.shadow_pilot.v2"
     assert config.workers["v1_shadow"] is True
     assert config.workers["context_v2"] is True
     assert config.workers["macro_source_only"] is True
@@ -79,6 +85,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     source = CONFIG_PATH.read_text(encoding="utf-8")
     assert "gdelt" not in source.lower()
     assert "news_macro_brief" not in source.lower()
+    assert "git_commit" not in source
 
 
 def test_activation_module_documents_rfc_exception_and_stays_application_owned() -> None:
@@ -116,17 +123,21 @@ def test_boot_materializes_a_usable_seven_day_window_from_start_not_an_expired_d
     assert report.window["collection_stop_at"] == BOOT + timedelta(days=7)
     assert report.window["collection_stop_at"] != EXPIRED
     assert len(report.cohorts) == 2
-    for item in report.cohorts:
-        cohort = store.load(WorldCohortId(item["cohort_id"]))
-        assert cohort.phase is CohortPhase.COLLECTING
-        assert cohort.started_event is not None
+    by_key = {item["key"]: item for item in report.cohorts}
+    c1 = store.load(WorldCohortId(by_key["technical_c1"]["cohort_id"]))
+    graph = store.load(WorldCohortId(by_key["graph_v3"]["cohort_id"]))
+    assert c1.phase is CohortPhase.COLLECTING
+    assert graph.phase is CohortPhase.REGISTERED
+    assert c1.started_event is not None
+    assert graph.started_event is None
+    for cohort in (c1, graph):
         assert cohort.manifest.planned_start_not_before == BOOT
         assert cohort.manifest.collection_stop_rule.at == BOOT + timedelta(days=7)
         assert cohort.manifest.bar_interval == "15m"
         assert cohort.manifest.authority == "shadow_only"
         assert cohort.manifest.decision_effect == "none"
-        envelope = store.envelope_for(cohort.started_event)
-        assert envelope.require_proven() is not None
+    envelope = store.envelope_for(c1.started_event)
+    assert envelope.require_proven() is not None
 
 
 def test_second_boot_is_idempotent_repairs_receipts_and_never_moves_the_window() -> None:
@@ -141,13 +152,15 @@ def test_second_boot_is_idempotent_repairs_receipts_and_never_moves_the_window()
     assert second.window["collection_stop_at"] == BOOT + timedelta(days=7)
     assert second.episodes_appended == 0
     assert second.backfill is False
-    for item in second.cohorts:
-        cohort = store.load(WorldCohortId(item["cohort_id"]))
-        assert cohort.phase is CohortPhase.COLLECTING
-        assert cohort.manifest.planned_start_not_before == BOOT
-        started_events = [event for event in cohort.events if event.event_type == "world_cohort_started"]
-        assert len(started_events) == 1
-        assert store.envelope_for(cohort.started_event).availability_status == "eligible"
+    by_key = {item["key"]: item for item in second.cohorts}
+    c1 = store.load(WorldCohortId(by_key["technical_c1"]["cohort_id"]))
+    graph = store.load(WorldCohortId(by_key["graph_v3"]["cohort_id"]))
+    assert c1.phase is CohortPhase.COLLECTING
+    assert graph.phase is CohortPhase.REGISTERED
+    assert c1.manifest.planned_start_not_before == BOOT
+    started_events = [event for event in c1.events if event.event_type == "world_cohort_started"]
+    assert len(started_events) == 1
+    assert store.envelope_for(c1.started_event).availability_status == "eligible"
 
 
 def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_v3_lane() -> None:
@@ -174,6 +187,9 @@ def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_v3_lane() -> No
     graph_masks = {lane.lane_id: lane.feature_mask_id for lane in graph.manifest.lanes}
     assert graph_masks["markov.graph"] == "topology_status_only.v1"
     assert graph_masks["gru.graph"] == "graph_content.v1"
+    assert c1.manifest.ontology_revision == "semantic_catalog.v1"
+    assert graph.manifest.ontology_revision == "market_ontology.v1"
+    assert graph.phase is CohortPhase.REGISTERED
 
 
 def test_env_and_config_disable_skip_register_without_raising() -> None:

@@ -32,6 +32,7 @@ WORLD_COHORT_REPORT_SCHEMA = "world_cohort_report.v1"
 WORLD_STATISTICAL_PROTOCOL_SCHEMA = "world_statistical_protocol.v1"
 WORLD_SUPPORT_GATES_SCHEMA = "world_support_gates.v1"
 WORLD_RUNTIME_IDENTITY_SCHEMA = "world_runtime_identity.v1"
+WORLD_RUNTIME_IDENTITY_INTENT_SCHEMA = "world_runtime_identity_intent.v1"
 
 COHORT_AUTHORITY = "shadow_only"
 COHORT_DECISION_EFFECT = "none"
@@ -321,6 +322,66 @@ class WorldRuntimeIdentity:
             numpy_version=value.get("numpy_version"),
             application_build_id=value.get("application_build_id"),
             schema_version=value.get("schema_version", WORLD_RUNTIME_IDENTITY_SCHEMA),
+        )
+
+
+@dataclass(frozen=True)
+class WorldRuntimeIdentityIntent:
+    """Operator-declared runtime constraints. Never a measured git commit."""
+
+    application_build_id: str
+    python_version: str | None = None
+    numpy_version: str | None = None
+    schema_version: str = WORLD_RUNTIME_IDENTITY_INTENT_SCHEMA
+
+    def __post_init__(self) -> None:
+        schema_version = _required_text(self.schema_version, "schema_version")
+        if schema_version != WORLD_RUNTIME_IDENTITY_INTENT_SCHEMA:
+            raise ValueError(f"schema_version must be {WORLD_RUNTIME_IDENTITY_INTENT_SCHEMA}")
+        object.__setattr__(self, "schema_version", schema_version)
+        object.__setattr__(
+            self,
+            "application_build_id",
+            _reject_latest(self.application_build_id, "application_build_id"),
+        )
+        python_version = None if self.python_version is None else _reject_latest(self.python_version, "python_version")
+        numpy_version = None if self.numpy_version is None else _reject_latest(self.numpy_version, "numpy_version")
+        object.__setattr__(self, "python_version", python_version)
+        object.__setattr__(self, "numpy_version", numpy_version)
+
+    def accepts(self, measured: WorldRuntimeIdentity) -> bool:
+        if not isinstance(measured, WorldRuntimeIdentity):
+            raise TypeError("measured runtime identity must be WorldRuntimeIdentity")
+        if measured.application_build_id != self.application_build_id:
+            return False
+        if self.python_version is not None and measured.python_version != self.python_version:
+            return False
+        if self.numpy_version is not None and measured.numpy_version != self.numpy_version:
+            return False
+        return True
+
+    def to_dict(self) -> dict[str, str]:
+        payload = {
+            "schema_version": self.schema_version,
+            "application_build_id": self.application_build_id,
+        }
+        if self.python_version is not None:
+            payload["python_version"] = self.python_version
+        if self.numpy_version is not None:
+            payload["numpy_version"] = self.numpy_version
+        return payload
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | WorldRuntimeIdentityIntent) -> WorldRuntimeIdentityIntent:
+        if isinstance(value, WorldRuntimeIdentityIntent):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("runtime_identity_intent must be WorldRuntimeIdentityIntent or a mapping")
+        return cls(
+            application_build_id=value.get("application_build_id"),
+            python_version=value.get("python_version"),
+            numpy_version=value.get("numpy_version"),
+            schema_version=value.get("schema_version", WORLD_RUNTIME_IDENTITY_INTENT_SCHEMA),
         )
 
 
@@ -2765,6 +2826,7 @@ __all__ = [
     "WorldFeatureMask",
     "WorldLaneDefinition",
     "WorldRuntimeIdentity",
+    "WorldRuntimeIdentityIntent",
     "WorldScopeMappingRef",
     "WorldScopeResolution",
     "WorldSensorRequirement",

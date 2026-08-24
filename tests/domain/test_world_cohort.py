@@ -71,6 +71,18 @@ def _runtime(**overrides: object) -> Any:
     return WorldRuntimeIdentity(**values)  # type: ignore[arg-type]
 
 
+def test_runtime_identity_intent_never_carries_git_commit_and_gates_measured_identity() -> None:
+    from trader.domain.world_cohort import WorldRuntimeIdentityIntent
+
+    intent = WorldRuntimeIdentityIntent(application_build_id="casys-trader.world.shadow_pilot.v2")
+    assert "git_commit" not in intent.to_dict()
+    assert intent.accepts(_runtime()) is False
+    matching = _runtime(application_build_id="casys-trader.world.shadow_pilot.v2")
+    assert intent.accepts(matching) is True
+    with pytest.raises(ValueError, match="latest"):
+        WorldRuntimeIdentityIntent(application_build_id="latest")
+
+
 def _lane(
     lane_id: str,
     *,

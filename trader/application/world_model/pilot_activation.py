@@ -23,15 +23,23 @@ from typing import Any
 import yaml
 
 from trader.application.world_model.baseline import MODEL_ID as MARKOV_MODEL_ID
+from trader.application.world_model.cohort_ports import (
+    WorldOntologyHeadsProof,
+    WorldOntologyProofQuery,
+    WorldRuntimeIdentityPort,
+)
 from trader.application.world_model.cohort_service import WorldCohortService
 from trader.application.world_model.encoding import world_lane_encoder_profile
 from trader.application.world_model.gru import MODEL_ID as GRU_MODEL_ID
+from trader.application.world_model.runtime_identity import MeasuredWorldRuntimeIdentityService
 from trader.domain.world_cohort import (
     COHORT_AUTHORITY,
     COHORT_DECISION_EFFECT,
     COHORT_RECOMMENDATION,
     ArmWorldCohort,
     CohortPhase,
+    InvalidateWorldCohort,
+    InvalidationReason,
     RegisterWorldCohort,
     SensorMask,
     StartWorldCohort,
@@ -42,19 +50,23 @@ from trader.domain.world_cohort import (
     WorldContrastTerm,
     WorldLaneDefinition,
     WorldRuntimeIdentity,
+    WorldRuntimeIdentityIntent,
     WorldSensorRequirement,
 )
 from trader.domain.world_episode import canonical_sha256, parse_utc_timestamp
 from trader.domain.world_feature_contract import (
     GRAPH_FEATURE_CONTRACT_VERSION,
+    WORLD_GRAPH_V3_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
     WORLD_SCOPE_MAPPING_SHA256,
 )
 
 
-WORLD_SHADOW_PILOT_SCHEMA = "world_shadow_pilot.v1"
+WORLD_SHADOW_PILOT_SCHEMA = "world_shadow_pilot.v2"
+WORLD_SHADOW_PILOT_PRIOR_SCHEMA = "world_shadow_pilot.v1"
 WORLD_SHADOW_PILOT_CONFIG_NAME = "world_shadow_pilot.yaml"
 WORLD_SHADOW_PILOT_ACTIVATION_FLAG = "CASYS_WORLD_SHADOW_PILOT_ACTIVATION"
+WORLD_SHADOW_PILOT_PRIOR_ID = "world_shadow_pilot.v1"
 _C1_LOGICAL = ("market", "status_only", "company", "macro", "joint")
 _GRAPH_LOGICAL = ("graph",)
 _GRU_SEQUENCE_LENGTH = 4
@@ -92,6 +104,7 @@ class WorldShadowPilotConfig:
     enabled: bool
     window: Mapping[str, Any]
     workers: Mapping[str, bool]
+    runtime_identity_intent: WorldRuntimeIdentityIntent
     payload: Mapping[str, Any]
 
 
@@ -111,6 +124,19 @@ class WorldShadowPilotActivation:
     episodes_appended: int = 0
     backfill: bool = False
     graph_cohort_id: str | None = None
+    prior_cohort_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorldShadowPilotInvalidation:
+    status: str
+    reason: str
+    authority: str = COHORT_AUTHORITY
+    decision_effect: str = COHORT_DECISION_EFFECT
+    recommendation: str = COHORT_RECOMMENDATION
+    prior_cohort_ids: tuple[str, ...] = ()
+    invalidated_cohort_ids: tuple[str, ...] = ()
+    apply: bool = False
 
 
 def world_shadow_pilot_activation_enabled(environ: Mapping[str, str] | None = None) -> bool:
@@ -191,6 +217,17 @@ def _parse_world_shadow_pilot_config(path: Path) -> WorldShadowPilotConfig:
         key: _required_bool(workers_raw.get(key), f"workers.{key}")
         for key in ("v1_shadow", "context_v2", "macro_source_only", "graph_v3")
     }
+    if payload.get("runtime_identity") is not None:
+        raise ValueError("runtime_identity is measured at activation and must not be committed")
+    intent = WorldRuntimeIdentityIntent.from_mapping(
+        _mapping(payload.get("runtime_identity_intent"), "runtime_identity_intent")
+    )
+    supersedes = _required_text(payload.get("supersedes_pilot_id"), "supersedes_pilot_id")
+    if supersedes != WORLD_SHADOW_PILOT_PRIOR_ID:
+        raise ValueError("supersedes_pilot_id must name the prior immutable pilot")
+    generation = payload.get("lifecycle_generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 2:
+        raise ValueError("lifecycle_generation must be an int >= 2")
     return WorldShadowPilotConfig(
         schema_version=schema,
         content_sha256=digest,
@@ -198,6 +235,7 @@ def _parse_world_shadow_pilot_config(path: Path) -> WorldShadowPilotConfig:
         enabled=_required_bool(payload.get("enabled"), "enabled"),
         window=MappingProxyType(window),
         workers=MappingProxyType(workers),
+        runtime_identity_intent=intent,
         payload=MappingProxyType(dict(payload)),
     )
 
@@ -337,6 +375,17 @@ def _sensors(lanes: Sequence[WorldLaneDefinition]) -> tuple[WorldSensorRequireme
     return tuple(sensors)
 
 
+def _legacy_stable_cohort_id(pilot_id: str, schema_version: str, key: str, activation_policy: str) -> str:
+    return "world_cohort:v1:" + canonical_sha256(
+        {
+            "pilot_id": pilot_id,
+            "schema_version": schema_version,
+            "cohort_key": key,
+            "activation_policy": activation_policy,
+        }
+    )
+
+
 def _stable_cohort_id(config: WorldShadowPilotConfig, key: str) -> str:
     return "world_cohort:v1:" + canonical_sha256(
         {
@@ -344,6 +393,8 @@ def _stable_cohort_id(config: WorldShadowPilotConfig, key: str) -> str:
             "schema_version": config.schema_version,
             "cohort_key": key,
             "activation_policy": config.activation_policy,
+            "config_sha256": config.content_sha256,
+            "lifecycle_generation": config.payload.get("lifecycle_generation"),
         }
     )
 
@@ -361,6 +412,7 @@ def _materialize_manifest(
     cohort_id: str,
     planned_start: datetime,
     stop_at: datetime,
+    runtime_identity: WorldRuntimeIdentity,
 ) -> WorldCohortManifest:
     key = _required_text(spec.get("key"), "cohorts[].key")
     families = tuple(_required_text(item, "families[]") for item in spec.get("families") or ())
@@ -379,6 +431,18 @@ def _materialize_manifest(
         if graph
         else _required_text(config.payload.get("context_feature_contract"), "context_feature_contract")
     )
+    if graph:
+        ontology_revision = _required_text(
+            spec.get("ontology_revision") or WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+            "ontology_revision",
+        )
+        if ontology_revision != WORLD_GRAPH_V3_ONTOLOGY_REVISION:
+            raise ValueError("graph cohort ontology_revision must be market_ontology.v1")
+    else:
+        ontology_revision = _required_text(
+            spec.get("ontology_revision") or config.payload.get("ontology_revision"),
+            "ontology_revision",
+        )
     return WorldCohortManifest(
         cohort_id=cohort_id,
         study_kind=_required_text(spec.get("study_kind"), "study_kind"),
@@ -400,19 +464,80 @@ def _materialize_manifest(
             "market_feature_contract",
         ),
         context_feature_contract=context_contract,
-        ontology_revision=_required_text(config.payload.get("ontology_revision"), "ontology_revision"),
+        ontology_revision=ontology_revision,
         scope_mapping=dict(config.payload["scope_mapping"]),
         sensor_requirements=_sensors(lanes),
         lanes=lanes,
         contrasts=_contrasts(lanes),
         statistical_protocol=dict(config.payload["statistical_protocol"]),
         support_gates=dict(config.payload["support_gates"]),
-        runtime_identity=WorldRuntimeIdentity.from_mapping(dict(config.payload["runtime_identity"])),
+        runtime_identity=runtime_identity,
         authority=COHORT_AUTHORITY,
         decision_effect=COHORT_DECISION_EFFECT,
         causal_claim=False,
         pnl_claim=False,
     )
+
+
+def _graph_ontology_proof(
+    manifest: WorldCohortManifest,
+    *,
+    ontology_proof: WorldOntologyProofQuery | None,
+    now: datetime,
+) -> WorldOntologyHeadsProof | None:
+    if ontology_proof is None or manifest.scope_mapping is None:
+        return None
+    return ontology_proof.proven_heads(
+        revision_id=manifest.ontology_revision,
+        scope_mapping_id=manifest.scope_mapping.mapping_id,
+        scope_mapping_hash=manifest.scope_mapping.mapping_sha256,
+        at=now,
+    )
+
+
+def _block_lanes_for_drift(service: WorldCohortService, cohort: WorldCohort) -> WorldCohort:
+    if cohort.phase is not CohortPhase.COLLECTING:
+        return cohort
+    for lane in cohort.manifest.lanes:
+        try:
+            service.record_config_drift(cohort.cohort_id, lane_id=lane.lane_id)
+        except Exception:  # noqa: BLE001 - a blocked lane must not raise into activation
+            continue
+    loaded = _try_load(service, cohort.cohort_id)
+    return cohort if loaded is None else loaded
+
+
+def _event_id(cohort: WorldCohort, event_type: str) -> str | None:
+    matches = [event for event in cohort.events if event.event_type == event_type]
+    return None if not matches else matches[-1].event_id
+
+
+def _cohort_report(
+    *,
+    key: str,
+    cohort: WorldCohort,
+    registered_event_id: str,
+    armed_event_id: str | None,
+    started_event_id: str | None,
+    already_present: bool,
+    reason: str,
+    blocked_reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "cohort_id": cohort.cohort_id,
+        "phase": cohort.phase.value,
+        "manifest_sha256": cohort.manifest.manifest_sha256,
+        "planned_start_not_before": cohort.manifest.planned_start_not_before,
+        "collection_stop_at": cohort.manifest.collection_stop_rule.at,
+        "ontology_revision": cohort.manifest.ontology_revision,
+        "registered_event_id": registered_event_id,
+        "armed_event_id": armed_event_id,
+        "started_event_id": started_event_id,
+        "already_present": already_present,
+        "reason": reason,
+        "blocked_reason": blocked_reason,
+    }
 
 
 def _activate_one(
@@ -421,11 +546,27 @@ def _activate_one(
     spec: Mapping[str, Any],
     *,
     now: datetime,
+    measured: WorldRuntimeIdentity,
+    ontology_proof: WorldOntologyProofQuery | None,
 ) -> dict[str, Any]:
     key = _required_text(spec.get("key"), "cohorts[].key")
     cohort_id = _stable_cohort_id(config, key)
+    logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
+    graph = "graph" in logicals
     existing = _try_load(service, cohort_id)
     if existing is not None:
+        if existing.manifest.runtime_identity != measured:
+            drifted = _block_lanes_for_drift(service, existing)
+            return _cohort_report(
+                key=key,
+                cohort=drifted,
+                registered_event_id=drifted.events[0].event_id,
+                armed_event_id=_event_id(drifted, "world_cohort_armed"),
+                started_event_id=None if drifted.started_event is None else drifted.started_event.event_id,
+                already_present=True,
+                reason="runtime_identity_drift",
+                blocked_reason="runtime_identity_drift",
+            )
         manifest = existing.manifest
     else:
         planned_start, stop_at = _window_for(config, now)
@@ -435,9 +576,25 @@ def _activate_one(
             cohort_id=cohort_id,
             planned_start=planned_start,
             stop_at=stop_at,
+            runtime_identity=measured,
         )
     registered = service.register(RegisterWorldCohort(manifest=manifest))
     loaded = service.repository.load(WorldCohortId(manifest.cohort_id))
+    blocked_reason = None
+    if graph:
+        proof = _graph_ontology_proof(loaded.manifest, ontology_proof=ontology_proof, now=now)
+        if proof is None:
+            blocked_reason = "graph_ontology_unpublished"
+            return _cohort_report(
+                key=key,
+                cohort=loaded,
+                registered_event_id=registered.event.event_id,
+                armed_event_id=_event_id(loaded, "world_cohort_armed"),
+                started_event_id=None if loaded.started_event is None else loaded.started_event.event_id,
+                already_present=existing is not None,
+                reason="graph_ontology_unpublished",
+                blocked_reason=blocked_reason,
+            )
     required = tuple(item.sensor_id for item in loaded.manifest.sensor_requirements if item.mode is SensorMask.REQUIRED)
     armed = registered
     if loaded.phase in {CohortPhase.REGISTERED, CohortPhase.ARMED}:
@@ -445,7 +602,7 @@ def _activate_one(
             ArmWorldCohort(
                 cohort_id=loaded.cohort_id,
                 manifest_sha256=loaded.manifest.manifest_sha256,
-                runtime_identity=loaded.manifest.runtime_identity,
+                runtime_identity=measured,
                 satisfied_sensor_ids=required,
             )
         )
@@ -456,22 +613,118 @@ def _activate_one(
             StartWorldCohort(
                 cohort_id=loaded.cohort_id,
                 manifest_sha256=loaded.manifest.manifest_sha256,
-                runtime_identity=loaded.manifest.runtime_identity,
+                runtime_identity=measured,
             )
         )
         loaded = service.repository.load(WorldCohortId(manifest.cohort_id))
-    return {
-        "key": key,
-        "cohort_id": loaded.cohort_id,
-        "phase": loaded.phase.value,
-        "manifest_sha256": loaded.manifest.manifest_sha256,
-        "planned_start_not_before": loaded.manifest.planned_start_not_before,
-        "collection_stop_at": loaded.manifest.collection_stop_rule.at,
-        "registered_event_id": registered.event.event_id,
-        "armed_event_id": armed.event.event_id,
-        "started_event_id": started.event.event_id,
-        "already_present": existing is not None,
-    }
+    return _cohort_report(
+        key=key,
+        cohort=loaded,
+        registered_event_id=registered.event.event_id,
+        armed_event_id=armed.event.event_id,
+        started_event_id=started.event.event_id,
+        already_present=existing is not None,
+        reason="operator_authorized_on_boot",
+        blocked_reason=blocked_reason,
+    )
+
+
+def _measure_runtime_identity(
+    config: WorldShadowPilotConfig,
+    *,
+    config_path: Path,
+    runtime_identity: WorldRuntimeIdentityPort | None,
+) -> WorldRuntimeIdentity:
+    if runtime_identity is not None:
+        measured = runtime_identity.measure()
+    else:
+        measured = MeasuredWorldRuntimeIdentityService(
+            repo_root=config_path.parent.parent,
+            application_build_id=config.runtime_identity_intent.application_build_id,
+        ).measure()
+    if not isinstance(measured, WorldRuntimeIdentity):
+        raise TypeError("runtime identity port must return WorldRuntimeIdentity")
+    if not config.runtime_identity_intent.accepts(measured):
+        raise ValueError("measured runtime identity does not match operator intent")
+    return measured
+
+
+def superseded_world_shadow_cohort_ids(
+    config: WorldShadowPilotConfig | None = None,
+    *,
+    config_dir: str | Path | None = None,
+) -> tuple[str, ...]:
+    resolved = config
+    if resolved is None and config_dir is not None:
+        resolved = load_world_shadow_pilot_config(config_dir)
+    keys = ("technical_c1", "graph_v3")
+    policy = "operator_authorized_on_boot"
+    prior_id = WORLD_SHADOW_PILOT_PRIOR_ID
+    if resolved is not None:
+        specs = resolved.payload.get("cohorts") or ()
+        keys = tuple(
+            _required_text(spec.get("key"), "cohorts[].key")
+            for spec in specs
+            if isinstance(spec, Mapping)
+        )
+        policy = resolved.activation_policy
+        prior_id = _required_text(
+            resolved.payload.get("supersedes_pilot_id") or WORLD_SHADOW_PILOT_PRIOR_ID,
+            "supersedes_pilot_id",
+        )
+    return tuple(_legacy_stable_cohort_id(prior_id, WORLD_SHADOW_PILOT_PRIOR_SCHEMA, key, policy) for key in keys)
+
+
+def invalidate_superseded_world_shadow_cohorts(
+    *,
+    cohort_service: WorldCohortService,
+    now: datetime | str,
+    config_dir: str | Path | None = None,
+    config: WorldShadowPilotConfig | None = None,
+    apply: bool = False,
+) -> WorldShadowPilotInvalidation:
+    """Append-only operator path for prior immutable cohort IDs. Default is dry-run."""
+
+    clock = _utc(now if isinstance(now, datetime) else parse_utc_timestamp(now, "now"))
+    resolved = config
+    if resolved is None and config_dir is not None:
+        resolved = load_world_shadow_pilot_config(config_dir)
+    prior_ids = superseded_world_shadow_cohort_ids(resolved, config_dir=config_dir)
+    if not apply:
+        return WorldShadowPilotInvalidation(
+            status="dry_run",
+            reason="operator_confirm_required",
+            prior_cohort_ids=prior_ids,
+            apply=False,
+        )
+    invalidated: list[str] = []
+    for cohort_id in prior_ids:
+        existing = _try_load(cohort_service, cohort_id)
+        if existing is None:
+            continue
+        if existing.phase is CohortPhase.COMPLETE:
+            continue
+        envelope = cohort_service.invalidate(
+            cohort_id,
+            InvalidateWorldCohort(
+                reason=InvalidationReason.ACCEPTED_DRIFT,
+                scope="prior_pilot",
+                proofs=(
+                    WORLD_SHADOW_PILOT_SCHEMA,
+                    resolved.content_sha256 if resolved is not None else "operator_prior_invalidation",
+                ),
+                occurred_at=clock,
+            ),
+        )
+        if envelope.event.event_type == "world_cohort_invalidated":
+            invalidated.append(cohort_id)
+    return WorldShadowPilotInvalidation(
+        status="invalidated",
+        reason="operator_authorized_prior_invalidation",
+        prior_cohort_ids=prior_ids,
+        invalidated_cohort_ids=tuple(invalidated),
+        apply=True,
+    )
 
 
 def activate_world_shadow_pilot(
@@ -480,6 +733,8 @@ def activate_world_shadow_pilot(
     config_dir: str | Path,
     now: datetime | str,
     environ: Mapping[str, str] | None = None,
+    runtime_identity: WorldRuntimeIdentityPort | None = None,
+    ontology_proof: WorldOntologyProofQuery | None = None,
 ) -> WorldShadowPilotActivation:
     """Idempotently register/arm/start approved shadow cohorts. Never backfills."""
 
@@ -498,6 +753,14 @@ def activate_world_shadow_pilot(
             return _skip("disabled", config=config)
         if cohort_service is None:
             return _skip("no_cohort_service", config=config)
+        try:
+            measured = _measure_runtime_identity(
+                config,
+                config_path=path,
+                runtime_identity=runtime_identity,
+            )
+        except Exception:  # noqa: BLE001 - unmeasurable identity cannot block V1/Trader
+            return _skip("runtime_identity_unavailable", config=config)
         specs = config.payload.get("cohorts")
         if not isinstance(specs, Sequence) or isinstance(specs, (str, bytes, bytearray)):
             return _skip("config_invalid", config=config)
@@ -505,7 +768,16 @@ def activate_world_shadow_pilot(
         for spec in specs:
             if not isinstance(spec, Mapping):
                 return _skip("config_invalid", config=config)
-            reports.append(_activate_one(cohort_service, config, spec, now=clock))
+            reports.append(
+                _activate_one(
+                    cohort_service,
+                    config,
+                    spec,
+                    now=clock,
+                    measured=measured,
+                    ontology_proof=ontology_proof,
+                )
+            )
         window = None
         if reports:
             window = MappingProxyType(
@@ -524,6 +796,7 @@ def activate_world_shadow_pilot(
             cohorts=tuple(reports),
             workers=config.workers,
             graph_cohort_id=graph_id,
+            prior_cohort_ids=superseded_world_shadow_cohort_ids(config),
         )
     except Exception:  # noqa: BLE001 - activation cannot raise into the trader loop
         return _skip("activation_error")
@@ -532,10 +805,15 @@ def activate_world_shadow_pilot(
 __all__ = [
     "WORLD_SHADOW_PILOT_ACTIVATION_FLAG",
     "WORLD_SHADOW_PILOT_CONFIG_NAME",
+    "WORLD_SHADOW_PILOT_PRIOR_ID",
+    "WORLD_SHADOW_PILOT_PRIOR_SCHEMA",
     "WORLD_SHADOW_PILOT_SCHEMA",
     "WorldShadowPilotActivation",
     "WorldShadowPilotConfig",
+    "WorldShadowPilotInvalidation",
     "activate_world_shadow_pilot",
+    "invalidate_superseded_world_shadow_cohorts",
     "load_world_shadow_pilot_config",
+    "superseded_world_shadow_cohort_ids",
     "world_shadow_pilot_activation_enabled",
 ]

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
 from trader.application.world_model.graph_ports import (
     WorldEntityEventEnvelope,
     WorldEntityEventId,
@@ -384,6 +385,38 @@ class WorldKnowledgeResolver:
         )
 
 
+class WorldOntologyProofService:
+    """Typed durable-heads query. Absence is None, never a fabricated revision."""
+
+    def __init__(self, ledger: WorldGraphLedger) -> None:
+        self._ontology = WorldOntologyResolver(ledger)
+
+    def proven_heads(
+        self,
+        *,
+        revision_id: str,
+        scope_mapping_id: str,
+        scope_mapping_hash: str,
+        at: datetime | str,
+    ) -> WorldOntologyHeadsProof | None:
+        view = self._ontology.at_cutoff(at)
+        published = view.published_revision
+        if published is None:
+            return None
+        if published.revision_id != revision_id:
+            return None
+        if published.scope_mapping_id != scope_mapping_id or published.scope_mapping_hash != scope_mapping_hash:
+            return None
+        return WorldOntologyHeadsProof(
+            revision_id=published.revision_id,
+            content_sha256=published.content_sha256 or "",
+            scope_mapping_id=published.scope_mapping_id,
+            scope_mapping_hash=published.scope_mapping_hash,
+            entity_heads_hash=published.entity_heads_hash or "",
+            structural_heads_hash=published.structural_heads_hash or "",
+        )
+
+
 class WorldOntologyService:
     """Typed command handlers. Domain events are appended; availability stays store-assigned."""
 
@@ -505,6 +538,7 @@ __all__ = [
     "UnlinkWorldEntityIdentity",
     "WorldKnowledgeOverlayView",
     "WorldKnowledgeResolver",
+    "WorldOntologyProofService",
     "WorldOntologyResolver",
     "WorldOntologyRevisionView",
     "WorldOntologyService",

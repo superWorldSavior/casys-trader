@@ -33,6 +33,7 @@ from trader.domain.world_cohort import (
     LaneOperationalStatus,
     WorldCohortSlot,
 )
+from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeResolution
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
     WorldEpisode,
@@ -430,6 +431,7 @@ class WorldModelService:
         lookback: str = "5d",
         run_id: str = "world_shadow.v1",
         cohort_service: object | None = None,
+        scope_resolver: object | None = None,
     ) -> None:
         normalized = _normalise_horizons(horizons)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
@@ -450,6 +452,7 @@ class WorldModelService:
         self.lookback = str(lookback)
         self.run_id = str(run_id).strip() or "world_shadow.v1"
         self.cohort_service = cohort_service
+        self.scope_resolver = scope_resolver
         self.log = logger or logging.getLogger("casys-trader")
         self._lock = threading.Lock()
         self._running: str | None = None
@@ -1644,7 +1647,28 @@ class WorldModelService:
                 grouped.setdefault(anchor, {}).setdefault(contract_id, identifier)
             for anchor, refs in grouped.items():
                 try:
-                    slot = _slot_from_captured(cohort, anchor, refs, started.event_id)
+                    declared = {lane.feature_contract_id for lane in cohort.manifest.lanes}
+                    filtered = {
+                        contract_id: identifier
+                        for contract_id, identifier in refs.items()
+                        if contract_id in declared
+                    }
+                    if not filtered:
+                        continue
+                    venue, symbol, _interval, _as_of = anchor
+                    resolution = _scope_resolution_for(
+                        cohort,
+                        venue=venue,
+                        symbol=symbol,
+                        resolver=self.scope_resolver,
+                    )
+                    slot = _slot_from_captured(
+                        cohort,
+                        anchor,
+                        filtered,
+                        started.event_id,
+                        scope_resolution=resolution,
+                    )
                     admit(AdmitWorldCohortSlot(slot=slot, started_evidence=evidence))
                 except Exception as exc:  # noqa: BLE001 - admission failure stays shadow-local
                     self._error(report, stage="cohort_admit", error=exc)
@@ -1688,11 +1712,36 @@ def _episode_as_of(episode: object) -> datetime | None:
     return _parse_timestamp(raw)
 
 
+def _scope_resolution_for(
+    cohort: object,
+    *,
+    venue: str,
+    symbol: str,
+    resolver: object | None,
+) -> WorldScopeResolution | None:
+    mapping = getattr(getattr(cohort, "manifest", None), "scope_mapping", None)
+    if mapping is None:
+        return None
+    if resolver is None:
+        raise ValueError("scope resolution is required when the manifest declares scope_mapping")
+    resolve = getattr(resolver, "resolve", None)
+    if not callable(resolve):
+        raise TypeError("scope_resolver must expose resolve(anchor)")
+    resolution = resolve(WorldMarketAnchorRef(market_venue=venue, instrument=symbol))
+    if not isinstance(resolution, WorldScopeResolution):
+        resolution = WorldScopeResolution.from_mapping(resolution)
+    if resolution.mapping_id != mapping.mapping_id or resolution.mapping_sha256 != mapping.mapping_sha256:
+        raise ValueError("scope resolution mapping identity must match the manifest")
+    return resolution
+
+
 def _slot_from_captured(
     cohort: object,
     anchor: tuple[str, str, str, str],
     refs: Mapping[str, str],
     started_event_id: str,
+    *,
+    scope_resolution: WorldScopeResolution | None = None,
 ) -> WorldCohortSlot:
     venue, symbol, interval, as_of = anchor
     manifest = cohort.manifest
@@ -1720,6 +1769,7 @@ def _slot_from_captured(
         feature_contract_fingerprints={lane.lane_id: lane.feature_contract_fingerprint for lane in lanes},
         feature_mask_fingerprints={lane.lane_id: lane.feature_mask_fingerprint for lane in lanes},
         started_event_id=started_event_id,
+        scope_resolution=scope_resolution,
     )
 
 
