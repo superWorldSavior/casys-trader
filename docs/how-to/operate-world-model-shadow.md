@@ -1,105 +1,221 @@
 # How-to — Opérer le World Model shadow
 
-> **Type** : How-to (Diátaxis). Procédure lecture seule.
-> **Référence** : [`reference/world-model.md`](../reference/world-model.md).
-> **Ne pas** redémarrer, pousser, ni modifier l'état live depuis cette page
-> sans intention explicite.
+> **Type** : How-to (Diátaxis). Procédure opérateur.
+> **Référence** : [`reference/world-model.md`](../reference/world-model.md)
+>   (contrat V1 ; le pilote cohorte/macro/graphe est décrit ici et dans les
+>   pages explanation / note de statut).
+> **Pourquoi** : [`world-model-shadow.md`](../explanation/architecture/world-model-shadow.md),
+>   [`world-context-ontology.md`](../explanation/architecture/world-context-ontology.md).
+> **Statut pilote** : [`2026-08-24-world-model-shadow-pilot.md`](../decisions/2026-08-24-world-model-shadow-pilot.md).
+>
+> Cette page **ne redémarre pas**, ne pousse pas, et n'écrit pas dans `state/`
+> ni `.env`. Un arrêt/relance reste un acte volontaire, voir
+> [`run-the-daemon.md`](run-the-daemon.md).
 
-Le World Model est `shadow_only` / `NO_GO`. Il n'influence ni le Brain, ni
-l'Univers, ni le broker. Une métrique de marché n'est **pas** un uplift Trader.
+Tout le World Model reste `shadow_only` / `decision_effect=none` / `NO_GO`.
+Il n'influence ni le Brain, ni l'Univers, ni le scheduler, ni RiskGate, ni le
+broker. Une métrique de marché n'est **pas** un PnL Trader. Après une semaine
+de collecte supervisée : couverture, plomberie, tendances préliminaires —
+jamais une preuve causale.
 
 ## Lire le statut
 
-Depuis la racine du dépôt, sur l'état paper courant :
+Depuis la racine du dépôt, sur l'état paper courant. Les lectures **ne créent
+pas** `world_model.db` ni `state/world_macro/` :
 
 ```bash
 uv run casys-trader world status --json
+uv run casys-trader world macro status --json
+uv run casys-trader world graph status --json
 ```
 
-Sortie machine-readable (`schema_version=world_model_status.v1`). Champs à
-lire en premier :
+`world status` (`schema_version=world_model_status.v1`) porte aussi le bloc
+macro. Champs à lire en premier :
 
 | Champ | Lecture honnête |
 |---|---|
 | `status` | `not_started` si `state/world_model.db` n'existe pas encore |
 | `authority` | toujours `shadow_only` |
 | `decision_effect` | toujours `none` |
+| `recommendation` | toujours `NO_GO` |
+| `causal_claim` / `pnl_claim` | toujours `false` |
 | `evaluation.status` | `warming_up` tant qu'aucune paire n'est scorable |
 | `impact.actual_contribution.status` | `not_attributable` |
-| `impact.counterfactual_contribution.status` | `not_available` |
+| `macro.gaps.gdelt` / `macro.gaps.news_macro_brief` | `excluded` |
 
-La commande n'écrit rien : base absente → `not_started`, fichier intact.
+`world graph status` (`world_graph_status.v1`) expose les budgets (profondeur
+4, 32 chemins) et `gaps.writes`. Un graphe **câblé** n'est pas une écriture.
 
-## Interpréter `not_started`
+### Cohortes (status + rapport)
 
-C'est l'état live attendu si le daemon n'a jamais booté le shadow (flag off,
-échec de boot, ou instance jamais démarrée avec ce code). Ce n'est pas une
-preuve que le modèle « ne prédit pas ». Vérifier ensuite :
+Le CLI n'a pas de `list`. Les `cohort_id` stables sont dérivés du YAML
+(`pilot_id` + `schema_version` + `cohort_key` + `activation_policy`) et
+apparaissent dans le log `[world_shadow_pilot]` au boot. Deux clés :
 
-1. `CASYS_WORLD_MODEL_SHADOW_ENABLED` dans le `.env` du process **déjà lancé**
-   (un export dans le shell courant ne change pas un daemon vivant) ;
-2. présence de `state/world_model.db` ;
-3. logs `[world_model_shadow]` dans `state/daemon_console.log`.
+| Clé YAML | `study_kind` | Lanes |
+|---|---|---|
+| `technical_c1` | `pipeline_pilot` | Markov + GRU × `market` / `status_only` / `company` / `macro` / `joint` — **pas de graphe** |
+| `graph_v3` | `pipeline_pilot` | Markov + GRU × `graph` seulement |
 
-Le flag n'est lu qu'au démarrage. Pour l'activer ou le couper : arrêter le
-daemon proprement, puis le relancer. Voir
-[`run-the-daemon.md`](run-the-daemon.md).
+```bash
+uv run casys-trader world cohort status --json COHORT_ID
+uv run casys-trader world cohort report --json COHORT_ID
+uv run casys-trader world graph report --json COHORT_ID
+```
 
-## Activer le challenger contexte V2 (opt-in, défaut off)
+`world cohort report` (`world_cohort_report.v1`) est reconstructible et
+lecture seule. `interpretation_limit=coverage_plumbing_preliminary_trends_only`
+tant que l'empan de collecte est inférieur à 8 jours. `causal_claim` et
+`pnl_claim` restent `false` même après.
 
-`CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED` vaut `0` par défaut. Ce how-to ne
-redémarre pas le daemon live et n'écrit pas dans `state/`.
+## Distinguer boot, cycle dû, cycle idle
 
-1. Vérifier que le process **déjà lancé** n'a pas le flag (un export local
-   ne le change pas).
-2. Poser `CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED=1` dans l'environnement du
-   prochain boot.
-3. Seulement lors d'un arrêt/relance **volontaire** ultérieur : le boot
-   construit le reader local et l'enricher background. Le cycle trading
-   continue de n'enqueue que la V1 marché.
-4. Relire `casys-trader world status --json` : `authority` reste
-   `shadow_only`. Une ablation V2−V1 n'est pas un PnL Trader, pas un
-   claim causal, et pas un impact de graphe : NetworkX est une projection
-   de provenance/traversée ; la topologie n'est pas encore encodée dans
-   le baseline/GRU.
+Trois états distincts. Ne pas les fusionner :
 
-Le code V2 doit démarrer une **cohorte prospective propre**. Interpréter
-une ablation comme prête est `NO_GO` tant que les gates causales
-(cutoff, reçus, ablation appariée) ne passent pas **et** qu'un producteur
-macro *source-only* n'existe pas. Les briefs macro actuels sont contaminés
-politique/candidat et restent exclus : un rapport régénéré demain recevra
-un reçu d'availability valide mais restera exclu jusqu'à ce producteur.
-L'incrément mesurable aujourd'hui est uniquement les métadonnées company /
-status compactes causalement prouvées plus la missingness et la topologie
-familiale déjà partagées avec la V1.
+| Observation | Ce que ça prouve | Ce que ça ne prouve pas |
+|---|---|---|
+| Log `[world_model_shadow] enabled` / `[world_shadow_pilot] status=started` | câblage au boot, cohortes `register`/`arm`/`start` | qu'un épisode a été écrit |
+| `world graph status` avec overlay câblé | le worker V3 est instancié | une projection persistée ou un `CAUSES` |
+| `episodes_appended=0` au boot | l'activation **ne backfill pas** | un échec de plomberie |
+| Cycle daemon `idle_waiting_for_wake` / replay de la même barre | le daemon vit | un nouveau `WorldEpisode` |
+| Compteur d'épisodes qui monte | un **cycle dû** a capturé une ancre OHLCV valide | un effet Trader |
 
-Détail d'ontologie : [`world-context-ontology.md`](../explanation/architecture/world-context-ontology.md).
+Le hook de capture tourne après le snapshot marché, **avant** le dispatch
+LLM (`reason=market_snapshot_pre_dispatch`). Sans ancre OHLCV valide : **aucun
+épisode**. Un replay exact est un no-op. Un cycle idle, un symbole unmapped
+pour le graphe, ou un worker encore en file (`queued_latest`) peuvent donc
+produire **zéro** nouvelle ligne alors que le daemon et le shadow sont
+câblés. Le graphe le dit explicitement : `gaps.writes=none_until_due_cycle`.
 
-## Activer / couper
+Vérifier ensuite, dans cet ordre :
+
+1. flags **du process déjà lancé** (un export local ne change rien) ;
+2. `state/world_model.db` et, si le worker macro est on, `state/world_macro/` ;
+3. logs `[world_model_shadow]`, `[world_shadow_pilot]`,
+   `[world_macro_source_only]` dans `state/daemon_console.log`.
+
+## Fenêtre d'une semaine
+
+La fenêtre n'est **pas** une date ISO pré-expirée dans le YAML. Le calendrier
+supervisé commence le **2026-08-24, Asia/Taipei**. Le runtime estampille :
+
+- `planned_start_not_before` = horloge UTC du **premier** boot qui active
+  (`window.planned_start=boot_event_time`) ;
+- `collection_stop_at` = start + 7 jours (`fixed_end`).
+
+Un second boot est idempotent : il **ne décale pas** la fenêtre, ne
+ré-écrit pas d'épisode, et répare au plus les reçus d'availability. Relire
+`world cohort status` : `phase=collecting` et les deux timestamps gelés.
+
+## Claims autorisés après une semaine
+
+Après sept jours de collecte supervisée, on peut dire :
+
+- la couverture (slots, capteurs, venues, horizons) ;
+- que la plomberie capture / masks / appariement / restart tient ou casse ;
+- des **tendances préliminaires** descriptives (log-loss / Brier appariés),
+  sous `insufficient_support` tant que le minimum descriptif (20 ancres
+  uniques) n'est pas atteint.
+
+On ne peut **pas** dire :
+
+- qu'une voie *cause* un mouvement (`causal_claim=false`, pas d'arête `CAUSES`) ;
+- qu'un PnL Trader, un drawdown de portefeuille ou un uplift d'ordres
+  existent (`pnl_claim=false`, `actual_trader_contribution=not_attributable`) ;
+- qu'une étude `prospective_evaluation` a été close — les deux cohortes du
+  pilote sont `pipeline_pilot`.
+
+## Flags et YAML
+
+Tous les flags sont lus **uniquement au boot**. Défauts runtime :
+
+| Flag | Défaut | Effet |
+|---|---|---|
+| `CASYS_WORLD_MODEL_SHADOW_ENABLED` | `1` | shadow V1 (Markov + GRU marché) |
+| `CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED` | `0` | voies contexte V2 |
+| `CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED` | `0` | worker macro source-only |
+| `CASYS_WORLD_MODEL_GRAPH_V3_ENABLED` | `0` | voies graphe V3 |
+| `CASYS_WORLD_SHADOW_PILOT_ACTIVATION` | `1` | honore le YAML d'autorisation |
+
+Le YAML `config/world_shadow_pilot.yaml` est l'**autorisation opérateur**, pas
+un défaut RFC. Si `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1` **et**
+`enabled: true`, le boot fait un **OU** avec `workers.*` :
+
+- `workers.v1_shadow` — V1 déjà porté par `CASYS_WORLD_MODEL_SHADOW_ENABLED` ;
+- `workers.context_v2` → OR du flag V2 ;
+- `workers.macro_source_only` → OR du flag macro ;
+- `workers.graph_v3` → OR du flag graphe.
+
+Puis, si le store V1 est créé, `activate_world_shadow_pilot` enregistre, arme
+et démarre les deux cohortes (exception documentée à l'activation RFC).
+`=0` saute register/arm/start **et** le OU YAML ; le V1 reste si son flag
+est on.
+
+`config/world_graph_v3.yaml` garde `cohort_id: null`. L'id graphe est
+**injecté** au compose depuis le rapport d'activation, jamais lu dans ce
+fichier.
+
+## Arrêter / désactiver le pilote
+
+Sans toucher au process vivant. Choisir l'intention, puis un arrêt/relance
+volontaire.
+
+| Objectif | Action | Ce qui reste |
+|---|---|---|
+| Ne plus auto-activer au prochain boot | `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=0` | V1 si `SHADOW_ENABLED=1` ; les cohortes **déjà** `collecting` dans `world_model.db` restent collectantes jusqu'à `close` / `invalidate` |
+| Couper V2 / macro / graphe au prochain boot | flags concernés à `0` **et** soit activation `0`, soit `workers.*: false` (rehash `content_sha256`) | V1 |
+| Fermer la collecte d'une cohorte | `uv run casys-trader world cohort close COHORT_ID --reason TEXT --json` | ledger append-only intact |
+| Invalider le protocole | `uv run casys-trader world cohort invalidate COHORT_ID --reason REASON --json` | `complete` est terminal : on n'invalide pas après |
+| Couper tout le shadow | `CASYS_WORLD_MODEL_SHADOW_ENABLED=0` | `world_model.db` n'est pas effacé ; **pas** de register/arm/start (pas de store). Le worker macro peut encore tourner si le YAML/flag l'OR : le couper aussi (ligne workers ci-dessus). Le chemin de décision Trader ne change pas |
+
+Raisons d'`invalidate` (enum fermé) : `manifest_id_hash_conflict`,
+`accepted_drift`, `pre_start_episode`, `contaminated_macro`, `future_leak`,
+`unpaired_training`, `missing_lane_metadata`, `destructive_correction`.
+
+`register` / `arm` / `start` CLI restent disponibles : le défaut RFC est
+l'activation **explicite**. Le YAML `operator_authorized_on_boot` est
+l'exception humaine, pas un feu vert trading.
+
+## Activer / couper le V1 seul
 
 | Objectif | Action |
 |---|---|
-| Shadow on (défaut) | omettre le flag, ou `CASYS_WORLD_MODEL_SHADOW_ENABLED=1`, **puis redémarrer** |
-| Shadow off | `CASYS_WORLD_MODEL_SHADOW_ENABLED=0`, **puis redémarrer** |
+| Shadow V1 on (défaut) | omettre le flag, ou `CASYS_WORLD_MODEL_SHADOW_ENABLED=1`, **puis redémarrer** |
+| Shadow V1 off | `CASYS_WORLD_MODEL_SHADOW_ENABLED=0`, **puis redémarrer** |
 
 Le chemin de décision Trader ne change pas. Couper le shadow n'efface pas
 `world_model.db`.
 
 ## Lire l'évaluation sans sur-interpréter
 
-Quand `evaluation.status=ready` :
+Quand `evaluation.status=ready` (voie V1) :
 
 - comparer baseline et GRU seulement si `comparisons[].status=ready` ;
 - en dessous de 20 paires : `insufficient_support`, pas de vainqueur ;
 - le drawdown directionnel est un proxy de marché à notionnel 1, sans frais ;
   ce n'est pas le drawdown du portefeuille paper.
 
-Quand `impact.actual_contribution.status=not_attributable` : ne pas attribuer
-de PnL Trader au World Model. Un lien pré-décision append-only et une
-politique d'ordres shadow pré-enregistrée n'existent pas encore.
+Quand `world cohort report` :
+
+- `study_kind=pipeline_pilot` : technique uniquement ;
+- `support` / `gates.support` : mode `descriptive_only` sur ce pilote ;
+- `negative_controls.status=offline_only` : les permutations ne trainent
+  pas les voies live ;
+- `winner` reste `false` dans les claims bornés du rapport.
+
+Quand `impact.actual_contribution.status=not_attributable` : ne pas
+attribuer de PnL Trader au World Model.
 
 ## Isoler la preuve
 
-`state/world_model.db` n'est pas `casys.db`. Ne pas y copier de tables broker,
-ni y ouvrir d'écriture manuelle. Le query adapter et le CLI sont en lecture
-seule ; le store runtime refuse `UPDATE`/`DELETE`.
+| Store | Contenu | Autorité |
+|---|---|---|
+| `state/world_model.db` | épisodes, outcomes, prédictions, événements de cohorte | journal append-only du shadow |
+| `state/world_macro/` | faits / observations / runs source-only + reçus | producteur macro, pas Univers |
+| `state/gdelt/` et `state/news_briefs/` | GDELT et `NewsMacroBrief` **Univers** | **exclus** comme source World Context |
+| `casys.db` | broker, décisions Trader | jamais fusionné |
+
+Ne pas copier de tables broker dans `world_model.db`, ni y ouvrir
+d'écriture manuelle. Le query adapter et le CLI status/report sont en
+lecture seule ; le store runtime refuse `UPDATE`/`DELETE`. NetworkX n'est
+jamais persisté.
