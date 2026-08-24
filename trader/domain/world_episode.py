@@ -171,6 +171,8 @@ __all__ = [
     "world_outcome_event_id",
     "world_prediction_id",
     "completed_bar_cutoff",
+    "bar_timestamp_on_canonical_grid",
+    "is_eligible_completed_bar",
     "parse_bar_interval",
     "MARKET_FEATURE_CONTRACT_VERSION",
 ]
@@ -272,6 +274,85 @@ def completed_bar_cutoff(
             return None
         return ts + duration
     return None
+
+
+def bar_timestamp_on_canonical_grid(
+    ts: datetime | str,
+    bar_interval: str | None,
+) -> bool:
+    """True iff *ts* sits on the UTC unix-epoch grid of *bar_interval*."""
+
+    try:
+        parsed = parse_utc_timestamp(ts, "ts")
+    except (TypeError, ValueError):
+        return False
+    duration = parse_bar_interval(bar_interval)
+    if duration is None:
+        return False
+    interval_seconds = duration.total_seconds()
+    if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+        return False
+    if abs(interval_seconds - round(interval_seconds)) > 1e-9:
+        return False
+    if parsed.microsecond != 0:
+        return False
+    unix = parsed.timestamp()
+    if abs(unix - round(unix)) > 1e-9:
+        return False
+    return int(round(unix)) % int(round(interval_seconds)) == 0
+
+
+def is_eligible_completed_bar(
+    *,
+    ts: datetime | str,
+    bar_interval: str | None,
+    timestamp_semantics: str | None = None,
+    end_at: datetime | str | None = None,
+    available_at: datetime | str | None = None,
+) -> bool:
+    """Return whether a provider row may be treated as a completed interval bar.
+
+    Canonical grid alignment is required. Flat OHLC and zero volume are not
+    disqualifiers: those can be a legitimate completed bar. A trailing
+    quote-like row with an off-grid timestamp is not a completed bar.
+    """
+
+    try:
+        parsed_ts = parse_utc_timestamp(ts, "ts")
+    except (TypeError, ValueError):
+        return False
+    if not bar_timestamp_on_canonical_grid(parsed_ts, bar_interval):
+        return False
+    parsed_end = None
+    if end_at is not None:
+        try:
+            parsed_end = parse_utc_timestamp(end_at, "end_at")
+        except (TypeError, ValueError):
+            return False
+        if parsed_end < parsed_ts:
+            return False
+    cutoff = None
+    try:
+        cutoff = completed_bar_cutoff(
+            as_of_bar_ts=parsed_ts,
+            timestamp_semantics=timestamp_semantics,
+            bar_interval=bar_interval,
+        )
+    except (TypeError, ValueError):
+        return False
+    if cutoff is not None and parsed_end is not None and parsed_end != cutoff:
+        return False
+    if cutoff is None and parsed_end is not None and not bar_timestamp_on_canonical_grid(parsed_end, bar_interval):
+        return False
+    bar_end = parsed_end if parsed_end is not None else cutoff
+    if available_at is not None:
+        try:
+            parsed_available = parse_utc_timestamp(available_at, "available_at")
+        except (TypeError, ValueError):
+            return False
+        if bar_end is not None and parsed_available < bar_end:
+            return False
+    return True
 
 
 def _optional_utc_timestamp(value: datetime | str | None, field_name: str) -> datetime | None:
@@ -627,6 +708,13 @@ class WorldObservation:
             raise ValueError("captured_at must not precede as_of_bar_ts")
         if available_at is not None and captured_at is not None and available_at > captured_at:
             raise ValueError("available_at must not follow captured_at")
+        bar_end = completed_bar_cutoff(
+            as_of_bar_ts=as_of,
+            timestamp_semantics=anchor.timestamp_semantics,
+            bar_interval=self.bar_interval,
+        )
+        if bar_end is not None and available_at is not None and available_at < bar_end:
+            raise ValueError("available_at must not precede completed bar end")
 
         object.__setattr__(self, "as_of_bar_ts", as_of)
         object.__setattr__(self, "anchor", anchor)
@@ -1029,6 +1117,20 @@ class WorldOutcome:
         object.__setattr__(self, "available_at", _optional_utc_timestamp(self.available_at, "available_at"))
         object.__setattr__(self, "computed_at", _optional_utc_timestamp(self.computed_at, "computed_at"))
         object.__setattr__(self, "endpoint_bar_ts", _optional_utc_timestamp(self.endpoint_bar_ts, "endpoint_bar_ts"))
+        if self.endpoint_bar_ts is not None and self.endpoint_bar_ts < self.target_at:
+            raise ValueError("endpoint_bar_ts must not precede target_at")
+        if (
+            self.available_at is not None
+            and self.endpoint_bar_ts is not None
+            and self.available_at < self.endpoint_bar_ts
+        ):
+            raise ValueError("available_at must not precede endpoint_bar_ts")
+        if (
+            self.computed_at is not None
+            and self.available_at is not None
+            and self.computed_at < self.available_at
+        ):
+            raise ValueError("computed_at must not precede available_at")
         object.__setattr__(self, "anchor_close", _finite_optional(self.anchor_close, "anchor_close"))
         object.__setattr__(self, "endpoint_close", _finite_optional(self.endpoint_close, "endpoint_close"))
         if self.source is not None:
@@ -1084,12 +1186,21 @@ class WorldOutcome:
         if requested_eligible is not None and not isinstance(requested_eligible, bool):
             raise TypeError("training_eligible must be a bool or None")
         observed_eligible = status == "observed" and self.source_raw_sha256 is not None
-        if requested_eligible is True and not observed_eligible:
-            raise ValueError("only an observed outcome with immutable source evidence is trainable")
+        causal_complete = (
+            observed_eligible
+            and self.endpoint_bar_ts is not None
+            and self.available_at is not None
+            and self.computed_at is not None
+        )
+        if requested_eligible is True:
+            if not observed_eligible:
+                raise ValueError("only an observed outcome with immutable source evidence is trainable")
+            if not causal_complete:
+                raise ValueError("trainable outcome requires proven causal timings")
         object.__setattr__(
             self,
             "training_eligible",
-            observed_eligible if requested_eligible is None else requested_eligible,
+            causal_complete if requested_eligible is None else requested_eligible,
         )
 
     @property

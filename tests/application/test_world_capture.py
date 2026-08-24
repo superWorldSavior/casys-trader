@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from trader.application.world_model.capture import capture_world_episodes
+from trader.application.world_model.capture import capture_world_episodes, is_eligible_completed_bar
+from trader.domain.world_episode import is_eligible_completed_bar as domain_is_eligible_completed_bar
 
 
 CAPTURED_AT = "2026-08-22T10:30:00+00:00"
@@ -52,6 +53,8 @@ def _capture(
     bars_by_symbol: object | None = None,
     metadata_by_symbol: object | None = None,
     timestamp_semantics: str = "bar_close",
+    interval: str = "1h",
+    captured_at: str = CAPTURED_AT,
 ) -> tuple:
     return capture_world_episodes(
         active_symbols=active_symbols,  # type: ignore[arg-type]
@@ -74,9 +77,9 @@ def _capture(
             metadata_by_symbol if metadata_by_symbol is not None else {"AAA": _metadata()}
         ),  # type: ignore[arg-type]
         source="unit-market-bars",
-        interval="1h",
+        interval=interval,
         timestamp_semantics=timestamp_semantics,
-        captured_at=CAPTURED_AT,
+        captured_at=captured_at,
     )
 
 
@@ -242,6 +245,78 @@ def test_capture_does_not_use_a_bar_known_to_be_available_after_t0() -> None:
 
     assert len(episodes) == 1
     assert episodes[0].observation.anchor.ts.isoformat() == "2026-08-22T09:00:00+00:00"
+
+
+def test_trailing_quote_row_is_not_a_pseudo_anchor() -> None:
+    aligned = [
+        _bar(
+            "2026-08-22T09:30:00+00:00",
+            close=101.0,
+            volume=800.0,
+            available_at="2026-08-22T10:30:00+00:00",
+        ),
+        _bar(
+            "2026-08-22T09:45:00+00:00",
+            close=101.5,
+            volume=900.0,
+            available_at="2026-08-22T10:30:00+00:00",
+        ),
+        _bar(
+            "2026-08-22T10:00:00+00:00",
+            open_=102.0,
+            high=102.0,
+            low=102.0,
+            close=102.0,
+            volume=0.0,
+            available_at="2026-08-22T10:30:00+00:00",
+        ),
+    ]
+    quote = _bar(
+        "2026-08-22T10:07:00+00:00",
+        open_=102.0,
+        high=102.0,
+        low=102.0,
+        close=102.0,
+        volume=0.0,
+        available_at="2026-08-22T10:30:00+00:00",
+    )
+
+    episodes = _capture(
+        bars_by_symbol={"AAA": [*aligned, quote]},
+        timestamp_semantics="bar_start",
+        interval="15m",
+        captured_at="2026-08-22T10:30:00+00:00",
+    )
+
+    assert len(episodes) == 1
+    assert episodes[0].observation.anchor.ts.isoformat() == "2026-08-22T10:00:00+00:00"
+    assert episodes[0].observation.anchor.volume == 0.0
+    assert episodes[0].observation.anchor.open == episodes[0].observation.anchor.close
+
+    later_quote = _bar(
+        "2026-08-22T10:12:00+00:00",
+        open_=102.0,
+        high=102.0,
+        low=102.0,
+        close=102.0,
+        volume=0.0,
+        available_at="2026-08-22T10:35:00+00:00",
+    )
+    later = _capture(
+        bars_by_symbol={"AAA": [*aligned, later_quote]},
+        timestamp_semantics="bar_start",
+        interval="15m",
+        captured_at="2026-08-22T10:35:00+00:00",
+    )
+    assert later[0].observation.anchor.ts == episodes[0].observation.anchor.ts
+    assert later[0].episode_id == episodes[0].episode_id
+
+
+def test_capture_and_labeler_bind_the_same_eligible_completed_bar_rule() -> None:
+    from trader.application.world_model.labeler import is_eligible_completed_bar as labeler_rule
+
+    assert is_eligible_completed_bar is domain_is_eligible_completed_bar
+    assert labeler_rule is domain_is_eligible_completed_bar
 
 
 def _contains_forbidden_key(value: object) -> bool:

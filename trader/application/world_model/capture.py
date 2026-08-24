@@ -16,11 +16,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import math
-import re
 
-from trader.domain.world_episode import AnchorBar, Freshness, WorldEpisode, WorldObservation, parse_utc_timestamp
+from trader.domain.world_episode import (
+    AnchorBar,
+    Freshness,
+    WorldEpisode,
+    WorldObservation,
+    completed_bar_cutoff,
+    is_eligible_completed_bar,
+    parse_bar_interval,
+    parse_utc_timestamp,
+)
 
 
 UTC = timezone.utc
@@ -48,7 +56,6 @@ _TIMESTAMP_SEMANTICS = {
     "bar_start": "bar_start",
     "start": "bar_start",
 }
-_INTERVAL_PATTERN = re.compile(r"^(?P<count>\d+(?:\.\d+)?)(?P<unit>[mhd])$")
 
 
 @dataclass(frozen=True)
@@ -315,7 +322,19 @@ def _normalise_bar(
     if end_at is not None and end_at < ts:
         return None
     if end_at is None:
-        end_at = _end_at(ts, semantics=semantics, interval=supplied_interval)
+        end_at = completed_bar_cutoff(
+            as_of_bar_ts=ts,
+            timestamp_semantics=semantics,
+            bar_interval=supplied_interval,
+        )
+    if not is_eligible_completed_bar(
+        ts=ts,
+        bar_interval=supplied_interval,
+        timestamp_semantics=semantics,
+        end_at=end_at,
+        available_at=available_at,
+    ):
+        return None
 
     return _MarketBar(
         ts=ts,
@@ -481,7 +500,7 @@ def _ineligibility_reason(
         return "missing_venue"
     if anchor.source_missing:
         return "missing_source"
-    if _interval_duration(anchor.interval) is None:
+    if parse_bar_interval(anchor.interval) is None:
         return "missing_or_invalid_interval"
     if anchor.available_at_invalid:
         return "invalid_available_at"
@@ -575,28 +594,6 @@ def _timestamp_semantics(value: str | None) -> str:
     if value is None:
         return "unknown"
     return _TIMESTAMP_SEMANTICS.get(value.strip().lower(), "unknown")
-
-
-def _end_at(ts: datetime, *, semantics: str, interval: str | None) -> datetime | None:
-    if semantics == "bar_close":
-        return ts
-    if semantics == "bar_start":
-        duration = _interval_duration(interval)
-        return ts + duration if duration is not None else None
-    return None
-
-
-def _interval_duration(interval: str | None) -> timedelta | None:
-    if interval is None:
-        return None
-    match = _INTERVAL_PATTERN.fullmatch(interval.strip().lower())
-    if match is None:
-        return None
-    count = float(match.group("count"))
-    if not math.isfinite(count) or count <= 0.0:
-        return None
-    seconds = {"m": 60.0, "h": 3600.0, "d": 86400.0}[match.group("unit")] * count
-    return timedelta(seconds=seconds)
 
 
 def _set_finite(features: dict[str, float], key: str, value: float) -> None:

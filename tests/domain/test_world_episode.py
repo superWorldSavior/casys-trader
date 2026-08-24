@@ -6,6 +6,7 @@ import pytest
 
 from trader.domain.world_episode import (
     AnchorBar,
+    DEFAULT_WORLD_HORIZONS,
     Freshness,
     WorldEpisode,
     WorldObservation,
@@ -13,6 +14,7 @@ from trader.domain.world_episode import (
     WorldPrediction,
     canonical_json,
     canonical_sha256,
+    is_eligible_completed_bar,
     world_episode_id,
 )
 
@@ -228,3 +230,129 @@ def test_world_outcome_from_dict_does_not_invent_missing_source_evidence() -> No
                 "training_eligible": True,
             }
         )
+
+
+def test_eligible_completed_bar_requires_canonical_grid_not_flatness() -> None:
+    aligned = datetime(2026, 8, 22, 9, 45, tzinfo=timezone.utc)
+    trailing_quote = datetime(2026, 8, 22, 9, 52, tzinfo=timezone.utc)
+
+    assert is_eligible_completed_bar(
+        ts=aligned,
+        bar_interval="15m",
+        timestamp_semantics="bar_start",
+    )
+    assert is_eligible_completed_bar(
+        ts=aligned,
+        bar_interval="15m",
+        timestamp_semantics="bar_start",
+        end_at=datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc),
+    )
+    assert not is_eligible_completed_bar(
+        ts=trailing_quote,
+        bar_interval="15m",
+        timestamp_semantics="bar_start",
+    )
+    assert not is_eligible_completed_bar(
+        ts=datetime(2026, 8, 22, 9, 45, 1, tzinfo=timezone.utc),
+        bar_interval="15m",
+        timestamp_semantics="bar_start",
+    )
+    assert not is_eligible_completed_bar(
+        ts=aligned,
+        bar_interval="15m",
+        timestamp_semantics="bar_start",
+        available_at=datetime(2026, 8, 22, 9, 50, tzinfo=timezone.utc),
+    )
+
+
+def test_observation_rejects_availability_before_completed_bar_end() -> None:
+    with pytest.raises(ValueError, match="completed bar"):
+        _observation(available_at="2026-08-22T01:59:00+00:00")
+
+    with pytest.raises(ValueError, match="completed bar"):
+        _observation(
+            bar_interval="15m",
+            as_of_bar_ts="2026-08-22T02:00:00Z",
+            available_at="2026-08-22T02:10:00+00:00",
+            captured_at="2026-08-22T02:20:00+00:00",
+            anchor=AnchorBar(
+                ts="2026-08-22T02:00:00+00:00",
+                open=100.0,
+                high=103.0,
+                low=99.0,
+                close=102.0,
+                volume=1_000.0,
+                source="analysis_bars",
+                timestamp_semantics="bar_start",
+            ),
+        )
+
+
+def test_observation_accepts_availability_at_completed_bar_end() -> None:
+    observation = _observation(
+        bar_interval="15m",
+        as_of_bar_ts="2026-08-22T02:00:00Z",
+        available_at="2026-08-22T02:15:00+00:00",
+        captured_at="2026-08-22T02:16:00+00:00",
+        anchor=AnchorBar(
+            ts="2026-08-22T02:00:00+00:00",
+            open=100.0,
+            high=100.0,
+            low=100.0,
+            close=100.0,
+            volume=0.0,
+            source="analysis_bars",
+            timestamp_semantics="bar_start",
+        ),
+    )
+
+    assert observation.available_at is not None
+    assert observation.available_at.isoformat() == "2026-08-22T02:15:00+00:00"
+
+
+def _outcome(**overrides: object) -> WorldOutcome:
+    values: dict[str, object] = {
+        "episode_id": "episode-causal",
+        "horizon": DEFAULT_WORLD_HORIZONS[0],
+        "status": "observed",
+        "target_at": "2026-08-22T06:00:00+00:00",
+        "available_at": "2026-08-22T06:00:00+00:00",
+        "computed_at": "2026-08-22T06:01:00+00:00",
+        "anchor_close": 100.0,
+        "endpoint_close": 101.0,
+        "endpoint_bar_ts": "2026-08-22T06:00:00+00:00",
+        "source": "yahoo",
+        "source_raw_sha256": "c" * 64,
+    }
+    values.update(overrides)
+    return WorldOutcome(**values)  # type: ignore[arg-type]
+
+
+def test_world_outcome_rejects_impossible_causal_timings() -> None:
+    with pytest.raises(ValueError, match="endpoint_bar_ts"):
+        _outcome(endpoint_bar_ts="2026-08-22T05:45:00+00:00")
+    with pytest.raises(ValueError, match="available_at"):
+        _outcome(available_at="2026-08-22T05:59:00+00:00")
+    with pytest.raises(ValueError, match="computed_at"):
+        _outcome(computed_at="2026-08-22T05:59:00+00:00")
+
+
+def test_malformed_legacy_outcome_without_causal_proof_is_not_trainable() -> None:
+    outcome = _outcome(computed_at=None, training_eligible=None)
+
+    assert outcome.training_eligible is False
+    with pytest.raises(ValueError, match="causal"):
+        _outcome(computed_at=None, training_eligible=True)
+
+
+def test_pending_outcome_may_be_computed_before_target() -> None:
+    pending = WorldOutcome(
+        episode_id="episode-pending",
+        horizon=DEFAULT_WORLD_HORIZONS[0],
+        status="pending",
+        target_at="2026-08-22T06:00:00+00:00",
+        computed_at="2026-08-22T05:00:00+00:00",
+    )
+
+    assert pending.training_eligible is False
+    assert pending.status == "pending"

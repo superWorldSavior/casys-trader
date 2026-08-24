@@ -17,6 +17,9 @@ import math
 from trader.domain.world_episode import (
     WORLD_OUTCOME_SCHEMA_VERSION,
     canonical_sha256,
+    completed_bar_cutoff,
+    is_eligible_completed_bar,
+    parse_bar_interval,
     world_outcome_event_id,
 )
 
@@ -25,6 +28,7 @@ UTC = timezone.utc
 LABEL_SEMANTICS_VERSION = "world_elapsed_labeler.v1"
 DIRECTION_SEMANTICS_VERSION = "simple_return_band_50bp.v1"
 DIRECTION_BAND = 0.005
+_SKIPPED_NON_BAR = object()
 
 
 @dataclass(frozen=True)
@@ -150,7 +154,7 @@ def label_horizon(
         )
 
     interval = _text(_first_field(observation, episode, names=("bar_interval", "interval")))
-    interval_duration = _interval_duration(interval)
+    interval_duration = parse_bar_interval(interval)
     if interval_duration is None:
         return _unknown_result(
             episode_id=episode_id,
@@ -178,7 +182,7 @@ def label_horizon(
         fallback_semantics="bar_close",
         fallback_price_basis=None,
     )
-    if anchor is None or not _valid_price(anchor.close):
+    if not isinstance(anchor, _BarEvidence) or not _valid_price(anchor.close):
         return _unknown_result(
             episode_id=episode_id,
             horizon_id=spec.horizon_id,
@@ -513,6 +517,8 @@ def _normalize_bars(
             fallback_semantics=fallback_semantics,
             fallback_price_basis=fallback_price_basis,
         )
+        if evidence is _SKIPPED_NON_BAR:
+            continue
         if evidence is None:
             invalid += 1
             continue
@@ -529,7 +535,7 @@ def _evidence_from(
     fallback_interval: str | None,
     fallback_semantics: str,
     fallback_price_basis: str | None,
-) -> _BarEvidence | None:
+) -> _BarEvidence | object | None:
     """Normalize a Bar, mapping, or domain AnchorBar without mutating it."""
 
     ts = _parse_datetime(_first_field(raw, names=("ts", "timestamp", "bar_ts"))) or fallback_ts
@@ -544,13 +550,25 @@ def _evidence_from(
     )
     price_basis = _text(_first_field(raw, names=("price_basis",))) or fallback_price_basis
     explicit_end = _parse_datetime(_first_field(raw, names=("bar_end_at", "end_at", "completed_at")))
-    end_at = explicit_end or _end_at(ts, semantics=semantics, interval=interval)
+    end_at = explicit_end or completed_bar_cutoff(
+        as_of_bar_ts=ts,
+        timestamp_semantics=semantics,
+        bar_interval=interval,
+    )
     explicit_available_at = _parse_datetime(
         _first_field(raw, names=("available_at", "captured_at", "observed_at", "ingested_at"))
     )
     if end_at is None:
         # An unknown timestamp convention cannot prove a fully completed bar.
         return None
+    if not is_eligible_completed_bar(
+        ts=ts,
+        bar_interval=interval,
+        timestamp_semantics=semantics,
+        end_at=end_at,
+        available_at=explicit_available_at,
+    ):
+        return _SKIPPED_NON_BAR
     availability_provenance = "explicit" if explicit_available_at is not None else "inferred_from_bar_end"
     available_at = explicit_available_at or end_at
     fingerprint_payload = {
@@ -584,19 +602,6 @@ def _evidence_from(
         fingerprint=fingerprint,
         evidence_id=f"market_bar:{fingerprint}",
     )
-
-
-def _end_at(ts: datetime, *, semantics: str, interval: str | None) -> datetime | None:
-    normalized = semantics.strip().lower()
-    if normalized in {"bar_close", "bar_end", "close", "end"}:
-        return ts
-    if normalized in {"bar_start", "start"}:
-        duration = _interval_duration(interval)
-        return ts + duration if duration is not None else None
-    # A provider can use a date/session label only when it gives an explicit end
-    # or availability timestamp; treating midnight as a session close leaks the
-    # current daily bar.
-    return None
 
 
 def _same_market_series(anchor: _BarEvidence, candidate: _BarEvidence) -> bool:
@@ -737,22 +742,6 @@ def _event_type(status: str) -> str:
     if status == "pending":
         return "outcome_scheduled"
     return "outcome_unavailable"
-
-
-def _interval_duration(interval: str | None) -> timedelta | None:
-    if not interval:
-        return None
-    normalized = interval.strip().lower()
-    units = {"m": 60, "h": 3600, "d": 86400}
-    if len(normalized) < 2 or normalized[-1] not in units:
-        return None
-    try:
-        amount = float(normalized[:-1])
-    except ValueError:
-        return None
-    if not math.isfinite(amount) or amount <= 0:
-        return None
-    return timedelta(seconds=amount * units[normalized[-1]])
 
 
 def _first_field(*objects: object, names: tuple[str, ...]) -> object:

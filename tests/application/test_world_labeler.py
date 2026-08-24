@@ -9,10 +9,17 @@ import pytest
 from trader.application.world_model.labeler import (
     DIRECTION_BAND,
     DIRECTION_SEMANTICS_VERSION,
+    is_eligible_completed_bar,
     label_episode,
     label_horizon,
 )
-from trader.domain.world_episode import AnchorBar, WorldEpisode, WorldObservation, WorldOutcome
+from trader.domain.world_episode import (
+    AnchorBar,
+    WorldEpisode,
+    WorldObservation,
+    WorldOutcome,
+    is_eligible_completed_bar as domain_is_eligible_completed_bar,
+)
 
 
 UTC = timezone.utc
@@ -302,3 +309,79 @@ def test_world_episode_duck_type_and_world_outcome_projection_are_compatible() -
     assert result["episode_id"] == episode.episode_id
     assert result["event_id"] == projected.event_id
     assert projected.training_eligible is True
+
+
+def _fifteen_minute_bar(
+    timestamp: datetime,
+    close: float,
+    *,
+    volume: float = 100.0,
+    available_at: datetime | None = None,
+) -> dict:
+    payload = _bar(timestamp, close, available_at=available_at)
+    payload["interval"] = "15m"
+    payload["timestamp_semantics"] = "bar_start"
+    payload["open"] = close
+    payload["high"] = close
+    payload["low"] = close
+    payload["volume"] = volume
+    return payload
+
+
+def test_labeler_ignores_off_grid_trailing_quote_and_keeps_aligned_endpoint() -> None:
+    anchor_at = datetime(2026, 8, 22, 10, 0, tzinfo=UTC)
+    episode = {
+        "episode_id": "episode-15m",
+        "training_eligible": True,
+        "observation": {
+            "symbol": "SPY",
+            "venue": "XNYS",
+            "bar_interval": "15m",
+            "as_of_bar_ts": anchor_at.isoformat(),
+            "anchor": _fifteen_minute_bar(anchor_at, 100.0, available_at=anchor_at + timedelta(minutes=15)),
+        },
+    }
+    aligned_endpoint = _fifteen_minute_bar(
+        datetime(2026, 8, 22, 14, 15, tzinfo=UTC),
+        101.0,
+        available_at=datetime(2026, 8, 22, 14, 30, tzinfo=UTC),
+    )
+    trailing_quote = _fifteen_minute_bar(
+        datetime(2026, 8, 22, 14, 7, tzinfo=UTC),
+        130.0,
+        volume=0.0,
+        available_at=datetime(2026, 8, 22, 14, 30, tzinfo=UTC),
+    )
+    now = datetime(2026, 8, 22, 14, 30, tzinfo=UTC)
+
+    observed = label_horizon(
+        episode,
+        [trailing_quote, aligned_endpoint],
+        "elapsed_4h.v1",
+        now=now,
+    )
+    quote_only = label_horizon(episode, [trailing_quote], "elapsed_4h.v1", now=now)
+
+    assert observed["status"] == "observed"
+    assert observed["target_bar"]["ts"] == aligned_endpoint["ts"]
+    assert observed["endpoint_bar_ts"] == (anchor_at + timedelta(hours=4, minutes=30)).isoformat()
+    assert quote_only["status"] == "missing"
+    assert quote_only["target_bar"] is None
+    assert is_eligible_completed_bar is domain_is_eligible_completed_bar
+
+    projected = WorldOutcome(
+        episode_id=observed["episode_id"],
+        horizon=observed["horizon"],
+        status=observed["status"],
+        target_at=observed["target_at"],
+        available_at=observed["available_at"],
+        computed_at=observed["computed_at"],
+        anchor_close=observed["anchor_close"],
+        endpoint_close=observed["endpoint_close"],
+        endpoint_bar_ts=observed["endpoint_bar_ts"],
+        source=observed["source"],
+        source_raw_sha256=observed["source_raw_sha256"],
+        training_eligible=observed["training_eligible"],
+    )
+    assert projected.training_eligible is True
+    assert projected.endpoint_bar_ts == datetime(2026, 8, 22, 14, 30, tzinfo=UTC)
