@@ -298,6 +298,9 @@ def tick_market_rotation(
         if build_radar_score_audit_observer_fn is None:
             build_radar_score_audit_observer_fn = build_radar_score_audit_observer
         radar_score_audit_observer = build_radar_score_audit_observer_fn(state_dir)
+        from trader.runtime.world_model_runtime import build_universe_written_scope_observer
+
+        universe_written_observer = build_universe_written_scope_observer(config_dir)
 
         market_context = _load_cached_market_context(
             state_dir / "last_regime.json",
@@ -324,6 +327,7 @@ def tick_market_rotation(
             sticky_fn=build_sticky_fn(state_dir),
             market_context=market_context,
             news_challenger_fn=news_challenger_fn,
+            universe_written_observer=universe_written_observer,
         )
     except Exception:  # noqa: BLE001 - rotation must never bring down the daemon
         log.exception("rotation tick (D10) échouée")
@@ -341,6 +345,8 @@ def run_cli(
     """Production facade for the EOD market rotation CLI."""
     from trader.market.rotation.wiring import run_cli as rotation_run_cli
 
+    from trader.runtime.world_model_runtime import build_universe_written_scope_observer
+
     return rotation_run_cli(
         config_dir,
         state_dir,
@@ -350,6 +356,7 @@ def run_cli(
         build_override_fn=build_llm_override_fn,
         build_sticky_fn=build_sticky_fn,
         as_of=as_of,
+        universe_written_observer=build_universe_written_scope_observer(config_dir),
     )
 
 

@@ -122,36 +122,54 @@ Les suffixes `.v1` des schémas payload (`world_feature.market.v1`,
 `world_availability_receipt.v1`, `world_episode.v1`, `world_graph_snapshot.v1`,
 …) sont des **révisions de sérialisation**, pas des générations de capacité.
 
-Cutover dur : **arrêter le daemon**, archiver hors ligne l'ancien
-`state/world_model.db` et `state/world_macro/`, démarrer un store **frais**,
-relancer. Le runtime **ne lit jamais** un ledger héritage. Pas de contrat
-tombstone actif, pas de reader d'ancien reçu, pas de migration incrémentale.
+Une rotation de mapping **ne** requiert **pas** d'archive DB : publish +
+supersede dans le même ledger, invalidation append-only des cohortes
+pilotes encore `COLLECTING` de la même forme. Un cutover store (autre
+identité de **schéma**) reste hors de cette génération. Le runtime **ne
+lit jamais** un ledger héritage. Pas de contrat tombstone actif, pas de
+reader d'ancien reçu.
 
-Le YAML committe un seul contrat : mapping `world_scope_mapping.v1`,
-ontologie `market_ontology.v1`, producteur `world_macro_source.v1`,
-lane `world.context.macro`, registre `world_macro_sources.v1`, adapters
-`world_dbnomics_series.v1` / `world_yahoo_commodity.v1`, plan
-`WORLD_MACRO_COLLECTION_PLAN_ID` /
+Le YAML committe un seul **contrat de schéma** : mapping
+`world_scope_mapping.v1`, ontologie `market_ontology.v1`, producteur
+`world_macro_source.v1`, lane `world.context.macro`, registre
+`world_macro_sources.v1`, adapters `world_dbnomics_series.v1` /
+`world_yahoo_commodity.v1`, plan `WORLD_MACRO_COLLECTION_PLAN_ID` /
 `7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83`.
 Les schémas payload restent `macro_source_fact.v1`,
 `macro_world_observation.v1`, `macro_source_registry.v1`,
 `macro_collection_plan.v1` et `macro_graph_bridge_run_spec.v1`.
-Table exacte `(market_venue, instrument)`, **aucun** fallback runtime.
+Table exacte `(market_venue, instrument)`, **aucun** fallback runtime
+`US → XNYS`.
 
-Le runtime **fail-close** si le dérivé ne reproduit pas ces identités
-gelées. Un bit de dérive bloque le boot du worker shadow ; le cycle
-Trader reste fail-open. Il n'existe plus de migration runtime, de
-handoff pont, ni de supersession ontologie.
+`mapping_id` / la famille `market_ontology.v1` sont le contrat. Le **hash
+de contenu** est la génération. L'instance d'ontologie est
+`market_ontology:v1:<mapping_sha256>`. Une rotation d'univers réconcilie
+les symboles manquants depuis les métadonnées provider (MIC explicite,
+XNYS vs XNAS) ; les lignes déjà mappées ne sont pas réécrites. Un
+contenu nouveau produit un nouveau `content_sha256`, une nouvelle
+révision publiée (append + supersede) et un nouveau manifeste de
+cohorte, sans bump `world_scope_mapping.v2`. Dry-run :
+`casys-trader world scope reconcile` ; `--apply` persiste. L'observer
+de rotation et le boot sont fail-open et n'ont pas d'autorité Trader.
 
-1. le boot **classifie** l'état durable du pont **avant** toute réservation
-   de curseur. Cold start = `missing` → activate. Restart identique =
-   no-op. Spec bloquée identique = resume no-op. Drift actif = block.
-   Drift bloqué = erreur, pas de wildcard ;
-2. le boot publie `market_ontology.v1` seulement si le store est vide.
-   Une révision déjà publiée d'une autre identité ou d'un autre hash
-   est un conflit ;
+Le runtime **fail-close** le worker shadow sur une identité de schéma
+inconnue (plan de collecte, producteur). Un store déjà publié avec la
+même famille et un hash précédent **supersede** dans le même ledger :
+l'histoire PIT reste lisible. Un store vide publie la génération
+courante. Le cycle Trader reste fail-open. Pas de cutover store pour une
+rotation de mapping.
+
+1. le boot **réconcilie** le mapping (fail-open), puis **classifie**
+   l'état durable du pont **avant** toute réservation de curseur. Cold
+   start = `missing` → activate. Restart identique = no-op. Spec bloquée
+   identique = resume no-op. Drift actif de la même famille = block puis
+   roll. Drift de plan/producteur = erreur, pas de wildcard ;
+2. le boot publie la révision dérivée si le store est vide. Même famille,
+   nouveau hash = append + publish + supersede. Une autre identité de
+   schéma (`market_ontology.v2`) est un conflit ;
 3. `world graph status` / `world cohort status` doivent montrer les têtes
-   `world_scope_mapping.v1` / `market_ontology.v1` ;
+   `world_scope_mapping.v1` / famille `market_ontology.v1` (contrat) plus
+   le hash / l'instance pinés par la cohorte ;
 4. un symbole sans ligne exacte reste `unmapped` : snapshot graphe
    `missing` **sans racine**, sans membres, sans MIC inventé. Le schéma
    reste `world_graph_snapshot.v1` (null = missingness, payload
@@ -159,9 +177,11 @@ handoff pont, ni de supersession ontologie.
 
 Pas de `DELETE`/`VACUUM` du ledger live. `shadow_only` /
 `decision_effect=none` / `causal_claim=false` / `pnl_claim=false`
-inchangés. Si le YAML mapping change à mapping_id constant, le boot
-**conflit** — bump d'id obligatoire. Détail :
-[RFC macro §17](../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md).
+inchangés. Les cohortes déjà collectées restent pinées sur leur hash et
+lisibles. Une génération B invalide les cohortes pilotes encore
+`COLLECTING` de la même forme (`mapping_generation_drift`) puis pine
+la successeure. Aucun SHA de génération n'est figé dans le domaine.
+Détail : [RFC macro §6.2 / §17](../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md).
 
 ## Claims autorisés après une semaine
 

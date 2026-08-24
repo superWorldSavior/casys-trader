@@ -71,6 +71,10 @@ class WorldCohortRepository(Protocol):
 class WorldCohortQuery(Protocol):
     def list_slots(self, cohort_id: WorldCohortId) -> tuple[WorldCohortSlot, ...]: ...
 
+    def list_collecting_cohorts(self) -> tuple[WorldCohort, ...]:
+        """Reconstructed collecting aggregates. Never registers, arms, or starts."""
+        ...
+
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope: ...
 
 

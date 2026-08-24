@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from tests.application.test_world_cohort_service import _MemoryWorldCohortStore
 from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.cohort_service import WorldCohortService
@@ -26,8 +28,8 @@ from trader.domain.world_feature_contract import (
     GRAPH_FEATURE_CONTRACT_ID,
     MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
 )
+from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 from trader.domain.world_scope import WorldMarketAnchorRef
 
 
@@ -86,29 +88,45 @@ def _service():
     return WorldCohortService(repository=store, query=store), store
 
 
-def _matching_graph_proof():
+def _live_mapping():
+    return WorldScopeResolver.load(CONFIG_DIR).mapping
+
+
+def _matching_graph_proof(mapping=None):
     from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
 
+    resolved = mapping if mapping is not None else _live_mapping()
     return WorldOntologyHeadsProof(
-        revision_id=MARKET_ONTOLOGY_REVISION,
+        revision_id=market_ontology_revision_id(resolved),
         content_sha256="d" * 64,
-        scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-        scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+        scope_mapping_id=resolved.mapping_id,
+        scope_mapping_hash=resolved.content_sha256,
         entity_heads_hash="e" * 64,
         structural_heads_hash="f" * 64,
     )
 
 
-def _activate(*, cohort_service, identity=IDENTITY_A, ontology_proof=None, now=BOOT, environ=None):
+def _activate(
+    *,
+    cohort_service,
+    identity=IDENTITY_A,
+    ontology_proof=None,
+    now=BOOT,
+    environ=None,
+    mapping=None,
+    config_dir=CONFIG_DIR,
+):
     from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
 
+    live = mapping if mapping is not None else _live_mapping()
     return activate_world_shadow_pilot(
         cohort_service=cohort_service,
-        config_dir=CONFIG_DIR,
+        config_dir=config_dir,
         now=now,
         environ={} if environ is None else environ,
         runtime_identity=_FixedIdentity(identity),
         ontology_proof=_FixedOntologyProof(ontology_proof),
+        mapping=live,
     )
 
 
@@ -180,7 +198,7 @@ def test_graph_unavailable_stays_registered_and_never_collecting() -> None:
     assert graph.phase is CohortPhase.REGISTERED
     assert graph.started_event is None
     assert by_key["graph"]["blocked_reason"] == "graph_ontology_unpublished"
-    assert graph.manifest.ontology_revision == MARKET_ONTOLOGY_REVISION
+    assert graph.manifest.ontology_revision == market_ontology_revision_id(_live_mapping())
     assert c1.manifest.ontology_revision == "semantic_catalog.v1"
     assert report.authority == "shadow_only"
     assert report.decision_effect == "none"
@@ -195,9 +213,10 @@ def test_exact_graph_ontology_proof_starts_graph_cohort() -> None:
     assert graph.phase is CohortPhase.COLLECTING
     assert graph.started_event is not None
     assert by_key["graph"].get("blocked_reason") in {None, ""}
-    assert graph.manifest.ontology_revision == MARKET_ONTOLOGY_REVISION
+    mapping = _live_mapping()
+    assert graph.manifest.ontology_revision == market_ontology_revision_id(mapping)
     assert graph.manifest.scope_mapping.mapping_id == WORLD_SCOPE_MAPPING_ID
-    assert graph.manifest.scope_mapping.mapping_sha256 == WORLD_SCOPE_MAPPING_SHA256
+    assert graph.manifest.scope_mapping.mapping_sha256 == mapping.content_sha256
 
 
 def test_wrong_ontology_revision_or_mapping_heads_keep_graph_registered() -> None:
@@ -208,7 +227,7 @@ def test_wrong_ontology_revision_or_mapping_heads_keep_graph_registered() -> Non
         revision_id="semantic_catalog.v1",
         content_sha256="d" * 64,
         scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-        scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+        scope_mapping_hash=_live_mapping().content_sha256,
         entity_heads_hash="e" * 64,
         structural_heads_hash="f" * 64,
     )
@@ -267,6 +286,152 @@ def test_restart_with_exact_measured_identity_keeps_window_and_fingerprints() ->
         started = [event for event in cohort.events if event.event_type == "world_cohort_started"]
         assert len(started) == 1
         assert all(state.status is LaneOperationalStatus.ACTIVE for state in cohort.lane_states.values())
+
+
+def _mapping_generation_b():
+    from trader.domain.world_scope import WorldCanonicalScopeRef, WorldScopeMapping, WorldScopeMappingEntry
+
+    mapping_a = _live_mapping()
+    mapping_b = WorldScopeMapping(
+        mapping_id=mapping_a.mapping_id,
+        entries=(
+            *mapping_a.entries,
+            WorldScopeMappingEntry(
+                anchor=WorldMarketAnchorRef(market_venue="US", instrument="ZZZZ"),
+                venue=WorldCanonicalScopeRef(kind="venue", entity_id="mic:XNYS"),
+                country=WorldCanonicalScopeRef(kind="country", entity_id="iso-3166:US"),
+                region=WorldCanonicalScopeRef(kind="region", entity_id="iso-un-m49:021"),
+                world=WorldCanonicalScopeRef(kind="world", entity_id="market"),
+                provider_proofs=("provider:zzzz",),
+                taxonomy_version="sessions_mic.v1",
+            ),
+        ),
+    )
+    assert mapping_b.content_sha256 != mapping_a.content_sha256
+    return mapping_a, mapping_b
+
+
+def test_old_cohort_stays_readable_and_new_generation_pins_new_mapping() -> None:
+    mapping_a, mapping_b = _mapping_generation_b()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    first_hashes = {
+        key: store.load(WorldCohortId(cohort_id)).manifest.manifest_sha256 for key, cohort_id in first_ids.items()
+    }
+    assert {store.load(WorldCohortId(cohort_id)).phase for cohort_id in first_ids.values()} == {CohortPhase.COLLECTING}
+    second = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        now=BOOT + timedelta(days=1),
+    )
+    second_ids = {item["key"]: item["cohort_id"] for item in second.cohorts}
+    assert set(first_ids.values()).isdisjoint(set(second_ids.values()))
+    for key, cohort_id in first_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.INVALIDATED
+        assert loaded.events[-1].event_type == "world_cohort_invalidated"
+        assert loaded.events[-1].reason is InvalidationReason.MAPPING_GENERATION_DRIFT
+        assert loaded.events[-1].scope == "mapping_generation"
+        assert loaded.manifest.manifest_sha256 == first_hashes[key]
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_a.content_sha256
+        if key == "graph":
+            assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_a)
+    for key, cohort_id in second_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
+        if key == "graph":
+            assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_b)
+
+
+def test_scope_resolution_cannot_repin_a_new_mapping_under_an_old_manifest() -> None:
+    from trader.application.world_model.service import _scope_resolution_for
+
+    mapping_a, mapping_b = _mapping_generation_b()
+    service, store = _service()
+    report = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+    )
+    cohort = store.load(WorldCohortId(report.cohorts[0]["cohort_id"]))
+    new_entry = mapping_b.entries[-1]
+
+    with pytest.raises(ValueError, match="scope resolution mapping identity must match the manifest"):
+        _scope_resolution_for(
+            cohort,
+            venue=new_entry.anchor.market_venue,
+            symbol=new_entry.anchor.instrument,
+            resolver=WorldScopeResolver(mapping=mapping_b, operator_config_sha256="0" * 64),
+        )
+
+
+def test_unrelated_collecting_cohort_is_untouched_by_mapping_generation() -> None:
+    from tests.application.test_world_cohort_service import _collecting, _manifest
+
+    mapping_a, mapping_b = _mapping_generation_b()
+    service, store = _service()
+    _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+    )
+    unrelated = _collecting(
+        service,
+        store,
+        _manifest(cohort_id="world_cohort:v1:" + "e" * 64),
+    )
+    unrelated_hash = unrelated.manifest.manifest_sha256
+    unrelated_events = tuple(event.event_id for event in unrelated.events)
+    _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        now=BOOT + timedelta(days=1),
+    )
+    loaded = store.load(WorldCohortId(unrelated.cohort_id))
+    assert loaded.phase is CohortPhase.COLLECTING
+    assert loaded.manifest.manifest_sha256 == unrelated_hash
+    assert tuple(event.event_id for event in loaded.events) == unrelated_events
+
+
+def test_mapping_generation_b_reactivation_is_idempotent() -> None:
+    mapping_a, mapping_b = _mapping_generation_b()
+    service, store = _service()
+    _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+    )
+    first_b = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        now=BOOT + timedelta(days=1),
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first_b.cohorts}
+    first_event_ids = {
+        key: tuple(event.event_id for event in store.load(WorldCohortId(cohort_id)).events)
+        for key, cohort_id in first_ids.items()
+    }
+    second_b = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        now=BOOT + timedelta(days=2),
+    )
+    assert {item["cohort_id"] for item in second_b.cohorts} == set(first_ids.values())
+    for key, cohort_id in first_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
+        assert tuple(event.event_id for event in loaded.events) == first_event_ids[key]
 
 
 def test_old_immutable_cohort_ids_are_not_rewritten_or_auto_claimed() -> None:

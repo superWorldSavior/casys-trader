@@ -25,6 +25,7 @@ from trader.domain.world_graph import (
 from trader.domain.world_graph_bridge_lifecycle import (
     UnknownMacroGraphBridgeDrift,
     classify_macro_graph_bridge,
+    same_bridge_schema_family,
 )
 from trader.domain.world_macro import MACRO_PRODUCER_VERSION, MacroCollectionPlan
 from trader.domain.world_scope import WorldScopeMapping
@@ -103,9 +104,13 @@ class RegisterMacroObservationKnowledge:
             if updated.version == registry.version:
                 return updated
             return self._append(updated, fence=registry.fence)
-        if decision.status == "drifted_active":
+        if decision.status == "drifted_active" and decision.run is not None:
             updated = registry.block(reason="config_drift", expected_version=registry.version)
             registry = self._append(updated, fence=registry.fence)
+            if same_bridge_schema_family(decision.run.spec, desired):
+                return self.activate(request_id)
+        if decision.status == "roll_generation":
+            return self.activate(request_id)
         raise UnknownMacroGraphBridgeDrift(
             "unknown_config_drift",
             context={

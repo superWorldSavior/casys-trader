@@ -375,6 +375,14 @@ def _cmd_world_graph(args: argparse.Namespace) -> int:
     return code
 
 
+def _cmd_world_scope(args: argparse.Namespace) -> int:
+    from trader.interfaces.cli.world_model import dispatch_world_scope
+
+    payload, code = dispatch_world_scope(args, config_dir=daemon.ROOT / "config")
+    _print_json(payload)
+    return code
+
+
 def _dashboard_url(path: object) -> str:
     return f"http://127.0.0.1:8137/{getattr(path, 'name', path)}"
 
@@ -1102,6 +1110,17 @@ def build_parser() -> argparse.ArgumentParser:
     graph_report.add_argument("cohort_id", nargs="?")
     graph_report.add_argument("--json", action="store_true")
     graph_report.set_defaults(func=_cmd_world_graph)
+
+    scope = world_sub.add_parser("scope", help="mapping de scopes World shadow")
+    scope_sub = scope.add_subparsers(dest="scope_command", required=True)
+    scope_reconcile = scope_sub.add_parser("reconcile", help="reconcilie universe.yaml vers world_scope_mapping.v1")
+    scope_reconcile.add_argument(
+        "--apply",
+        action="store_true",
+        help="persiste une nouvelle generation de mapping (defaut: dry-run)",
+    )
+    scope_reconcile.add_argument("--json", action="store_true")
+    scope_reconcile.set_defaults(func=_cmd_world_scope)
 
     news_macro = sub.add_parser("news-macro", help="briefs macro/news par marché")
     news_macro_sub = news_macro.add_subparsers(dest="news_macro_command", required=True)

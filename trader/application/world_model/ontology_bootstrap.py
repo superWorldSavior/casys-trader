@@ -3,8 +3,9 @@
 Derives instrument/venue/country/region/world entities and TRADED_ON /
 LOCATED_IN / PART_OF_WORLD heads solely from the versioned WorldScopeMapping.
 No issuer/company inference, no causal edges, no silent suffix fallback.
-Fresh state publishes the current mapping and ontology. Existing different
-identity or hash is drift and fails closed.
+Fresh state publishes the mapping generation. A new mapping hash appends a
+new revision instance and supersedes the prior active revision. Same
+instance id is never rewritten.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from trader.application.world_model.ontology_service import (
     AssertStructuralWorldRelation,
     AssertWorldEntity,
     PublishWorldOntologyRevision,
+    SupersedeWorldOntologyRevision,
     WorldOntologyProofService,
     WorldOntologyService,
 )
@@ -37,9 +39,9 @@ from trader.domain.world_graph import (
 from trader.domain.world_ontology_lifecycle import (
     WorldOntologyLifecycleSpec,
     WorldOntologyPublicationPlan,
-    committed_world_ontology_lifecycle_spec,
+    market_ontology_revision_id,
     plan_world_ontology_publication,
-    require_committed_ontology_revision,
+    require_mapping_aligned_ontology_revision,
 )
 from trader.domain.world_scope import WorldCanonicalScopeRef, WorldScopeMapping
 
@@ -78,13 +80,17 @@ def _proofs(entry: object) -> tuple[str, ...]:
 def derive_market_ontology(
     mapping: WorldScopeMapping,
     *,
-    revision_id: str = MARKET_ONTOLOGY_REVISION_ID,
+    revision_id: str | None = None,
     effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
 ) -> tuple[tuple[WorldEntityRef, ...], tuple[StructuralWorldRelation, ...], WorldOntologyRevision]:
     """Pure mapping → frozen heads. Identity map stays empty."""
 
     if not isinstance(mapping, WorldScopeMapping):
         raise TypeError("mapping must be WorldScopeMapping")
+    resolved_revision_id = str(revision_id).strip() if revision_id is not None else ""
+    if not resolved_revision_id:
+        resolved_revision_id = market_ontology_revision_id(mapping)
+    revision_id = resolved_revision_id
     when = _utc(effective_from, "effective_from")
     entities: dict[str, WorldEntityRef] = {}
     proofs: dict[str, set[str]] = {}
@@ -188,7 +194,7 @@ class WorldOntologyBootstrapService:
         ledger: WorldGraphLedger,
         mapping: WorldScopeMapping,
         *,
-        revision_id: str = MARKET_ONTOLOGY_REVISION_ID,
+        revision_id: str | None = None,
         effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
         lifecycle_spec: WorldOntologyLifecycleSpec | None = None,
     ) -> None:
@@ -196,9 +202,14 @@ class WorldOntologyBootstrapService:
             raise TypeError("mapping must be WorldScopeMapping")
         self._ledger = ledger
         self._mapping = mapping
-        self._revision_id = str(revision_id).strip() or MARKET_ONTOLOGY_REVISION_ID
+        self._lifecycle_spec = None if lifecycle_spec is None else WorldOntologyLifecycleSpec.from_mapping(lifecycle_spec)
+        if revision_id is not None and str(revision_id).strip():
+            self._revision_id = str(revision_id).strip()
+        elif self._lifecycle_spec is not None:
+            self._revision_id = self._lifecycle_spec.revision_id
+        else:
+            self._revision_id = market_ontology_revision_id(mapping)
         self._effective_from = _utc(effective_from, "effective_from")
-        self._lifecycle_spec = lifecycle_spec or committed_world_ontology_lifecycle_spec()
         self._service = WorldOntologyService(ledger)
 
     def expected_revision(self) -> WorldOntologyRevision:
@@ -207,8 +218,8 @@ class WorldOntologyBootstrapService:
             revision_id=self._revision_id,
             effective_from=self._effective_from,
         )[2]
-        if self._lifecycle_spec == committed_world_ontology_lifecycle_spec():
-            return require_committed_ontology_revision(revision, self._mapping)
+        if self._lifecycle_spec is None:
+            return require_mapping_aligned_ontology_revision(revision, self._mapping)
         return revision
 
     def _plan(
@@ -240,27 +251,26 @@ class WorldOntologyBootstrapService:
             return _readiness(status="drifted", mapping=self._mapping, revision=published, reason="revision_drift")
         if plan.action == "ready":
             return _readiness(status="ready", mapping=self._mapping, revision=published, reason="attested")
+        if plan.action == "supersede":
+            return _readiness(status="unpublished", mapping=self._mapping, revision=expected, reason="generation_supersede")
         return _readiness(status="unpublished", mapping=self._mapping, revision=expected, reason="unpublished")
 
-    def ensure_published(self, *, now: datetime | str | None = None) -> WorldOntologyReadiness:
-        cutoff = _utc(now, "now")
-        current = self.readiness(cutoff)
-        if current.status == "ready":
-            return current
-        if current.status == "drifted":
-            raise ValueError("conflict: committed ontology heads do not match the published revision")
-        plan, _published, revision = self._plan(cutoff)
-        if plan.action != "publish":
-            raise ValueError("conflict: committed ontology heads do not match the published revision")
-        entities, relations, expected = derive_market_ontology(
+    def _append_generation(
+        self,
+        *,
+        expected: WorldOntologyRevision,
+        cutoff: datetime,
+    ) -> None:
+        entities, relations, derived = derive_market_ontology(
             self._mapping,
             revision_id=self._revision_id,
             effective_from=self._effective_from,
         )
-        if expected.content_sha256 != revision.content_sha256:
+        if derived.content_sha256 != expected.content_sha256:
             raise ValueError("conflict: derived ontology revision drifted during publish")
         view = self._service.ontology.at_cutoff(cutoff)
         existing_nodes = {entity.node_id for entity in view.entities}
+        existing_refs = {WorldStructuralRelationRef.from_relation(item) for item in view.structural_relations}
         proofs: dict[str, tuple[str, ...]] = {}
         for relation in relations:
             proofs.setdefault(relation.source.node_id, relation.source_refs)
@@ -273,11 +283,34 @@ class WorldOntologyBootstrapService:
                 AssertWorldEntity(entity=entity, source_refs=source_refs, effective_from=self._effective_from)
             )
         for relation in relations:
+            if WorldStructuralRelationRef.from_relation(relation) in existing_refs:
+                continue
             self._service.assert_structural_relation(AssertStructuralWorldRelation(relation=relation))
         self._service.publish_revision(PublishWorldOntologyRevision(revision=expected))
-        # Receipts are store-stamped at append time; do not require the pre-append cutoff
-        # to observe them (ready_at can be a few microseconds later than the captured now).
-        return _readiness(status="ready", mapping=self._mapping, revision=expected, reason="published")
+
+    def ensure_published(self, *, now: datetime | str | None = None) -> WorldOntologyReadiness:
+        cutoff = _utc(now, "now")
+        current = self.readiness(cutoff)
+        if current.status == "ready":
+            return current
+        if current.status == "drifted":
+            raise ValueError("conflict: committed ontology heads do not match the published revision")
+        plan, published, revision = self._plan(cutoff)
+        if plan.action == "publish":
+            self._append_generation(expected=revision, cutoff=cutoff)
+            return _readiness(status="ready", mapping=self._mapping, revision=revision, reason="published")
+        if plan.action == "supersede":
+            if published is None:
+                raise ValueError("conflict: supersede requires a published predecessor")
+            self._append_generation(expected=revision, cutoff=cutoff)
+            self._service.supersede_revision(
+                SupersedeWorldOntologyRevision(
+                    revision_id=published.revision_id,
+                    successor_revision_id=revision.revision_id,
+                )
+            )
+            return _readiness(status="ready", mapping=self._mapping, revision=revision, reason="superseded")
+        raise ValueError("conflict: committed ontology heads do not match the published revision")
 
 
 class WorldOntologyAttestation:
@@ -288,7 +321,7 @@ class WorldOntologyAttestation:
         ledger: WorldGraphLedger,
         mapping: WorldScopeMapping,
         *,
-        revision_id: str = MARKET_ONTOLOGY_REVISION_ID,
+        revision_id: str | None = None,
         effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
         lifecycle_spec: WorldOntologyLifecycleSpec | None = None,
     ) -> None:

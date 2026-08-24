@@ -9,11 +9,11 @@ from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.cohort_service import WorldCohortService
 from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
 from trader.domain.world_cohort import CohortPhase, WorldCohortId
+from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 from trader.domain.world_feature_contract import (
-    MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
 )
+from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
 from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, compose_world_resource_guard
 
@@ -63,14 +63,16 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         assert attestation.readiness(BOOT).status == "unpublished"
         published = attestation.ensure_published(now=BOOT)
         assert published.status == "ready"
+        mapping = WorldScopeResolver.load(CONFIG_DIR).mapping
         proof = attestation.proven_heads(
-            revision_id=MARKET_ONTOLOGY_REVISION,
+            revision_id=market_ontology_revision_id(mapping),
             scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-            scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+            scope_mapping_hash=mapping.content_sha256,
             at=BOOT,
         )
         assert proof is not None
-        assert proof.scope_mapping_hash == WORLD_SCOPE_MAPPING_SHA256
+        assert proof.scope_mapping_hash == mapping.content_sha256
+        assert proof.revision_id == market_ontology_revision_id(mapping)
 
         repaired = _activate(store, ontology_proof=attestation)
         repaired_phases = _phases(store, repaired)
@@ -104,12 +106,22 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
             assert "broker" not in lowered
         boot = Path(daemon.__file__).read_text(encoding="utf-8")
         world_boot = boot[
-            boot.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"') : boot.index(
+            boot.index('_world_model_context = _env_int("CASYS_WORLD_MODEL_CONTEXT_ENABLED"') : boot.index(
                 "claimed_resources.learning_sync_runner"
             )
         ]
+        assert "compose_world_scope_mapping_reconcile(" in world_boot
         assert "compose_world_ontology_attestation(" in world_boot
         assert "ontology_proof=" in world_boot
+        assert world_boot.index("compose_world_scope_mapping_reconcile(") < world_boot.index(
+            "compose_world_ontology_attestation("
+        )
+        assert world_boot.index("compose_world_scope_mapping_reconcile(") < world_boot.index(
+            "wire_world_macro_runtime("
+        )
+        assert world_boot.index("compose_world_scope_mapping_reconcile(") < world_boot.index(
+            "load_world_shadow_pilot_config("
+        )
         assert world_boot.index("compose_world_ontology_attestation(") < world_boot.index(
             "activate_world_shadow_pilot("
         )
@@ -118,5 +130,53 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         assert "compose_world_resource_guard(" in world_boot
         assert "resource_guard=" in world_boot
         assert "trader_callback" not in world_boot
+        assert "mapping reconcile cannot block market/Trader" in boot
     finally:
         store.close()
+
+
+def test_boot_mapping_reconcile_is_idempotent_and_provider_failure_is_fail_open(tmp_path: Path) -> None:
+    from trader.application.world_model.scope_mapping_reconcile import WorldScopeMappingReconcileService
+    from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+    from trader.domain.world_scope_listing import UnresolvedInstrumentListing
+    from trader.infrastructure.files.world_scope_mapping_config import YamlWorldScopeMappingStore
+
+    mapping_copy = tmp_path / "world_scope_mapping.yaml"
+    mapping_copy.write_text((CONFIG_DIR / "world_scope_mapping.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    store = YamlWorldScopeMappingStore(mapping_copy)
+    current = store.load()
+
+    class _Universe:
+        def current_anchors(self):
+            return tuple((entry.anchor.market_venue, entry.anchor.instrument) for entry in current.entries)
+
+    class _Listings:
+        def lookup(self, *, market_venue: str, instrument: str):
+            raise RuntimeError("provider down")
+
+    service = WorldScopeMappingReconcileService(universe=_Universe(), listings=_Listings(), store=store)
+    first = service.reconcile(persist=True)
+    second = service.reconcile(persist=True)
+    assert first.action == second.action == "ready"
+    assert first.mapping.content_sha256 == current.content_sha256 == second.mapping.content_sha256
+    assert WorldScopeResolver.load(mapping_copy).mapping.content_sha256 == current.content_sha256
+
+    class _GrowingUniverse:
+        def current_anchors(self):
+            return (*_Universe().current_anchors(), ("US", "NOPE"))
+
+    failed = WorldScopeMappingReconcileService(
+        universe=_GrowingUniverse(),
+        listings=_Listings(),
+        store=store,
+    ).reconcile(persist=True)
+    assert failed.action == "ready"
+    assert failed.unresolved == (
+        UnresolvedInstrumentListing(
+            market_venue="US",
+            instrument="NOPE",
+            status="unresolved",
+            reason="provider_failure",
+        ),
+    )
+    assert WorldScopeResolver.load(mapping_copy).mapping.content_sha256 == current.content_sha256

@@ -53,6 +53,8 @@ def test_world_pilot_activation_is_an_application_module() -> None:
     assert _import_violations(path, _FORBIDDEN_APPLICATION_PREFIXES) == []
     source = path.read_text(encoding="utf-8")
     assert "operator_authorized_on_boot" in source
+    assert "MAPPING_GENERATION_DRIFT" in source
+    assert "list_collecting_cohorts" in source
     assert "sqlite3" not in source
     assert "def backfill" not in source
 
@@ -188,14 +190,21 @@ def test_production_world_model_has_no_macro_graph_bridge_handoff() -> None:
 def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     availability_path = REPO_ROOT / "trader" / "domain" / "world_availability.py"
     scope_path = REPO_ROOT / "trader" / "domain" / "world_scope.py"
+    listing_path = REPO_ROOT / "trader" / "domain" / "world_scope_listing.py"
+    mapping_lifecycle_path = REPO_ROOT / "trader" / "domain" / "world_scope_lifecycle.py"
     lifecycle_path = REPO_ROOT / "trader" / "domain" / "world_ontology_lifecycle.py"
     bridge_lifecycle_path = REPO_ROOT / "trader" / "domain" / "world_graph_bridge_lifecycle.py"
     assert availability_path.exists()
     assert scope_path.exists()
+    assert listing_path.exists()
+    assert mapping_lifecycle_path.exists()
     assert lifecycle_path.exists()
     assert bridge_lifecycle_path.exists()
     assert (
-        _domain_import_violations([availability_path, scope_path, lifecycle_path, bridge_lifecycle_path], REPO_ROOT)
+        _domain_import_violations(
+            [availability_path, scope_path, listing_path, mapping_lifecycle_path, lifecycle_path, bridge_lifecycle_path],
+            REPO_ROOT,
+        )
         == []
     )
 
@@ -212,6 +221,8 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
         WorldScopeMapping,
         WorldScopeResolution,
     )
+    from trader.domain.world_scope_listing import propose_world_scope_mapping_entry
+    from trader.domain.world_scope_lifecycle import plan_world_scope_mapping_generation
     from trader.domain.world_ontology_lifecycle import (
         WorldOntologyLifecycleSpec,
         plan_world_ontology_publication,
@@ -231,6 +242,8 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert WorldMarketAnchorRef.__module__ == "trader.domain.world_scope"
     assert WorldScopeMapping.__module__ == "trader.domain.world_scope"
     assert WorldScopeResolution.__module__ == "trader.domain.world_scope"
+    assert propose_world_scope_mapping_entry.__module__ == "trader.domain.world_scope_listing"
+    assert plan_world_scope_mapping_generation.__module__ == "trader.domain.world_scope_lifecycle"
     assert WorldOntologyLifecycleSpec.__module__ == "trader.domain.world_ontology_lifecycle"
     assert plan_world_ontology_publication.__module__ == "trader.domain.world_ontology_lifecycle"
     assert classify_macro_graph_bridge.__module__ == "trader.domain.world_graph_bridge_lifecycle"
@@ -238,6 +251,8 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert require_committed_live_bridge_lineage.__module__ == "trader.domain.world_graph_bridge_lifecycle"
     assert "trader.infrastructure" not in availability_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in scope_path.read_text(encoding="utf-8")
+    assert "trader.infrastructure" not in listing_path.read_text(encoding="utf-8")
+    assert "trader.infrastructure" not in mapping_lifecycle_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in lifecycle_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in bridge_lifecycle_path.read_text(encoding="utf-8")
     assert "trader.runtime" not in bridge_lifecycle_path.read_text(encoding="utf-8")
@@ -374,7 +389,11 @@ def test_world_ontology_attestation_is_application_owned_and_composed_at_runtime
     assert "def compose_world_ontology_attestation" in runtime_source
     daemon_source = daemon_path.read_text(encoding="utf-8")
     assert "compose_world_ontology_attestation(" in daemon_source
+    assert "compose_world_scope_mapping_reconcile(" in daemon_source
     assert "ontology_proof=_ontology_attestation" in daemon_source
+    assert daemon_source.index("compose_world_scope_mapping_reconcile(") < daemon_source.index(
+        "compose_world_ontology_attestation("
+    )
     assert daemon_source.index("compose_world_ontology_attestation(") < daemon_source.index(
         "activate_world_shadow_pilot("
     )

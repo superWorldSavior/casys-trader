@@ -207,7 +207,11 @@ def test_live_yaml_derives_committed_bridge_spec() -> None:
         collection_plan_hash=plan.content_sha256,
         producer_version=MACRO_PRODUCER_VERSION,
     )
-    assert spec == committed_macro_graph_bridge_spec()
+    assert spec == committed_macro_graph_bridge_spec(
+        mapping=mapping,
+        ontology=revision,
+        collection_plan=plan,
+    )
     assert (
         require_committed_live_bridge_lineage(
             mapping=mapping,

@@ -1,5 +1,5 @@
 schema_version: world_graph.v1
-content_sha256: "68fedcb7fa12d6b2e7c2467b5e33e5211db60aafe880233a32c20606ba6d29df"
+content_sha256: "171bc168103dd322bdb37584b5f2131293afef531cbc6190a24a4eb6712b5260"
 authority: shadow_only
 decision_effect: none
 causal_claim: false
@@ -8,7 +8,6 @@ traversal_policy_version: graph_traversal.v1
 
 scope_mapping:
   mapping_id: world_scope_mapping.v1
-  mapping_sha256: "94a7d310d51ad411e04abf9b5e00e9d802e2836138123d2ae1d1b756bda148ee"
 
 instrument_id_rule: "mic:<MIC>:symbol:<universe_symbol>"
 issuer_identity:

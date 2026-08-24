@@ -829,6 +829,104 @@ def test_lifecycle_register_arm_start_close_complete_and_illegal_transitions() -
     ]
 
 
+def test_prior_mapping_generation_predicate_matches_same_shape_different_hash_only() -> None:
+    from trader.domain.world_cohort import (
+        is_prior_mapping_generation_cohort,
+        world_cohort_lane_signature,
+    )
+
+    mapping = _scope_mapping()
+    sensors = (
+        _sensor(),
+        type(_sensor())(
+            sensor_id="macro",
+            source_contract_id="macro_world_observation.v1",
+            projection_contract_id="macro_context_projection.v1",
+            mode="required",
+            lane_ids=("markov.macro", "markov.joint", "gru.macro", "gru.joint"),
+        ),
+    )
+    collecting = _started(
+        _armed(
+            _register(
+                _manifest(
+                    scope_mapping={"mapping_id": mapping.mapping_id, "mapping_sha256": mapping.content_sha256},
+                    sensor_requirements=sensors,
+                    lanes=_formal_lanes(),
+                    contrasts=_formal_contrasts(),
+                )
+            ),
+            sensors=("company", "macro"),
+        )
+    )
+    signature = world_cohort_lane_signature(collecting.manifest.lanes)
+    successor_hash = "b" * 64
+    assert is_prior_mapping_generation_cohort(
+        collecting,
+        mapping_id=mapping.mapping_id,
+        mapping_sha256=successor_hash,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question=collecting.manifest.question,
+    )
+    assert not is_prior_mapping_generation_cohort(
+        collecting,
+        mapping_id=mapping.mapping_id,
+        mapping_sha256=mapping.content_sha256,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question=collecting.manifest.question,
+    )
+    assert not is_prior_mapping_generation_cohort(
+        collecting,
+        mapping_id="world_scope_mapping.other",
+        mapping_sha256=successor_hash,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question=collecting.manifest.question,
+    )
+    assert not is_prior_mapping_generation_cohort(
+        collecting,
+        mapping_id=mapping.mapping_id,
+        mapping_sha256=successor_hash,
+        lane_signature=("markov.graph", "gru.graph"),
+        study_kind="pipeline_pilot",
+        question=collecting.manifest.question,
+    )
+    assert not is_prior_mapping_generation_cohort(
+        collecting,
+        mapping_id=mapping.mapping_id,
+        mapping_sha256=successor_hash,
+        lane_signature=signature,
+        study_kind="prospective_evaluation",
+        question=collecting.manifest.question,
+    )
+    assert not is_prior_mapping_generation_cohort(
+        collecting,
+        mapping_id=mapping.mapping_id,
+        mapping_sha256=successor_hash,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question="A different pilot question",
+    )
+    registered = _register(
+        _manifest(
+            scope_mapping={"mapping_id": mapping.mapping_id, "mapping_sha256": mapping.content_sha256},
+            sensor_requirements=sensors,
+            lanes=_formal_lanes(),
+            contrasts=_formal_contrasts(),
+        )
+    )
+    assert not is_prior_mapping_generation_cohort(
+        registered,
+        mapping_id=mapping.mapping_id,
+        mapping_sha256=successor_hash,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question=registered.manifest.question,
+    )
+
+
 def test_arm_requires_runtime_match_required_sensors_and_allows_optional_gaps() -> None:
     from trader.domain.world_cohort import ArmWorldCohort
 

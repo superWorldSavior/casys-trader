@@ -52,14 +52,20 @@ from trader.domain.world_cohort import (
     WorldRuntimeIdentity,
     WorldRuntimeIdentityIntent,
     WorldSensorRequirement,
+    is_prior_mapping_generation_cohort,
+    world_cohort_lane_signature,
 )
 from trader.domain.world_episode import SUPPORTED_WORLD_HORIZONS, canonical_sha256, parse_utc_timestamp
 from trader.domain.world_feature_contract import (
     GRAPH_FEATURE_CONTRACT_ID,
     MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
 )
+from trader.domain.world_ontology_lifecycle import (
+    admits_market_ontology_family,
+    market_ontology_revision_id,
+)
+from trader.domain.world_scope import WorldScopeMapping
 from trader.domain.world_macro import (
     MACRO_LANE_IDENTITY,
     MACRO_PRODUCER_VERSION,
@@ -229,8 +235,6 @@ def _parse_world_shadow_pilot_config(path: Path) -> WorldShadowPilotConfig:
     scope = _mapping(payload.get("scope_mapping"), "scope_mapping")
     if scope.get("mapping_id") != WORLD_SCOPE_MAPPING_ID:
         raise ValueError(f"scope_mapping must reuse the committed {WORLD_SCOPE_MAPPING_ID}")
-    if scope.get("mapping_sha256") != WORLD_SCOPE_MAPPING_SHA256:
-        raise ValueError("scope_mapping must reuse the committed world_scope_mapping hash")
     macro = _mapping(payload.get("macro_producer"), "macro_producer")
     if macro.get("producer_version") != MACRO_PRODUCER_VERSION:
         raise ValueError(f"macro_producer.producer_version must be {MACRO_PRODUCER_VERSION}")
@@ -413,7 +417,13 @@ def _legacy_stable_cohort_id(pilot_id: str, schema_version: str, key: str, activ
     )
 
 
-def _stable_cohort_id(config: WorldShadowPilotConfig, key: str) -> str:
+def _stable_cohort_id(
+    config: WorldShadowPilotConfig,
+    key: str,
+    *,
+    mapping_sha256: str | None = None,
+    ontology_revision: str | None = None,
+) -> str:
     return "world_cohort:v1:" + canonical_sha256(
         {
             "pilot_id": config.payload.get("pilot_id") or WORLD_SHADOW_PILOT_SCHEMA,
@@ -422,6 +432,8 @@ def _stable_cohort_id(config: WorldShadowPilotConfig, key: str) -> str:
             "activation_policy": config.activation_policy,
             "config_sha256": config.content_sha256,
             "lifecycle_generation": config.payload.get("lifecycle_generation"),
+            "mapping_sha256": mapping_sha256,
+            "ontology_revision": ontology_revision,
         }
     )
 
@@ -440,6 +452,7 @@ def _materialize_manifest(
     planned_start: datetime,
     stop_at: datetime,
     runtime_identity: WorldRuntimeIdentity,
+    mapping: WorldScopeMapping,
 ) -> WorldCohortManifest:
     key = _required_text(spec.get("key"), "cohorts[].key")
     families = tuple(_required_text(item, "families[]") for item in spec.get("families") or ())
@@ -459,12 +472,13 @@ def _materialize_manifest(
         else _required_text(config.payload.get("context_feature_contract"), "context_feature_contract")
     )
     if graph:
-        ontology_revision = _required_text(
+        declared = _required_text(
             spec.get("ontology_revision") or MARKET_ONTOLOGY_REVISION,
             "ontology_revision",
         )
-        if ontology_revision != MARKET_ONTOLOGY_REVISION:
+        if declared != MARKET_ONTOLOGY_REVISION and not admits_market_ontology_family(declared):
             raise ValueError(f"graph cohort ontology_revision must be {MARKET_ONTOLOGY_REVISION}")
+        ontology_revision = market_ontology_revision_id(mapping)
     else:
         ontology_revision = _required_text(
             spec.get("ontology_revision") or config.payload.get("ontology_revision"),
@@ -492,7 +506,10 @@ def _materialize_manifest(
         ),
         context_feature_contract=context_contract,
         ontology_revision=ontology_revision,
-        scope_mapping=dict(config.payload["scope_mapping"]),
+        scope_mapping={
+            "mapping_id": mapping.mapping_id,
+            "mapping_sha256": mapping.content_sha256,
+        },
         sensor_requirements=_sensors(lanes),
         lanes=lanes,
         contrasts=_contrasts(lanes),
@@ -567,6 +584,58 @@ def _cohort_report(
     }
 
 
+def _lane_signature_for_spec(spec: Mapping[str, Any]) -> tuple[str, ...]:
+    families = tuple(_required_text(item, "families[]") for item in spec.get("families") or ())
+    logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
+    return world_cohort_lane_signature(
+        tuple(_lane(family, logical) for family in families for logical in logicals)
+    )
+
+
+def _close_prior_mapping_generations(
+    service: WorldCohortService,
+    spec: Mapping[str, Any],
+    *,
+    mapping: WorldScopeMapping,
+    now: datetime,
+) -> tuple[str, ...]:
+    """Append-only: invalidate collecting same-shape predecessors. Never rewrite."""
+
+    key = _required_text(spec.get("key"), "cohorts[].key")
+    study_kind = _required_text(spec.get("study_kind"), "cohorts[].study_kind")
+    question = _required_text(spec.get("question"), "cohorts[].question")
+    signature = _lane_signature_for_spec(spec)
+    closed: list[str] = []
+    for cohort in service.query.list_collecting_cohorts():
+        if not is_prior_mapping_generation_cohort(
+            cohort,
+            mapping_id=mapping.mapping_id,
+            mapping_sha256=mapping.content_sha256,
+            lane_signature=signature,
+            study_kind=study_kind,
+            question=question,
+        ):
+            continue
+        pin = cohort.manifest.scope_mapping
+        envelope = service.invalidate(
+            WorldCohortId(cohort.cohort_id),
+            InvalidateWorldCohort(
+                reason=InvalidationReason.MAPPING_GENERATION_DRIFT,
+                scope="mapping_generation",
+                proofs=(
+                    key,
+                    mapping.mapping_id,
+                    mapping.content_sha256,
+                    "" if pin is None else pin.mapping_sha256,
+                ),
+                occurred_at=now,
+            ),
+        )
+        if envelope.event.event_type == "world_cohort_invalidated":
+            closed.append(cohort.cohort_id)
+    return tuple(closed)
+
+
 def _activate_one(
     service: WorldCohortService,
     config: WorldShadowPilotConfig,
@@ -575,11 +644,19 @@ def _activate_one(
     now: datetime,
     measured: WorldRuntimeIdentity,
     ontology_proof: WorldOntologyProofQuery | None,
+    mapping: WorldScopeMapping,
 ) -> dict[str, Any]:
+    _close_prior_mapping_generations(service, spec, mapping=mapping, now=now)
     key = _required_text(spec.get("key"), "cohorts[].key")
-    cohort_id = _stable_cohort_id(config, key)
     logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
     graph = "graph" in logicals
+    ontology_pin = market_ontology_revision_id(mapping) if graph else None
+    cohort_id = _stable_cohort_id(
+        config,
+        key,
+        mapping_sha256=mapping.content_sha256,
+        ontology_revision=ontology_pin,
+    )
     existing = _try_load(service, cohort_id)
     if existing is not None:
         if existing.manifest.runtime_identity != measured:
@@ -604,11 +681,12 @@ def _activate_one(
             planned_start=planned_start,
             stop_at=stop_at,
             runtime_identity=measured,
+            mapping=mapping,
         )
     registered = service.register(RegisterWorldCohort(manifest=manifest))
     loaded = service.repository.load(WorldCohortId(manifest.cohort_id))
     blocked_reason = None
-    if graph:
+    if graph and loaded.phase is not CohortPhase.COLLECTING:
         proof = _graph_ontology_proof(loaded.manifest, ontology_proof=ontology_proof, now=now)
         if proof is None:
             blocked_reason = "graph_ontology_unpublished"
@@ -758,6 +836,7 @@ def activate_world_shadow_pilot(
     environ: Mapping[str, str] | None = None,
     runtime_identity: WorldRuntimeIdentityPort | None = None,
     ontology_proof: WorldOntologyProofQuery | None = None,
+    mapping: WorldScopeMapping | None = None,
 ) -> WorldShadowPilotActivation:
     """Idempotently register/arm/start approved shadow cohorts. Never backfills."""
 
@@ -776,6 +855,16 @@ def activate_world_shadow_pilot(
             return _skip("disabled", config=config)
         if cohort_service is None:
             return _skip("no_cohort_service", config=config)
+        live_mapping = mapping
+        if live_mapping is None:
+            try:
+                from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+
+                live_mapping = WorldScopeResolver.load(path.parent).mapping
+            except Exception:  # noqa: BLE001 - mapping load cannot block market/Trader
+                return _skip("mapping_unavailable", config=config)
+        if live_mapping.mapping_id != WORLD_SCOPE_MAPPING_ID:
+            return _skip("mapping_unavailable", config=config)
         try:
             measured = _measure_runtime_identity(
                 config,
@@ -799,6 +888,7 @@ def activate_world_shadow_pilot(
                     now=clock,
                     measured=measured,
                     ontology_proof=ontology_proof,
+                    mapping=live_mapping,
                 )
             )
         window = None

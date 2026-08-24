@@ -8,6 +8,7 @@
 |---|---|
 | [`registre-decisions-metier.md`](registre-decisions-metier.md) | Source de vérité historique des décisions D1..D15, avec contexte et arbitrages |
 | [`2026-08-24-world-model-shadow-pilot.md`](2026-08-24-world-model-shadow-pilot.md) | Statut du pilote World Model shadow (exception d'activation, fenêtre 7 j, `NO_GO`) — ne réécrit pas D19 |
+| [`2026-08-25-world-scope-mapping-generation.md`](2026-08-25-world-scope-mapping-generation.md) | Mapping `world_scope_mapping.v1` : schéma vs génération (hash), publish+supersede append-only, XNYS/XNAS |
 | [`../decisions-business.md`](../decisions-business.md) | Guide de lecture, supersessions et liens vers le comportement courant |
 
 Règle : ne pas réécrire l'histoire d'une décision. Si le comportement évolue,

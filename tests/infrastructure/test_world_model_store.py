@@ -904,6 +904,8 @@ def test_list_collecting_cohort_ids_requires_started_phase(tmp_path: Path) -> No
         assert store.list_collecting_cohort_ids() == ()
         service.start(_start_command(manifest))
         assert store.list_collecting_cohort_ids() == (WorldCohortId(manifest.cohort_id),)
+        listed = store.list_collecting_cohorts()
+        assert [item.cohort_id for item in listed] == [manifest.cohort_id]
     finally:
         store.close()
 

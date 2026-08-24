@@ -3707,8 +3707,12 @@ class MacroGraphBridgeRegistry:
         if reservation.bridge_key != self.bridge_key:
             raise ValueError("reservation bridge_key mismatch")
         run = self.active_run
+        epoch = 1
         if run is not None:
-            activated = self.events[0] if self.events else None
+            activated = next(
+                (event for event in reversed(self.events) if isinstance(event, MacroGraphBridgeActivated)),
+                None,
+            )
             if (
                 isinstance(activated, MacroGraphBridgeActivated)
                 and activated.reservation_id == reservation.reservation_id
@@ -3716,11 +3720,14 @@ class MacroGraphBridgeRegistry:
                 and run.activation_cursor == reservation.cursor
             ):
                 return self
-            raise ValueError("active generation already exists")
+            if run.status == "blocked" and run.spec != spec:
+                epoch = run.epoch + 1
+            else:
+                raise ValueError("active generation already exists")
         run_id = _bridge_run_id(
             {
                 "bridge_key": self.bridge_key,
-                "epoch": 1,
+                "epoch": epoch,
                 "spec": spec.to_dict(),
                 "activation_cursor": reservation.cursor.to_dict(),
                 "reservation_id": reservation.reservation_id,
@@ -3729,7 +3736,7 @@ class MacroGraphBridgeRegistry:
         event = MacroGraphBridgeActivated(
             bridge_key=self.bridge_key,
             run_id=run_id,
-            epoch=1,
+            epoch=epoch,
             spec=spec,
             activation_cursor=reservation.cursor,
             reservation_id=reservation.reservation_id,

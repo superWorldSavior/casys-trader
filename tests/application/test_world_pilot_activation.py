@@ -18,11 +18,11 @@ from trader.domain.world_cohort import (
     WorldRuntimeIdentity,
 )
 from trader.domain.world_episode import canonical_sha256
+from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 from trader.domain.world_feature_contract import (
-    MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
 )
+from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 
 
 UTC = timezone.utc
@@ -40,6 +40,10 @@ def _service():
     return WorldCohortService(repository=store, query=store), store
 
 
+def _live_mapping():
+    return WorldScopeResolver.load(REPO_ROOT / "config").mapping
+
+
 def _activate(**kwargs):
     from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
 
@@ -47,6 +51,7 @@ def _activate(**kwargs):
         "config_dir": REPO_ROOT / "config",
         "now": BOOT,
         "environ": {},
+        "mapping": _live_mapping(),
     }
     values.update(kwargs)
     if "cohort_service" not in values:
@@ -94,7 +99,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v1"
     assert payload["pilot_id"] == "world_shadow_pilot.v1"
     assert "supersedes_pilot_id" not in payload
-    assert payload["lifecycle_generation"] == 1
+    assert payload["lifecycle_generation"] == 2
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -123,7 +128,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert config.window["collection_stop_kind"] == "fixed_end"
     assert "2026-08-17" not in CONFIG_PATH.read_text(encoding="utf-8")
     assert payload["scope_mapping"]["mapping_id"] == WORLD_SCOPE_MAPPING_ID
-    assert payload["scope_mapping"]["mapping_sha256"] == WORLD_SCOPE_MAPPING_SHA256
+    assert "mapping_sha256" not in payload["scope_mapping"]
     from trader.domain.world_macro import (
         MACRO_LANE_IDENTITY,
         MACRO_PRODUCER_VERSION,
@@ -235,14 +240,15 @@ def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_graph_lane() ->
     assert families["gru.joint"] is ModelFamily.GRU
     gru_lanes = [lane for lane in c1.manifest.lanes if lane.model_family is ModelFamily.GRU]
     assert gru_lanes and all(lane.sequence_length == 4 for lane in gru_lanes)
+    mapping = _live_mapping()
     assert c1.manifest.scope_mapping is not None
     assert c1.manifest.scope_mapping.mapping_id == WORLD_SCOPE_MAPPING_ID
-    assert graph.manifest.scope_mapping.mapping_sha256 == WORLD_SCOPE_MAPPING_SHA256
+    assert graph.manifest.scope_mapping.mapping_sha256 == mapping.content_sha256
     graph_masks = {lane.lane_id: lane.feature_mask_id for lane in graph.manifest.lanes}
     assert graph_masks["markov.graph"] == "topology_status_only.v1"
     assert graph_masks["gru.graph"] == "graph_content.v1"
     assert c1.manifest.ontology_revision == "semantic_catalog.v1"
-    assert graph.manifest.ontology_revision == MARKET_ONTOLOGY_REVISION
+    assert graph.manifest.ontology_revision == market_ontology_revision_id(_live_mapping())
     assert graph.phase is CohortPhase.REGISTERED
     from trader.domain.world_macro import MACRO_PRODUCER_VERSION
 

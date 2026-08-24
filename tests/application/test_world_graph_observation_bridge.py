@@ -10,7 +10,10 @@ from typing import Any
 
 import pytest
 
-from tests.domain.test_world_graph_bridge_lifecycle import _drifted_committed_specs
+from tests.domain.test_world_graph_bridge_lifecycle import (
+    _drifted_committed_specs,
+    _generation_roll_specs,
+)
 from tests.package_layout._helpers import REPO_ROOT
 from trader.domain.world_availability import (
     AvailabilityEvidence,
@@ -804,3 +807,37 @@ def test_ensure_one_bit_identity_drift_does_not_retire_or_handoff(
     assert about.event_id in {item.event_id for item in graph.knowledge}
     assert link.relation.relation_id in asserted_ids
     assert scan.reserve_calls == 1
+
+
+@pytest.mark.parametrize("side,field,durable,desired", _generation_roll_specs())
+def test_ensure_mapping_generation_rolls_append_only_without_retiring_predecessor(
+    side: str,
+    field: str,
+    durable: MacroGraphBridgeRunSpec,
+    desired: MacroGraphBridgeRunSpec,
+) -> None:
+    del side, field
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    mapping, link, about = _seed_owned_observes(scan, graph, bridge, durable)
+    predecessor_run_id = bridge.registry.active_run.run_id
+    predecessor_event_ids = {event.event_id for event in bridge.registry.events}
+    use_case = _use_case(scan, graph, bridge, mapping)
+    use_case._spec = lambda: desired  # type: ignore[method-assign]
+    rolled = use_case.ensure(REQUEST_ID)
+    assert rolled.active_run is not None
+    assert rolled.active_run.status == "active"
+    assert rolled.active_run.spec == desired
+    assert rolled.active_run.epoch == 2
+    assert rolled.active_run.run_id != predecessor_run_id
+    assert not any(event.event_type == "macro_graph_bridge_run_handed_off" for event in rolled.events)
+    assert predecessor_event_ids <= {event.event_id for event in rolled.events}
+    retired = [item for item in graph.knowledge if isinstance(item, KnowledgeWorldRelationRetired)]
+    assert retired == []
+    asserted_ids = {
+        item.relation.relation_id for item in graph.knowledge if isinstance(item, KnowledgeWorldRelationAsserted)
+    }
+    assert about.event_id in {item.event_id for item in graph.knowledge}
+    assert link.relation.relation_id in asserted_ids
+    assert scan.reserve_calls == 2

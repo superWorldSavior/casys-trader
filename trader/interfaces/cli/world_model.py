@@ -387,6 +387,54 @@ def dispatch_world_graph(args: Any, *, state_dir: str | Path) -> tuple[dict[str,
     return _error("unsupported_command", str(command), recovery="use a documented world graph subcommand"), 2
 
 
+def reconcile_world_scope_mapping(
+    config_dir: str | Path,
+    *,
+    persist: bool = False,
+) -> tuple[dict[str, Any], int]:
+    from trader.application.world_model.scope_mapping_reconcile import WorldScopeMappingReconcileService
+    from trader.infrastructure.files.universe_anchors import YamlUniverseAnchorSource
+    from trader.infrastructure.files.world_scope_mapping_config import YamlWorldScopeMappingStore
+    from trader.infrastructure.market_sources.world_scope_listing import (
+        InstrumentListingMetadataAdapter,
+        YFinanceListingExchangeLookup,
+    )
+
+    service = WorldScopeMappingReconcileService(
+        universe=YamlUniverseAnchorSource(config_dir),
+        listings=InstrumentListingMetadataAdapter(exchange_lookup=YFinanceListingExchangeLookup()),
+        store=YamlWorldScopeMappingStore(config_dir),
+    )
+    result = service.reconcile(persist=persist)
+    return {
+        "ok": True,
+        "command": "scope-reconcile",
+        "persist": persist,
+        "action": result.action,
+        "mapping_id": result.mapping.mapping_id,
+        "mapping_sha256": result.mapping.content_sha256,
+        "added_anchors": [list(item) for item in result.added_anchors],
+        "preserved_conflicts": [list(item) for item in result.preserved_conflicts],
+        "unresolved": [
+            {
+                "market_venue": item.market_venue,
+                "instrument": item.instrument,
+                "status": item.status,
+                "reason": item.reason,
+            }
+            for item in result.unresolved
+        ],
+        **_claims(),
+    }, 0
+
+
+def dispatch_world_scope(args: Any, *, config_dir: str | Path) -> tuple[dict[str, Any], int]:
+    command = getattr(args, "scope_command", None)
+    if command == "reconcile":
+        return reconcile_world_scope_mapping(config_dir, persist=bool(getattr(args, "apply", False)))
+    return _error("unsupported_command", str(command), recovery="casys-trader world scope reconcile"), 2
+
+
 __all__ = [
     "HORIZONS",
     "WORLD_COHORT_INVALIDATION_REASONS",
@@ -395,6 +443,8 @@ __all__ = [
     "dispatch_world_cohort",
     "dispatch_world_graph",
     "dispatch_world_macro",
+    "dispatch_world_scope",
+    "reconcile_world_scope_mapping",
     "invalidate_world_cohort",
     "read_world_cohort_report",
     "read_world_cohort_status",

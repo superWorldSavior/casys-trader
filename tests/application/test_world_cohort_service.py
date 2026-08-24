@@ -301,6 +301,17 @@ class _MemoryWorldCohortStore:
     def list_slots(self, cohort_id: WorldCohortId) -> tuple[WorldCohortSlot, ...]:
         return self.load(cohort_id).admitted_slots
 
+    def list_collecting_cohorts(self) -> tuple[WorldCohort, ...]:
+        collecting: list[WorldCohort] = []
+        for cohort_id in sorted(self.manifests):
+            try:
+                cohort = self.load(WorldCohortId(cohort_id))
+            except (LookupError, TypeError, ValueError):
+                continue
+            if cohort.phase is CohortPhase.COLLECTING and cohort.started_event is not None:
+                collecting.append(cohort)
+        return tuple(collecting)
+
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
         envelope = self.envelopes.get(event.event_id)
         if envelope is None:
@@ -451,6 +462,16 @@ def _collecting(service, store, manifest: WorldCohortManifest | None = None):
     return store.load(WorldCohortId(current.cohort_id))
 
 
+def test_memory_store_lists_collecting_cohorts_only() -> None:
+    service, store = _service()
+    service.register(RegisterWorldCohort(manifest=_manifest()))
+    assert store.list_collecting_cohorts() == ()
+    collecting = _collecting(service, store)
+    listed = store.list_collecting_cohorts()
+    assert [item.cohort_id for item in listed] == [collecting.cohort_id]
+    assert listed[0].phase is CohortPhase.COLLECTING
+
+
 def test_ports_are_consumer_owned_typed_contracts() -> None:
     from trader.application.world_model.cohort_ports import WorldCohortQuery, WorldCohortRepository
 
@@ -477,6 +498,10 @@ def test_ports_are_consumer_owned_typed_contracts() -> None:
     assert list(inspect.signature(WorldCohortQuery.list_slots).parameters) == ["self", "cohort_id"]
     assert query_hints["cohort_id"] is WorldCohortId
     assert query_hints["return"] == tuple[WorldCohortSlot, ...]
+
+    collecting_hints = get_type_hints(WorldCohortQuery.list_collecting_cohorts)
+    assert list(inspect.signature(WorldCohortQuery.list_collecting_cohorts).parameters) == ["self"]
+    assert collecting_hints["return"] == tuple[WorldCohort, ...]
 
     envelope_hints = get_type_hints(WorldCohortQuery.envelope_for)
     assert list(inspect.signature(WorldCohortQuery.envelope_for).parameters) == ["self", "event"]

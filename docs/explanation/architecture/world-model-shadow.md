@@ -146,10 +146,14 @@ traverser ; aucun objet NetworkX n'est persisté ; aucune arête `CAUSES`.
 `config/world_graph.yaml` a `cohort_id: null` ; l'id d'étude est
 injecté au compose depuis l'activation pilote.
 
-La révision dérivée de `world_scope_mapping.v1` est vérifiée contre
-`MARKET_ONTOLOGY_SHA256` / `market_ontology.v1` ; les adapters
-SQLite projettent, le payload JSON est l'autorité. Snapshot
-`unmapped`/`ambiguous` : `world_graph_snapshot.v1` avec
+La révision dérivée de `world_scope_mapping.v1` est
+`market_ontology:v1:<mapping_sha256>`, vérifiée contre le mapping chargé.
+Un store vide publie. Une nouvelle génération append puis supersede
+l'active dans le même ledger ; les têtes déjà collectées restent
+lisibles au cutoff PIT. Les cohortes pilotes encore `COLLECTING` de la
+même forme sont invalidées (`mapping_generation_drift`) avant d'armer
+la successeure.
+Snapshot `unmapped`/`ambiguous` : `world_graph_snapshot.v1` avec
 `root_entity=null`, zéro membre. Une relation `OBSERVES` porte le
 producteur et le scope natif ; la distance d'ancestry se reconstruit
 depuis les têtes `TRADED_ON` / `LOCATED_IN` / `PART_OF_WORLD`, elle
@@ -157,9 +161,10 @@ n'est pas inventée à la collecte.
 
 Le pont macro→graphe est append-only : classify avant réserve ;
 activation à froid ; restart no-op ; resume bloqué identique ; drift
-actif = block ; drift bloqué = erreur. Pas de handoff, pas de
-remediation de lignée. Curseur monotone ; pas de wildcard
-d'ownership. La voie graphe = shadow-only, aucune autorité Trader.
+actif de la même famille (nouveau hash de mapping/ontologie) = block
+puis roll de génération ; drift de plan/producteur = erreur. Pas de
+handoff. Curseur monotone ; pas de wildcard d'ownership. La voie
+graphe = shadow-only, aucune autorité Trader.
 
 ## Deux cohortes, lanes Markov et GRU froid
 

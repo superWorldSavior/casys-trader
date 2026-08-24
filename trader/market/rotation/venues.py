@@ -149,6 +149,7 @@ def tick(
     radar_score_audit_observer=None,
     market_context=None,
     news_challenger_fn=None,
+    universe_written_observer=None,
 ) -> dict:
     """Run one per-venue rotation cycle and reconcile the active universe.
 
@@ -165,6 +166,8 @@ def tick(
             activé; une préparation seule ne lui est jamais transmise comme active.
         radar_score_audit_observer: callback best-effort qui persiste le comparatif
             score courant vs shadow. Sa sortie ne participe jamais à la sélection.
+        universe_written_observer: callback best-effort après une écriture d'univers.
+            Échec silencieux ; n'appartient pas au chemin de trading.
         market_context: dict optionnel transmis au payload override (v1 : regime_families).
     """
     config_path = Path(config_dir)
@@ -501,6 +504,11 @@ def tick(
         final, pin=user_overrides.pin, ban=user_overrides.ban, sticky=sticky
     )
     written = write_universe_if_changed(str(config_path / "universe.yaml"), final)
+    if written and universe_written_observer is not None:
+        try:
+            universe_written_observer(final)
+        except Exception:  # noqa: BLE001 - world mapping must not affect rotation
+            pass
     return {"dues": dues, "open": open_v, "final": final, "written": written}
 
 

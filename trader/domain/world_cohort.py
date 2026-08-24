@@ -87,6 +87,7 @@ class SensorMask(StrEnum):
 class InvalidationReason(StrEnum):
     MANIFEST_ID_HASH_CONFLICT = "manifest_id_hash_conflict"
     ACCEPTED_DRIFT = "accepted_drift"
+    MAPPING_GENERATION_DRIFT = "mapping_generation_drift"
     PRE_START_EPISODE = "pre_start_episode"
     CONTAMINATED_MACRO = "contaminated_macro"
     FUTURE_LEAK = "future_leak"
@@ -2770,6 +2771,44 @@ class WorldCohort:
         raise TypeError(f"unsupported command: {type(command).__name__}")
 
 
+def world_cohort_lane_signature(lanes: Sequence[WorldLaneDefinition | Mapping[str, Any]]) -> tuple[str, ...]:
+    """Stable lane-id signature. Same families × logicals = same pilot shape."""
+
+    resolved = _lane_tuple(lanes)
+    return tuple(sorted(lane.lane_id for lane in resolved))
+
+
+def is_prior_mapping_generation_cohort(
+    cohort: WorldCohort,
+    *,
+    mapping_id: str,
+    mapping_sha256: str,
+    lane_signature: Sequence[str],
+    study_kind: StudyKind | str,
+    question: str,
+) -> bool:
+    """True when a collecting cohort is the same pilot shape on a previous mapping hash."""
+
+    if not isinstance(cohort, WorldCohort):
+        raise TypeError("cohort must be WorldCohort")
+    if cohort.phase is not CohortPhase.COLLECTING:
+        return False
+    pin = cohort.manifest.scope_mapping
+    if pin is None:
+        return False
+    expected_id = _required_text(mapping_id, "mapping_id")
+    expected_hash = _sha256_hex(mapping_sha256, "mapping_sha256")
+    if pin.mapping_id != expected_id or pin.mapping_sha256 == expected_hash:
+        return False
+    expected_kind = _enum(StudyKind, study_kind, "study_kind")
+    if cohort.manifest.study_kind is not expected_kind:
+        return False
+    if cohort.manifest.question != _required_text(question, "question"):
+        return False
+    expected_lanes = tuple(_required_text(item, "lane_signature[]") for item in lane_signature)
+    return world_cohort_lane_signature(cohort.manifest.lanes) == tuple(sorted(expected_lanes))
+
+
 __all__ = [
     "COHORT_AUTHORITY",
     "COHORT_DECISION_EFFECT",
@@ -2810,6 +2849,8 @@ __all__ = [
     "WorldCohortId",
     "WorldCohortInvalidated",
     "WorldCohortLaneBlocked",
+    "is_prior_mapping_generation_cohort",
+    "world_cohort_lane_signature",
     "WorldCohortLaneRestored",
     "WorldCohortManifest",
     "WorldCohortMatchedMember",

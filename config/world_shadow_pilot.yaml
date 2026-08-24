@@ -1,7 +1,7 @@
 schema_version: world_shadow_pilot.v1
-content_sha256: "a9612f22c193b2c643a9f0e24d511f803cd79624c66bf826129221b1f462ed1e"
+content_sha256: "d17969c958492575829ad5afdf2e6438546298fa2c83e02ba3ecd330a2523906"
 pilot_id: world_shadow_pilot.v1
-lifecycle_generation: 1
+lifecycle_generation: 2
 authority: shadow_only
 decision_effect: none
 recommendation: NO_GO
@@ -28,7 +28,6 @@ ontology_revision: semantic_catalog.v1
 
 scope_mapping:
   mapping_id: world_scope_mapping.v1
-  mapping_sha256: "94a7d310d51ad411e04abf9b5e00e9d802e2836138123d2ae1d1b756bda148ee"
 
 macro_producer:
   producer_version: world_macro_source.v1

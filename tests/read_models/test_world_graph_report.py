@@ -15,9 +15,9 @@ from trader.domain.world_cohort import (
     WorldContrastTerm,
     WorldSensorRequirement,
 )
+from tests.domain.test_world_cohort import _scope_mapping
 from trader.domain.world_feature_contract import (
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
     graph_feature_contract,
     graph_content_mask,
     topology_status_only_mask,
@@ -48,7 +48,7 @@ def _graph_manifest(**overrides: object):
         "context_feature_contract": V3.contract_id,
         "scope_mapping": {
             "mapping_id": WORLD_SCOPE_MAPPING_ID,
-            "mapping_sha256": WORLD_SCOPE_MAPPING_SHA256,
+            "mapping_sha256": _scope_mapping().content_sha256,
         },
         "sensor_requirements": (
             WorldSensorRequirement(

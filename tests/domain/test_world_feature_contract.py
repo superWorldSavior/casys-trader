@@ -31,11 +31,9 @@ from trader.domain.world_feature_contract import (
     WORLD_FEATURE_MASK_SCHEMA,
     WORLD_GRAPH_CONFIG_SHA256,
     MARKET_ONTOLOGY_REVISION,
-    MARKET_ONTOLOGY_SHA256,
     GRAPH_PATH_RULE_VERSION,
     GRAPH_WINDOWS_AND_DECAY,
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
     MARKET_ENCODER_IDENTITY,
     CONTEXT_ENCODER_IDENTITY,
     GRAPH_ENCODER_IDENTITY,
@@ -348,6 +346,8 @@ def test_scope_mapping_types_remain_macro0_owners_not_a_cohort_contract() -> Non
     source = MODULE_PATH.read_text(encoding="utf-8")
     assert "class WorldScopeMapping" not in source
     assert "class WorldScopeResolution" not in source
+    assert "MARKET_ONTOLOGY_SHA256" not in source
+    assert "WORLD_SCOPE_MAPPING_SHA256" not in source
     assert WorldScopeMapping.__module__ == "trader.domain.world_scope"
     assert WorldScopeResolution.__module__ == "trader.domain.world_scope"
     assert WorldFeatureContract.__module__ == "trader.domain.world_feature_contract"
@@ -396,13 +396,24 @@ def test_graph_contract_is_isolated_from_market_context_and_binds_committed_grap
     assert v3.encoder_identity == GRAPH_ENCODER_IDENTITY == "world_feature_encoder.graph.v1"
     assert v3.vocabulary_version == GRAPH_FEATURE_CONTRACT_ID
     assert v3.ontology_revision == MARKET_ONTOLOGY_REVISION == config["ontology_revision"] == "market_ontology.v1"
-    assert len(MARKET_ONTOLOGY_SHA256) == 64
+    assert len(str(config["content_sha256"])) == 64
     assert v3.path_rule_version == GRAPH_PATH_RULE_VERSION == config["traversal_policy_version"] == "graph_traversal.v1"
     assert v3.to_dict()["windows_and_decay"] == config["windows_and_decay"]
     assert canonical_payload(GRAPH_WINDOWS_AND_DECAY) == config["windows_and_decay"]
     assert WORLD_GRAPH_CONFIG_SHA256 == config["content_sha256"]
     assert WORLD_SCOPE_MAPPING_ID == config["scope_mapping"]["mapping_id"] == mapping["mapping_id"]
-    assert WORLD_SCOPE_MAPPING_SHA256 == config["scope_mapping"]["mapping_sha256"] == mapping["content_sha256"]
+    assert "mapping_sha256" not in config["scope_mapping"]
+    from trader.domain.world_scope import WorldScopeMapping
+
+    loaded = WorldScopeMapping.from_mapping(
+        {
+            "schema_version": mapping.get("schema_version"),
+            "mapping_id": mapping.get("mapping_id"),
+            "entries": mapping.get("entries") or (),
+            "content_sha256": mapping.get("content_sha256"),
+        }
+    )
+    assert loaded.content_sha256 == mapping["content_sha256"]
     assert v3.allowed_feature_groups == frozenset({"market", "status", "company", "macro", "graph_status", "graph"})
     assert (
         v3.group("market").categorical_features

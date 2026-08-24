@@ -42,6 +42,8 @@ MARKET_DATA_IMPORT_STAR_EXPORTS = (
     "clamp_wake_to_session_open",
     "aggregate_bars",
     "classify_symbol_context",
+    "explicit_mic_assignment",
+    "explicit_mic_for_symbol",
     "Quote",
     "get_bars",
     "get_quote",

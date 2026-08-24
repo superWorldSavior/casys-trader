@@ -449,7 +449,7 @@ def _macro_graph_bridge_use_case(
 ):
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
     from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
-    from trader.domain.world_graph_bridge_lifecycle import require_committed_live_bridge_lineage
+    from trader.domain.world_graph_bridge_lifecycle import derive_macro_graph_bridge_spec
     from trader.domain.world_scope import WorldScopeMapping
 
     if not isinstance(mapping, WorldScopeMapping):
@@ -459,7 +459,7 @@ def _macro_graph_bridge_use_case(
     bootstrap = WorldOntologyBootstrapService(graph_store, mapping)
     bootstrap.ensure_published(now=now)
     revision = bootstrap.expected_revision()
-    require_committed_live_bridge_lineage(
+    derive_macro_graph_bridge_spec(
         mapping=mapping,
         ontology=revision,
         collection_plan=collection_plan,

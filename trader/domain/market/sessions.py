@@ -148,13 +148,31 @@ _SYMBOL_MIC: dict[str, str] = {
 }
 
 
-def _mic_for_symbol(symbol: str) -> str:
+def explicit_mic_for_symbol(symbol: str) -> str | None:
+    """Return the sessions-taxonomy MIC when the symbol has an explicit row.
+
+    Unsuffixed US names have no row here. Calendar code may still default them
+    to XNYS; callers that must distinguish XNYS from XNAS must not use that
+    default as a listing authority.
+    """
+
+    assignment = explicit_mic_assignment(symbol)
+    return None if assignment is None else assignment[1]
+
+
+def explicit_mic_assignment(symbol: str) -> tuple[str, str] | None:
+    """Return ``(selector, mic)`` for an explicit sessions taxonomy row."""
+
     if symbol in _SYMBOL_MIC:
-        return _SYMBOL_MIC[symbol]
-    for suffix, mic in _VENUE_MIC.items():
+        return (symbol, _SYMBOL_MIC[symbol])
+    for suffix, mic in sorted(_VENUE_MIC.items(), key=lambda item: len(item[0]), reverse=True):
         if symbol.endswith(suffix):
-            return mic
-    return "XNYS"
+            return (suffix, mic)
+    return None
+
+
+def _mic_for_symbol(symbol: str) -> str:
+    return explicit_mic_for_symbol(symbol) or "XNYS"
 
 
 @functools.lru_cache(maxsize=32)
@@ -696,4 +714,6 @@ __all__ = [
     "clamp_wake_to_session_open",
     "aggregate_bars",
     "classify_symbol_context",
+    "explicit_mic_assignment",
+    "explicit_mic_for_symbol",
 ]

@@ -662,6 +662,36 @@ def _default_scope_resolver() -> object | None:
         return None
 
 
+def compose_world_scope_mapping_reconcile(config_dir: str | Path) -> object:
+    """Composition root for universe → WorldScopeMapping reconciliation."""
+
+    from trader.application.world_model.scope_mapping_reconcile import WorldScopeMappingReconcileService
+    from trader.infrastructure.files.universe_anchors import YamlUniverseAnchorSource
+    from trader.infrastructure.files.world_scope_mapping_config import YamlWorldScopeMappingStore
+    from trader.infrastructure.market_sources.world_scope_listing import (
+        InstrumentListingMetadataAdapter,
+        YFinanceListingExchangeLookup,
+    )
+
+    return WorldScopeMappingReconcileService(
+        universe=YamlUniverseAnchorSource(config_dir),
+        listings=InstrumentListingMetadataAdapter(exchange_lookup=YFinanceListingExchangeLookup()),
+        store=YamlWorldScopeMappingStore(config_dir),
+    )
+
+
+def build_universe_written_scope_observer(config_dir: str | Path):
+    """Fail-open observer. Rotation writes stay authoritative even if mapping fails."""
+
+    def _observe(_symbols=None) -> None:
+        try:
+            compose_world_scope_mapping_reconcile(config_dir).reconcile(persist=True)
+        except Exception:  # noqa: BLE001 - shadow mapping cannot affect trading
+            return
+
+    return _observe
+
+
 def _wire_cohort_service(store: object, cohort_service: object | None) -> object | None:
     if cohort_service is not None:
         return cohort_service
@@ -787,8 +817,11 @@ __all__ = [
     "WorldModelRuntime",
     "WorldModelShadowRuntime",
     "WorldTemporalTraversalAdapter",
+    "build_universe_written_scope_observer",
     "compose_local_graph_lanes",
+    "compose_world_ontology_attestation",
     "compose_world_resource_guard",
+    "compose_world_scope_mapping_reconcile",
     "graph_budget_view",
     "graph_status_overlay",
 ]

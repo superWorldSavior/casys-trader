@@ -26,6 +26,7 @@ leur propre page de référence, liés ci-dessous.
 | `symbol_news_aliases.yaml` | alias d'entités pour l'attribution challenger | alias par symbole | `runtime/news_challenger_runtime` |
 | `company_entities.yaml` | identités officielles des entreprises, notamment LEI EU | entité/venue/identifiants | `infrastructure/market_sources/company` |
 | `company_intelligence.yaml` | bornes et modes de projection micro | concurrence, caps, modes Univers/trader | `runtime/company_intelligence_runtime`, `runtime/company_context_config` |
+| `world_scope_mapping.yaml` | **génération courante** des scopes World (`world_scope_mapping.v1`) | `entries`, `content_sha256` | `application/world_model/world_scope_resolver`, réconciliation univers |
 | `conviction.yaml` | tilt de conviction **par famille** | (par famille) | `market/radar_config` (`load_conviction`) → `market/rotation/wiring` |
 | `process_governance.yaml` | contrat de preuve du cycle paper | frontière, identités, accountability, résultats terminaux | `support/metadata/governance_version`, `runtime/process_pilot` |
 

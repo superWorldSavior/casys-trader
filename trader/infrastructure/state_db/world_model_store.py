@@ -1963,17 +1963,22 @@ class WorldModelStore:
         return self.load(cohort_id).admitted_slots
 
     def list_collecting_cohort_ids(self) -> tuple[WorldCohortId, ...]:
-        """Return reconstructed collecting cohorts. Never registers, arms, or starts."""
+        """Return reconstructed collecting cohort ids. Never registers, arms, or starts."""
+
+        return tuple(WorldCohortId(cohort.cohort_id) for cohort in self.list_collecting_cohorts())
+
+    def list_collecting_cohorts(self) -> tuple[WorldCohort, ...]:
+        """Return reconstructed collecting aggregates. Never registers, arms, or starts."""
 
         rows = self._db.query_all("SELECT cohort_id FROM world_cohort_manifests ORDER BY cohort_id")
-        collecting: list[WorldCohortId] = []
+        collecting: list[WorldCohort] = []
         for row in rows:
             try:
                 cohort = self.load(WorldCohortId(row["cohort_id"]))
             except (LookupError, TypeError, ValueError):
                 continue
             if cohort.phase is CohortPhase.COLLECTING and cohort.started_event is not None:
-                collecting.append(WorldCohortId(cohort.cohort_id))
+                collecting.append(cohort)
         return tuple(collecting)
 
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:

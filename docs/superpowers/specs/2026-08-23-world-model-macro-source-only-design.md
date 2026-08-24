@@ -399,7 +399,13 @@ ancre résolue, scopes ordonnés et statut `resolved | unmapped | ambiguous`.
 Le domaine effectue cette résolution pure ; l'adapter charge le fichier
 configuré. Aucune heuristique `TW -> XTAI`, `US -> XNYS` ou `EU -> ...` ne vit
 dans le runtime/reader. Une nouvelle cotation ou correction crée une nouvelle
-version du mapping et donc un nouveau manifeste de cohorte.
+**génération** du mapping (`content_sha256`) et donc un nouveau manifeste de
+cohorte. Le contrat de schéma reste `world_scope_mapping.v1` : on ne bump pas
+vers `world_scope_mapping.v2` / `v3`. Les lignes déjà pinées ne sont pas
+réécrites ; un store ontologique déjà publié avec l'ancien hash
+append une successeure `market_ontology:v1:<nouveau_hash>` et
+supersede l'active. L'histoire PIT et les cohortes pinées restent
+lisibles dans le même ledger.
 
 ## 7. Owners DDD et règles d'import
 
@@ -824,11 +830,12 @@ par hash dans le registre et les versions de transformation. Ils ne remettent
 pas en cause la frontière source-only et ne peuvent pas être inventés par un
 lot d'implémentation.
 
-## 17. Contrat live unique (archive hors ligne, store frais)
+## 17. Contrat live unique (une famille de schéma)
 
-Un seul contrat runtime. Pas de parser héritage, pas de handoff, pas de
-supersession ontologie. Cutover = archiver l'ancien store hors ligne et
-démarrer un store frais. Les schémas payload restent
+Un seul contrat runtime. Pas de parser héritage, pas de handoff. Une
+génération de mapping append + publish + supersede dans le même ledger ;
+cutover store (archive hors ligne) seulement pour une autre identité de
+schéma. Les schémas payload restent
 `macro_source_fact.v1`, `macro_world_observation.v1`,
 `macro_source_registry.v1`, `macro_collection_plan.v1` et
 `macro_graph_bridge_run_spec.v1`. Autorité inchangée : `shadow_only` /

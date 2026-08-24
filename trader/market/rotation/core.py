@@ -42,6 +42,7 @@ def run(
     emergency_floor: float,
     gap_adverse: frozenset[str] = frozenset(),
     daily_invalidated: frozenset[str] = frozenset(),
+    universe_written_observer=None,
 ) -> dict:
     """Orchestration EOD de la rotation d'univers.
 
@@ -188,6 +189,11 @@ def run(
     )
     if final:
         write_universe_atomic(universe_path, final)
+        if universe_written_observer is not None:
+            try:
+                universe_written_observer(final)
+            except Exception:  # noqa: BLE001 - world mapping must not affect rotation
+                pass
     # final vidé par un ban → on garde le fichier (fusible non-vide) ;
     # le ban reste effectif via la lecture daemon (effective_universe_symbols).
     save_rotation_state(state_dir, advance_state(state, hot, last_valid=final, rotation_at=as_of))

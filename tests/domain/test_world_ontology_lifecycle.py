@@ -5,19 +5,23 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
-from trader.domain.world_feature_contract import (
-    MARKET_ONTOLOGY_REVISION,
-    MARKET_ONTOLOGY_SHA256,
-    WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
-)
+from trader.domain.world_feature_contract import MARKET_ONTOLOGY_REVISION, WORLD_SCOPE_MAPPING_ID
 from trader.domain.world_graph import WorldEntityRef, WorldOntologyRevision
 from trader.domain.world_ontology_lifecycle import (
     ONTOLOGY_PUBLICATION_ACTIONS,
     WorldOntologyLifecycleSpec,
+    admits_market_ontology_family,
     committed_world_ontology_lifecycle_spec,
+    market_ontology_revision_id,
+    market_ontology_revision_id_for_mapping_hash,
     plan_world_ontology_publication,
-    require_committed_ontology_revision,
+    require_mapping_aligned_ontology_revision,
+)
+from trader.domain.world_scope import (
+    WorldCanonicalScopeRef,
+    WorldMarketAnchorRef,
+    WorldScopeMapping,
+    WorldScopeMappingEntry,
 )
 
 
@@ -44,93 +48,8 @@ def _spec_for(expected: WorldOntologyRevision) -> WorldOntologyLifecycleSpec:
     )
 
 
-def test_lifecycle_module_is_stdlib_domain() -> None:
-    assert MODULE_PATH.exists()
-    assert _domain_import_violations([MODULE_PATH], REPO_ROOT) == []
-    source = MODULE_PATH.read_text(encoding="utf-8")
-    assert "trader.runtime" not in source
-    assert "trader.infrastructure" not in source
-    assert "backfill" not in source
-    assert "supersede" not in source
-    assert "predecessor" not in source
-
-
-def test_committed_spec_is_the_current_identity() -> None:
-    spec = committed_world_ontology_lifecycle_spec()
-    assert spec.revision_id == MARKET_ONTOLOGY_REVISION == "market_ontology.v1"
-    assert spec.mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v1"
-    assert spec.revision_hash == MARKET_ONTOLOGY_SHA256
-    assert spec.mapping_sha256 == WORLD_SCOPE_MAPPING_SHA256
-    payload = spec.to_dict()
-    assert payload == {
-        "revision_id": MARKET_ONTOLOGY_REVISION,
-        "mapping_id": WORLD_SCOPE_MAPPING_ID,
-        "revision_hash": MARKET_ONTOLOGY_SHA256,
-        "mapping_sha256": WORLD_SCOPE_MAPPING_SHA256,
-    }
-    assert WorldOntologyLifecycleSpec.from_mapping(payload) == spec
-    with pytest.raises(FrozenInstanceError):
-        spec.revision_id = "other"  # type: ignore[misc]
-
-
-def test_empty_store_publishes_current_revision() -> None:
-    expected = _revision(
-        revision_id=MARKET_ONTOLOGY_REVISION,
-        mapping_id=WORLD_SCOPE_MAPPING_ID,
-        mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
-    )
-    spec = _spec_for(expected)
-    plan = plan_world_ontology_publication(published=None, expected=expected, spec=spec)
-    assert plan.action == "publish"
-    assert plan.published_revision_id is None
-    assert plan.expected_revision_id == spec.revision_id
-    assert ONTOLOGY_PUBLICATION_ACTIONS == frozenset({"ready", "publish"})
-
-
-def test_matching_current_revision_is_ready_and_other_identity_conflicts() -> None:
-    expected = _revision(
-        revision_id=MARKET_ONTOLOGY_REVISION,
-        mapping_id=WORLD_SCOPE_MAPPING_ID,
-        mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
-    )
-    spec = _spec_for(expected)
-    ready = plan_world_ontology_publication(published=expected, expected=expected, spec=spec)
-    assert ready.action == "ready"
-    drifted = _revision(
-        revision_id=spec.revision_id,
-        mapping_id=spec.mapping_id,
-        mapping_hash="c" * 64,
-    )
-    with pytest.raises(ValueError, match="conflict"):
-        plan_world_ontology_publication(published=drifted, expected=expected, spec=spec)
-    unknown = _revision(revision_id="market_ontology.v0", mapping_id="world_scope_mapping.v0")
-    with pytest.raises(ValueError, match="current committed identity"):
-        plan_world_ontology_publication(published=unknown, expected=expected, spec=spec)
-
-
-def test_committed_spec_rejects_expected_hash_drift_on_empty_store() -> None:
-    spec = committed_world_ontology_lifecycle_spec()
-    expected = _revision(
-        revision_id=spec.revision_id,
-        mapping_id=spec.mapping_id,
-        mapping_hash=spec.mapping_sha256,
-    )
-    with pytest.raises(ValueError, match="ontology hash drifted"):
-        plan_world_ontology_publication(published=None, expected=expected, spec=spec)
-    custom = _spec_for(expected)
-    plan = plan_world_ontology_publication(published=None, expected=expected, spec=custom)
-    assert plan.action == "publish"
-
-
-def test_require_committed_ontology_revision_rejects_mapping_id_with_drifted_hash() -> None:
-    from trader.domain.world_scope import (
-        WorldCanonicalScopeRef,
-        WorldMarketAnchorRef,
-        WorldScopeMapping,
-        WorldScopeMappingEntry,
-    )
-
-    mapping = WorldScopeMapping(
+def _mapping() -> WorldScopeMapping:
+    return WorldScopeMapping(
         mapping_id=WORLD_SCOPE_MAPPING_ID,
         entries=(
             WorldScopeMappingEntry(
@@ -144,10 +63,129 @@ def test_require_committed_ontology_revision_rejects_mapping_id_with_drifted_has
             ),
         ),
     )
-    revision = _revision(
+
+
+def test_lifecycle_module_is_stdlib_domain() -> None:
+    assert MODULE_PATH.exists()
+    assert _domain_import_violations([MODULE_PATH], REPO_ROOT) == []
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    assert "trader.runtime" not in source
+    assert "trader.infrastructure" not in source
+    assert "backfill" not in source
+    assert "open(" not in source
+    assert "Path(" not in source
+    assert "generation_pending" not in source
+
+
+def test_revision_instance_id_is_derived_from_mapping_hash() -> None:
+    mapping = _mapping()
+    revision_id = market_ontology_revision_id(mapping)
+    assert revision_id == market_ontology_revision_id_for_mapping_hash(mapping.content_sha256)
+    assert revision_id.startswith("market_ontology:v1:")
+    assert revision_id.endswith(mapping.content_sha256)
+    assert admits_market_ontology_family(revision_id)
+    assert admits_market_ontology_family(MARKET_ONTOLOGY_REVISION)
+    assert not admits_market_ontology_family("market_ontology.v0")
+    with pytest.raises(TypeError, match="derived from mapping"):
+        committed_world_ontology_lifecycle_spec()
+
+
+def test_empty_store_publishes_current_revision() -> None:
+    mapping = _mapping()
+    expected = _revision(
+        revision_id=market_ontology_revision_id(mapping),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash=mapping.content_sha256,
+    )
+    spec = _spec_for(expected)
+    plan = plan_world_ontology_publication(published=None, expected=expected, spec=spec)
+    assert plan.action == "publish"
+    assert plan.published_revision_id is None
+    assert plan.expected_revision_id == spec.revision_id
+    assert ONTOLOGY_PUBLICATION_ACTIONS == frozenset({"ready", "publish", "supersede"})
+
+
+def test_matching_current_revision_is_ready() -> None:
+    mapping = _mapping()
+    expected = _revision(
+        revision_id=market_ontology_revision_id(mapping),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash=mapping.content_sha256,
+    )
+    spec = _spec_for(expected)
+    ready = plan_world_ontology_publication(published=expected, expected=expected, spec=spec)
+    assert ready.action == "ready"
+    unknown = _revision(revision_id="market_ontology.v0", mapping_id="world_scope_mapping.v0")
+    with pytest.raises(ValueError, match="current committed identity"):
+        plan_world_ontology_publication(published=unknown, expected=expected, spec=spec)
+
+
+def test_legacy_family_instance_is_superseded_by_derived_generation() -> None:
+    mapping = _mapping()
+    expected = _revision(
+        revision_id=market_ontology_revision_id(mapping),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash=mapping.content_sha256,
+    )
+    published = _revision(
+        revision_id=MARKET_ONTOLOGY_REVISION,
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash="a" * 64,
+    )
+    plan = plan_world_ontology_publication(published=published, expected=expected, spec=_spec_for(expected))
+    assert plan.action == "supersede"
+    assert plan.published_revision_id == MARKET_ONTOLOGY_REVISION
+    assert plan.expected_revision_id == expected.revision_id
+    assert plan.published_revision_id != plan.expected_revision_id
+
+
+def test_new_mapping_hash_supersedes_prior_derived_generation() -> None:
+    first = _revision(
+        revision_id=market_ontology_revision_id_for_mapping_hash("a" * 64),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash="a" * 64,
+    )
+    second = _revision(
+        revision_id=market_ontology_revision_id_for_mapping_hash("b" * 64),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash="b" * 64,
+    )
+    plan = plan_world_ontology_publication(published=first, expected=second, spec=_spec_for(second))
+    assert plan.action == "supersede"
+    assert plan.published_revision_id == first.revision_id
+    assert plan.expected_revision_id == second.revision_id
+
+
+def test_same_instance_id_hash_drift_is_still_a_conflict() -> None:
+    mapping_hash = "b" * 64
+    expected = _revision(
+        revision_id=market_ontology_revision_id_for_mapping_hash(mapping_hash),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash=mapping_hash,
+    )
+    published = _revision(
+        revision_id=expected.revision_id,
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash="a" * 64,
+    )
+    with pytest.raises(ValueError, match="conflict"):
+        plan_world_ontology_publication(published=published, expected=expected, spec=_spec_for(expected))
+
+
+def test_require_aligned_revision_rejects_family_id_and_hash_mismatch() -> None:
+    mapping = _mapping()
+    family = _revision(
         revision_id=MARKET_ONTOLOGY_REVISION,
         mapping_id=WORLD_SCOPE_MAPPING_ID,
         mapping_hash=mapping.content_sha256,
     )
-    with pytest.raises(ValueError, match="mapping hash drifted"):
-        require_committed_ontology_revision(revision, mapping)
+    with pytest.raises(ValueError, match="mapping generation"):
+        require_mapping_aligned_ontology_revision(family, mapping)
+    derived = _revision(
+        revision_id=market_ontology_revision_id(mapping),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash=mapping.content_sha256,
+    )
+    assert require_mapping_aligned_ontology_revision(derived, mapping) is derived
+    with pytest.raises(FrozenInstanceError):
+        derived.revision_id = "other"  # type: ignore[misc]

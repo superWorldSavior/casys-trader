@@ -24,7 +24,7 @@ ou le portefeuille.
 | Couche | Owner | Rôle |
 |---|---|---|
 | `domain/world_episode` | contrat | `WorldEpisode`, observation, outcome, prediction |
-| `application/world_model` | cas d'usage | capture, labeler, encoding, baseline Markov, GRU, `WorldModelService` |
+| `application/world_model` | cas d'usage | capture, labeler, encoding, baseline Markov, GRU, `WorldModelService`, réconciliation de mapping |
 | `infrastructure/state_db` | persistance | journal append-only + query adapter lecture seule |
 | `reporting/read_models` | lecture | évaluation préquentielle, impact Trader honnête, status projector |
 | `runtime/world_model_runtime` | composition | adapter background fail-open et façade `WorldModelRuntime` |
@@ -35,9 +35,11 @@ Les voies de capacité live sont `market`, `context`, `macro_source` et
 `world_availability_receipt.v1`, `world_episode.v1`, …) sont des révisions
 de sérialisation, pas des générations de capacité.
 
-Cutover dur : arrêter le daemon, archiver hors ligne `state/world_model.db`
-et `state/world_macro/`, démarrer un store frais. Le runtime ne lit jamais
-un ledger héritage. Pas de contrat tombstone actif.
+Une génération de mapping se publie et se supersede dans le même ledger ;
+les cohortes pilotes encore `COLLECTING` de la même forme sont invalidées
+en append-only. Un cutover store (archive hors ligne) n'est pas requis
+pour un nouveau hash de mapping. Le runtime ne lit jamais un ledger
+héritage. Pas de contrat tombstone actif.
 
 `application/world_model` n'importe ni `runtime`, ni `infrastructure`. Ses
 modules canoniques n'importent pas `reporting` ; seuls les chemins historiques

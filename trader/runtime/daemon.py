@@ -2095,6 +2095,19 @@ def main(
     _world_macro_store: object | None = None
     _world_macro_mapping: object | None = None
     _world_model_horizons: tuple[str, ...] | None = None
+    # Resolve every currently selected instrument before any World consumer
+    # loads the mapping. This keeps macro, ontology, cohort, and graph on one
+    # generation during the whole boot. Failure remains shadow-local.
+    try:
+        from trader.runtime.world_model_runtime import compose_world_scope_mapping_reconcile
+
+        compose_world_scope_mapping_reconcile(ROOT / "config").reconcile(persist=True)
+    except Exception as exc:  # noqa: BLE001 - mapping reconcile cannot block market/Trader
+        log.warning(
+            "[world_scope_mapping] reconcile skipped: %s:%s",
+            type(exc).__name__,
+            exc,
+        )
     try:
         from trader.application.world_model.pilot_activation import load_world_shadow_pilot_config
 

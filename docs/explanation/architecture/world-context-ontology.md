@@ -32,15 +32,19 @@ portefeuille ni recommandation. Une ablation appariée ne mesure qu'un delta
 prédictif (log-loss, Brier), sans claim économique ni claim causal.
 
 La `venue` marché/contexte est un scope marché logique (`EU`, `TW`, `US`). Le mapping
-versionné `world_scope_mapping.v1` (hash gelé dans le YAML pilote) résout `(market_venue, instrument)`
-vers les scopes canoniques (`mic`, pays, région). Aucun fallback `TW -> XTAI`
-silencieux. Un scope `unmapped` ou `ambiguous` produit une missingness
+`world_scope_mapping.v1` est le **contrat de schéma** ; le `content_sha256` est
+la génération. Il résout `(market_venue, instrument)` vers les scopes
+canoniques (`mic`, pays, région). Aucun fallback `TW -> XTAI` ou `US -> XNYS`
+silencieux. Les cotations US distinguent XNYS et XNAS via les métadonnées
+provider. Un scope `unmapped` ou `ambiguous` produit une missingness
 canonique, pas une invention : snapshot graphe `world_graph_snapshot.v1` sans
 racine ni membres (`root_entity` JSON `null` est un élargissement
 compatible de la missingness, pas un bump de schéma). L'ontologie
-structurelle commitée est `market_ontology.v1` ; son hash dérivé doit
-égaliser `MARKET_ONTOLOGY_SHA256`. Un store qui a déjà publié une autre
-identité ou un autre hash est un conflit : cutover dur, pas de supersession.
+structurelle commitée reste la famille `market_ontology.v1`. L'instance
+est `market_ontology:v1:<mapping_sha256>`. Un store vide publie la
+génération courante. Un store déjà publié, même famille, hash différent,
+append une successeure et supersede l'active (PIT inchangé). Une autre
+identité de schéma (`market_ontology.v2`) est un conflit.
 
 ## Horloges point-in-time
 

@@ -13,6 +13,12 @@ L'univers live est composé en plusieurs étages. Le radar et le scout construis
 un **pool candidat** ; l'analyste fournit un **brief** ; l'agent univers compose
 la **hotlist** ; le code ajoute ensuite les **sticky hors quota**.
 
+Une écriture de `universe.yaml` (chemin venue ou legacy) déclenche en
+**fail-open** la réconciliation World scope : le trading n'attend pas le
+mapping ; un symbole sans MIC provider reste `unmapped`. Voir
+[world-model](world-model.md) et
+[opérer le World Model shadow](../how-to/operate-world-model-shadow.md).
+
 ## Flux et propriété
 
 ```text

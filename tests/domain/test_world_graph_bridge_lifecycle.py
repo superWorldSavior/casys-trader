@@ -10,9 +10,7 @@ from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_context import EntityRef
 from trader.domain.world_feature_contract import (
     MARKET_ONTOLOGY_REVISION,
-    MARKET_ONTOLOGY_SHA256,
     WORLD_SCOPE_MAPPING_ID,
-    WORLD_SCOPE_MAPPING_SHA256,
 )
 from trader.domain.world_graph import (
     MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
@@ -27,18 +25,18 @@ from trader.domain.world_graph import (
     StructuralWorldRelation,
 )
 from trader.domain.world_graph_bridge_lifecycle import (
-    COMMITTED_MACRO_GRAPH_BRIDGE_SPEC,
     MACRO_GRAPH_BRIDGE_LIFECYCLE_STATUSES,
     MacroGraphBridgeLifecycleDecision,
     UnknownMacroGraphBridgeDrift,
     classify_macro_graph_bridge,
     committed_macro_graph_bridge_spec,
+    derive_macro_graph_bridge_spec,
     require_committed_live_bridge_lineage,
+    same_bridge_schema_family,
 )
+from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
-    WORLD_MACRO_COLLECTION_PLAN_ID,
-    WORLD_MACRO_COLLECTION_PLAN_SHA256,
     MacroCollectionPlan,
     MacroCollectionTarget,
     MacroScope,
@@ -75,7 +73,13 @@ def _mapping(*, mapping_id: str = "world_scope_mapping.v1") -> WorldScopeMapping
     )
 
 
-def _revision(mapping: WorldScopeMapping, *, revision_id: str = "market_ontology.v1") -> WorldOntologyRevision:
+def _revision(mapping: WorldScopeMapping, *, revision_id: str | None = None) -> WorldOntologyRevision:
+    if revision_id is None:
+        revision_id = (
+            market_ontology_revision_id(mapping)
+            if mapping.mapping_id == WORLD_SCOPE_MAPPING_ID
+            else MARKET_ONTOLOGY_REVISION
+        )
     entity = WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330")
     venue = WorldEntityRef(kind="venue", entity_id="mic:XTAI")
     structural = StructuralWorldRelation(
@@ -305,16 +309,12 @@ def _replace_run_spec(spec: MacroGraphBridgeRunSpec, **changes: str) -> MacroGra
         return instance
 
 
-def _identity_fields() -> tuple[str, ...]:
-    return (
-        "scope_mapping_id",
-        "scope_mapping_hash",
-        "ontology_revision_id",
-        "ontology_revision_hash",
-        "collection_plan_id",
-        "collection_plan_hash",
-        "producer_version",
-    )
+def _generation_roll_fields() -> tuple[str, ...]:
+    return ("scope_mapping_hash", "ontology_revision_id", "ontology_revision_hash")
+
+
+def _unknown_drift_fields() -> tuple[str, ...]:
+    return ("scope_mapping_id", "collection_plan_id", "collection_plan_hash", "producer_version")
 
 
 def _flip_spec_field(spec: MacroGraphBridgeRunSpec, field: str) -> MacroGraphBridgeRunSpec:
@@ -329,44 +329,78 @@ def _flip_spec_field(spec: MacroGraphBridgeRunSpec, field: str) -> MacroGraphBri
     return _replace_run_spec(spec, **{field: flipped})
 
 
-def _drifted_committed_specs() -> list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]]:
-    current = committed_macro_graph_bridge_spec()
+def _flip_cases(fields: tuple[str, ...]) -> list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]]:
+    current = _spec()
     cases: list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]] = []
-    for field in _identity_fields():
+    for field in fields:
         cases.append(("durable", field, _flip_spec_field(current, field), current))
         cases.append(("desired", field, current, _flip_spec_field(current, field)))
     return cases
 
 
-def test_committed_spec_is_the_frozen_live_lineage() -> None:
-    assert inspect.signature(committed_macro_graph_bridge_spec).parameters == {}
-    spec = committed_macro_graph_bridge_spec()
-    assert spec == COMMITTED_MACRO_GRAPH_BRIDGE_SPEC
+def _drifted_committed_specs() -> list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]]:
+    return _flip_cases(_unknown_drift_fields())
+
+
+def _generation_roll_specs() -> list[tuple[str, str, MacroGraphBridgeRunSpec, MacroGraphBridgeRunSpec]]:
+    return _flip_cases(_generation_roll_fields())
+
+
+def test_bridge_spec_is_derived_from_loaded_mapping_and_ontology() -> None:
+    mapping = _mapping()
+    revision = _revision(mapping)
+    plan = _plan()
+    spec = derive_macro_graph_bridge_spec(mapping=mapping, ontology=revision, collection_plan=plan)
+    assert spec == committed_macro_graph_bridge_spec(mapping=mapping, ontology=revision, collection_plan=plan)
     assert spec.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
-    assert spec.scope_mapping_id == WORLD_SCOPE_MAPPING_ID == "world_scope_mapping.v1"
-    assert spec.scope_mapping_hash == WORLD_SCOPE_MAPPING_SHA256
-    assert spec.ontology_revision_id == MARKET_ONTOLOGY_REVISION == "market_ontology.v1"
-    assert spec.ontology_revision_hash == MARKET_ONTOLOGY_SHA256
-    assert spec.collection_plan_id == WORLD_MACRO_COLLECTION_PLAN_ID
-    assert spec.collection_plan_hash == WORLD_MACRO_COLLECTION_PLAN_SHA256
-    assert spec.collection_plan_id == f"macro_collection_plan:v1:{WORLD_MACRO_COLLECTION_PLAN_SHA256}"
+    assert spec.scope_mapping_id == WORLD_SCOPE_MAPPING_ID == mapping.mapping_id
+    assert spec.scope_mapping_hash == mapping.content_sha256
+    assert spec.ontology_revision_id == market_ontology_revision_id(mapping)
+    assert spec.ontology_revision_hash == revision.content_sha256
+    assert spec.collection_plan_id == plan.plan_id
+    assert spec.collection_plan_hash == plan.content_sha256
     assert spec.producer_version == MACRO_PRODUCER_VERSION == "world_macro_source.v1"
-    with pytest.raises(ValueError, match="drifted from committed"):
+    with pytest.raises(TypeError, match="derived from mapping"):
+        committed_macro_graph_bridge_spec()
+    with pytest.raises(ValueError, match="committed identity"):
         require_committed_live_bridge_lineage(
-            mapping=_mapping(),
-            ontology=_revision(_mapping()),
-            collection_plan=_plan(),
+            mapping=mapping,
+            ontology=revision,
+            collection_plan=plan,
         )
+    family = _revision(mapping, revision_id=MARKET_ONTOLOGY_REVISION)
+    with pytest.raises(ValueError, match="derived from the mapping generation"):
+        derive_macro_graph_bridge_spec(mapping=mapping, ontology=family, collection_plan=plan)
 
 
-def test_classify_does_not_admit_a_blocked_different_spec() -> None:
-    current = committed_macro_graph_bridge_spec()
-    other = _spec()
-    blocked = _activated(other).block(reason="config_drift", expected_version=1)
-    unknown = classify_macro_graph_bridge(blocked, desired=current)
+def test_blocked_mapping_generation_rolls_and_unknown_plan_stays_closed() -> None:
+    current = _spec()
+    rolled = _flip_spec_field(current, "scope_mapping_hash")
+    assert same_bridge_schema_family(current, rolled)
+    blocked = _activated(current).block(reason="config_drift", expected_version=1)
+    decision = classify_macro_graph_bridge(blocked, desired=rolled)
+    assert decision.status == "roll_generation"
+    other_plan = _spec(plan=_plan(digest="c" * 64))
+    unknown = classify_macro_graph_bridge(blocked, desired=other_plan)
     assert unknown.status == "unknown_drift"
-    active = classify_macro_graph_bridge(_activated(other), desired=current)
+    active = classify_macro_graph_bridge(_activated(current), desired=other_plan)
     assert active.status == "drifted_active"
+
+
+@pytest.mark.parametrize("side,field,durable,desired", _generation_roll_specs())
+def test_blocked_generation_hash_rolls(
+    side: str,
+    field: str,
+    durable: MacroGraphBridgeRunSpec,
+    desired: MacroGraphBridgeRunSpec,
+) -> None:
+    del side, field
+    blocked = _activated(durable).block(reason="config_drift", expected_version=1)
+    decision = classify_macro_graph_bridge(blocked, desired=desired)
+    assert decision.status == "roll_generation"
+    assert blocked.active_run is not None
+    assert blocked.active_run.status == "blocked"
+    assert not any(event.event_type == "macro_graph_bridge_run_handed_off" for event in blocked.events)
 
 
 @pytest.mark.parametrize("side,field,durable,desired", _drifted_committed_specs())

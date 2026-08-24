@@ -298,6 +298,7 @@ def run_cli(
     build_override_fn: Callable[[], Callable[[Any], dict]] | None = None,
     build_sticky_fn: Callable[[str | Path], Callable[[], set[str]]] | None = None,
     as_of: str | None = None,
+    universe_written_observer=None,
 ) -> dict:
     """Point d'entrée prod de la rotation : charge config, injecte les dépendances, exécute run().
 
@@ -311,6 +312,7 @@ def run_cli(
             LLM doit être activé.
         build_sticky_fn: factory concrète injectée depuis runtime pour lire l'état.
         as_of: date ISO 8601 (None → date.today()).
+        universe_written_observer: callback best-effort after a universe write.
 
     Returns:
         dict run() : {"final_hot_set", "default_hot_set", "alerts", "written"}.
@@ -365,4 +367,5 @@ def run_cli(
         delta=params.delta,
         dwell_days=params.dwell_days,
         emergency_floor=params.emergency_score,
+        universe_written_observer=universe_written_observer,
     )

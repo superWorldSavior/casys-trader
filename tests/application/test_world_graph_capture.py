@@ -291,7 +291,7 @@ def test_graph_capture_does_not_import_store_runtime_or_yaml_config() -> None:
     assert _import_violations(_GRAPH_CAPTURE) == []
     source = _GRAPH_CAPTURE.read_text(encoding="utf-8")
     assert "study_cohort_id" in source
-    assert WORLD_GRAPH_CONFIG_SHA256 == "68fedcb7fa12d6b2e7c2467b5e33e5211db60aafe880233a32c20606ba6d29df"
+    assert WORLD_GRAPH_CONFIG_SHA256 == "171bc168103dd322bdb37584b5f2131293afef531cbc6190a24a4eb6712b5260"
 
 
 def test_market_identity_stays_frozen_and_graph_companion_shares_the_market_slot() -> None:

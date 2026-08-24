@@ -428,7 +428,11 @@ def test_live_bridge_lineage_binds_derived_ontology_and_collection_plan() -> Non
         ontology=revision,
         collection_plan=plan,
     )
-    assert spec == committed_macro_graph_bridge_spec()
+    assert spec == committed_macro_graph_bridge_spec(
+        mapping=bundle.scope_mapping,
+        ontology=revision,
+        collection_plan=plan,
+    )
 
 
 def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
@@ -451,7 +455,7 @@ def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping
     for market_venue, instrument in historical:
         resolved = mapping.resolve(WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument))
         assert resolved.status == "resolved", (market_venue, instrument)
-    assert len(mapping.entries) == 36
+    assert len(mapping.entries) == 50
 
     collection_ids = {(scope.kind, scope.entity_id) for scope in collection_scopes(operator)}
     assert collection_ids == {
@@ -463,6 +467,7 @@ def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping
     venue_ids = {entity.entity_id for entity in entities if entity.kind == "venue"}
     assert "mic:XTAI" in venue_ids
     assert "mic:XNYS" in venue_ids
+    assert "mic:XNAS" in venue_ids
     assert ("venue", "mic:XTAI") not in collection_ids
     assert revision.scope_mapping_id == mapping.mapping_id
     assert revision.scope_mapping_hash == mapping.content_sha256
@@ -505,8 +510,9 @@ def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping
     bundle.runner.stop()
     assert captured
     assert captured[0] is bundle.mapping
-    assert len(captured[0].entries) == 36
+    assert len(captured[0].entries) == 50
     assert any(entry.venue.entity_id == "mic:XTAI" for entry in captured[0].entries)
+    assert any(entry.venue.entity_id == "mic:XNAS" for entry in captured[0].entries)
 
 
 def test_wire_does_not_fetch_until_trigger(tmp_path: Path) -> None:

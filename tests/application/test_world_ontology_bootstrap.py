@@ -10,7 +10,6 @@ from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.graph_ports import WorldOntologyReadinessPort
 from trader.application.world_model.graph_snapshot import expected_scope_heads
 from trader.application.world_model.ontology_bootstrap import (
-    MARKET_ONTOLOGY_REVISION_ID,
     WorldOntologyAttestation,
     WorldOntologyBootstrapService,
     derive_market_ontology,
@@ -65,6 +64,8 @@ def _import_violations(path: Path) -> list[str]:
 def test_ontology_bootstrap_is_application_owned_without_infrastructure() -> None:
     assert _BOOTSTRAP.exists()
     assert _import_violations(_BOOTSTRAP) == []
+    source = _BOOTSTRAP.read_text(encoding="utf-8")
+    assert "generation_pending" not in source
     assert callable(WorldOntologyBootstrapService.readiness)
     assert callable(WorldOntologyBootstrapService.ensure_published)
     assert callable(WorldOntologyAttestation.ensure_published)
@@ -86,13 +87,11 @@ def test_derive_market_ontology_uses_exact_mapping_heads_without_issuer_or_suffi
     assert any(item.endswith(":symbol:2301.TW") for item in instrument_ids)
     assert any(item.endswith(":symbol:GM") for item in instrument_ids)
     assert not any(item.endswith(":symbol:2301") for item in instrument_ids)
-    assert revision.revision_id == MARKET_ONTOLOGY_REVISION_ID
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id, require_committed_ontology_revision
+
+    assert revision.revision_id == market_ontology_revision_id(mapping)
     assert revision.scope_mapping_id == mapping.mapping_id
     assert revision.scope_mapping_hash == mapping.content_sha256
-    from trader.domain.world_feature_contract import MARKET_ONTOLOGY_SHA256
-    from trader.domain.world_ontology_lifecycle import require_committed_ontology_revision
-
-    assert revision.content_sha256 == MARKET_ONTOLOGY_SHA256
     require_committed_ontology_revision(revision, mapping)
     assert revision.identity_link_refs == ()
     second = derive_market_ontology(mapping)[2]
@@ -112,7 +111,9 @@ def test_committed_market_ontology_bootstrap_is_deterministic_and_idempotent_on_
         assert service.readiness(CUTOFF).status == "unpublished"
         ready = service.ensure_published(now=CUTOFF)
         assert ready.status == "ready"
-        assert ready.revision_id == MARKET_ONTOLOGY_REVISION_ID
+        from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
+
+        assert ready.revision_id == market_ontology_revision_id(mapping)
         entity_events = first.list_entity_events_available_through(CUTOFF)
         relation_events = first.list_structural_relation_events_available_through(CUTOFF)
         revision_events = first.list_revision_events_available_through(CUTOFF)
@@ -156,14 +157,12 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
     tmp_path: Path,
 ) -> None:
     from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
-    from trader.domain.world_feature_contract import (
-        MARKET_ONTOLOGY_REVISION,
-        WORLD_SCOPE_MAPPING_ID,
-        WORLD_SCOPE_MAPPING_SHA256,
-    )
+    from trader.domain.world_feature_contract import WORLD_SCOPE_MAPPING_ID
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 
     mapping = WorldScopeResolver.load(CONFIG_DIR).mapping
     path = tmp_path / "world_model.db"
+    revision_id = market_ontology_revision_id(mapping)
 
     def clock() -> datetime:
         return CUTOFF
@@ -173,9 +172,9 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
         attestation = WorldOntologyAttestation(store, mapping)
         assert (
             attestation.proven_heads(
-                revision_id=MARKET_ONTOLOGY_REVISION,
+                revision_id=revision_id,
                 scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-                scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+                scope_mapping_hash=mapping.content_sha256,
                 at=CUTOFF,
             )
             is None
@@ -184,13 +183,13 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
         ready = attestation.ensure_published(now=CUTOFF)
         assert ready.status == "ready"
         proof = attestation.proven_heads(
-            revision_id=MARKET_ONTOLOGY_REVISION,
+            revision_id=revision_id,
             scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-            scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+            scope_mapping_hash=mapping.content_sha256,
             at=CUTOFF,
         )
         assert isinstance(proof, WorldOntologyHeadsProof)
-        assert proof.revision_id == MARKET_ONTOLOGY_REVISION
+        assert proof.revision_id == revision_id
         assert proof.scope_mapping_id == mapping.mapping_id
         assert proof.scope_mapping_hash == mapping.content_sha256
         assert proof.content_sha256 == ready.ontology_hash
@@ -198,7 +197,7 @@ def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_h
             attestation.proven_heads(
                 revision_id="semantic_catalog.v1",
                 scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
-                scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+                scope_mapping_hash=mapping.content_sha256,
                 at=CUTOFF,
             )
             is None
@@ -234,10 +233,11 @@ def _entry(*, market_venue: str, instrument: str, venue: str, country: str, regi
     )
 
 
-def test_published_different_identity_is_drifted_and_never_superseded(tmp_path: Path) -> None:
+def test_same_db_publishes_generation_a_then_b_and_preserves_pit(tmp_path: Path) -> None:
     from trader.domain.world_graph import WorldOntologyRevisionPublished, WorldOntologyRevisionSuperseded
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 
-    other_mapping = WorldScopeMapping(
+    generation_a = WorldScopeMapping(
         mapping_id="world_scope_mapping.v1",
         entries=(
             _entry(
@@ -249,7 +249,7 @@ def test_published_different_identity_is_drifted_and_never_superseded(tmp_path: 
             ),
         ),
     )
-    live_mapping = WorldScopeMapping(
+    generation_b = WorldScopeMapping(
         mapping_id="world_scope_mapping.v1",
         entries=(
             _entry(
@@ -264,38 +264,54 @@ def test_published_different_identity_is_drifted_and_never_superseded(tmp_path: 
             ),
         ),
     )
-    _, _, other_revision = derive_market_ontology(other_mapping, revision_id="market_ontology.v1")
-    other_spec = WorldOntologyLifecycleSpec(
-        revision_id="market_ontology.v1",
-        mapping_id=other_mapping.mapping_id,
-        revision_hash=other_revision.content_sha256,
-        mapping_sha256=other_mapping.content_sha256,
-    )
+    times = {"now": CUTOFF}
+
+    def clock() -> datetime:
+        return times["now"]
+
     path = tmp_path / "world_model.db"
-    store = WorldGraphStore(path, clock=lambda: CUTOFF)
+    store = WorldGraphStore(path, clock=clock)
     try:
-        first = WorldOntologyBootstrapService(
-            store,
-            other_mapping,
-            revision_id="market_ontology.v1",
-            lifecycle_spec=other_spec,
-        ).ensure_published(now=CUTOFF)
+        first = WorldOntologyBootstrapService(store, generation_a).ensure_published(now=CUTOFF)
         assert first.status == "ready"
-        assert first.revision_id == "market_ontology.v1"
-        successor = WorldOntologyBootstrapService(store, live_mapping)
-        pending = successor.readiness(CUTOFF)
-        assert pending.status == "drifted"
-        with pytest.raises(ValueError, match="conflict"):
-            successor.ensure_published(now=CUTOFF)
-        events = [envelope.event for envelope in store.list_revision_events_available_through(CUTOFF)]
-        assert not any(isinstance(event, WorldOntologyRevisionSuperseded) for event in events)
-        assert isinstance(events[-1], WorldOntologyRevisionPublished)
-        assert events[-1].revision.revision_id == "market_ontology.v1"
+        assert first.revision_id == market_ontology_revision_id(generation_a)
+        view_a = WorldOntologyService(store).ontology.at_cutoff(CUTOFF)
+        assert view_a.published_revision is not None
+        assert view_a.published_revision.revision_id == first.revision_id
+        assert not any(entity.entity_id.endswith(":symbol:GM") for entity in view_a.published_revision.entities)
+
+        later = CUTOFF.replace(minute=1)
+        times["now"] = later
+        second = WorldOntologyBootstrapService(store, generation_b).ensure_published(now=later)
+        assert second.status == "ready"
+        assert second.revision_id == market_ontology_revision_id(generation_b)
+        assert second.revision_id != first.revision_id
+
+        old = WorldOntologyService(store).ontology.at_cutoff(CUTOFF)
+        assert old.published_revision is not None
+        assert old.published_revision.revision_id == first.revision_id
+        assert not any(entity.entity_id.endswith(":symbol:GM") for entity in old.published_revision.entities)
+
+        current = WorldOntologyService(store).ontology.at_cutoff(later)
+        assert current.published_revision is not None
+        assert current.published_revision.revision_id == second.revision_id
+        assert any(entity.entity_id.endswith(":symbol:GM") for entity in current.published_revision.entities)
+
+        events = [envelope.event for envelope in store.list_revision_events_available_through(later)]
+        assert any(isinstance(event, WorldOntologyRevisionPublished) for event in events)
+        assert any(isinstance(event, WorldOntologyRevisionSuperseded) for event in events)
+        before = len(store.list_revision_events_available_through(later))
+        idempotent = WorldOntologyBootstrapService(store, generation_b).ensure_published(now=later)
+        assert idempotent.status == "ready"
+        assert idempotent.revision_id == second.revision_id
+        assert len(store.list_revision_events_available_through(later)) == before
     finally:
         store.close()
 
 
-def test_same_revision_id_hash_drift_stays_a_conflict(tmp_path: Path) -> None:
+def test_same_revision_id_hash_drift_stays_a_conflict_and_next_generation_supersedes(
+    tmp_path: Path,
+) -> None:
     first_mapping = WorldScopeMapping(
         mapping_id="world_scope_mapping.v1",
         entries=(
@@ -338,12 +354,27 @@ def test_same_revision_id_hash_drift_stays_a_conflict(tmp_path: Path) -> None:
         assert drifted_service.readiness(CUTOFF).status == "drifted"
         with pytest.raises(ValueError, match="conflict"):
             drifted_service.ensure_published(now=CUTOFF)
+        next_revision = derive_market_ontology(drifted)[2]
+        next_spec = WorldOntologyLifecycleSpec(
+            revision_id=next_revision.revision_id,
+            mapping_id=drifted.mapping_id,
+            revision_hash=next_revision.content_sha256,
+            mapping_sha256=drifted.content_sha256,
+        )
+        pending = WorldOntologyBootstrapService(store, drifted, lifecycle_spec=next_spec)
+        ready = pending.readiness(CUTOFF)
+        assert ready.status == "unpublished"
+        assert ready.reason == "generation_supersede"
+        held = pending.ensure_published(now=CUTOFF)
+        assert held.status == "ready"
+        assert held.revision_id == next_revision.revision_id
+        assert held.ontology_hash == next_revision.content_sha256
     finally:
         store.close()
 
 
-def test_committed_bootstrap_binds_frozen_ontology_hash_and_refuses_synthetic_v2(tmp_path: Path) -> None:
-    from trader.domain.world_feature_contract import MARKET_ONTOLOGY_SHA256
+def test_committed_bootstrap_derives_generation_and_refuses_v2_contract(tmp_path: Path) -> None:
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 
     mapping = WorldScopeResolver.load(CONFIG_DIR).mapping
     path = tmp_path / "world_model.db"
@@ -351,15 +382,18 @@ def test_committed_bootstrap_binds_frozen_ontology_hash_and_refuses_synthetic_v2
     try:
         service = WorldOntologyBootstrapService(store, mapping)
         expected = service.expected_revision()
-        assert expected.content_sha256 == MARKET_ONTOLOGY_SHA256
+        assert expected.revision_id == market_ontology_revision_id(mapping)
+        assert expected.revision_id.startswith("market_ontology:v1:")
+        assert expected.scope_mapping_hash == mapping.content_sha256
         ready = service.ensure_published(now=CUTOFF)
         assert ready.status == "ready"
-        assert ready.ontology_hash == MARKET_ONTOLOGY_SHA256
+        assert ready.ontology_hash == expected.content_sha256
+        assert ready.revision_id == expected.revision_id
     finally:
         store.close()
 
     synthetic = WorldScopeMapping(
-        mapping_id="world_scope_mapping.v1",
+        mapping_id="world_scope_mapping.v2",
         entries=(
             _entry(
                 market_venue="TW",
@@ -370,12 +404,14 @@ def test_committed_bootstrap_binds_frozen_ontology_hash_and_refuses_synthetic_v2
             ),
         ),
     )
+    with pytest.raises(ValueError, match="mapping_id"):
+        from trader.domain.world_ontology_lifecycle import market_ontology_revision_id as revision_id_for
+
+        revision_id_for(synthetic)
     drifted_path = tmp_path / "drifted.db"
     drifted_store = WorldGraphStore(drifted_path, clock=lambda: CUTOFF)
     try:
-        drifted = WorldOntologyBootstrapService(drifted_store, synthetic)
-        assert drifted.readiness(CUTOFF).status == "drifted"
-        with pytest.raises(ValueError, match="conflict"):
-            drifted.ensure_published(now=CUTOFF)
+        with pytest.raises(ValueError, match="mapping_id"):
+            WorldOntologyBootstrapService(drifted_store, synthetic).ensure_published(now=CUTOFF)
     finally:
         drifted_store.close()
