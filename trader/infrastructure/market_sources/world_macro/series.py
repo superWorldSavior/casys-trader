@@ -334,6 +334,22 @@ def urllib_macro_transport(url: str, *, timeout_s: float, headers: dict[str, str
     return UrllibMacroTransport().get(url, timeout_s=timeout_s, headers=headers)
 
 
+def source_deadline_s(budget: Any, *, retry_max: int, honor_retry_after: bool) -> float:
+    """End-to-end bound covering limiter wait, each attempt, and one bounded retry wait.
+
+    Per-attempt I/O still uses ``budget.timeout_s``. Retry-After is honoured only up
+    to that same per-attempt timeout, so the extra wait slot is ``timeout_s`` when
+    ``honor_retry_after`` is set, otherwise the configured min interval.
+    """
+
+    timeout_s = float(budget.timeout_s)
+    min_interval_s = float(budget.min_interval_s)
+    retries = max(0, int(retry_max))
+    attempts = 1 + retries
+    retry_wait_s = timeout_s if honor_retry_after else min_interval_s
+    return min_interval_s + attempts * timeout_s + retries * retry_wait_s
+
+
 class ProviderRateLimiter:
     """Single-flight, coalescent GET with min-interval, Retry-After, and one retry max."""
 
@@ -347,11 +363,13 @@ class ProviderRateLimiter:
         transport: MacroHttpTransport,
         clock: Callable[[], datetime],
         sleeper: Callable[[float], None],
+        deadline_s: float | None = None,
     ) -> None:
         self._min_interval_s = min_interval_s
         self._retry_max = retry_max
         self._honor_retry_after = honor_retry_after
         self._timeout_s = timeout_s
+        self._deadline_s = None if deadline_s is None else float(deadline_s)
         self._transport = transport
         self._clock = clock
         self._sleeper = sleeper
@@ -359,6 +377,11 @@ class ProviderRateLimiter:
         self._map_lock = threading.Lock()
         self._inflight: dict[str, Future[MacroHttpResponse]] = {}
         self._last_request_at: datetime | None = None
+
+    def _waiter_timeout_s(self) -> float:
+        if self._deadline_s is not None and self._deadline_s > 0:
+            return self._deadline_s
+        return self._timeout_s
 
     def get(self, url: str, *, headers: dict[str, str] | None = None) -> MacroHttpResponse:
         request_headers = headers or {}
@@ -371,7 +394,7 @@ class ProviderRateLimiter:
                 owner = True
         if not owner:
             try:
-                return future.result(timeout=self._timeout_s)
+                return future.result(timeout=self._waiter_timeout_s())
             except TimeoutError as exc:
                 raise MacroSourceFetchError("timeout", "timeout") from exc
         try:
@@ -454,7 +477,10 @@ def _parse_dbnomics(body: str) -> tuple[str, float, datetime | None] | None:
 def _series_url(entry: MacroSourceRegistryEntry, budget: ProviderBudget) -> str:
     if entry.provider_id == "dbnomics":
         observations = 1 if budget.observations is None else budget.observations
-        return f"{budget.base.rstrip('/')}/series/{entry.provider_entity_id}?observations={observations}"
+        return (
+            f"{budget.base.rstrip('/')}/series/{entry.provider_entity_id}"
+            f"?observations={observations}&metadata=0"
+        )
     range_value = budget.range or "5d"
     interval = budget.interval or "1d"
     return f"{budget.base}{entry.provider_entity_id}?range={range_value}&interval={interval}"
@@ -595,6 +621,11 @@ def build_macro_source_ports(
             retry_max=bundle.budgets.retry_max,
             honor_retry_after=bundle.budgets.honor_retry_after,
             timeout_s=budget.timeout_s,
+            deadline_s=source_deadline_s(
+                budget,
+                retry_max=bundle.budgets.retry_max,
+                honor_retry_after=bundle.budgets.honor_retry_after,
+            ),
             transport=transport,
             clock=resolved_clock,
             sleeper=resolved_sleeper,
@@ -628,5 +659,6 @@ __all__ = [
     "YahooCommodityAdapter",
     "build_macro_source_ports",
     "load_world_macro_operator_configs",
+    "source_deadline_s",
     "urllib_macro_transport",
 ]

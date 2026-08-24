@@ -89,8 +89,27 @@ def _fact_boundary_failure(
     return None
 
 
+_TYPED_SOURCE_FAILURE_REASONS = frozenset(
+    {
+        "http_429",
+        "invalid_payload",
+        "missing",
+        "persistence_conflict",
+        "provenance_mismatch",
+        "scope_mismatch",
+        "timeout",
+        "unavailable",
+    }
+)
+
+
 def _source_failure_reason(exc: BaseException) -> str:
+    typed = getattr(exc, "reason", None)
+    if isinstance(typed, str) and typed in _TYPED_SOURCE_FAILURE_REASONS:
+        return typed
     text = f"{type(exc).__name__} {exc}".lower()
+    if "conflict" in text:
+        return "persistence_conflict"
     if "429" in text or "too many" in text:
         return "http_429"
     if "timeout" in text:

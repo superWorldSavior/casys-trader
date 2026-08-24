@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -267,7 +268,29 @@ def test_dbnomics_adapter_emits_typed_fact_for_canonical_scope_not_run_scope() -
     assert fact.valid_until == published + timedelta(hours=72)
     assert fact.valid_until != OBSERVED_AT + timedelta(hours=72)
     assert "XTAI" not in json.dumps(fact.to_dict())
-    assert transport.calls == ["https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1"]
+    assert transport.calls == [
+        "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D?observations=1&metadata=0"
+    ]
+
+
+def test_dbnomics_urls_add_metadata_zero_and_keep_period_value_indexed_at() -> None:
+    bundle = _bundle()
+    db_entries = [entry for entry in bundle.registry.entries if entry.provider_id == "dbnomics"]
+    assert db_entries
+    indexed_at = "2026-08-23T12:30:00Z"
+    transport = ScriptedTransport(
+        [_dbnomics_body("2026-08-22", 4.33, indexed_at=indexed_at) for _ in db_entries]
+    )
+    ports = _ports(transport)
+    for entry in db_entries:
+        facts = ports[entry.source_id].read_facts(RUN_SCOPE, OBSERVED_AT)
+        assert facts[0].period == "2026-08-22"
+        assert facts[0].value.number == 4.33
+        assert facts[0].published_at == datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    assert transport.calls
+    assert all("metadata=0" in url for url in transport.calls)
+    assert all("observations=" in url for url in transport.calls)
+    assert all("metadata=0" not in url.split("?")[0] for url in transport.calls)
 
 
 def test_dbnomics_monthly_cpi_uses_monthly_ttl_and_index_unit() -> None:
@@ -501,6 +524,177 @@ def test_timeout_retries_once_then_missing() -> None:
     with pytest.raises((TimeoutError, MacroSourceFetchError), match="timeout"):
         _ports(transport)["gold_usd"].read_facts(RUN_SCOPE, OBSERVED_AT)
     assert len(transport.calls) == 2
+
+
+def test_source_deadline_covers_min_interval_attempts_and_bounded_retry_wait() -> None:
+    from trader.infrastructure.market_sources.world_macro.series import source_deadline_s
+
+    bundle = _bundle()
+    db = bundle.budgets.providers["dbnomics"]
+    yahoo = bundle.budgets.providers["yahoo_finance"]
+    db_deadline = source_deadline_s(
+        db,
+        retry_max=bundle.budgets.retry_max,
+        honor_retry_after=bundle.budgets.honor_retry_after,
+    )
+    yahoo_deadline = source_deadline_s(
+        yahoo,
+        retry_max=bundle.budgets.retry_max,
+        honor_retry_after=bundle.budgets.honor_retry_after,
+    )
+    assert bundle.budgets.retry_max == 1
+    assert bundle.budgets.honor_retry_after is True
+    assert db_deadline == db.min_interval_s + 2 * db.timeout_s + db.timeout_s
+    assert yahoo_deadline == yahoo.min_interval_s + 2 * yahoo.timeout_s + yahoo.timeout_s
+    assert db_deadline == 17.0
+    assert yahoo_deadline == 29.0
+    assert db_deadline > db.timeout_s
+    assert yahoo_deadline > yahoo.timeout_s
+
+
+def _deadline_limiter(*, transport, timeout_s: float, min_interval_s: float, retry_max: int = 1):
+    from types import SimpleNamespace
+
+    from trader.infrastructure.market_sources.world_macro.series import (
+        ProviderRateLimiter,
+        source_deadline_s,
+    )
+
+    budget = SimpleNamespace(timeout_s=timeout_s, min_interval_s=min_interval_s)
+    deadline_s = source_deadline_s(budget, retry_max=retry_max, honor_retry_after=True)
+    limiter = ProviderRateLimiter(
+        min_interval_s=min_interval_s,
+        retry_max=retry_max,
+        honor_retry_after=True,
+        timeout_s=timeout_s,
+        deadline_s=deadline_s,
+        transport=transport,
+        clock=lambda: OBSERVED_AT,
+        sleeper=time.sleep,
+    )
+    return limiter, deadline_s
+
+
+def test_limiter_wait_plus_slow_valid_response_fits_derived_deadline() -> None:
+    from trader.application.world_model.source_deadline import BoundedSourceDeadline
+    from trader.infrastructure.market_sources.world_macro.series import MacroHttpResponse
+
+    timeout_s = 0.18
+    min_interval_s = 0.12
+    transport_timeouts: list[float] = []
+
+    class SlowOk:
+        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> MacroHttpResponse:
+            del url, headers
+            transport_timeouts.append(timeout_s)
+            time.sleep(0.14)
+            return MacroHttpResponse(status=200, body=_dbnomics_body("2026-08-22", 4.33), headers={})
+
+    limiter, deadline_s = _deadline_limiter(
+        transport=SlowOk(),
+        timeout_s=timeout_s,
+        min_interval_s=min_interval_s,
+    )
+    assert deadline_s > timeout_s
+    assert limiter.get("https://example.test/prime").status == 200
+    started = time.monotonic()
+    response = BoundedSourceDeadline(max_workers=1).run(
+        lambda: limiter.get("https://example.test/slow"),
+        timeout_s=deadline_s,
+    )
+    elapsed = time.monotonic() - started
+    assert response.status == 200
+    assert elapsed > timeout_s
+    assert elapsed < deadline_s
+    assert transport_timeouts == [timeout_s, timeout_s]
+
+
+def test_limiter_timeout_retries_within_derived_deadline() -> None:
+    from trader.application.world_model.source_deadline import BoundedSourceDeadline
+    from trader.infrastructure.market_sources.world_macro.series import MacroSourceFetchError
+
+    timeout_s = 0.16
+    min_interval_s = 0.08
+    calls: list[str] = []
+
+    class SlowTimeout:
+        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> object:
+            del timeout_s, headers
+            calls.append(url)
+            time.sleep(0.10)
+            raise TimeoutError("timed out")
+
+    limiter, deadline_s = _deadline_limiter(
+        transport=SlowTimeout(),
+        timeout_s=timeout_s,
+        min_interval_s=min_interval_s,
+    )
+    with pytest.raises(MacroSourceFetchError) as caught:
+        BoundedSourceDeadline(max_workers=1).run(
+            lambda: limiter.get("https://example.test/timeout"),
+            timeout_s=deadline_s,
+        )
+    assert caught.value.reason == "timeout"
+    assert calls == ["https://example.test/timeout", "https://example.test/timeout"]
+
+
+def test_limiter_429_retry_fits_derived_deadline() -> None:
+    from trader.application.world_model.source_deadline import BoundedSourceDeadline
+    from trader.infrastructure.market_sources.world_macro.series import (
+        MacroHttpResponse,
+        MacroSourceFetchError,
+    )
+
+    timeout_s = 0.16
+    min_interval_s = 0.08
+    script = [
+        MacroHttpResponse(status=429, body="rate limited", headers={"Retry-After": "1"}),
+        MacroHttpResponse(status=200, body=_dbnomics_body("2026-08-22", 4.33), headers={}),
+    ]
+
+    class Scripted:
+        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> MacroHttpResponse:
+            del url, timeout_s, headers
+            item = script.pop(0)
+            return item
+
+    limiter, deadline_s = _deadline_limiter(
+        transport=Scripted(),
+        timeout_s=timeout_s,
+        min_interval_s=min_interval_s,
+    )
+    started = time.monotonic()
+    response = BoundedSourceDeadline(max_workers=1).run(
+        lambda: limiter.get("https://example.test/retry"),
+        timeout_s=deadline_s,
+    )
+    elapsed = time.monotonic() - started
+    assert response.status == 200
+    assert elapsed > timeout_s
+    assert elapsed < deadline_s
+    assert script == []
+
+    exhausted = [
+        MacroHttpResponse(status=429, body="rate limited", headers={"Retry-After": "1"}),
+        MacroHttpResponse(status=429, body="still limited", headers={"Retry-After": "1"}),
+    ]
+
+    class Exhausted:
+        def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> MacroHttpResponse:
+            del url, timeout_s, headers
+            return exhausted.pop(0)
+
+    limiter_429, deadline_429 = _deadline_limiter(
+        transport=Exhausted(),
+        timeout_s=timeout_s,
+        min_interval_s=min_interval_s,
+    )
+    with pytest.raises(MacroSourceFetchError) as caught:
+        BoundedSourceDeadline(max_workers=1).run(
+            lambda: limiter_429.get("https://example.test/exhausted"),
+            timeout_s=deadline_429,
+        )
+    assert caught.value.reason == "http_429"
 
 
 def test_provider_requests_are_single_flight_and_coalesced() -> None:

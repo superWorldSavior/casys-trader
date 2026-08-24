@@ -320,6 +320,7 @@ def wire_world_macro_runtime(
         UrllibMacroTransport,
         build_macro_source_ports,
         load_world_macro_operator_configs,
+        source_deadline_s,
     )
     from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
 
@@ -335,7 +336,11 @@ def wire_world_macro_runtime(
     )
     store = WorldMacroStore(Path(state_dir) / "world_macro", clock=resolved_clock)
     source_timeouts = {
-        entry.source_id: operator.budgets.providers[entry.provider_id].timeout_s
+        entry.source_id: source_deadline_s(
+            operator.budgets.providers[entry.provider_id],
+            retry_max=operator.budgets.retry_max,
+            honor_retry_after=operator.budgets.honor_retry_after,
+        )
         for entry in operator.registry.entries
         if entry.provider_id in operator.budgets.providers
     }
