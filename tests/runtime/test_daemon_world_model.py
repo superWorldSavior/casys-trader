@@ -614,6 +614,7 @@ def test_macro_producer_boot_is_independent_of_v2_and_does_not_start_cohort() ->
     assert v2_flag < shadow_if
     boot = source[macro_flag:shadow_if]
     assert "wire_world_macro_runtime(" in boot
+    assert "graph_v3_enabled=_world_model_graph_v3" in source
     assert ".trigger(" not in boot
     assert "RegisterWorldCohort" not in boot
     assert "ArmWorldCohort" not in boot

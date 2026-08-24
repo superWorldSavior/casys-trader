@@ -15,6 +15,7 @@ from trader.application.world_model.ontology_service import (
     AssertWorldEntity,
     LinkWorldEntityIdentity,
     PublishWorldOntologyRevision,
+    SupersedeWorldOntologyRevision,
     WorldOntologyService,
 )
 from trader.domain.world_availability import (
@@ -773,3 +774,65 @@ def test_snapshot_ledger_append_is_explicit_and_idempotent_by_identity() -> None
     assert loaded == bundle.snapshot
     replayed = json.loads(json.dumps(loaded.to_dict()))
     assert "networkx" not in json.dumps(replayed).lower()
+
+
+def test_snapshot_membership_is_bound_to_published_revision_refs() -> None:
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    revision = _seed_rfc_graph(ledger, mapping)
+    extra_family = WorldEntityRef(kind="family", entity_id="taxonomy:v1:later-family")
+    extra = _structural(
+        kind="MEMBER_OF_FAMILY",
+        source=_instrument(),
+        target=extra_family,
+        source_refs=("taxonomy:v1:later-family",),
+    )
+    ontology = WorldOntologyService(ledger)
+    ontology.assert_entity(AssertWorldEntity(entity=extra_family, source_refs=("taxonomy:v1:later-family",), effective_from=T0))
+    ontology.assert_structural_relation(AssertStructuralWorldRelation(relation=extra))
+    bundle = _service(ledger).build(_request(mapping))
+    extra_ref = WorldStructuralRelationRef.from_relation(extra)
+    assert bundle.snapshot.ontology_revision == revision.revision_id
+    assert bundle.snapshot.ontology_hash == revision.content_sha256
+    assert extra_ref not in bundle.snapshot.structural_relation_refs
+    assert extra not in bundle.structural_relations
+    assert extra_family.node_id not in {item.entity.node_id for item in bundle.snapshot.entity_revision_refs}
+
+
+def test_later_structural_relation_is_visible_only_after_superseding_revision() -> None:
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    _seed_rfc_graph(ledger, mapping)
+    extra_family = WorldEntityRef(kind="family", entity_id="taxonomy:v1:later-family")
+    extra = _structural(
+        kind="MEMBER_OF_FAMILY",
+        source=_instrument(),
+        target=extra_family,
+        source_refs=("taxonomy:v1:later-family",),
+    )
+    ontology = WorldOntologyService(ledger)
+    ontology.assert_entity(AssertWorldEntity(entity=extra_family, source_refs=("taxonomy:v1:later-family",), effective_from=T0))
+    ontology.assert_structural_relation(AssertStructuralWorldRelation(relation=extra))
+    before = _service(ledger).build(_request(mapping))
+    extra_ref = WorldStructuralRelationRef.from_relation(extra)
+    assert extra_ref not in before.snapshot.structural_relation_refs
+
+    successor = WorldOntologyRevision(
+        revision_id="market_ontology.v2",
+        entities=_rfc_entities() + (extra_family,),
+        structural_relation_refs=tuple(
+            WorldStructuralRelationRef.from_relation(item) for item in _rfc_structural() + (extra,)
+        ),
+        identity_link_refs=(_link().as_ref(),),
+        scope_mapping_id=mapping.mapping_id,
+        scope_mapping_hash=mapping.content_sha256,
+    )
+    ontology.supersede_revision(
+        SupersedeWorldOntologyRevision(revision_id="market_ontology.v1", successor_revision_id=successor.revision_id)
+    )
+    ontology.publish_revision(PublishWorldOntologyRevision(revision=successor))
+    after = _service(ledger).build(_request(mapping))
+    assert after.snapshot.ontology_revision == "market_ontology.v2"
+    assert after.snapshot.ontology_hash == successor.content_sha256
+    assert extra_ref in after.snapshot.structural_relation_refs
+    assert extra in after.structural_relations

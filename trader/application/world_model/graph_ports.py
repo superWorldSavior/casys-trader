@@ -199,6 +199,33 @@ class MacroGraphBridgeLedger(Protocol):
     def load(self, bridge_key: MacroGraphBridgeKey) -> MacroGraphBridgeRegistry: ...
 
 
+@dataclass(frozen=True)
+class WorldOntologyReadiness:
+    """Cohort-facing snapshot of committed ontology/mapping heads. No infrastructure types."""
+
+    status: str
+    scope_mapping_id: str
+    scope_mapping_hash: str
+    revision_id: str | None = None
+    ontology_hash: str | None = None
+    entity_count: int = 0
+    structural_relation_count: int = 0
+    identity_link_count: int = 0
+    reason: str = ""
+
+
+class WorldOntologyReadinessPort(Protocol):
+    """Application port for cohort activation. Adapters must not leak stores into domain."""
+
+    def readiness(self, cutoff_at: datetime | str | None = None) -> WorldOntologyReadiness: ...
+
+
+class WorldOntologyBootstrapPort(Protocol):
+    def ensure_published(self, *, now: datetime | str | None = None) -> WorldOntologyReadiness: ...
+
+    def readiness(self, cutoff_at: datetime | str | None = None) -> WorldOntologyReadiness: ...
+
+
 __all__ = [
     "BridgeRequestId",
     "MacroGraphBridgeEventId",
@@ -216,6 +243,9 @@ __all__ = [
     "WorldGraphSnapshotId",
     "WorldGraphSnapshotLedger",
     "WorldGraphTraversalPort",
+    "WorldOntologyBootstrapPort",
+    "WorldOntologyReadiness",
+    "WorldOntologyReadinessPort",
     "WorldOntologyRevisionEventEnvelope",
     "WorldOntologyRevisionEventId",
     "WorldRelationEventEnvelope",

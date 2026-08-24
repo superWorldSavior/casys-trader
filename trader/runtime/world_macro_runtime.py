@@ -292,14 +292,19 @@ def wire_world_macro_runtime(
     transport: object | None = None,
     clock: Callable[[], datetime] | None = None,
     sleeper: Callable[[float], None] | None = None,
+    graph_v3_enabled: bool = False,
 ) -> WorldMacroRuntimeBundle:
-    """Build store, ports, pipeline, and coalescing worker. No fetch at wire time."""
+    """Build store, ports, pipeline, and coalescing worker. No fetch at wire time.
+
+    ``graph_v3_enabled`` is the already-resolved activation bit (env OR pilot YAML).
+    This composer does not reread the process environment.
+    """
 
     from trader.application.world_model.macro_pipeline import MacroWorldPipeline
     from trader.infrastructure.market_sources.world_macro.series import (
+        UrllibMacroTransport,
         build_macro_source_ports,
         load_world_macro_operator_configs,
-        urllib_macro_transport,
     )
     from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
 
@@ -309,7 +314,7 @@ def wire_world_macro_runtime(
     resolved_clock = clock or (lambda: datetime.now(timezone.utc))
     ports = build_macro_source_ports(
         operator,
-        transport=transport or urllib_macro_transport,
+        transport=transport or UrllibMacroTransport(),
         clock=resolved_clock,
         sleeper=sleeper,
     )
@@ -321,7 +326,7 @@ def wire_world_macro_runtime(
         policy=operator.policy,
     )
     scopes = collection_scopes(operator)
-    graph_enabled = graph_v3_enabled()
+    graph_enabled = bool(graph_v3_enabled)
     graph_store = None
     if graph_enabled:
         from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
@@ -378,12 +383,14 @@ def _reconcile_macro_graph_bridge(
     report: dict[str, object],
 ) -> None:
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
+    from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
     from trader.domain.world_episode import canonical_sha256
-    from trader.domain.world_graph import WorldOntologyRevision, WorldOntologyRevisionPublished
+    from trader.domain.world_graph import WorldOntologyRevisionPublished
     from trader.domain.world_scope import WorldScopeMapping
 
     if not isinstance(mapping, WorldScopeMapping):
         raise TypeError("graph bridge requires WorldScopeMapping")
+    WorldOntologyBootstrapService(graph_store, mapping).ensure_published(now=now)
     revision = None
     list_revisions = getattr(graph_store, "list_revision_events_available_through", None)
     if callable(list_revisions):
@@ -392,14 +399,7 @@ def _reconcile_macro_graph_bridge(
             if isinstance(event, WorldOntologyRevisionPublished):
                 revision = event.revision
     if revision is None:
-        revision = WorldOntologyRevision(
-            revision_id="market_ontology.v1",
-            entities=(),
-            structural_relation_refs=(),
-            identity_link_refs=(),
-            scope_mapping_id=mapping.mapping_id,
-            scope_mapping_hash=mapping.content_sha256,
-        )
+        raise ValueError("graph bridge requires an attested market_ontology.v1 revision")
     use_case = RegisterMacroObservationKnowledge(
         scan=macro_store,
         graph=graph_store,

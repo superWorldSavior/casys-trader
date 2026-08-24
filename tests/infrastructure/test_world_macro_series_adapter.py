@@ -328,6 +328,40 @@ def test_same_period_value_and_unit_is_replayed_not_a_new_vintage() -> None:
     assert second[0].supersedes_fact_version_id is None
 
 
+def test_urllib_macro_transport_get_uses_mocked_urlopen(monkeypatch: pytest.MonkeyPatch) -> None:
+    from trader.infrastructure.market_sources.world_macro.series import UrllibMacroTransport
+
+    class _Response:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+    seen: dict[str, object] = {}
+
+    def fake_urlopen(req: object, timeout: object = None) -> object:
+        seen["url"] = getattr(req, "full_url", None)
+        seen["timeout"] = timeout
+        seen["headers"] = dict(getattr(req, "headers", {}))
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    transport = UrllibMacroTransport()
+    response = transport.get("https://example.test/series", timeout_s=9.0, headers={"User-Agent": "casys-test"})
+    assert response.status == 200
+    assert response.body == b'{"ok": true}'
+    assert seen["url"] == "https://example.test/series"
+    assert seen["timeout"] == 9.0
+    assert "casys-test" in str(seen["headers"])
+
+
 def test_empty_or_unparsable_payload_is_explicit_missing_not_a_zero() -> None:
     from trader.infrastructure.market_sources.world_macro.series import MacroSourceFetchError
 

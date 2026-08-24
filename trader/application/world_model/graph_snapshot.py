@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any
@@ -32,6 +32,7 @@ from trader.domain.world_graph import (
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
     StructuralWorldRelation,
+    WorldEntityIdentityLink,
     WorldEntityRef,
     WorldGraphSnapshot,
     WorldKnowledgeRelationRef,
@@ -131,6 +132,42 @@ def _assert_scope_heads(
         allowed = expected_targets.get((kind, source))
         if allowed is not None and target not in allowed:
             raise ValueError("published revision topology contradicts WorldScopeMapping heads")
+
+
+def _revision_bound_view(
+    view: WorldOntologyRevisionView,
+    published: WorldOntologyRevision,
+) -> WorldOntologyRevisionView:
+    """A published hash may only expose the entity/structural/identity heads it froze."""
+
+    allowed_entities = {entity.node_id for entity in published.entities}
+    allowed_structural = frozenset(published.structural_relation_refs)
+    allowed_identity = frozenset(published.identity_link_refs)
+    entity_revision_refs = tuple(
+        item for item in view.entity_revision_refs if item.entity.node_id in allowed_entities
+    )
+    entities = tuple(item.entity for item in entity_revision_refs)
+    if not entities:
+        entities = tuple(entity for entity in published.entities)
+    structural_relations = tuple(
+        relation
+        for relation in view.structural_relations
+        if WorldStructuralRelationRef.from_relation(relation) in allowed_structural
+    )
+    identity_links = tuple(
+        link for link in view.identity_links if isinstance(link, WorldEntityIdentityLink) and link.as_ref() in allowed_identity
+    )
+    return replace(
+        view,
+        entities=entities,
+        entity_revision_refs=entity_revision_refs,
+        structural_relations=structural_relations,
+        identity_links=identity_links,
+        published_revision=published,
+        entity_heads_hash=published.entity_heads_hash or view.entity_heads_hash,
+        structural_heads_hash=published.structural_heads_hash or view.structural_heads_hash,
+        identity_map_hash=published.identity_map_hash or view.identity_map_hash,
+    )
 
 
 def _require_mapping_alignment(request: WorldGraphSnapshotRequest, published: WorldOntologyRevision | None) -> None:
@@ -260,6 +297,7 @@ class WorldGraphSnapshotService:
                 missingness={"ontology": "unpublished"},
                 status="missing",
             )
+        view = _revision_bound_view(view, published)
         _assert_scope_heads(expected_scope_heads(resolved.scope_mapping), _actual_scope_heads(view.structural_relations))
         if resolved.scope_resolution.status in {"unmapped", "ambiguous"}:
             return _missing_snapshot(

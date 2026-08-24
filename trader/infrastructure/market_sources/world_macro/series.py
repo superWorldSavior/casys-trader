@@ -65,6 +65,32 @@ class MacroHttpTransport(Protocol):
     def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> MacroHttpResponse: ...
 
 
+class UrllibMacroTransport:
+    """Object-shaped stdlib adapter. Production default for MacroHttpTransport."""
+
+    def get(self, url: str, *, timeout_s: float, headers: dict[str, str]) -> MacroHttpResponse:
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
+                return MacroHttpResponse(
+                    status=int(response.status),
+                    body=response.read(),
+                    headers={str(key): str(value) for key, value in response.headers.items()},
+                )
+        except urllib.error.HTTPError as exc:
+            header_map = {}
+            if exc.headers is not None:
+                header_map = {str(key): str(value) for key, value in exc.headers.items()}
+            return MacroHttpResponse(status=int(exc.code), body=exc.read(), headers=header_map)
+        except TimeoutError:
+            raise
+        except urllib.error.URLError as exc:
+            reason = exc.reason
+            if isinstance(reason, TimeoutError) or "timed out" in str(exc).lower():
+                raise TimeoutError("timeout") from exc
+            raise
+
+
 @dataclass(frozen=True)
 class ProviderBudget:
     provider_id: str
@@ -299,26 +325,9 @@ def _retry_after_seconds(response: MacroHttpResponse, fallback: float) -> float:
 
 
 def urllib_macro_transport(url: str, *, timeout_s: float, headers: dict[str, str]) -> MacroHttpResponse:
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
-            return MacroHttpResponse(
-                status=int(response.status),
-                body=response.read(),
-                headers={str(key): str(value) for key, value in response.headers.items()},
-            )
-    except urllib.error.HTTPError as exc:
-        header_map = {}
-        if exc.headers is not None:
-            header_map = {str(key): str(value) for key, value in exc.headers.items()}
-        return MacroHttpResponse(status=int(exc.code), body=exc.read(), headers=header_map)
-    except TimeoutError:
-        raise
-    except urllib.error.URLError as exc:
-        reason = exc.reason
-        if isinstance(reason, TimeoutError) or "timed out" in str(exc).lower():
-            raise TimeoutError("timeout") from exc
-        raise
+    """Compatibility wrapper. Production wiring uses UrllibMacroTransport.get()."""
+
+    return UrllibMacroTransport().get(url, timeout_s=timeout_s, headers=headers)
 
 
 class ProviderRateLimiter:
@@ -607,6 +616,7 @@ __all__ = [
     "MacroTtlPolicy",
     "ProviderBudget",
     "ProviderRateLimiter",
+    "UrllibMacroTransport",
     "WorldMacroOperatorBundle",
     "YahooCommodityAdapter",
     "build_macro_source_ports",

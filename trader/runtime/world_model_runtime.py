@@ -422,6 +422,9 @@ def _compose_graph_v3_capture(
     resolver = WorldScopeResolver.load(Path(config_dir))
     db = getattr(store, "_db", None)
     graph_store = WorldGraphStore(db if db is not None else path)
+    from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
+
+    WorldOntologyBootstrapService(graph_store, resolver.mapping).ensure_published()
     service = WorldGraphSnapshotService(
         ledger=graph_store,
         traversal=WorldTemporalTraversalAdapter(),

@@ -2127,6 +2127,7 @@ def main(
                 config_dir=ROOT / "config",
                 state_dir=STATE_DIR,
                 logger=log,
+                graph_v3_enabled=_world_model_graph_v3,
             )
             _world_macro_runner = _world_macro_bundle.runner
             _world_macro_store = _world_macro_bundle.store

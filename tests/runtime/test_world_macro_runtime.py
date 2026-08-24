@@ -408,6 +408,7 @@ def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
         transport=UrlFixtureTransport(),
         clock=FakeClock(NOW),
         sleeper=lambda _seconds: None,
+        graph_v3_enabled=True,
     )
     first = bundle.runner.trigger(now=NOW, reason="first")
     assert first["triggered"] is True
@@ -416,3 +417,174 @@ def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
     assert any(item.startswith("activate:") for item in calls)
     assert any(item.startswith("reconcile:") for item in calls)
     assert "RegisterMacroObservationKnowledge" not in inspect.getsource(collect_world_macro)
+
+
+def _jsonl_payloads(root: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not root.exists():
+        return rows
+    for path in root.rglob("*.jsonl"):
+        if "availability_receipts" in path.parts:
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                rows.append(payload)
+    return rows
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: str, status: int = 200) -> None:
+        self.status = status
+        self._body = body.encode("utf-8")
+        self.headers = {"Content-Type": "application/json"}
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeHttpResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+def test_default_macro_runtime_with_mocked_urlopen_yields_typed_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import urllib.error
+
+    from trader.domain.world_macro import MacroSourceFact, MacroWorldObservation
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    failing = {"value": True}
+
+    def fake_urlopen(req: object, timeout: object = None) -> object:
+        del timeout
+        url = str(getattr(req, "full_url", req))
+        if failing["value"]:
+            raise urllib.error.URLError("network down")
+        if "finance.yahoo.com" in url:
+            return _FakeHttpResponse(_yahoo_body("2026-08-21", 91.22))
+        return _FakeHttpResponse(_dbnomics_body("2026-08-22", 4.33))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    wire_source = inspect.getsource(wire_world_macro_runtime)
+    assert "UrllibMacroTransport()" in wire_source
+    assert "transport or urllib_macro_transport" not in wire_source
+    assert "graph_v3_enabled()" not in wire_source
+
+    clock = FakeClock(NOW)
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        clock=clock,
+        sleeper=lambda _seconds: None,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="historical-failure")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=60.0)
+    failed_events = [
+        row
+        for row in _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
+        if row.get("event_type") == "macro_source_failed"
+    ]
+    assert failed_events
+    failed_count = len(failed_events)
+    assert _jsonl_payloads(tmp_path / "world_macro" / "facts") == []
+
+    failing["value"] = False
+    clock.advance(hours=1)
+    second = bundle.runner.trigger(now=clock(), reason="proven-run")
+    assert second["triggered"] is True
+    second["_thread"].join(timeout=60.0)
+    bundle.runner.stop()
+
+    facts = [
+        MacroSourceFact.from_mapping(row)
+        for row in _jsonl_payloads(tmp_path / "world_macro" / "facts")
+        if row.get("fact_version_id")
+    ]
+    observations = [
+        MacroWorldObservation.from_mapping(row)
+        for row in _jsonl_payloads(tmp_path / "world_macro" / "observations")
+        if row.get("producer_version") and row.get("observation_id")
+    ]
+    assert facts
+    assert observations
+    assert all(item.fact_version_id.value.startswith("macro_source_fact_version:v1:") for item in facts)
+    assert all(item.observation_id.startswith("macro_world_observation:v1:") for item in observations)
+    remaining_failures = [
+        row
+        for row in _jsonl_payloads(tmp_path / "world_macro" / "runs" / "events")
+        if row.get("event_type") == "macro_source_failed"
+    ]
+    assert len(remaining_failures) == failed_count
+
+
+def test_graph_v3_yaml_only_enables_macro_graph_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    monkeypatch.delenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", raising=False)
+    calls: list[str] = []
+
+    class _Bridge:
+        def activate(self, request_id: str) -> object:
+            calls.append(f"activate:{request_id}")
+            return SimpleNamespace(events=(), active_run=None)
+
+        def reconcile(self, *, limit: int) -> object:
+            calls.append(f"reconcile:{limit}")
+            return SimpleNamespace(events=())
+
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
+        lambda **_kwargs: _Bridge(),
+    )
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=FakeClock(NOW),
+        sleeper=lambda _seconds: None,
+        graph_v3_enabled=True,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="yaml-only")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=60.0)
+    bundle.runner.stop()
+    assert any(item.startswith("activate:") for item in calls)
+    assert any(item.startswith("reconcile:") for item in calls)
+
+
+def test_typed_graph_flag_false_does_not_reread_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    monkeypatch.setenv("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", "1")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
+        lambda **_kwargs: calls.append("bridge") or SimpleNamespace(),
+    )
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=FakeClock(NOW),
+        sleeper=lambda _seconds: None,
+        graph_v3_enabled=False,
+    )
+    first = bundle.runner.trigger(now=NOW, reason="env-ignored")
+    assert first["triggered"] is True
+    first["_thread"].join(timeout=60.0)
+    bundle.runner.stop()
+    assert calls == []
+    world_model_db = tmp_path / "world_model.db"
+    assert not world_model_db.exists()

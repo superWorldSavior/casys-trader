@@ -192,6 +192,8 @@ def test_missing_unpublished_unmapped_and_budget_graph_are_neutral_v3_companions
     assert unpublished_snapshot.missingness["ontology"] == "unpublished"
     assert unmapped_snapshot.status == "missing"
     assert unmapped_snapshot.missingness["scope"] == "unmapped"
+    assert unmapped_snapshot.structural_relation_refs == frozenset()
+    assert unmapped_snapshot.knowledge_relation_refs == frozenset()
     features = _graph_features(unpublished.observation)["categorical_features"]
     assert features["graph_status"] == "missing"
     assert features["graph_missingness_status"] == "unpublished"
