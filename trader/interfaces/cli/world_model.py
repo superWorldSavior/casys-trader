@@ -33,12 +33,19 @@ from trader.domain.world_cohort import (
     WorldCohortId,
     WorldCohortManifest,
 )
+from trader.domain.world_feature_contract import (
+    WORLD_GRAPH_V3_PATH_RULE_VERSION,
+    WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
+)
+from trader.domain.world_graph import GRAPH_TRAVERSAL_POLICY_VERSION
 from trader.reporting.read_models.world_cohort import read_world_cohort_report
 from trader.reporting.read_models.world_macro_status import read_world_macro_status
+from trader.reporting.read_models.world_patterns import read_world_pattern_report
 from trader.reporting.read_models.world_status import HORIZONS, read_world_model_status
 
 WORLD_COHORT_INVALIDATION_REASONS = tuple(item.value for item in InvalidationReason)
 _WORLD_MODEL_DB = "world_model.db"
+_GRAPH_V3_FLAG = "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
 _CLAIM_FIELDS = {
     "authority": COHORT_AUTHORITY,
     "decision_effect": COHORT_DECISION_EFFECT,
@@ -375,16 +382,96 @@ def dispatch_world_macro(args: Any, *, state_dir: str | Path) -> tuple[dict[str,
     return _error("unsupported_command", str(command), recovery="use a documented world macro subcommand"), 2
 
 
+def _graph_v3_budgets() -> dict[str, Any]:
+    return {
+        "max_depth": 4,
+        "max_paths_per_root": 32,
+        "policy_version": GRAPH_TRAVERSAL_POLICY_VERSION,
+        "path_rule_version": WORLD_GRAPH_V3_PATH_RULE_VERSION,
+        "windows_and_decay": dict(WORLD_GRAPH_V3_WINDOWS_AND_DECAY),
+    }
+
+
+def _graph_v3_gaps(state_dir: str | Path, *, world_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    status = world_status if world_status is not None else read_world_model_status(state_dir)
+    by_model = status.get("predictions_by_model") or {}
+    v3_predictions = 0
+    if isinstance(by_model, Mapping):
+        v3_predictions = sum(
+            int(count or 0) for key, count in by_model.items() if "graph.v3" in str(key)
+        )
+    return {
+        "cohort_activation": "not_started",
+        "v3_predictions": v3_predictions,
+        "flag_default": 0,
+    }
+
+
+def read_world_graph_status(state_dir: str | Path) -> dict[str, Any]:
+    """Read-only graph V3 budgets/gaps. Never creates world_model.db."""
+
+    world = read_world_model_status(state_dir)
+    exists = bool(world.get("exists"))
+    status = "not_started" if not exists else str(world.get("status") or "unavailable")
+    return {
+        "schema_version": "world_graph_status.v1",
+        "command": "status",
+        "status": status,
+        "exists": exists,
+        "flag": _GRAPH_V3_FLAG,
+        "flag_default": 0,
+        "budgets": _graph_v3_budgets(),
+        "gaps": _graph_v3_gaps(state_dir, world_status=world),
+        **_claims(),
+    }
+
+
+def read_world_graph_report(state_dir: str | Path, cohort_id: str | None = None) -> dict[str, Any]:
+    """Read-only graph V3 report. Never activates a cohort or claims causality/PnL."""
+
+    payload: dict[str, Any] = {
+        "schema_version": "world_graph_report.v1",
+        "command": "report",
+        "status": "not_started",
+        "exists": False,
+        "cohort_id": cohort_id,
+        "budgets": _graph_v3_budgets(),
+        "gaps": _graph_v3_gaps(state_dir),
+        **_claims(),
+    }
+    if not cohort_id:
+        return payload
+    patterns = read_world_pattern_report(state_dir, cohort_id)
+    payload["status"] = str(patterns.get("status") or "not_started")
+    payload["exists"] = bool(patterns.get("exists"))
+    payload["patterns"] = patterns
+    return payload
+
+
+def dispatch_world_graph(args: Any, *, state_dir: str | Path) -> tuple[dict[str, Any], int]:
+    command = getattr(args, "graph_command", None)
+    if command == "status":
+        payload = read_world_graph_status(state_dir)
+        return payload, _read_exit_code(payload)
+    if command == "report":
+        payload = read_world_graph_report(state_dir, getattr(args, "cohort_id", None))
+        return payload, _read_exit_code(payload)
+    return _error("unsupported_command", str(command), recovery="use a documented world graph subcommand"), 2
+
+
 __all__ = [
     "HORIZONS",
     "WORLD_COHORT_INVALIDATION_REASONS",
     "arm_world_cohort",
     "close_world_cohort",
     "dispatch_world_cohort",
+    "dispatch_world_graph",
     "dispatch_world_macro",
     "invalidate_world_cohort",
     "read_world_cohort_report",
     "read_world_cohort_status",
+    "read_world_graph_report",
+    "read_world_graph_status",
     "read_world_macro_status",
     "read_world_model_status",
     "register_world_cohort",

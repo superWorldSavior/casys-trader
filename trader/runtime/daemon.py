@@ -2088,6 +2088,7 @@ def main(
     experiment_runtime_identity = _capture_experiment_runtime_identity()
     _world_model_runner: object | None = None
     _world_model_context_v2 = _env_int("CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED", 0) == 1
+    _world_model_graph_v3 = _env_int("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", 0) == 1
     _world_macro_source_only = _env_int("CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED", 0) == 1
     _world_macro_runner: object | None = None
     _world_macro_store: object | None = None
@@ -2152,6 +2153,7 @@ def main(
                 WorldContextEpisodeEnricher,
                 WorldModelBackgroundRunner,
                 WorldModelRuntime,
+                compose_local_graph_v3_lanes,
             )
 
             _world_model_store = WorldModelStore(STATE_DIR / "world_model.db")
@@ -2197,6 +2199,22 @@ def main(
                         scope_mapping=_world_macro_mapping,
                     )
                 )
+            graph_enricher = None
+            if _world_model_graph_v3:
+                try:
+                    v3_predictors, graph_enricher = compose_local_graph_v3_lanes(
+                        enabled=True,
+                        store=_world_model_store,
+                        config_dir=ROOT / "config",
+                    )
+                    extra_predictors.extend(v3_predictors)
+                except Exception as exc:  # noqa: BLE001 - V3 composition cannot block V1/V2
+                    log.warning(
+                        "[world_model_shadow] graph_v3 disabled after compose failure: %s:%s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    graph_enricher = None
             _world_model_runtime = WorldModelRuntime(
                 store=_world_model_store,
                 predictor=HierarchicalDirichletWorldBaseline(),
@@ -2211,14 +2229,21 @@ def main(
                 runtime=_world_model_runtime,
                 logger=log,
                 context_enricher=context_enricher,
+                graph_enricher=graph_enricher,
             )
             claimed_resources.world_model_store = _world_model_store
             claimed_resources.world_model_runner = _world_model_runner
+            _world_model_lane_count = 2
+            if _world_model_context_v2:
+                _world_model_lane_count += 2
+            if graph_enricher is not None:
+                _world_model_lane_count += 2
             log.info(
-                "[world_model_shadow] enabled db=%s authority=shadow_only context_v2=%s lanes=%s",
+                "[world_model_shadow] enabled db=%s authority=shadow_only context_v2=%s graph_v3=%s lanes=%s",
                 STATE_DIR / "world_model.db",
                 int(_world_model_context_v2),
-                4 if _world_model_context_v2 else 2,
+                int(graph_enricher is not None),
+                _world_model_lane_count,
             )
         except Exception as exc:  # noqa: BLE001 - shadow boot cannot block trading
             log.warning(

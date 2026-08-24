@@ -337,9 +337,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_world_status(args: argparse.Namespace) -> int:
-    from trader.interfaces.cli.world_model import read_world_model_status
+    from trader.interfaces.cli.world_model import read_world_graph_status, read_world_model_status
 
-    payload = read_world_model_status(daemon.STATE_DIR)
+    payload = {**read_world_model_status(daemon.STATE_DIR), "graph": read_world_graph_status(daemon.STATE_DIR)}
     if args.json:
         _print_json(payload)
     else:
@@ -365,6 +365,14 @@ def _cmd_world_macro(args: argparse.Namespace) -> int:
     from trader.interfaces.cli.world_model import dispatch_world_macro
 
     payload, code = dispatch_world_macro(args, state_dir=daemon.STATE_DIR)
+    _print_json(payload)
+    return code
+
+
+def _cmd_world_graph(args: argparse.Namespace) -> int:
+    from trader.interfaces.cli.world_model import dispatch_world_graph
+
+    payload, code = dispatch_world_graph(args, state_dir=daemon.STATE_DIR)
     _print_json(payload)
     return code
 
@@ -1081,6 +1089,16 @@ def build_parser() -> argparse.ArgumentParser:
     macro_status = macro_sub.add_parser("status", help="couverture et fraîcheur source-only")
     macro_status.add_argument("--json", action="store_true")
     macro_status.set_defaults(func=_cmd_world_macro)
+
+    graph = world_sub.add_parser("graph", help="graphe V3 shadow")
+    graph_sub = graph.add_subparsers(dest="graph_command", required=True)
+    graph_status = graph_sub.add_parser("status", help="budgets et gaps graphe V3")
+    graph_status.add_argument("--json", action="store_true")
+    graph_status.set_defaults(func=_cmd_world_graph)
+    graph_report = graph_sub.add_parser("report", help="rapport graphe V3 sans claim causal")
+    graph_report.add_argument("cohort_id", nargs="?")
+    graph_report.add_argument("--json", action="store_true")
+    graph_report.set_defaults(func=_cmd_world_graph)
 
     news_macro = sub.add_parser("news-macro", help="briefs macro/news par marché")
     news_macro_sub = news_macro.add_subparsers(dest="news_macro_command", required=True)

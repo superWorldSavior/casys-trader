@@ -678,3 +678,174 @@ def test_daemon_post_cycle_macro_trigger_cannot_break_trader_loop() -> None:
     loop_idx = main_idx + source[main_idx:].index("_trigger_world_macro_source_only(")
     assert "if not args.once:" in source[loop_idx - 400 : loop_idx]
     assert "_trigger_world_macro_source_only" not in inspect.getsource(daemon.run_cycle)
+
+
+def test_graph_v3_flag_defaults_off_via_existing_env_int_surface() -> None:
+    from pathlib import Path
+
+    from trader.runtime.world_macro_runtime import GRAPH_V3_FLAG
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    assert GRAPH_V3_FLAG == "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
+    assert '_env_int("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", 0)' in source
+    assert "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED=1" not in source
+    assert "CASYS_WORLD_MODEL_GRAPH_ENABLED" not in source
+
+
+def test_daemon_boot_wires_graph_v3_only_inside_shadow_without_starting_cohort() -> None:
+    from pathlib import Path
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    flag_idx = source.index('_env_int("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", 0)')
+    shadow_if = source.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"')
+    boot = source[shadow_if : source.index("claimed_resources.learning_sync_runner", shadow_if)]
+    assert flag_idx < shadow_if or "_world_model_graph_v3" in boot
+    assert "compose_local_graph_v3_lanes" in boot
+    assert "graph_enricher" in boot
+    assert "_world_model_graph_v3" in boot
+    assert "RegisterWorldCohort" not in boot
+    assert "ArmWorldCohort" not in boot
+    assert "StartWorldCohort" not in boot
+    assert "AdmitWorldCohortSlot" not in boot
+    assert ".register(" not in boot
+    assert ".arm(" not in boot
+    assert ".start(" not in boot.replace("thread.start()", "")
+    assert "authority=shadow_only" in boot
+
+
+def test_world_shadow_trigger_never_attaches_graph_on_the_cycle_thread(monkeypatch) -> None:
+    class Boom:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("graph capture must not run on the daemon cycle thread")
+
+        def enrich(self, *_args, **_kwargs):
+            raise AssertionError("graph enricher must not run on the daemon cycle thread")
+
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_capture.attach_world_graph",
+        Boom,
+    )
+    runner = _Runner()
+    result = daemon._trigger_world_model_shadow(
+        runner=runner,
+        active_symbols=["AAA"],
+        tradable_symbols=["AAA"],
+        bars_by_symbol={"AAA": _bars(base=100.0)},
+        data_age_by_symbol={"AAA": 3.0},
+        runtime_data_source_by_symbol={"AAA": "yfinance"},
+        data_source=object(),
+        runtime_interval="15m",
+        now=NOW,
+    )
+    assert result["triggered"] is True
+    episodes = runner.calls[0]["episodes"]
+    assert len(episodes) == 1
+    assert episodes[0].observation.feature_contract_version == "market_ohlcv_causal.v1"
+    assert getattr(episodes[0].observation, "graph", None) is None
+
+
+def test_graph_v3_enrichment_failure_keeps_v1_and_is_visible(tmp_path) -> None:
+    from trader.application.world_model import labeler
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, WorldModelRuntime
+
+    class BrokenGraphEnricher:
+        def enrich(self, _episodes):
+            raise OSError("graph disk unavailable")
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    runner = WorldModelBackgroundRunner(
+        runtime=WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=labeler,
+            bar_provider=None,
+        ),
+        graph_enricher=BrokenGraphEnricher(),
+    )
+    try:
+        result = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=100.0)},
+            data_age_by_symbol={"AAA": 3.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW,
+        )
+        result["_thread"].join(timeout=2)
+        status = runner.status()
+        assert status["status"] == "partial"
+        assert status["errors"][0]["stage"] == "graph_enrich"
+        assert store.counts()["episodes"] == 1
+        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "market_ohlcv_causal.v1"
+        assert store.list_collecting_cohort_ids() == ()
+    finally:
+        runner.stop()
+        store.close()
+
+
+def test_idle_unmapped_cycle_does_not_write_v3_from_graph_wiring_alone(tmp_path) -> None:
+    from pathlib import Path
+
+    from trader.application.world_model import labeler
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import (
+        WorldModelBackgroundRunner,
+        WorldModelRuntime,
+        compose_local_graph_v3_lanes,
+    )
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    repo_config = Path(daemon.__file__).resolve().parents[2] / "config"
+    predictors, enricher = compose_local_graph_v3_lanes(
+        enabled=True,
+        store=store,
+        config_dir=repo_config,
+    )
+    assert enricher is not None
+    assert predictors
+    assert store.counts()["episodes"] == 0
+    runner = WorldModelBackgroundRunner(
+        runtime=WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            predictors=predictors,
+            labeler=labeler,
+            bar_provider=None,
+        ),
+        graph_enricher=enricher,
+    )
+    try:
+        assert runner.status()["graph"]["wired"] is True
+        assert store.counts()["episodes"] == 0
+        result = daemon._trigger_world_model_shadow(
+            runner=runner,
+            active_symbols=["AAA"],
+            tradable_symbols=["AAA"],
+            bars_by_symbol={"AAA": _bars(base=100.0)},
+            data_age_by_symbol={"AAA": 3.0},
+            runtime_data_source_by_symbol={"AAA": "yfinance"},
+            data_source=object(),
+            runtime_interval="15m",
+            now=NOW,
+        )
+        assert result["triggered"] is True
+        result["_thread"].join(timeout=2)
+        rows = store.list_eligible_episodes()
+        versions = {
+            (row.get("feature_contract_version") or row["observation"]["feature_contract_version"])
+            for row in rows
+        }
+        assert "market_ohlcv_causal.v1" in versions
+        assert GRAPH_FEATURE_CONTRACT_VERSION not in versions
+        assert store.list_collecting_cohort_ids() == ()
+        assert all((row.get("prediction_record") or {}).get("decision_effect", "none") == "none" for row in store.list_predictions())
+    finally:
+        runner.stop()
+        store.close()

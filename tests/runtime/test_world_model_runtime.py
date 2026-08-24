@@ -1135,3 +1135,149 @@ def test_runtime_restart_keeps_cohort_fingerprints_and_does_not_backfill_downtim
         restarted_store.close()
     finally:
         store.close()
+
+
+def test_graph_v3_flag_reuses_macro_runtime_name_and_defaults_off() -> None:
+    from pathlib import Path
+
+    from trader.runtime.world_macro_runtime import GRAPH_V3_FLAG, graph_v3_enabled
+    from trader.runtime import world_model_runtime
+
+    assert GRAPH_V3_FLAG == "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
+    assert graph_v3_enabled({}) is False
+    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "0"}) is False
+    assert graph_v3_enabled({"CASYS_WORLD_MODEL_GRAPH_V3_ENABLED": "1"}) is True
+    source = Path(world_model_runtime.__file__).read_text(encoding="utf-8")
+    assert "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED" in source
+    assert "def graph_v3_enabled" not in source
+    assert "graph_v3_enabled" in source
+    assert "CASYS_WORLD_MODEL_GRAPH_ENABLED" not in source
+
+
+def test_compose_local_graph_v3_lanes_requires_flag_and_capture_and_predictors() -> None:
+    from tests.application.test_world_graph_capture import _unpublished_config
+    from trader.runtime.world_model_runtime import (
+        WorldGraphEpisodeEnricher,
+        compose_local_graph_v3_lanes,
+    )
+
+    capture = _unpublished_config()
+    dummy = object()
+    assert compose_local_graph_v3_lanes(enabled=False, capture=capture, predictors=(dummy,)) == ((), None)
+    assert compose_local_graph_v3_lanes(enabled=True, capture=None, predictors=(dummy,)) == ((), None)
+    assert compose_local_graph_v3_lanes(enabled=True, capture=capture, predictors=()) == ((), None)
+    predictors, enricher = compose_local_graph_v3_lanes(
+        enabled=True,
+        capture=capture,
+        predictors=(dummy,),
+    )
+    assert predictors == (dummy,)
+    assert isinstance(enricher, WorldGraphEpisodeEnricher)
+    assert enricher.config is capture
+
+
+def test_graph_enricher_appends_v3_without_mutating_v1() -> None:
+    from tests.application.test_world_context_capture import V1_EPISODE_ID, _v1_episode
+    from tests.application.test_world_graph_capture import _unpublished_config
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+    from trader.runtime.world_model_runtime import WorldGraphEpisodeEnricher
+
+    v1 = _v1_episode()
+    original_id = v1.episode_id
+    enricher = WorldGraphEpisodeEnricher(_unpublished_config())
+    out = enricher.enrich((v1,))
+    assert v1.episode_id == original_id == V1_EPISODE_ID
+    assert v1.observation.feature_contract_version == "market_ohlcv_causal.v1"
+    assert len(out) == 2
+    assert out[0].episode_id == V1_EPISODE_ID
+    assert out[1].observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_VERSION
+    assert out[1].observation.symbol == v1.observation.symbol
+
+
+def test_background_graph_enrich_failure_keeps_v1_capture() -> None:
+    class BrokenGraphEnricher:
+        def enrich(self, _episodes):
+            raise OSError("graph snapshot unavailable")
+
+    class RecordingRuntime:
+        def __init__(self) -> None:
+            self.captured: list[object] = []
+
+        def mature_pending(self, _now: datetime, **_kwargs) -> dict[str, object]:
+            return {"status": "ok"}
+
+        def capture_and_predict(self, episodes, **_kwargs) -> dict[str, object]:
+            self.captured.append(tuple(episodes))
+            return {"status": "ok"}
+
+    runtime = RecordingRuntime()
+    runner = WorldModelBackgroundRunner(
+        runtime=runtime,  # type: ignore[arg-type]
+        graph_enricher=BrokenGraphEnricher(),
+    )
+    original = _episode("e-graph-fail")
+    triggered = runner.trigger(episodes=[original], now=NOW)
+    triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
+
+    assert runtime.captured == [(_episode("e-graph-fail"),)]
+    status = runner.status()
+    assert status["status"] == "partial"
+    assert status["errors"][0]["stage"] == "graph_enrich"
+    assert status["graph"]["authority"] == "shadow_only"
+    assert status["graph"]["decision_effect"] == "none"
+    assert status["graph"]["causal_claim"] is False
+    assert status["graph"]["pnl_claim"] is False
+
+
+def test_compose_and_runner_wire_graph_without_writing_until_due_cycle(tmp_path) -> None:
+    from tests.application.test_world_graph_capture import _unpublished_config
+    from trader.domain.world_feature_contract import GRAPH_FEATURE_CONTRACT_VERSION
+    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    try:
+        predictors, enricher = compose_local_graph_v3_lanes(
+            enabled=True,
+            capture=_unpublished_config(),
+        )
+        assert enricher is not None
+        assert predictors
+        assert store.counts()["episodes"] == 0
+        runner = WorldModelBackgroundRunner(
+            runtime=WorldModelRuntime(
+                store=store,
+                predictor=HierarchicalDirichletWorldBaseline(),
+                predictors=predictors,
+                labeler=None,
+                bar_provider=None,
+                horizons=("elapsed_4h.v1",),
+            ),
+            graph_enricher=enricher,
+        )
+        wired = runner.status()
+        assert wired["running"] is False
+        assert wired["graph"]["wired"] is True
+        assert wired["graph"]["gaps"]["writes"] == "none_until_due_cycle"
+        assert wired["graph"]["budgets"]["max_depth"] == 4
+        assert wired["graph"]["budgets"]["max_paths_per_root"] == 32
+        assert store.counts()["episodes"] == 0
+
+        from tests.application.test_world_context_capture import _v1_episode
+
+        triggered = runner.trigger(episodes=[_v1_episode()], now=NOW)
+        triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
+        versions = {
+            row["observation"]["feature_contract_version"]
+            for row in store.list_eligible_episodes()
+        }
+        assert "market_ohlcv_causal.v1" in versions
+        assert GRAPH_FEATURE_CONTRACT_VERSION in versions
+        assert store.list_collecting_cohort_ids() == ()
+        capture = runner.status()["capture"]
+        assert all(
+            (row.get("prediction_record") or {}).get("decision_effect", "none") == "none"
+            for row in store.list_predictions()
+        )
+        assert "causal" not in str(capture).lower() or capture.get("status") in {"ok", "partial"}
+    finally:
+        store.close()

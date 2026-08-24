@@ -15,6 +15,7 @@ import logging
 import threading
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
+from pathlib import Path
 
 from trader.application.world_model.service import (
     DEFAULT_HORIZONS,
@@ -22,6 +23,7 @@ from trader.application.world_model.service import (
     _clone,
     _utc,
 )
+from trader.runtime.world_macro_runtime import graph_v3_enabled
 
 
 @dataclasses.dataclass(frozen=True)
@@ -49,11 +51,13 @@ class WorldModelBackgroundRunner:
         logger: object | None = None,
         thread_name: str = "world-model-shadow",
         context_enricher: WorldContextEpisodeEnricher | None = None,
+        graph_enricher: WorldGraphEpisodeEnricher | None = None,
     ) -> None:
         self.runtime = runtime
         self.log = logger or logging.getLogger("casys-trader")
         self.thread_name = str(thread_name).strip() or "world-model-shadow"
         self.context_enricher = context_enricher
+        self.graph_enricher = graph_enricher
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._pending: _BackgroundSnapshot | None = None
@@ -114,12 +118,15 @@ class WorldModelBackgroundRunner:
 
     def status(self) -> dict[str, object]:
         with self._lock:
-            return {
+            payload: dict[str, object] = {
                 **copy.deepcopy(self._last_report),
                 "running": self._thread is not None,
                 "pending": self._pending is not None,
                 "stopping": self._stopping,
             }
+        if self.graph_enricher is not None:
+            payload["graph"] = graph_v3_status_overlay(wired=True)
+        return payload
 
     def stop(self) -> None:
         """Request shutdown; a blocking provider is never force-killed."""
@@ -159,6 +166,16 @@ class WorldModelBackgroundRunner:
                     capture_snapshot = dataclasses.replace(current, episodes=enriched)
                 except Exception as exc:  # noqa: BLE001 - V2 enrichment is fail-open for V1
                     self._background_error(report, stage="context_enrich", error=exc)
+            if self.graph_enricher is not None:
+                try:
+                    enriched = tuple(
+                        self.graph_enricher.enrich(
+                            tuple(_clone(episode) for episode in capture_snapshot.episodes)
+                        )
+                    )
+                    capture_snapshot = dataclasses.replace(capture_snapshot, episodes=enriched)
+                except Exception as exc:  # noqa: BLE001 - V3 enrichment is fail-open for V1/V2
+                    self._background_error(report, stage="graph_enrich", error=exc)
             try:
                 report["capture"] = self._capture_and_predict(capture_snapshot)
             except Exception as exc:  # noqa: BLE001 - still attempt capture after a maturity failure
@@ -257,6 +274,192 @@ class WorldContextEpisodeEnricher:
         v1 = tuple(canonical)
         v2 = attach_world_context(v1, self.source)
         return v1 + tuple(v2)
+
+
+class WorldGraphEpisodeEnricher:
+    """Background V3 companion attachment. Local files only; no network or LLM I/O."""
+
+    def __init__(self, config: object) -> None:
+        self.config = config
+
+    def enrich(self, episodes: Sequence[object]) -> tuple[object, ...]:
+        from trader.application.world_model.graph_capture import attach_world_graph
+        from trader.domain.world_episode import WorldEpisode
+
+        canonical: list[WorldEpisode] = []
+        for episode in episodes:
+            if isinstance(episode, WorldEpisode):
+                canonical.append(episode)
+                continue
+            if isinstance(episode, Mapping):
+                canonical.append(WorldEpisode.from_dict(episode))
+                continue
+            to_dict = getattr(episode, "to_dict", None)
+            if not callable(to_dict):
+                raise TypeError("graph enricher requires WorldEpisode records")
+            payload = to_dict()
+            if not isinstance(payload, Mapping):
+                raise TypeError("graph enricher requires WorldEpisode records")
+            canonical.append(WorldEpisode.from_dict(payload))
+        attached = tuple(canonical)
+        v3 = attach_world_graph(attached, self.config)
+        return attached + tuple(v3)
+
+
+class WorldTemporalTraversalAdapter:
+    """Runtime adapter: GRAPH-4 projector behind the application traversal port."""
+
+    def enumerate_paths(self, structural, knowledge, root, *, max_depth=None, max_paths=None):
+        from trader.application.world_model.graph_ports import WorldGraphPath, WorldGraphPathSet, WorldGraphPathStep
+        from trader.infrastructure.graph.world_temporal_networkx import WorldTemporalGraph
+
+        enumerated = WorldTemporalGraph.from_resolved_views(structural, knowledge).enumerate_paths(
+            root,
+            max_depth=max_depth,
+            max_paths=max_paths,
+        )
+        return WorldGraphPathSet(
+            paths=tuple(
+                WorldGraphPath(
+                    steps=tuple(
+                        WorldGraphPathStep(
+                            relation_id=step.relation_id,
+                            kind=step.kind,
+                            family=step.family,
+                            direction=step.direction,
+                            source_kind=step.source_kind,
+                            target_kind=step.target_kind,
+                            source_node_id=step.source_node_id,
+                            target_node_id=step.target_node_id,
+                            freshness_bucket=step.freshness_bucket,
+                        )
+                        for step in path.steps
+                    )
+                )
+                for path in enumerated.paths
+            ),
+            status=enumerated.status,
+            policy_version=enumerated.policy_version,
+        )
+
+
+def graph_v3_budget_view() -> dict[str, object]:
+    from trader.domain.world_feature_contract import (
+        WORLD_GRAPH_V3_PATH_RULE_VERSION,
+        WORLD_GRAPH_V3_WINDOWS_AND_DECAY,
+    )
+    from trader.domain.world_graph import GRAPH_TRAVERSAL_POLICY_VERSION
+
+    return {
+        "max_depth": 4,
+        "max_paths_per_root": 32,
+        "policy_version": GRAPH_TRAVERSAL_POLICY_VERSION,
+        "path_rule_version": WORLD_GRAPH_V3_PATH_RULE_VERSION,
+        "windows_and_decay": dict(WORLD_GRAPH_V3_WINDOWS_AND_DECAY),
+    }
+
+
+def graph_v3_status_overlay(*, wired: bool, writes: str = "none_until_due_cycle") -> dict[str, object]:
+    return {
+        "wired": wired,
+        "flag": "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED",
+        "flag_default": 0,
+        "budgets": graph_v3_budget_view(),
+        "gaps": {"writes": writes, "cohort_activation": "not_started"},
+        "authority": "shadow_only",
+        "decision_effect": "none",
+        "causal_claim": False,
+        "pnl_claim": False,
+        "recommendation": "NO_GO",
+    }
+
+
+def _compose_graph_v3_predictors() -> tuple[object, ...]:
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.encoding import world_lane_encoder_profile
+    from trader.application.world_model.gru import OnlineGRUWorldChallenger
+    from trader.domain.world_feature_contract import (
+        GRAPH_FEATURE_CONTRACT_VERSION,
+        WORLD_V3_GRU_MODEL_IDENTITY,
+        WORLD_V3_MARKOV_MODEL_IDENTITY,
+        WORLD_V3_MODEL_VERSION,
+    )
+
+    status = world_lane_encoder_profile("topology_status_only")
+    content = world_lane_encoder_profile("graph_content")
+    return (
+        HierarchicalDirichletWorldBaseline(
+            model_id=WORLD_V3_MARKOV_MODEL_IDENTITY,
+            model_version=WORLD_V3_MODEL_VERSION,
+            feature_contract=status.contract,
+            feature_mask=status.mask,
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+        ),
+        OnlineGRUWorldChallenger(
+            model_id=WORLD_V3_GRU_MODEL_IDENTITY,
+            model_version=WORLD_V3_MODEL_VERSION,
+            feature_contract=content.contract,
+            feature_mask=content.mask,
+            accepted_feature_contracts=frozenset({GRAPH_FEATURE_CONTRACT_VERSION}),
+        ),
+    )
+
+
+def _compose_graph_v3_capture(*, store: object | None, config_dir: str | Path | None) -> object | None:
+    if store is None or config_dir is None:
+        return None
+    path = getattr(store, "path", None)
+    if path is None:
+        return None
+    from trader.application.world_model.graph_capture import WorldGraphCaptureConfig
+    from trader.application.world_model.graph_snapshot import WorldGraphSnapshotService
+    from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+    from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
+
+    resolver = WorldScopeResolver.load(Path(config_dir))
+    db = getattr(store, "_db", None)
+    graph_store = WorldGraphStore(db if db is not None else path)
+    service = WorldGraphSnapshotService(
+        ledger=graph_store,
+        traversal=WorldTemporalTraversalAdapter(),
+        snapshot_ledger=graph_store,
+    )
+    return WorldGraphCaptureConfig(
+        scope_mapping=resolver.mapping,
+        snapshot_service=service,
+        study_cohort_id=None,
+        max_depth=4,
+        max_paths=32,
+    )
+
+
+def compose_local_graph_v3_lanes(
+    *,
+    enabled: bool | None = None,
+    capture: object | None = None,
+    predictors: Iterable[object] | None = None,
+    store: object | None = None,
+    config_dir: str | Path | None = None,
+) -> tuple[tuple[object, ...], WorldGraphEpisodeEnricher | None]:
+    """Compose local V3 lanes only when the reused GRAPH_V3 flag is on and capture+predictors exist."""
+
+    try:
+        resolved_enabled = graph_v3_enabled() if enabled is None else bool(enabled)
+        if not resolved_enabled:
+            return (), None
+        resolved_capture = capture if capture is not None else _compose_graph_v3_capture(
+            store=store,
+            config_dir=config_dir,
+        )
+        if predictors is None:
+            resolved_predictors: tuple[object, ...] = _compose_graph_v3_predictors()
+        else:
+            resolved_predictors = tuple(predictors)
+        if resolved_capture is None or not resolved_predictors:
+            return (), None
+        return resolved_predictors, WorldGraphEpisodeEnricher(resolved_capture)
+    except Exception:  # noqa: BLE001 - V3 composition never blocks V1/V2/Trader
+        return (), None
 
 
 class CallableWorldBarProvider:
@@ -434,8 +637,13 @@ __all__ = [
     "CallableWorldBarProvider",
     "CallableWorldLabeler",
     "WorldContextEpisodeEnricher",
+    "WorldGraphEpisodeEnricher",
     "WorldModelBackgroundRunner",
     "WorldModelRunner",
     "WorldModelRuntime",
     "WorldModelShadowRuntime",
+    "WorldTemporalTraversalAdapter",
+    "compose_local_graph_v3_lanes",
+    "graph_v3_budget_view",
+    "graph_v3_status_overlay",
 ]

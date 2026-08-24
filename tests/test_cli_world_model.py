@@ -586,3 +586,76 @@ def test_world_status_json_keeps_macro_separate_from_ml_study(tmp_path, monkeypa
     assert payload["macro"]["gaps"]["gdelt"] == "excluded"
     assert not _db_path(tmp_path).exists()
     assert not (tmp_path / "world_macro").exists()
+
+
+def test_world_graph_parser_exposes_status_and_report() -> None:
+    parser = cli.build_parser()
+    status = parser.parse_args(["world", "graph", "status", "--json"])
+    assert status.world_command == "graph"
+    assert status.graph_command == "status"
+    report = parser.parse_args(["world", "graph", "report", "--json"])
+    assert report.graph_command == "report"
+    report_cohort = parser.parse_args(["world", "graph", "report", COHORT_ID, "--json"])
+    assert report_cohort.cohort_id == COHORT_ID
+
+
+def test_world_graph_status_is_read_only_and_exposes_budgets_gaps(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, ["world", "graph", "status", "--json"])
+
+    assert code == 0
+    assert payload["schema_version"] == "world_graph_status.v1"
+    assert payload["command"] == "status"
+    assert payload["status"] == "not_started"
+    assert payload["flag"] == "CASYS_WORLD_MODEL_GRAPH_V3_ENABLED"
+    assert payload["flag_default"] == 0
+    assert payload["budgets"]["max_depth"] == 4
+    assert payload["budgets"]["max_paths_per_root"] == 32
+    assert payload["budgets"]["policy_version"] == "graph_traversal.v1"
+    assert "gaps" in payload
+    assert payload["gaps"]["cohort_activation"] == "not_started"
+    assert "evaluation" not in payload
+    assert "impact" not in payload
+    serialized = json.dumps(payload).lower()
+    assert "should-not" not in serialized
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_graph_report_is_read_only_shadow_bounded(tmp_path, monkeypatch, capsys) -> None:
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, ["world", "graph", "report", "--json"])
+
+    assert code == 0
+    assert payload["schema_version"] == "world_graph_report.v1"
+    assert payload["command"] == "report"
+    assert payload["status"] == "not_started"
+    assert payload["budgets"]["max_depth"] == 4
+    assert payload["gaps"]["cohort_activation"] == "not_started"
+    assert "evaluation" not in payload
+    assert "impact" not in payload
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_status_json_nests_graph_budgets_without_causal_or_pnl(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli.daemon, "STATE_DIR", tmp_path)
+
+    assert cli.main(["world", "status", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "not_started"
+    assert payload["decision_effect"] == "none"
+    graph = payload["graph"]
+    assert graph["schema_version"] == "world_graph_status.v1"
+    assert graph["flag_default"] == 0
+    assert graph["budgets"]["max_paths_per_root"] == 32
+    assert graph["gaps"]["cohort_activation"] == "not_started"
+    assert "evaluation" not in graph
+    assert graph["causal_claim"] is False
+    assert graph["pnl_claim"] is False
+    assert graph["authority"] == "shadow_only"
+    assert not _db_path(tmp_path).exists()
