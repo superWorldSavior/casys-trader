@@ -164,10 +164,14 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     availability_path = REPO_ROOT / "trader" / "domain" / "world_availability.py"
     scope_path = REPO_ROOT / "trader" / "domain" / "world_scope.py"
     lifecycle_path = REPO_ROOT / "trader" / "domain" / "world_ontology_lifecycle.py"
+    bridge_lifecycle_path = REPO_ROOT / "trader" / "domain" / "world_graph_bridge_lifecycle.py"
     assert availability_path.exists()
     assert scope_path.exists()
     assert lifecycle_path.exists()
-    assert _domain_import_violations([availability_path, scope_path, lifecycle_path], REPO_ROOT) == []
+    assert bridge_lifecycle_path.exists()
+    assert _domain_import_violations(
+        [availability_path, scope_path, lifecycle_path, bridge_lifecycle_path], REPO_ROOT
+    ) == []
 
     from trader.domain.world_availability import (
         AvailabilityEvidence,
@@ -186,6 +190,10 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
         WorldOntologyLifecycleSpec,
         plan_world_ontology_publication,
     )
+    from trader.domain.world_graph_bridge_lifecycle import (
+        classify_macro_graph_bridge,
+        committed_macro_graph_bridge_migration,
+    )
 
     assert WorldAvailabilityReceipt.__module__ == "trader.domain.world_availability"
     assert WorldAvailabilitySubjectRef.__module__ == "trader.domain.world_availability"
@@ -198,9 +206,13 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert WorldScopeResolution.__module__ == "trader.domain.world_scope"
     assert WorldOntologyLifecycleSpec.__module__ == "trader.domain.world_ontology_lifecycle"
     assert plan_world_ontology_publication.__module__ == "trader.domain.world_ontology_lifecycle"
+    assert classify_macro_graph_bridge.__module__ == "trader.domain.world_graph_bridge_lifecycle"
+    assert committed_macro_graph_bridge_migration.__module__ == "trader.domain.world_graph_bridge_lifecycle"
     assert "trader.infrastructure" not in availability_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in scope_path.read_text(encoding="utf-8")
     assert "trader.infrastructure" not in lifecycle_path.read_text(encoding="utf-8")
+    assert "trader.infrastructure" not in bridge_lifecycle_path.read_text(encoding="utf-8")
+    assert "trader.runtime" not in bridge_lifecycle_path.read_text(encoding="utf-8")
     assert "xtai" not in scope_path.read_text(encoding="utf-8").lower()
     assert "xnys" not in scope_path.read_text(encoding="utf-8").lower()
 

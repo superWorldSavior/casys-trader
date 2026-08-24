@@ -122,7 +122,10 @@ _REQUEST_ID_PREFIX = "macro_graph_bridge_request:v1"
 MACRO_GRAPH_BRIDGE_EVENT_SCHEMA = "macro_graph_bridge_event.v1"
 MACRO_OBSERVATION_CURSOR_SCHEMA = "macro_observation_cursor.v1"
 MACRO_OBSERVATION_CURSOR_RESERVATION_SCHEMA = "macro_observation_cursor_reservation.v1"
-MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA = "macro_graph_bridge_run_spec.v1"
+MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1 = "macro_graph_bridge_run_spec.v1"
+MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2 = "macro_graph_bridge_run_spec.v2"
+MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA = MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1
+_COLLECTION_PLAN_ID_PREFIX = "macro_collection_plan:v1"
 MACRO_GRAPH_SKIP_REASONS = frozenset({"scope_not_registered", "invalid_envelope", "producer_not_admitted"})
 MACRO_GRAPH_BLOCK_REASONS = frozenset({"config_drift"})
 MACRO_GRAPH_RUN_STATUSES = frozenset({"active", "blocked", "superseded"})
@@ -2693,12 +2696,15 @@ class MacroGraphBridgeRunSpec:
     scope_mapping_hash: str
     ontology_revision_id: str
     ontology_revision_hash: str
-    schema_version: str = MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA
+    schema_version: str = MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1
+    collection_plan_id: str | None = None
+    collection_plan_hash: str | None = None
+    producer_version: str | None = None
 
     def __post_init__(self) -> None:
         schema_version = _required_text(self.schema_version, "schema_version")
-        if schema_version != MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA:
-            raise ValueError(f"schema_version must be {MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA}")
+        if schema_version not in {MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1, MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2}:
+            raise ValueError("schema_version must be a supported macro_graph_bridge_run_spec version")
         object.__setattr__(self, "schema_version", schema_version)
         object.__setattr__(self, "scope_mapping_id", _required_text(self.scope_mapping_id, "scope_mapping_id"))
         object.__setattr__(self, "scope_mapping_hash", _sha256_hex(self.scope_mapping_hash, "scope_mapping_hash"))
@@ -2708,15 +2714,43 @@ class MacroGraphBridgeRunSpec:
         object.__setattr__(
             self, "ontology_revision_hash", _sha256_hex(self.ontology_revision_hash, "ontology_revision_hash")
         )
+        if schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1:
+            if self.collection_plan_id is not None or self.collection_plan_hash is not None:
+                raise ValueError("v1 run spec must not bind a collection plan")
+            if self.producer_version is not None:
+                raise ValueError("v1 run spec must not bind a producer version")
+            object.__setattr__(self, "collection_plan_id", None)
+            object.__setattr__(self, "collection_plan_hash", None)
+            object.__setattr__(self, "producer_version", None)
+            return
+        if self.collection_plan_id is None or self.collection_plan_hash is None:
+            raise ValueError("v2 run spec requires collection_plan identity and content hash")
+        object.__setattr__(
+            self,
+            "collection_plan_id",
+            _validate_prefixed_id(self.collection_plan_id, _COLLECTION_PLAN_ID_PREFIX, "collection_plan_id"),
+        )
+        object.__setattr__(self, "collection_plan_hash", _sha256_hex(self.collection_plan_hash, "collection_plan_hash"))
+        if self.producer_version is None:
+            raise ValueError("v2 run spec requires producer_version")
+        producer_version = _required_text(self.producer_version, "producer_version")
+        if producer_version != MACRO_PRODUCER_VERSION:
+            raise ValueError(f"v2 run spec requires producer_version={MACRO_PRODUCER_VERSION}")
+        object.__setattr__(self, "producer_version", producer_version)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "scope_mapping_id": self.scope_mapping_id,
             "scope_mapping_hash": self.scope_mapping_hash,
             "ontology_revision_id": self.ontology_revision_id,
             "ontology_revision_hash": self.ontology_revision_hash,
         }
+        if self.schema_version == MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2:
+            payload["collection_plan_id"] = self.collection_plan_id
+            payload["collection_plan_hash"] = self.collection_plan_hash
+            payload["producer_version"] = self.producer_version
+        return payload
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | MacroGraphBridgeRunSpec) -> MacroGraphBridgeRunSpec:
@@ -2729,7 +2763,10 @@ class MacroGraphBridgeRunSpec:
             scope_mapping_hash=value.get("scope_mapping_hash"),
             ontology_revision_id=value.get("ontology_revision_id"),
             ontology_revision_hash=value.get("ontology_revision_hash"),
-            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA),
+            schema_version=value.get("schema_version", MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1),
+            collection_plan_id=value.get("collection_plan_id"),
+            collection_plan_hash=value.get("collection_plan_hash"),
+            producer_version=value.get("producer_version"),
         )
 
 
@@ -3841,6 +3878,9 @@ __all__ = [
     "GRAPH_TRAVERSAL_POLICY_VERSION",
     "KNOWLEDGE_RELATION_KINDS",
     "MACRO_GRAPH_BLOCK_REASONS",
+    "MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA",
+    "MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V1",
+    "MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA_V2",
     "MACRO_GRAPH_SKIP_REASONS",
     "STRUCTURAL_RELATION_KINDS",
     "WORLD_ENTITY_KINDS",

@@ -352,6 +352,7 @@ def wire_world_macro_runtime(
                 macro_store=store,
                 graph_store=graph_store,
                 mapping=operator.scope_mapping,
+                collection_plan=plan,
                 report=report,
             )
         except Exception as exc:  # noqa: BLE001 - graph bridge stays fail-open
@@ -381,6 +382,7 @@ def _reconcile_macro_graph_bridge(
     macro_store: object,
     graph_store: object,
     mapping: object,
+    collection_plan: MacroCollectionPlan,
     report: dict[str, object],
 ) -> None:
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
@@ -390,6 +392,8 @@ def _reconcile_macro_graph_bridge(
 
     if not isinstance(mapping, WorldScopeMapping):
         raise TypeError("graph bridge requires WorldScopeMapping")
+    if not isinstance(collection_plan, MacroCollectionPlan):
+        raise TypeError("graph bridge requires MacroCollectionPlan")
     bootstrap = WorldOntologyBootstrapService(graph_store, mapping)
     bootstrap.ensure_published(now=now)
     revision = bootstrap.expected_revision()
@@ -399,16 +403,15 @@ def _reconcile_macro_graph_bridge(
         bridge=graph_store,
         scope_mapping=mapping,
         structural_revision=revision,
+        collection_plan=collection_plan,
         bridge_key=_BRIDGE_KEY,
     )
-    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256({"bridge_key": _BRIDGE_KEY, "intent": "activate"})
-    use_case.activate(request_id)
+    request_id = "macro_graph_bridge_request:v1:" + canonical_sha256(
+        {"bridge_key": _BRIDGE_KEY, "intent": "align"}
+    )
+    registry = use_case.ensure(request_id)
     registry = use_case.reconcile(limit=32)
     run = getattr(registry, "active_run", None)
-    if getattr(run, "status", None) == "blocked" and getattr(run, "block_reason", None) == "config_drift":
-        registry = use_case.handoff(scope_mapping=mapping, structural_revision=revision)
-        registry = use_case.reconcile(limit=32)
-        run = getattr(registry, "active_run", None)
     report["graph_bridge"] = {
         "status": None if run is None else getattr(run, "status", None),
         "version": getattr(registry, "version", None),

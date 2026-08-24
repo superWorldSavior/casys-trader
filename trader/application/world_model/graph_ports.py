@@ -103,6 +103,10 @@ class WorldGraphLedger(Protocol):
         self, cutoff_at: datetime
     ) -> tuple[WorldRelationEventEnvelope, ...]: ...
 
+    def get_knowledge_relation_event(
+        self, event_id: WorldRelationEventId
+    ) -> KnowledgeWorldRelationEvent | None: ...
+
     def list_revision_events_available_through(
         self, cutoff_at: datetime
     ) -> tuple[WorldOntologyRevisionEventEnvelope, ...]: ...

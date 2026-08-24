@@ -331,11 +331,22 @@ class WorldGraphStore:
         if not isinstance(parsed, _KNOWLEDGE_LOG.allowed):
             raise TypeError("event must be a knowledge relation event")
         existing = self._event_row(_KNOWLEDGE_LOG.table, parsed.event_id)
+        allow_blocked = isinstance(parsed, KnowledgeWorldRelationRetired)
         if fence is not None:
-            self._assert_fence(fence, expected_registry_version, for_new_insert=existing is None)
+            self._assert_fence(
+                fence,
+                expected_registry_version,
+                for_new_insert=existing is None,
+                allow_blocked=allow_blocked,
+            )
         self._persist_graph_event(parsed, log=_KNOWLEDGE_LOG)
         if fence is not None:
-            self._assert_fence(fence, expected_registry_version, for_new_insert=False)
+            self._assert_fence(
+                fence,
+                expected_registry_version,
+                for_new_insert=False,
+                allow_blocked=allow_blocked,
+            )
         receipt = self._commit_availability_receipt(
             subject_kind=_KNOWLEDGE_LOG.subject_kind,
             subject_id=parsed.event_id,
@@ -343,6 +354,17 @@ class WorldGraphStore:
             table=_KNOWLEDGE_LOG.table,
         )
         return PersistedWorldRef(identity=_KNOWLEDGE_LOG.id_type(parsed.event_id), receipt=receipt)
+
+    def get_knowledge_relation_event(self, event_id: WorldRelationEventId | str) -> KnowledgeWorldRelationEvent | None:
+        row = self._event_row(_KNOWLEDGE_LOG.table, str(event_id))
+        if row is None:
+            return None
+        if row["family"] != "knowledge":
+            return None
+        event = self._rehydrate_event_row(row, log=_KNOWLEDGE_LOG)
+        if not isinstance(event, _KNOWLEDGE_LOG.allowed):
+            raise TypeError("event must be a knowledge relation event")
+        return event
 
     def append_revision_event(
         self, event: WorldOntologyRevisionEvent
@@ -483,12 +505,14 @@ class WorldGraphStore:
         expected_registry_version: int | None,
         *,
         for_new_insert: bool,
+        allow_blocked: bool = False,
     ) -> None:
         if not isinstance(fence, MacroGraphBridgeFence):
             raise TypeError("fence must be MacroGraphBridgeFence")
         registry = self._registry_from_rows(fence.bridge_key, proven_only=False)
         run = registry.active_run
-        if run is None or run.run_id != fence.run_id or run.epoch != fence.epoch or run.status != "active":
+        allowed_status = {"active", "blocked"} if allow_blocked else {"active"}
+        if run is None or run.run_id != fence.run_id or run.epoch != fence.epoch or run.status not in allowed_status:
             raise StaleBridgeEpoch("stale_bridge_epoch")
         if for_new_insert:
             proven = self._proven_bridge_version(fence.bridge_key)

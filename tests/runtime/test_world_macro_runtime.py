@@ -362,9 +362,8 @@ def test_mapping_v2_covers_live_anchors_and_graph_bootstrap_uses_full_mapping(
     monkeypatch.setattr(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
         lambda **_kwargs: SimpleNamespace(
-            activate=lambda _request_id: SimpleNamespace(events=(), active_run=None),
+            ensure=lambda _request_id: SimpleNamespace(events=(), active_run=None),
             reconcile=lambda **_k: SimpleNamespace(events=(), active_run=None),
-            handoff=lambda **_k: SimpleNamespace(events=(), active_run=None, version=1),
         ),
     )
     bundle = wire_world_macro_runtime(
@@ -546,17 +545,17 @@ def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
     calls: list[str] = []
 
     class _Bridge:
-        def activate(self, request_id: str) -> object:
-            calls.append(f"activate:{request_id}")
+        def ensure(self, request_id: str) -> object:
+            calls.append(f"ensure:{request_id}")
             return SimpleNamespace(events=(), active_run=None)
 
         def reconcile(self, *, limit: int) -> object:
             calls.append(f"reconcile:{limit}")
             return SimpleNamespace(events=())
 
-        def handoff(self, **_kwargs: object) -> object:
-            calls.append("handoff")
-            return SimpleNamespace(events=(), active_run=None, version=1)
+        def activate(self, request_id: str) -> object:
+            calls.append(f"activate:{request_id}")
+            return SimpleNamespace(events=(), active_run=None)
 
     monkeypatch.setattr(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
@@ -574,8 +573,9 @@ def test_graph_v3_enabled_runs_in_macro_worker_not_episode_capture(
     assert first["triggered"] is True
     first["_thread"].join(timeout=60.0)
     bundle.runner.stop()
-    assert any(item.startswith("activate:") for item in calls)
+    assert any(item.startswith("ensure:") for item in calls)
     assert any(item.startswith("reconcile:") for item in calls)
+    assert not any(item.startswith("activate:") for item in calls)
     assert "RegisterMacroObservationKnowledge" not in inspect.getsource(collect_world_macro)
 
 
@@ -693,17 +693,17 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(tmp_path: Path, monkeypat
     calls: list[str] = []
 
     class _Bridge:
-        def activate(self, request_id: str) -> object:
-            calls.append(f"activate:{request_id}")
+        def ensure(self, request_id: str) -> object:
+            calls.append(f"ensure:{request_id}")
             return SimpleNamespace(events=(), active_run=None)
 
         def reconcile(self, *, limit: int) -> object:
             calls.append(f"reconcile:{limit}")
             return SimpleNamespace(events=())
 
-        def handoff(self, **_kwargs: object) -> object:
-            calls.append("handoff")
-            return SimpleNamespace(events=(), active_run=None, version=1)
+        def activate(self, request_id: str) -> object:
+            calls.append(f"activate:{request_id}")
+            return SimpleNamespace(events=(), active_run=None)
 
     monkeypatch.setattr(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
@@ -721,46 +721,51 @@ def test_graph_v3_yaml_only_enables_macro_graph_bridge(tmp_path: Path, monkeypat
     assert first["triggered"] is True
     first["_thread"].join(timeout=60.0)
     bundle.runner.stop()
-    assert any(item.startswith("activate:") for item in calls)
+    assert any(item.startswith("ensure:") for item in calls)
     assert any(item.startswith("reconcile:") for item in calls)
+    assert not any(item.startswith("activate:") for item in calls)
 
 
-def test_graph_bridge_handoff_after_config_drift_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_graph_bridge_ensure_then_reconcile_never_activates_every_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from trader.runtime.world_macro_runtime import wire_world_macro_runtime
 
     _stub_ontology_bootstrap(monkeypatch)
+    captured: list[dict[str, object]] = []
     calls: list[str] = []
 
     class _Bridge:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+        def ensure(self, request_id: str) -> object:
+            calls.append(f"ensure:{request_id}")
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="active", block_reason=None),
+                version=1,
+            )
+
+        def reconcile(self, *, limit: int) -> object:
+            calls.append(f"reconcile:{limit}")
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="active", block_reason=None),
+                version=1,
+            )
+
         def activate(self, request_id: str) -> object:
             calls.append(f"activate:{request_id}")
             return SimpleNamespace(events=(), active_run=None)
 
-        def reconcile(self, *, limit: int) -> object:
-            calls.append(f"reconcile:{limit}")
-            if "handoff" in calls:
-                return SimpleNamespace(
-                    events=(),
-                    active_run=SimpleNamespace(status="active", block_reason=None),
-                    version=3,
-                )
-            return SimpleNamespace(
-                events=(),
-                active_run=SimpleNamespace(status="blocked", block_reason="config_drift"),
-                version=2,
-            )
-
         def handoff(self, **_kwargs: object) -> object:
             calls.append("handoff")
-            return SimpleNamespace(
-                events=(),
-                active_run=SimpleNamespace(status="active", block_reason=None),
-                version=3,
-            )
+            return SimpleNamespace(events=(), active_run=None, version=1)
 
     monkeypatch.setattr(
         "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
-        lambda **_kwargs: _Bridge(),
+        lambda **kwargs: _Bridge(**kwargs),
     )
     bundle = wire_world_macro_runtime(
         config_dir=CONFIG_DIR,
@@ -770,13 +775,20 @@ def test_graph_bridge_handoff_after_config_drift_block(tmp_path: Path, monkeypat
         sleeper=lambda _seconds: None,
         graph_v3_enabled=True,
     )
-    first = bundle.runner.trigger(now=NOW, reason="drift-handoff")
+    first = bundle.runner.trigger(now=NOW, reason="align")
     assert first["triggered"] is True
     first["_thread"].join(timeout=60.0)
     bundle.runner.stop()
-    assert any(item.startswith("activate:") for item in calls)
-    assert calls.count("handoff") == 1
-    assert calls.count("reconcile:32") == 2
+    assert any(item.startswith("ensure:") for item in calls)
+    assert calls.count("reconcile:32") == 1
+    assert "handoff" not in calls
+    assert not any(item.startswith("activate:") for item in calls)
+    assert captured
+    assert captured[0]["collection_plan"].__class__.__name__ == "MacroCollectionPlan"
+    runtime_source = (REPO_ROOT / "trader" / "runtime" / "world_macro_runtime.py").read_text(encoding="utf-8")
+    assert "use_case.ensure(" in runtime_source
+    assert "use_case.activate(" not in runtime_source
+    assert "collection_plan=collection_plan" in runtime_source
 
 
 def test_typed_graph_flag_false_does_not_reread_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

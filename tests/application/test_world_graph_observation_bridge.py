@@ -26,9 +26,13 @@ from trader.domain.world_availability import (
 from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_graph import (
+    KnowledgeArtifactRef,
+    KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
+    KnowledgeWorldRelationRetired,
     MacroGraphBridgeFence,
     MacroGraphBridgeRegistry,
+    MacroGraphBridgeRunSpec,
     MacroGraphObservationLinked,
     MacroGraphObservationSkipped,
     MacroObservationCursor,
@@ -40,12 +44,19 @@ from trader.domain.world_graph import (
     WorldEntityRef,
     WorldOntologyRevision,
     WorldStructuralRelationRef,
+    parse_world_relation_event,
+)
+from trader.domain.world_graph_bridge_lifecycle import (
+    MacroGraphBridgeMigration,
+    UnknownMacroGraphBridgeDrift,
 )
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
     MACRO_SOURCE_REGISTRY_VERSION,
     MACRO_TRANSFORM_VERSION,
     MACRO_WORLD_OBSERVATION_SUBJECT_KIND,
+    MacroCollectionPlan,
+    MacroCollectionTarget,
     MacroCoverage,
     MacroDimensionState,
     MacroFactSource,
@@ -185,6 +196,19 @@ def _envelope(observation: MacroWorldObservation | None = None) -> MacroObservat
         observation=resolved,
         persisted=PersistedWorldRef(identity=MacroObservationId(resolved.observation_id), receipt=attested),
         evidence=AvailabilityEvidence(receipt=attested, first_seen_at=FIRST_SEEN),
+    )
+
+
+def _plan(*, digest: str = "b" * 64) -> MacroCollectionPlan:
+    return MacroCollectionPlan(
+        registry_version="macro_sources.v1",
+        registry_content_sha256=digest,
+        targets=(
+            MacroCollectionTarget(
+                scope=_scope(),
+                source_ids=("official_provider",),
+            ),
+        ),
     )
 
 
@@ -331,27 +355,28 @@ class _Graph:
 
     def append_knowledge_relation_event(
         self,
-        event: KnowledgeWorldRelationAsserted,
+        event: KnowledgeWorldRelationAsserted | KnowledgeWorldRelationRetired,
         fence: MacroGraphBridgeFence | None = None,
         expected_registry_version: int | None = None,
     ) -> PersistedWorldRef[str]:
         self.fence_calls.append(fence)
+        parsed = parse_world_relation_event(event)
         if fence is None:
             raise ValueError("bridge knowledge append requires a fence")
         if self.bridge is not None:
             current = self.bridge.registry.fence
             run = self.bridge.registry.active_run
-            if current != fence or run is None or run.status != "active":
+            allowed = {"active", "blocked"} if isinstance(parsed, KnowledgeWorldRelationRetired) else {"active"}
+            if current != fence or run is None or run.status not in allowed:
                 raise StaleBridgeEpoch("stale_bridge_epoch")
             if expected_registry_version != self.bridge.registry.version:
                 raise StaleBridgeEpoch("stale_bridge_epoch")
         if self.stale_before_payload:
             raise StaleBridgeEpoch("stale_bridge_epoch")
-        parsed = KnowledgeWorldRelationAsserted.from_mapping(event.to_dict())
         existing = next((item for item in self.knowledge if item.event_id == parsed.event_id), None)
         if existing is None:
             self.knowledge.append(parsed)
-        elif existing.relation.content_sha256 != parsed.relation.content_sha256:
+        elif existing.to_dict() != parsed.to_dict():
             raise ValueError("conflict: same relation event with different content")
         if self.stale_before_receipt:
             raise StaleBridgeEpoch("stale_bridge_epoch")
@@ -364,6 +389,9 @@ class _Graph:
             identity=WorldRelationEventId(parsed.event_id),
             receipt=_attested_event_receipt(parsed, kind="world_relation_event"),
         )
+
+    def get_knowledge_relation_event(self, event_id):
+        return next((item for item in self.knowledge if item.event_id == str(event_id)), None)
 
     def list_knowledge_relation_events_available_through(self, cutoff_at: datetime):
         from trader.application.world_model.graph_ports import WorldRelationEventEnvelope
@@ -424,7 +452,15 @@ class _Bridge:
         return PersistedWorldRef(identity=MacroGraphBridgeEventId(event.event_id), receipt=receipt)
 
 
-def _use_case(scan: _Scan, graph: _Graph, bridge: _Bridge, mapping: WorldScopeMapping | None = None):
+def _use_case(
+    scan: _Scan,
+    graph: _Graph,
+    bridge: _Bridge,
+    mapping: WorldScopeMapping | None = None,
+    *,
+    collection_plan: MacroCollectionPlan | None = None,
+    migration: MacroGraphBridgeMigration | None = None,
+):
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
 
     resolved = mapping if mapping is not None else _mapping()
@@ -435,6 +471,8 @@ def _use_case(scan: _Scan, graph: _Graph, bridge: _Bridge, mapping: WorldScopeMa
         bridge=bridge,
         scope_mapping=resolved,
         structural_revision=_revision(resolved),
+        collection_plan=collection_plan if collection_plan is not None else _plan(),
+        migration=migration,
         bridge_key=BRIDGE_KEY,
     )
 
@@ -476,6 +514,7 @@ def test_ports_expose_scan_bridge_ledger_and_fenced_knowledge_append() -> None:
     listed = inspect.signature(MacroObservationScanPort.list_available_after)
     assert list(listed.parameters) == ["self", "cursor", "limit"]
     assert hasattr(MacroObservationScanPort, "cursor_for")
+    assert hasattr(WorldGraphLedger, "get_knowledge_relation_event")
     append_event = inspect.signature(MacroGraphBridgeLedger.append_event)
     assert "expected_registry_version" in append_event.parameters
     assert "fence" in append_event.parameters
@@ -564,6 +603,7 @@ def test_config_drift_blocks_without_advancing_or_skipping() -> None:
         bridge=bridge,
         scope_mapping=drifted,
         structural_revision=_revision(drifted),
+        collection_plan=_plan(),
         bridge_key=BRIDGE_KEY,
     )
     registry = drifted_case.reconcile(limit=8)
@@ -592,6 +632,7 @@ def test_handoff_has_no_gap_or_double_ownership_and_old_fence_is_stale() -> None
         bridge=bridge,
         scope_mapping=drifted,
         structural_revision=_revision(drifted),
+        collection_plan=_plan(),
         bridge_key=BRIDGE_KEY,
     )
     blocked = drifted_case.reconcile(limit=8)
@@ -663,3 +704,134 @@ def test_old_worker_is_fenced_before_payload_receipt_terminal_and_cursor() -> No
     bridge.stale = True
     with pytest.raises(StaleBridgeEpoch):
         use_case.reconcile(limit=8)
+
+
+def _v1_spec(mapping: WorldScopeMapping | None = None) -> MacroGraphBridgeRunSpec:
+    resolved = mapping if mapping is not None else _mapping()
+    revision = _revision(resolved)
+    return MacroGraphBridgeRunSpec(
+        scope_mapping_id=resolved.mapping_id,
+        scope_mapping_hash=resolved.content_sha256,
+        ontology_revision_id=revision.revision_id,
+        ontology_revision_hash=revision.content_sha256,
+    )
+
+
+def test_ensure_missing_reserves_once_and_matched_active_is_noop() -> None:
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    use_case = _use_case(scan, graph, bridge)
+    first = use_case.ensure(REQUEST_ID)
+    assert first.active_run is not None
+    assert first.active_run.status == "active"
+    assert first.active_run.spec.schema_version.endswith(".v2")
+    assert first.active_run.spec.collection_plan_id == _plan().plan_id
+    assert first.active_run.spec.producer_version == MACRO_PRODUCER_VERSION
+    assert scan.reserve_calls == 1
+    again = use_case.ensure(REQUEST_ID)
+    assert again.events == first.events
+    assert scan.reserve_calls == 1
+
+
+def test_ensure_matched_blocked_resumes_without_reserving() -> None:
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    use_case = _use_case(scan, graph, bridge)
+    use_case.ensure(REQUEST_ID)
+    blocked = bridge.registry.block(reason="config_drift", expected_version=bridge.registry.version)
+    bridge.registry = blocked
+    assert scan.reserve_calls == 1
+    resumed = use_case.ensure(REQUEST_ID)
+    assert resumed.active_run is not None
+    assert resumed.active_run.status == "active"
+    assert scan.reserve_calls == 1
+
+
+def test_ensure_unknown_drift_blocks_without_activate_and_fails_closed() -> None:
+    mapping = _mapping()
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    use_case = _use_case(scan, graph, bridge, mapping)
+    use_case.ensure(REQUEST_ID)
+    drifted = WorldScopeMapping(mapping_id="world_scope_mapping.v2", entries=mapping.entries)
+    drifted_case = _use_case(scan, graph, bridge, drifted)
+    with pytest.raises(UnknownMacroGraphBridgeDrift, match="unknown_config_drift"):
+        drifted_case.ensure(REQUEST_ID)
+    assert bridge.registry.active_run is not None
+    assert bridge.registry.active_run.status == "blocked"
+    assert bridge.registry.active_run.block_reason == "config_drift"
+    assert scan.reserve_calls == 1
+
+
+def test_ensure_admitted_migration_retires_owned_observes_then_handoffs() -> None:
+    mapping = _mapping()
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    v1 = _v1_spec(mapping)
+    reservation = scan.reserve_activation_cursor(BRIDGE_KEY, REQUEST_ID)
+    bridge.registry = bridge.registry.activate(reservation=reservation, spec=v1, expected_version=0)
+    graph.bridge = bridge
+    envelope = _envelope()
+    cursor = scan.seed(envelope, 1)
+    from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
+
+    link = MacroObservationKnowledgeLink.from_envelope(envelope, mapping, _revision(mapping))
+    asserted = KnowledgeWorldRelationAsserted(relation=link.relation)
+    graph.append_knowledge_relation_event(
+        asserted,
+        fence=bridge.registry.fence,
+        expected_registry_version=bridge.registry.version,
+    )
+    linked = bridge.registry.link_observation(
+        observation_id=envelope.observation.observation_id,
+        relation=link.relation,
+        relation_event_id=asserted.event_id,
+        cursor=cursor,
+        expected_version=bridge.registry.version,
+    )
+    bridge.registry = linked
+    about = KnowledgeWorldRelationAsserted(
+        relation=KnowledgeWorldRelation(
+            kind="ABOUT",
+            source=KnowledgeArtifactRef(
+                artifact_id="knowledge_artifact:v1:" + "4" * 64,
+                content_sha256="f" * 64,
+            ),
+            target=WorldEntityRef(kind="venue", entity_id="mic:XTAI"),
+            effective_from=CUTOFF,
+            ontology_revision=_revision(mapping).revision_id,
+            source_refs=("artifact:proof",),
+        )
+    )
+    graph.knowledge.append(about)
+    successor_plan = _plan()
+    successor = _use_case(
+        scan,
+        graph,
+        bridge,
+        mapping,
+        collection_plan=successor_plan,
+        migration=MacroGraphBridgeMigration(predecessor_spec=v1, successor_spec=RegisterMacroObservationKnowledge(
+            scan=scan,
+            graph=graph,
+            bridge=bridge,
+            scope_mapping=mapping,
+            structural_revision=_revision(mapping),
+            collection_plan=successor_plan,
+            bridge_key=BRIDGE_KEY,
+        )._spec()),
+    )
+    handed = successor.ensure(REQUEST_ID)
+    assert handed.active_run is not None
+    assert handed.active_run.epoch == 2
+    assert handed.active_run.cursor == linked.active_run.cursor
+    assert handed.active_run.spec.schema_version.endswith(".v2")
+    retired = [item for item in graph.knowledge if isinstance(item, KnowledgeWorldRelationRetired)]
+    assert len(retired) == 1
+    assert retired[0].relation_id == link.relation.relation_id
+    assert about.event_id in {item.event_id for item in graph.knowledge}
+    assert scan.reserve_calls == 1
