@@ -308,6 +308,62 @@ def test_observation_accepts_availability_at_completed_bar_end() -> None:
 
     assert observation.available_at is not None
     assert observation.available_at.isoformat() == "2026-08-22T02:15:00+00:00"
+    assert observation.completed_bar_end_at == datetime(2026, 8, 22, 2, 15, tzinfo=timezone.utc)
+
+
+def test_observation_preserves_proven_completed_bar_end() -> None:
+    bar_start = _observation(
+        bar_interval="15m",
+        as_of_bar_ts="2026-08-24T05:15:00Z",
+        available_at="2026-08-24T05:30:00+00:00",
+        captured_at="2026-08-24T05:31:00+00:00",
+        anchor=AnchorBar(
+            ts="2026-08-24T05:15:00+00:00",
+            open=100.0,
+            high=103.0,
+            low=99.0,
+            close=102.0,
+            volume=1_000.0,
+            source="analysis_bars",
+            timestamp_semantics="bar_start",
+        ),
+    )
+    bar_close = _observation(
+        bar_interval="15m",
+        as_of_bar_ts="2026-08-24T05:15:00Z",
+        available_at="2026-08-24T05:15:00+00:00",
+        captured_at="2026-08-24T05:16:00+00:00",
+        anchor=AnchorBar(
+            ts="2026-08-24T05:15:00+00:00",
+            open=100.0,
+            high=103.0,
+            low=99.0,
+            close=102.0,
+            volume=1_000.0,
+            source="analysis_bars",
+            timestamp_semantics="bar_close",
+        ),
+    )
+    unknown = _observation(
+        bar_interval="15m",
+        as_of_bar_ts="2026-08-24T05:15:00Z",
+        available_at="2026-08-24T05:15:00+00:00",
+        captured_at="2026-08-24T05:16:00+00:00",
+        anchor=AnchorBar(
+            ts="2026-08-24T05:15:00+00:00",
+            open=100.0,
+            high=103.0,
+            low=99.0,
+            close=102.0,
+            volume=1_000.0,
+            source="analysis_bars",
+            timestamp_semantics="unknown",
+        ),
+    )
+
+    assert bar_start.completed_bar_end_at == datetime(2026, 8, 24, 5, 30, tzinfo=timezone.utc)
+    assert bar_close.completed_bar_end_at == bar_close.as_of_bar_ts
+    assert unknown.completed_bar_end_at is None
 
 
 def _outcome(**overrides: object) -> WorldOutcome:

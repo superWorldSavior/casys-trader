@@ -39,9 +39,11 @@ from trader.domain.world_episode import (
     SamplingSlotCapture,
     SamplingSlotCaptureKind,
     WorldEpisode,
+    WorldObservation,
     WorldOutcome,
     WorldPrediction,
     canonical_prediction_class,
+    completed_bar_cutoff,
 )
 
 
@@ -1545,8 +1547,8 @@ class WorldModelService:
         cutoff = cutoffs.get(str(getattr(identity, "started_event_id", "") or ""))
         if cutoff is None:
             return False
-        as_of = _episode_as_of(episode)
-        if as_of is None or as_of <= cutoff:
+        proven_end = _episode_completed_bar_end(episode)
+        if proven_end is None or proven_end <= cutoff:
             return False
         cohort_id = str(getattr(identity, "study_cohort_id", "") or "")
         identifier = _episode_id(episode)
@@ -1577,15 +1579,20 @@ class WorldModelService:
             except Exception:  # noqa: BLE001 - unproven start never blocks V1 shadow
                 continue
             grouped: dict[tuple[str, str, str, str], dict[str, str]] = {}
+            anchor_ends: dict[tuple[str, str, str, str], datetime] = {}
             for episode in episodes:
                 anchor = observation_market_anchor(episode)
                 if anchor is None:
                     continue
-                venue, symbol, interval, as_of = anchor
+                venue, symbol, interval, _as_of = anchor
                 if venue not in set(cohort.manifest.venues) or interval != cohort.manifest.bar_interval:
                     continue
-                as_of_dt = _parse_timestamp(as_of)
-                if as_of_dt is None or as_of_dt <= evidence.effective_ready_at:
+                # Cohort eligibility is the proven completed-bar end, not as_of identity.
+                proven_end = _episode_completed_bar_end(episode)
+                if proven_end is None or proven_end <= evidence.effective_ready_at:
+                    continue
+                existing_end = anchor_ends.get(anchor)
+                if existing_end is not None and existing_end != proven_end:
                     continue
                 identifier = _episode_id(episode)
                 if identifier is None:
@@ -1596,6 +1603,7 @@ class WorldModelService:
                     continue
                 if not contract_id:
                     continue
+                anchor_ends[anchor] = proven_end
                 grouped.setdefault(anchor, {}).setdefault(contract_id, identifier)
             for anchor, refs in grouped.items():
                 try:
@@ -1619,6 +1627,7 @@ class WorldModelService:
                         anchor,
                         filtered,
                         started.event_id,
+                        anchor_end_at=anchor_ends[anchor],
                         scope_resolution=resolution,
                     )
                     admit(AdmitWorldCohortSlot(slot=slot, started_evidence=evidence))
@@ -1655,13 +1664,37 @@ def _predictor_cohort_lineage(predictor: object | None) -> dict[str, str] | None
     }
 
 
-def _episode_as_of(episode: object) -> datetime | None:
+def _observation_source(episode: object) -> object:
     payload = _episode_payload(episode)
     observation = _field(payload, "observation")
-    raw = _field(payload, "as_of_bar_ts")
-    if raw is None and observation is not None:
-        raw = _field(observation, "as_of_bar_ts")
-    return _parse_timestamp(raw)
+    return observation if observation is not None else payload
+
+
+def _episode_completed_bar_end(episode: object) -> datetime | None:
+    """Return the proven completed-bar clock, or None when provenance is insufficient."""
+
+    source = _observation_source(episode)
+    if isinstance(source, WorldObservation):
+        completed = source.completed_bar_end_at
+        return None if completed is None else _utc(completed)
+    as_of = _parse_timestamp(_field(source, "as_of_bar_ts"))
+    interval = _field(source, "bar_interval", "interval")
+    if as_of is None or not isinstance(interval, str) or not interval.strip():
+        return None
+    anchor = _field(source, "anchor")
+    semantics = _field(anchor, "timestamp_semantics") if anchor is not None else None
+    if semantics is None:
+        semantics = _field(source, "timestamp_semantics")
+    if not isinstance(semantics, str) or not semantics.strip():
+        return None
+    try:
+        return completed_bar_cutoff(
+            as_of_bar_ts=as_of,
+            timestamp_semantics=semantics,
+            bar_interval=interval,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _scope_resolution_for(
@@ -1693,6 +1726,7 @@ def _slot_from_captured(
     refs: Mapping[str, str],
     started_event_id: str,
     *,
+    anchor_end_at: datetime,
     scope_resolution: WorldScopeResolution | None = None,
 ) -> WorldCohortSlot:
     venue, symbol, interval, as_of = anchor
@@ -1705,7 +1739,7 @@ def _slot_from_captured(
         symbol=symbol,
         bar_interval=interval,
         as_of_bar_ts=as_of,
-        anchor_end_at=as_of,
+        anchor_end_at=anchor_end_at,
         comparison_batch_id=_stable_id(
             "world-cohort-slot-batch",
             {

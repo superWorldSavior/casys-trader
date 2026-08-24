@@ -843,6 +843,16 @@ class WorldObservation:
         return self.as_of_bar_ts
 
     @property
+    def completed_bar_end_at(self) -> datetime | None:
+        """Proven completed-bar clock, or None when semantics cannot prove it."""
+
+        return completed_bar_cutoff(
+            as_of_bar_ts=self.as_of_bar_ts,
+            timestamp_semantics=self.anchor.timestamp_semantics,
+            bar_interval=self.bar_interval,
+        )
+
+    @property
     def episode_id(self) -> str:
         context_snapshot_id = None
         if isinstance(self.context, Mapping):
