@@ -62,9 +62,31 @@ Distincte de ``_DATA_BOUNDARY`` : un analyste n'a ni mandat, ni contrat de sorti
 ni mémoire, ni outil — lui parler de ces blocs le renverrait à un contexte absent.
 """
 
+_USER_FACING_TEXT_GUIDANCE = (
+    "# User-facing writing\n"
+    "Write every free-text field you author in clear, natural English. This includes "
+    "`rationale`, context-request rationales, `thesis.setup`, `thesis.invalidation`, "
+    "watch/order rationales, and learning notes. Keep JSON keys, enum values, symbols, "
+    "IDs, and tool names exactly as specified.\n"
+    "`rationale` is the explanation shown in the app. Use two to four short sentences, "
+    "in this order when applicable: (1) the decision and intended position change, "
+    "(2) at most two material reasons, (3) the active or requested protection and "
+    "invalidation, and (4) the next review time or trigger. Describe requested actions "
+    "as intent; never claim that a tool effect was applied unless a matching "
+    "`tool_result` in the supplied context confirms it.\n"
+    "Keep decision-critical numbers such as position size, price, stop, and timeframe, "
+    "but explain them in ordinary language. Do not expose internal tokens such as "
+    "`sticky_unmandated`, `runtime_stale`, `breakout_down`, or `data_age` in prose. "
+    "Avoid unexplained abbreviations such as ER, SL24, SH24, HTF, and rvol; spell out "
+    "the meaning. Raw metric names belong in the structured technical record, not the "
+    "app-facing prose. This is a "
+    "presentation rule only: do not change the decision, confidence, reason code, or "
+    "tool calls to make the message sound simpler.\n\n"
+)
+
 _OUTPUT_CONTRACT = (
     "Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme:\n"
-    '{"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    '{"symbol":"<SYM>","confidence":<0..1>,"rationale":"<clear English>",'
     '"opportunity_side":<"long"|"short"|null>,'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
     "`calls: []` signifie HOLD explicite pour ce symbole.\n"
@@ -308,6 +330,7 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
         f"{_decision_guidance(allow_context_request=allow_context_request, allow_tool_calls=False)}"
         f"{_exec_guidance()}"
         f"{_indicator_watch_vocabulary()}"
+        f"{_USER_FACING_TEXT_GUIDANCE}"
         f"# Contexte marché et portefeuille (JSON)\n{_prompt_json(context)}\n\n"
         f"# Contrat de sortie\n{output_contract}\n"
     )
@@ -316,7 +339,7 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
 _BATCH_FINAL_CONTRACT = (
     'Réponds UNIQUEMENT par {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
     "par symbole listé.\n"
-    'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<clear English>",'
     '"opportunity_side":<"long"|"short"|null>,'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
     "`opportunity_side` sert uniquement à l'audit ex-post : direction de "
@@ -330,7 +353,7 @@ _BATCH_FINAL_CONTRACT = (
 _SYMBOL_CALLS_FINAL_CONTRACT = (
     'Le contrat final: {"decisions": [ <obj>, ... ]} avec EXACTEMENT une entrée '
     "par symbole listé.\n"
-    'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<court>",'
+    'Chaque <obj>: {"symbol":"<SYM>","confidence":<0..1>,"rationale":"<clear English>",'
     '"opportunity_side":<"long"|"short"|null>,'
     f'"decision_reason_code":"{_REASON_CODE_ENUM}","calls":[<tool_call>,...]}}\n'
     "`opportunity_side` est la direction de l'opportunité précise évaluée; `null` "
@@ -750,6 +773,7 @@ def build_batch_prompt(
         f"{_exec_guidance()}"
         f"{_indicator_watch_vocabulary()}"
         f"{_tool_catalog(max_tool_calls_per_symbol=max_tool_calls_per_symbol, max_rounds=max_rounds) if allow_tool_calls else ''}"
+        f"{_USER_FACING_TEXT_GUIDANCE}"
         f"# Contexte partagé (JSON)\n{_prompt_json(shared_context)}\n\n"
         f"# Symboles à décider (JSON)\n{_prompt_json(symbols_payload)}\n\n"
         f"# Contrat de sortie\n{contract}\n"

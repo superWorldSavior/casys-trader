@@ -115,6 +115,33 @@ def test_build_prompt_single_expose_la_grammaire_pine_like_calls() -> None:
     assert "cancel_watch_ids" not in prompt
 
 
+def test_prompts_exigent_des_messages_utilisateur_en_anglais_clair() -> None:
+    prompts = [
+        codex_client.build_prompt(
+            mandate="m",
+            memory="mem",
+            context={"cockpit": {}},
+            allow_context_request=True,
+        ),
+        build_batch_prompt(
+            mandate="m",
+            memory="mem",
+            shared_context={},
+            symbols_payload=[],
+            allow_tool_calls=True,
+        ),
+    ]
+
+    for prompt in prompts:
+        assert "# User-facing writing" in prompt
+        assert "clear, natural English" in prompt
+        assert "Use two to four short sentences" in prompt
+        assert "never claim that a tool effect was applied" in prompt
+        assert "Do not expose internal tokens" in prompt
+        assert "presentation rule only" in prompt
+        assert '"rationale":"<clear English>"' in prompt
+
+
 def test_prompt_demande_un_reason_code_structure() -> None:
     prompt = build_batch_prompt(
         mandate="m",
