@@ -296,3 +296,19 @@ def test_world_resource_budget_is_stdlib_domain_with_application_port() -> None:
     assert "os.environ" not in domain_source
     assert "sqlite3" not in domain_source
 
+
+def test_world_ontology_attestation_is_application_owned_and_composed_at_runtime() -> None:
+    bootstrap_path = REPO_ROOT / "trader" / "application" / "world_model" / "ontology_bootstrap.py"
+    runtime_path = REPO_ROOT / "trader" / "runtime" / "world_model_runtime.py"
+    daemon_path = REPO_ROOT / "trader" / "runtime" / "daemon.py"
+    assert bootstrap_path.exists()
+    assert "class WorldOntologyAttestation" in bootstrap_path.read_text(encoding="utf-8")
+    assert _import_violations(bootstrap_path, _FORBIDDEN_APPLICATION_PREFIXES) == []
+    runtime_source = runtime_path.read_text(encoding="utf-8")
+    assert "def compose_world_ontology_attestation" in runtime_source
+    daemon_source = daemon_path.read_text(encoding="utf-8")
+    assert "compose_world_ontology_attestation(" in daemon_source
+    assert "ontology_proof=_ontology_attestation" in daemon_source
+    assert daemon_source.index("compose_world_ontology_attestation(") < daemon_source.index(
+        "activate_world_shadow_pilot("
+    )

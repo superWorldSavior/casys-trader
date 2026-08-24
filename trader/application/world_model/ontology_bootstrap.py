@@ -15,10 +15,12 @@ from trader.application.world_model.graph_ports import (
     WorldOntologyReadiness,
 )
 from trader.application.world_model.graph_snapshot import expected_scope_heads
+from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
 from trader.application.world_model.ontology_service import (
     AssertStructuralWorldRelation,
     AssertWorldEntity,
     PublishWorldOntologyRevision,
+    WorldOntologyProofService,
     WorldOntologyService,
 )
 from trader.domain.world_episode import parse_utc_timestamp
@@ -235,9 +237,64 @@ class WorldOntologyBootstrapService:
         return _readiness(status="ready", mapping=self._mapping, revision=revision, reason="published")
 
 
+class WorldOntologyAttestation:
+    """Single application authority for market_ontology.v1 bootstrap and PIT heads proof."""
+
+    def __init__(
+        self,
+        ledger: WorldGraphLedger,
+        mapping: WorldScopeMapping,
+        *,
+        revision_id: str = MARKET_ONTOLOGY_REVISION_ID,
+        effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
+    ) -> None:
+        self._ledger = ledger
+        self._mapping = mapping
+        self._bootstrap = WorldOntologyBootstrapService(
+            ledger,
+            mapping,
+            revision_id=revision_id,
+            effective_from=effective_from,
+        )
+        self._proof = WorldOntologyProofService(ledger)
+
+    @property
+    def ledger(self) -> WorldGraphLedger:
+        return self._ledger
+
+    @property
+    def mapping(self) -> WorldScopeMapping:
+        return self._mapping
+
+    def expected_revision(self) -> WorldOntologyRevision:
+        return self._bootstrap.expected_revision()
+
+    def readiness(self, cutoff_at: datetime | str | None = None) -> WorldOntologyReadiness:
+        return self._bootstrap.readiness(cutoff_at)
+
+    def ensure_published(self, *, now: datetime | str | None = None) -> WorldOntologyReadiness:
+        return self._bootstrap.ensure_published(now=now)
+
+    def proven_heads(
+        self,
+        *,
+        revision_id: str,
+        scope_mapping_id: str,
+        scope_mapping_hash: str,
+        at: datetime | str,
+    ) -> WorldOntologyHeadsProof | None:
+        return self._proof.proven_heads(
+            revision_id=revision_id,
+            scope_mapping_id=scope_mapping_id,
+            scope_mapping_hash=scope_mapping_hash,
+            at=at,
+        )
+
+
 __all__ = [
     "MARKET_ONTOLOGY_EFFECTIVE_FROM",
     "MARKET_ONTOLOGY_REVISION_ID",
+    "WorldOntologyAttestation",
     "WorldOntologyBootstrapService",
     "WorldOntologyReadiness",
     "derive_market_ontology",

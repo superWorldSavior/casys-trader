@@ -9,6 +9,7 @@ from trader.application.world_model.graph_ports import WorldOntologyReadinessPor
 from trader.application.world_model.graph_snapshot import expected_scope_heads
 from trader.application.world_model.ontology_bootstrap import (
     MARKET_ONTOLOGY_REVISION_ID,
+    WorldOntologyAttestation,
     WorldOntologyBootstrapService,
     derive_market_ontology,
 )
@@ -53,6 +54,8 @@ def test_ontology_bootstrap_is_application_owned_without_infrastructure() -> Non
     assert _import_violations(_BOOTSTRAP) == []
     assert callable(WorldOntologyBootstrapService.readiness)
     assert callable(WorldOntologyBootstrapService.ensure_published)
+    assert callable(WorldOntologyAttestation.ensure_published)
+    assert callable(WorldOntologyAttestation.proven_heads)
     assert WorldOntologyReadinessPort.__name__ == "WorldOntologyReadinessPort"
 
 
@@ -128,6 +131,58 @@ def test_committed_market_ontology_bootstrap_is_deterministic_and_idempotent_on_
         assert WorldOntologyBootstrapService(second, mapping).readiness(CUTOFF).status == "ready"
     finally:
         second.close()
+
+
+def test_ontology_attestation_is_the_single_proof_query_and_does_not_fabricate_heads(
+    tmp_path: Path,
+) -> None:
+    from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
+    from trader.domain.world_feature_contract import (
+        WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+        WORLD_SCOPE_MAPPING_ID,
+        WORLD_SCOPE_MAPPING_SHA256,
+    )
+
+    mapping = WorldScopeResolver.load(CONFIG_DIR).mapping
+    path = tmp_path / "world_model.db"
+
+    def clock() -> datetime:
+        return CUTOFF
+
+    store = WorldGraphStore(path, clock=clock)
+    try:
+        attestation = WorldOntologyAttestation(store, mapping)
+        assert attestation.proven_heads(
+            revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+            scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
+            scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+            at=CUTOFF,
+        ) is None
+        assert attestation.readiness(CUTOFF).status == "unpublished"
+        ready = attestation.ensure_published(now=CUTOFF)
+        assert ready.status == "ready"
+        proof = attestation.proven_heads(
+            revision_id=WORLD_GRAPH_V3_ONTOLOGY_REVISION,
+            scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
+            scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+            at=CUTOFF,
+        )
+        assert isinstance(proof, WorldOntologyHeadsProof)
+        assert proof.revision_id == WORLD_GRAPH_V3_ONTOLOGY_REVISION
+        assert proof.scope_mapping_id == mapping.mapping_id
+        assert proof.scope_mapping_hash == mapping.content_sha256
+        assert proof.content_sha256 == ready.ontology_hash
+        assert attestation.proven_heads(
+            revision_id="semantic_catalog.v1",
+            scope_mapping_id=WORLD_SCOPE_MAPPING_ID,
+            scope_mapping_hash=WORLD_SCOPE_MAPPING_SHA256,
+            at=CUTOFF,
+        ) is None
+        again = attestation.ensure_published(now=CUTOFF)
+        assert again.ontology_hash == ready.ontology_hash
+        assert len(store.list_revision_events_available_through(CUTOFF)) == 1
+    finally:
+        store.close()
 
 
 def test_unmapped_instrument_is_not_invented_by_bootstrap() -> None:

@@ -289,7 +289,7 @@ def test_paired_comparison_excludes_mismatched_causal_identity_with_reasons() ->
         baseline, gru = _causal_pair(gru_overrides=mutation)
         result = evaluate_shadow([baseline, gru], [_outcome()], minimum_paired_support=1)
 
-        assert result["status"] == "ready"
+        assert result["status"] == "warming_up"
         assert [(group["model_id"], group["matched"]) for group in result["groups"]] == [
             (BASELINE_MODEL_ID, 1),
             (GRU_MODEL_ID, 1),
@@ -302,6 +302,73 @@ def test_paired_comparison_excludes_mismatched_causal_identity_with_reasons() ->
         assert comparison["gru_minus_baseline"] is None
         assert result["excluded"][reason] == 1
         assert comparison["excluded"][reason] == 1
+
+
+def test_generic_eval_dedup_is_order_independent_over_full_causal_proof() -> None:
+    replay = _prediction(
+        prediction_id="immutable-causal",
+        model_id=BASELINE_MODEL_ID,
+        **_CAUSAL_IDENTITY,
+    )
+    replay_copy = dict(replay)
+    divergent_proof = _prediction(
+        prediction_id="immutable-causal",
+        model_id=BASELINE_MODEL_ID,
+        **{**_CAUSAL_IDENTITY, "comparison_batch_id": "batch:other"},
+    )
+    outcome = _outcome()
+
+    forward = evaluate_shadow([replay, replay_copy], [outcome], minimum_paired_support=1)
+    reversed_replay = evaluate_shadow([replay_copy, replay], [outcome], minimum_paired_support=1)
+    assert forward == reversed_replay
+    assert forward["matched"] == 1
+    assert forward["excluded"] == {"duplicate_prediction_replay": 1}
+
+    forward_ambiguous = evaluate_shadow([replay, divergent_proof], [outcome], minimum_paired_support=1)
+    reversed_ambiguous = evaluate_shadow([divergent_proof, replay], [outcome], minimum_paired_support=1)
+    assert forward_ambiguous == reversed_ambiguous
+    assert forward_ambiguous["matched"] == 0
+    assert forward_ambiguous["status"] == "warming_up"
+    assert forward_ambiguous["excluded"] == {"ambiguous_prediction_identity": 2}
+
+
+def test_generic_eval_counts_absent_members_and_does_not_claim_ready_without_exact_pairs() -> None:
+    baseline_only = _prediction(
+        prediction_id="baseline-only",
+        episode_id="episode-1",
+        model_id=BASELINE_MODEL_ID,
+        **_CAUSAL_IDENTITY,
+    )
+    gru_other_slot = _prediction(
+        prediction_id="gru-other",
+        episode_id="episode-2",
+        model_id=GRU_MODEL_ID,
+        created_at="2026-08-21T10:00:00+00:00",
+        **{
+            **_CAUSAL_IDENTITY,
+            "predicted_at": "2026-08-21T10:00:00+00:00",
+            "ready_at": "2026-08-21T10:00:00+00:00",
+        },
+    )
+    outcomes = [
+        _outcome(event_id="outcome-1", episode_id="episode-1"),
+        _outcome(
+            event_id="outcome-2",
+            episode_id="episode-2",
+            available_at="2026-08-21T14:15:00+00:00",
+        ),
+    ]
+    forward = evaluate_shadow([baseline_only, gru_other_slot], outcomes, minimum_paired_support=1)
+    reversed_rows = evaluate_shadow([gru_other_slot, baseline_only], outcomes, minimum_paired_support=1)
+
+    assert forward == reversed_rows
+    assert forward["status"] == "warming_up"
+    comparison = forward["comparisons"][0]
+    assert comparison["matched_pairs"] == 0
+    assert comparison["status"] == "insufficient_support"
+    assert comparison["excluded"]["absent_member"] == 2
+    assert forward["excluded"]["absent_member"] == 2
+    assert "predicted_at_mismatch" not in comparison["excluded"]
 
 
 def test_paired_comparison_accepts_exact_causal_identity() -> None:

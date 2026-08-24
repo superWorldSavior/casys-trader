@@ -145,8 +145,8 @@ def evaluate_shadow(
     (``predicted_at``) and the actual wall-clock availability
     (``ready_at``/``recorded_at``) to be strictly before the outcome label.
     The asynchronous worker makes the logical cutoff alone insufficient.
-    Scoring groups stay ``ready`` whenever any prequential pair is scorable;
-    comparison-proof mismatches do not flip that into a false ``warming_up``.
+    Individual groups may still list scorable forecasts, but a GRU/baseline
+    comparison with candidates and zero exact pairs stays ``warming_up``.
     """
 
     if isinstance(minimum_paired_support, bool) or not isinstance(minimum_paired_support, int):
@@ -249,7 +249,7 @@ def evaluate_shadow(
         "comparison_minimum_paired_support": minimum_paired_support,
         "comparisons": comparisons,
         "excluded": dict(sorted(excluded.items())),
-        "status": "ready" if groups else "warming_up",
+        "status": _evaluation_status(groups, comparisons),
         "context_ablation": evaluate_context_ablation_from_scores(
             grouped_scores,
             minimum_paired_support=minimum_paired_support,
@@ -553,13 +553,14 @@ def _select_predictions(
 
     selected: list[tuple[object, str, str, str, str]] = []
     for (episode_id, horizon_id, model_id, model_version), rows in sorted(candidates.items()):
-        signatures = {_prediction_replay_signature(row) for row in rows}
+        ordered = sorted(rows, key=_prediction_replay_signature)
+        signatures = {_prediction_replay_signature(row) for row in ordered}
         if len(signatures) != 1:
             excluded["ambiguous_prediction_identity"] += len(rows)
             continue
         if len(rows) > 1:
             excluded["duplicate_prediction_replay"] += len(rows) - 1
-        selected.append((rows[0], episode_id, horizon_id, model_id, model_version))
+        selected.append((ordered[0], episode_id, horizon_id, model_id, model_version))
     return selected
 
 
@@ -578,6 +579,10 @@ def _prediction_replay_signature(prediction: object) -> str:
         "ready_at": None if ready_at is None else ready_at.isoformat(),
         "training_cutoff": _text_from_payload(prediction, model_payload, "training_cutoff"),
         "model_fingerprint": _text_from_payload(prediction, model_payload, "model_fingerprint"),
+        "study_cohort_id": _envelope_text(prediction, "study_cohort_id"),
+        "manifest_sha256": _envelope_text(prediction, "manifest_sha256"),
+        "comparison_batch_id": _comparison_batch_id(prediction),
+        "training_lineage": _comparison_cohort_fingerprint(prediction),
     }
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
@@ -604,15 +609,23 @@ def _paired_comparisons(
     ]
     comparisons: list[dict[str, Any]] = []
     for baseline_version, horizon_id, baseline_rows in sorted(baseline_groups):
-        baseline_by_slot = {row.candidate_slot: row for row in baseline_rows}
+        baseline_by_slot, baseline_ambiguous = _unique_candidate_slots(baseline_rows)
         for gru_version, gru_horizon_id, gru_rows in sorted(gru_groups):
             if gru_horizon_id != horizon_id:
                 continue
-            gru_by_slot = {row.candidate_slot: row for row in gru_rows}
+            gru_by_slot, gru_ambiguous = _unique_candidate_slots(gru_rows)
             paired_baseline: list[_ScoredPrediction] = []
             paired_gru: list[_ScoredPrediction] = []
             comparison_excluded: defaultdict[str, int] = defaultdict(int)
-            for slot in sorted(set(baseline_by_slot).intersection(gru_by_slot)):
+            for slot in sorted(set(baseline_by_slot) | set(gru_by_slot) | baseline_ambiguous | gru_ambiguous):
+                if slot in baseline_ambiguous or slot in gru_ambiguous:
+                    comparison_excluded["ambiguous_lane_member"] += 1
+                    excluded["ambiguous_lane_member"] += 1
+                    continue
+                if slot not in baseline_by_slot or slot not in gru_by_slot:
+                    comparison_excluded["absent_member"] += 1
+                    excluded["absent_member"] += 1
+                    continue
                 baseline_row = baseline_by_slot[slot]
                 gru_row = gru_by_slot[slot]
                 mismatch = _comparison_proof_mismatch(baseline_row, gru_row)
@@ -662,6 +675,31 @@ def _paired_comparisons(
                 )
             comparisons.append(comparison)
     return comparisons
+
+
+def _unique_candidate_slots(
+    rows: list[_ScoredPrediction],
+) -> tuple[dict[tuple[str, str], _ScoredPrediction], set[tuple[str, str]]]:
+    grouped: dict[tuple[str, str], list[_ScoredPrediction]] = defaultdict(list)
+    for row in rows:
+        grouped[row.candidate_slot].append(row)
+    unique: dict[tuple[str, str], _ScoredPrediction] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    for slot, items in grouped.items():
+        ordered = sorted(items, key=lambda item: item.episode_id)
+        if len(ordered) != 1:
+            ambiguous.add(slot)
+            continue
+        unique[slot] = ordered[0]
+    return unique, ambiguous
+
+
+def _evaluation_status(groups: list[dict[str, Any]], comparisons: list[dict[str, Any]]) -> str:
+    if not groups:
+        return "warming_up"
+    if comparisons and all(int(item.get("matched_pairs") or 0) == 0 for item in comparisons):
+        return "warming_up"
+    return "ready"
 
 
 def _comparison_proof_mismatch(left: _ScoredPrediction, right: _ScoredPrediction) -> str | None:

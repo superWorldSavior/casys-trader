@@ -457,16 +457,46 @@ def _compose_graph_v3_predictors() -> tuple[object, ...]:
     )
 
 
+def compose_world_ontology_attestation(
+    *,
+    store: object | None,
+    config_dir: str | Path | None,
+    clock: object | None = None,
+) -> object | None:
+    """Compose the single market_ontology.v1 attestation. Fail-open, no fabricated heads."""
+
+    if store is None or config_dir is None:
+        return None
+    try:
+        from trader.application.world_model.ontology_bootstrap import WorldOntologyAttestation
+        from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+        from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
+
+        path = getattr(store, "path", None)
+        db = getattr(store, "_db", None)
+        if db is None and path is None:
+            return None
+        kwargs: dict[str, object] = {}
+        if clock is not None:
+            kwargs["clock"] = clock
+        graph_store = WorldGraphStore(db if db is not None else path, **kwargs)
+        mapping = WorldScopeResolver.load(Path(config_dir)).mapping
+        return WorldOntologyAttestation(graph_store, mapping)
+    except Exception:  # noqa: BLE001 - missing ontology cannot block V1/Trader
+        return None
+
+
 def _compose_graph_v3_capture(
     *,
     store: object | None,
     config_dir: str | Path | None,
     study_cohort_id: str | None = None,
+    ontology_attestation: object | None = None,
 ) -> object | None:
     if store is None or config_dir is None:
         return None
     path = getattr(store, "path", None)
-    if path is None:
+    if path is None and ontology_attestation is None:
         return None
     from trader.application.world_model.graph_capture import WorldGraphCaptureConfig
     from trader.application.world_model.graph_snapshot import WorldGraphSnapshotService
@@ -474,18 +504,25 @@ def _compose_graph_v3_capture(
     from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
 
     resolver = WorldScopeResolver.load(Path(config_dir))
-    db = getattr(store, "_db", None)
-    graph_store = WorldGraphStore(db if db is not None else path)
-    from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
+    from trader.application.world_model.ontology_bootstrap import WorldOntologyAttestation
 
-    WorldOntologyBootstrapService(graph_store, resolver.mapping).ensure_published()
+    if isinstance(ontology_attestation, WorldOntologyAttestation):
+        graph_store = ontology_attestation.ledger
+        attestation = ontology_attestation
+    else:
+        if path is None:
+            return None
+        db = getattr(store, "_db", None)
+        graph_store = WorldGraphStore(db if db is not None else path)
+        attestation = WorldOntologyAttestation(graph_store, resolver.mapping)
+    attestation.ensure_published()
     service = WorldGraphSnapshotService(
         ledger=graph_store,
         traversal=WorldTemporalTraversalAdapter(),
         snapshot_ledger=graph_store,
     )
     return WorldGraphCaptureConfig(
-        scope_mapping=resolver.mapping,
+        scope_mapping=attestation.mapping,
         snapshot_service=service,
         study_cohort_id=study_cohort_id,
         max_depth=4,
@@ -529,6 +566,7 @@ def compose_local_graph_v3_lanes(
     store: object | None = None,
     config_dir: str | Path | None = None,
     study_cohort_id: str | None = None,
+    ontology_attestation: object | None = None,
 ) -> tuple[tuple[object, ...], WorldGraphEpisodeEnricher | None]:
     """Compose local V3 lanes only when the reused GRAPH_V3 flag is on and capture+predictors exist."""
 
@@ -543,6 +581,7 @@ def compose_local_graph_v3_lanes(
                 store=store,
                 config_dir=config_dir,
                 study_cohort_id=study_cohort_id,
+                ontology_attestation=ontology_attestation,
             )
         )
         if predictors is None:

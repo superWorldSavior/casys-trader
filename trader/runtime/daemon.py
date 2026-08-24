@@ -2166,6 +2166,7 @@ def main(
                 WorldModelBackgroundRunner,
                 WorldModelRuntime,
                 compose_local_graph_v3_lanes,
+                compose_world_ontology_attestation,
                 compose_world_resource_guard,
             )
 
@@ -2175,6 +2176,21 @@ def main(
                 query=_world_model_store,
             )
             _pilot_graph_cohort_id = None
+            _ontology_attestation = None
+            try:
+                _ontology_attestation = compose_world_ontology_attestation(
+                    store=_world_model_store,
+                    config_dir=ROOT / "config",
+                )
+                if _ontology_attestation is not None:
+                    _ontology_attestation.ensure_published(now=now())
+            except Exception as exc:  # noqa: BLE001 - unpublished ontology cannot block V1/Trader
+                log.warning(
+                    "[world_shadow_pilot] ontology attestation skipped: %s:%s",
+                    type(exc).__name__,
+                    exc,
+                )
+                _ontology_attestation = None
             if _world_shadow_pilot_activation:
                 try:
                     from trader.application.world_model.pilot_activation import (
@@ -2186,6 +2202,7 @@ def main(
                         config_dir=ROOT / "config",
                         now=now(),
                         environ=os.environ,
+                        ontology_proof=_ontology_attestation,
                     )
                     if _pilot_report.status != "skipped":
                         _pilot_graph_cohort_id = _pilot_report.graph_cohort_id
@@ -2245,6 +2262,7 @@ def main(
                         store=_world_model_store,
                         config_dir=ROOT / "config",
                         study_cohort_id=_pilot_graph_cohort_id,
+                        ontology_attestation=_ontology_attestation,
                     )
                     extra_predictors.extend(v3_predictors)
                 except Exception as exc:  # noqa: BLE001 - V3 composition cannot block V1/V2
