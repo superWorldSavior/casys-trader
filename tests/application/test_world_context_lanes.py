@@ -343,11 +343,11 @@ def test_service_reuses_first_canonical_v2_slot_across_context_ids_and_restart(t
     assert {row["episode_id"] for row in store.list_predictions()} == {first.episode_id}
 
 
-def test_service_fails_closed_on_v2_market_evidence_conflict(tmp_path) -> None:
+def test_service_reuses_canonical_v2_slot_when_later_poll_revises_ohlcv_and_context(tmp_path) -> None:
     from pathlib import Path
 
     from trader.domain.world_episode import WorldEpisode, WorldObservation
-    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.infrastructure.state_db.world_model_store import WorldModelConflictError, WorldModelStore
 
     first, _second = _v2_context_pair()
     v1 = _v1_episode()
@@ -397,9 +397,15 @@ def test_service_fails_closed_on_v2_market_evidence_conflict(tmp_path) -> None:
     )
     assert service.capture_and_predict((first,), now=NOW)["errors"] == []
     report = service.capture_and_predict((artifact_second,), now=NOW)
-    assert report["errors"]
-    assert any("market_evidence_conflict" in str(item.get("error") or "") for item in report["errors"])
+    assert report["errors"] == []
+    assert report["episodes_existing"] == 1
+    assert report["episodes_appended"] == 0
     assert store.counts()["episodes"] == 1
+    stored = store.get_episode(first.episode_id)
+    assert stored is not None
+    assert float(stored["episode"]["observation"]["anchor"]["close"]) == first.observation.anchor.close
+    with pytest.raises(WorldModelConflictError, match="V2 market slot"):
+        store.append_episode(artifact_second)
 
 
 def _replace_offset_with_z(value: object) -> object:

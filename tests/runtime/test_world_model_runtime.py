@@ -302,6 +302,9 @@ def test_capture_appends_each_prediction_before_any_label_and_is_idempotent() ->
 
     assert first["episodes_appended"] == 1
     assert first["predictions_appended"] == 2
+    assert second["errors"] == []
+    assert second["episodes_existing"] == 1
+    assert second["episodes_appended"] == 0
     assert second["predictions_appended"] == 0
     assert predictor.predictions == [
         ("e-capture", "elapsed_4h.v1"),
@@ -311,7 +314,6 @@ def test_capture_appends_each_prediction_before_any_label_and_is_idempotent() ->
         ("episode", "e-capture"),
         ("prediction", ("e-capture", "elapsed_4h.v1")),
         ("prediction", ("e-capture", "elapsed_1d.v1")),
-        ("episode", "e-capture"),
     ]
     assert labeler.calls == []
     assert bars.calls == []

@@ -187,9 +187,8 @@ def test_world_shadow_wiring_persists_predictions_in_the_dedicated_store(tmp_pat
         assert revised["triggered"] is True
         revised["_thread"].join(timeout=2)
         capture = runner.status()["capture"]
-        assert capture["status"] == "partial"
-        assert capture["errors"][0]["stage"] == "get_episode"
-        assert "existing_episode_market_evidence_conflict" in capture["errors"][0]["error"]
+        assert capture["errors"] == []
+        assert capture.get("episodes_appended", 0) == 0
         assert store.counts() == {
             "episodes": 2,
             "outcome_events": 0,
@@ -416,8 +415,8 @@ def test_repeated_poll_of_the_same_bar_keeps_one_v2_row(tmp_path) -> None:
         )
         revised["_thread"].join(timeout=2)
         capture = runner.status()["capture"]
-        assert capture["status"] == "partial"
-        assert any("existing_episode_market_evidence_conflict" in item["error"] for item in capture["errors"])
+        assert capture["errors"] == []
+        assert capture.get("episodes_appended", 0) == 0
         assert store.counts()["episodes"] == 2
     finally:
         runner.stop()

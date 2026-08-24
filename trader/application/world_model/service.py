@@ -36,6 +36,8 @@ from trader.domain.world_cohort import (
 from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeResolution
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
+    SamplingSlotCapture,
+    SamplingSlotCaptureKind,
     WorldEpisode,
     WorldOutcome,
     WorldPrediction,
@@ -180,76 +182,22 @@ def _episode_payload(value: object) -> object:
     return value
 
 
-def _canonical_v2_episode(value: object) -> WorldEpisode | None:
-    """Rebuild a V2 episode through the domain contract, or return None for non-V2."""
+def _coerce_world_episode(value: object) -> WorldEpisode | None:
+    """Rebuild a WorldEpisode from a detached payload, or None when it is not one."""
 
-    payload = _mapping_copy(value)
-    observation = payload.get("observation")
-    observation_map = dict(observation) if isinstance(observation, Mapping) else {}
-    top = str(payload.get("feature_contract_version") or "").strip()
-    nested = str(observation_map.get("feature_contract_version") or "").strip()
-    has_context = observation_map.get("context") is not None
-    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT
-    is_v2 = (top == _V2_FEATURE_CONTRACT or nested == _V2_FEATURE_CONTRACT or has_context) and not is_v3
-    if top and nested and top != nested:
-        if is_v2:
-            raise ValueError("feature_contract_version envelope contradicts nested observation")
+    if isinstance(value, WorldEpisode):
+        return value
+    try:
+        payload = _mapping_copy(value)
+    except Exception:
         return None
-    if not is_v2:
+    nested = payload.get("episode")
+    if isinstance(nested, Mapping) and "observation" in nested:
+        payload = dict(nested)
+    try:
+        return WorldEpisode.from_dict(payload)
+    except (TypeError, ValueError):
         return None
-    return WorldEpisode.from_dict(payload)
-
-
-def _canonical_v3_episode(value: object) -> WorldEpisode | None:
-    """Rebuild a V3 episode through the domain contract, or return None for non-V3."""
-
-    payload = _mapping_copy(value)
-    observation = payload.get("observation")
-    observation_map = dict(observation) if isinstance(observation, Mapping) else {}
-    top = str(payload.get("feature_contract_version") or "").strip()
-    nested = str(observation_map.get("feature_contract_version") or "").strip()
-    has_graph = observation_map.get("graph_features") is not None or observation_map.get("graph") is not None
-    is_v3 = top == _V3_FEATURE_CONTRACT or nested == _V3_FEATURE_CONTRACT or has_graph
-    if top and nested and top != nested:
-        if is_v3:
-            raise ValueError("feature_contract_version envelope contradicts nested observation")
-        return None
-    if not is_v3:
-        return None
-    return WorldEpisode.from_dict(payload)
-
-
-def _episode_market_signature(value: object) -> str:
-    """Fingerprint stable market evidence while ignoring context and fetch clocks."""
-
-    canonical_v3 = _canonical_v3_episode(value)
-    canonical_v2 = None if canonical_v3 is not None else _canonical_v2_episode(value)
-    source = canonical_v3 if canonical_v3 is not None else canonical_v2
-    payload = _mapping_copy(source if source is not None else value)
-    payload.pop("episode_id", None)
-    payload.pop("context", None)
-    payload.pop("context_id", None)
-    payload.pop("graph_features", None)
-    payload.pop("graph", None)
-    containers: list[dict[str, object]] = [payload]
-    observation = payload.get("observation")
-    if isinstance(observation, Mapping):
-        detached_observation = copy.deepcopy(dict(observation))
-        detached_observation.pop("context", None)
-        detached_observation.pop("context_id", None)
-        detached_observation.pop("graph_features", None)
-        detached_observation.pop("graph", None)
-        payload["observation"] = detached_observation
-        containers.append(detached_observation)
-    for container in containers:
-        container.pop("available_at", None)
-        container.pop("captured_at", None)
-        freshness = container.get("freshness")
-        if isinstance(freshness, Mapping):
-            stable_freshness = copy.deepcopy(dict(freshness))
-            stable_freshness.pop("data_age_minutes", None)
-            container["freshness"] = stable_freshness
-    return _stable_id("world-episode-market", payload)
 
 
 def _iso_slot_text(value: object) -> str | None:
@@ -690,103 +638,107 @@ class WorldModelService:
             if identifier is None:
                 self._error(report, stage="episode_id", error=ValueError("missing_episode_id"), episode=episode)
                 continue
-
-            canonical_episode = episode
             try:
-                existing = self._lookup_canonical_episode(episode)
-            except Exception as load_exc:  # noqa: BLE001 - shadow conflict never escapes
-                self._error(
-                    report,
-                    stage="get_episode",
-                    error=load_exc,
-                    episode=episode,
-                )
+                kind, canonical = self._capture_sampling_slot(episode, report)
+            except Exception as exc:  # noqa: BLE001 - shadow lookup never escapes
+                self._error(report, stage="get_episode", error=exc, episode=episode)
                 continue
+            if kind is SamplingSlotCaptureKind.MISSING or canonical is None:
+                continue
+            canonical_episodes.append(canonical)
+
+    def _capture_sampling_slot(
+        self,
+        incoming_episode: object,
+        report: dict[str, object],
+    ) -> tuple[SamplingSlotCaptureKind, object | None]:
+        """Persist the first durable observation for a slot, or reuse it.
+
+        A later poll of the same sampling slot — including a later available_at
+        or revised OHLCV/context evidence — must not mutate the stored episode
+        and must not raise an application warning.  Direct store append of a
+        divergent payload still fails closed.  Duck-typed shadow payloads stay
+        replayable; a WorldEpisode is preferred when the contract can rebuild.
+        """
+
+        existing = self._lookup_canonical_episode(incoming_episode)
+        if existing is not None:
+            report["episodes_existing"] = int(report["episodes_existing"]) + 1
+            return SamplingSlotCaptureKind.REUSED_CANONICAL, self._recorded_capture(
+                SamplingSlotCaptureKind.REUSED_CANONICAL,
+                existing,
+            )
+        try:
+            appended = self.store.append_episode(_clone(incoming_episode))
+        except Exception as exc:  # noqa: BLE001
+            existing = self._lookup_canonical_episode(incoming_episode)
             if existing is not None:
                 report["episodes_existing"] = int(report["episodes_existing"]) + 1
-                canonical_episodes.append(existing)
-                continue
-            try:
-                appended = self.store.append_episode(_clone(episode))
-            except Exception as exc:  # noqa: BLE001
-                try:
-                    existing = self._lookup_canonical_episode(episode)
-                    if existing is None:
-                        existing = self._load_existing_episode(identifier, episode)
-                except Exception as load_exc:  # noqa: BLE001 - shadow conflict never escapes
-                    self._error(
-                        report,
-                        stage="get_episode",
-                        error=load_exc,
-                        episode=episode,
-                    )
-                    continue
-                if existing is not None:
-                    report["episodes_existing"] = int(report["episodes_existing"]) + 1
-                    canonical_episode = existing
-                else:
-                    self._error(report, stage="append_episode", error=exc, episode=episode)
-                    continue
-            else:
-                if appended is False:
-                    report["episodes_existing"] = int(report["episodes_existing"]) + 1
-                    reused = self._lookup_canonical_episode(episode)
-                    if reused is not None:
-                        canonical_episode = reused
-                else:
-                    report["episodes_appended"] = int(report["episodes_appended"]) + 1
-            canonical_episodes.append(canonical_episode)
+                return SamplingSlotCaptureKind.REUSED_CANONICAL, self._recorded_capture(
+                    SamplingSlotCaptureKind.REUSED_CANONICAL,
+                    existing,
+                )
+            self._error(report, stage="append_episode", error=exc, episode=incoming_episode)
+            return SamplingSlotCaptureKind.MISSING, None
+        if appended is False:
+            report["episodes_existing"] = int(report["episodes_existing"]) + 1
+            reused = self._lookup_canonical_episode(incoming_episode)
+            payload = incoming_episode if reused is None else reused
+            return SamplingSlotCaptureKind.REUSED_CANONICAL, self._recorded_capture(
+                SamplingSlotCaptureKind.REUSED_CANONICAL,
+                payload,
+            )
+        report["episodes_appended"] = int(report["episodes_appended"]) + 1
+        return SamplingSlotCaptureKind.APPENDED, self._recorded_capture(
+            SamplingSlotCaptureKind.APPENDED,
+            incoming_episode,
+        )
+
+    @staticmethod
+    def _recorded_capture(kind: SamplingSlotCaptureKind, episode: object) -> object:
+        """Keep lifecycle invariants explicit when the payload is a WorldEpisode."""
+
+        canonical = episode if isinstance(episode, WorldEpisode) else _coerce_world_episode(episode)
+        if canonical is None:
+            return episode
+        capture = (
+            SamplingSlotCapture.appended(canonical)
+            if kind is SamplingSlotCaptureKind.APPENDED
+            else SamplingSlotCapture.reused_canonical(canonical)
+        )
+        return capture.episode
 
     def _lookup_canonical_episode(self, incoming_episode: object) -> object | None:
-        """Reuse the first canonical V2/V3 episode for a market slot when the store can."""
+        """Return the first durable episode for this sampling slot, if any.
 
+        V2/V3 identities include context/graph snapshot digests, so a later poll
+        with different evidence still maps onto the same market slot.  V1 uses
+        the deterministic episode id.  The stored observation is canonical even
+        when the incoming poll carries later clocks or revised OHLCV.
+        """
+
+        stored = None
         v2_slot = _v2_market_slot(incoming_episode)
         v3_slot = _v3_market_slot(incoming_episode)
         if v2_slot is not None:
             lookup = getattr(self.store, "get_episode_by_v2_slot", None)
-            slot = v2_slot
+            if callable(lookup):
+                stored = lookup(**v2_slot)
         elif v3_slot is not None:
             lookup = getattr(self.store, "get_episode_by_v3_slot", None)
-            slot = v3_slot
-        else:
-            return None
-        if not callable(lookup):
-            return None
-        stored = lookup(**slot)
+            if callable(lookup):
+                stored = lookup(**v3_slot)
+        if stored is None:
+            identifier = _episode_id(incoming_episode)
+            if identifier is not None:
+                stored = self.store.get_episode(identifier)
         if stored is None:
             return None
-        canonical = _clone(_episode_payload(stored))
-        if _episode_market_signature(canonical) != _episode_market_signature(incoming_episode):
-            raise ValueError(
-                "existing_episode_market_evidence_conflict: same sampling slot has "
-                "different source, OHLCV, feature, or eligibility evidence"
-            )
-        return canonical
-
-    def _load_existing_episode(
-        self,
-        episode_id: str,
-        incoming_episode: object,
-    ) -> object | None:
-        """Reuse the first immutable observation recorded for one sampling slot.
-
-        A later daemon cycle can see the same completed bar with a later fetch
-        or capture clock.  The deterministic episode id intentionally denotes
-        the market slot, so the first point-in-time evidence remains canonical;
-        attempting to append the later envelope would correctly conflict in the
-        strict store.  Direct store callers still retain that conflict check.
-        """
-
-        stored = self.store.get_episode(episode_id)
-        if stored is None:
-            return None
-        canonical = _clone(_episode_payload(stored))
-        if _episode_market_signature(canonical) != _episode_market_signature(incoming_episode):
-            raise ValueError(
-                "existing_episode_market_evidence_conflict: same sampling slot has "
-                "different source, OHLCV, feature, or eligibility evidence"
-            )
-        return canonical
+        payload = _episode_payload(stored)
+        canonical = _coerce_world_episode(payload)
+        if canonical is not None:
+            return canonical
+        return _clone(payload)
 
     def _predict_one(self, episode: object, horizon: str, report: dict[str, object]) -> None:
         identifier = _episode_id(episode)

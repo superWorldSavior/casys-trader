@@ -18,6 +18,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
@@ -153,6 +154,8 @@ __all__ = [
     "AnchorBar",
     "Freshness",
     "OutcomeHorizon",
+    "SamplingSlotCapture",
+    "SamplingSlotCaptureKind",
     "WorldEpisode",
     "WorldObservation",
     "WorldOutcome",
@@ -520,6 +523,63 @@ def world_episode_id(
     if graph_snapshot_id is not None:
         slot["graph_snapshot_id"] = _required_text(graph_snapshot_id, "graph_snapshot_id")
     return f"world-episode:v1:{canonical_sha256(slot)}"
+
+
+class SamplingSlotCaptureKind(StrEnum):
+    """Lifecycle of one sampling-slot capture at the application/domain boundary.
+
+    The first durable WorldEpisode for a slot is the immutable observation.  A
+    later poll of that same slot reuses it and must not mutate market evidence.
+    Direct store append of the same identity with different content still fails
+    closed.
+    """
+
+    MISSING = "missing"
+    APPENDED = "appended"
+    REUSED_CANONICAL = "reused_canonical"
+
+
+@dataclass(frozen=True)
+class SamplingSlotCapture:
+    """Typed result for one sampling-slot persistence attempt.
+
+    Application capture uses this instead of bool/string branching: either the
+    slot is still empty, the first observation was appended, or a later poll
+    resolved to that canonical episode.  The first durable WorldEpisode wins;
+    a reused capture never carries a later-revised observation.
+    """
+
+    kind: SamplingSlotCaptureKind | str
+    episode: WorldEpisode | None = None
+
+    def __post_init__(self) -> None:
+        kind = self.kind if isinstance(self.kind, SamplingSlotCaptureKind) else SamplingSlotCaptureKind(self.kind)
+        object.__setattr__(self, "kind", kind)
+        if kind is SamplingSlotCaptureKind.MISSING:
+            if self.episode is not None:
+                raise ValueError("missing sampling slot capture cannot carry an episode")
+            return
+        episode = self.episode
+        if episode is None:
+            raise ValueError("durable sampling slot capture requires an episode")
+        if isinstance(episode, WorldEpisode):
+            return
+        if isinstance(episode, Mapping):
+            object.__setattr__(self, "episode", WorldEpisode.from_dict(episode))
+            return
+        raise TypeError("durable sampling slot capture requires a WorldEpisode")
+
+    @classmethod
+    def missing(cls) -> SamplingSlotCapture:
+        return cls(kind=SamplingSlotCaptureKind.MISSING)
+
+    @classmethod
+    def appended(cls, episode: WorldEpisode) -> SamplingSlotCapture:
+        return cls(kind=SamplingSlotCaptureKind.APPENDED, episode=episode)
+
+    @classmethod
+    def reused_canonical(cls, episode: WorldEpisode) -> SamplingSlotCapture:
+        return cls(kind=SamplingSlotCaptureKind.REUSED_CANONICAL, episode=episode)
 
 
 @dataclass(frozen=True)
