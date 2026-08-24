@@ -2090,9 +2090,20 @@ def main(
     _world_model_context_v2 = _env_int("CASYS_WORLD_MODEL_CONTEXT_V2_ENABLED", 0) == 1
     _world_model_graph_v3 = _env_int("CASYS_WORLD_MODEL_GRAPH_V3_ENABLED", 0) == 1
     _world_macro_source_only = _env_int("CASYS_WORLD_MACRO_SOURCE_ONLY_ENABLED", 0) == 1
+    _world_shadow_pilot_activation = _env_int("CASYS_WORLD_SHADOW_PILOT_ACTIVATION", 1) == 1
     _world_macro_runner: object | None = None
     _world_macro_store: object | None = None
     _world_macro_mapping: object | None = None
+    try:
+        from trader.application.world_model.pilot_activation import load_world_shadow_pilot_config
+
+        _pilot_config = load_world_shadow_pilot_config(ROOT / "config")
+    except Exception:  # noqa: BLE001 - missing/invalid pilot config cannot block trading
+        _pilot_config = None
+    if _world_shadow_pilot_activation and _pilot_config is not None and _pilot_config.enabled:
+        _world_model_context_v2 = _world_model_context_v2 or bool(_pilot_config.workers.get("context_v2"))
+        _world_model_graph_v3 = _world_model_graph_v3 or bool(_pilot_config.workers.get("graph_v3"))
+        _world_macro_source_only = _world_macro_source_only or bool(_pilot_config.workers.get("macro_source_only"))
 
     def _run_cycle_with_process_state(**kwargs):
         return cycle_run(
@@ -2161,14 +2172,39 @@ def main(
                 repository=_world_model_store,
                 query=_world_model_store,
             )
+            _pilot_graph_cohort_id = None
+            if _world_shadow_pilot_activation:
+                try:
+                    from trader.application.world_model.pilot_activation import (
+                        activate_world_shadow_pilot,
+                    )
+
+                    _pilot_report = activate_world_shadow_pilot(
+                        cohort_service=_world_cohort_service,
+                        config_dir=ROOT / "config",
+                        now=now(),
+                        environ=os.environ,
+                    )
+                    if _pilot_report.status != "skipped":
+                        _pilot_graph_cohort_id = _pilot_report.graph_cohort_id
+                    log.info(
+                        "[world_shadow_pilot] status=%s reason=%s authority=shadow_only decision_effect=none cohorts=%s",
+                        _pilot_report.status,
+                        _pilot_report.reason,
+                        len(_pilot_report.cohorts),
+                    )
+                except Exception as exc:  # noqa: BLE001 - pilot activation cannot block V1 shadow
+                    log.warning(
+                        "[world_shadow_pilot] skipped after activation failure: %s:%s",
+                        type(exc).__name__,
+                        exc,
+                    )
             extra_predictors: list[object] = [OnlineGRUWorldChallenger()]
             context_enricher = None
             if _world_model_context_v2:
                 from trader.runtime.world_macro_runtime import MACRO_LANE_IDENTITY
 
-                v2_model_version = (
-                    MACRO_LANE_IDENTITY if _world_macro_store is not None else "context.v2"
-                )
+                v2_model_version = MACRO_LANE_IDENTITY if _world_macro_store is not None else "context.v2"
                 extra_predictors.extend(
                     [
                         HierarchicalDirichletWorldBaseline(
@@ -2206,6 +2242,7 @@ def main(
                         enabled=True,
                         store=_world_model_store,
                         config_dir=ROOT / "config",
+                        study_cohort_id=_pilot_graph_cohort_id,
                     )
                     extra_predictors.extend(v3_predictors)
                 except Exception as exc:  # noqa: BLE001 - V3 composition cannot block V1/V2

@@ -1266,10 +1266,7 @@ def test_compose_and_runner_wire_graph_without_writing_until_due_cycle(tmp_path)
 
         triggered = runner.trigger(episodes=[_v1_episode()], now=NOW)
         triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
-        versions = {
-            row["observation"]["feature_contract_version"]
-            for row in store.list_eligible_episodes()
-        }
+        versions = {row["observation"]["feature_contract_version"] for row in store.list_eligible_episodes()}
         assert "market_ohlcv_causal.v1" in versions
         assert GRAPH_FEATURE_CONTRACT_VERSION in versions
         assert store.list_collecting_cohort_ids() == ()
@@ -1279,5 +1276,45 @@ def test_compose_and_runner_wire_graph_without_writing_until_due_cycle(tmp_path)
             for row in store.list_predictions()
         )
         assert "causal" not in str(capture).lower() or capture.get("status") in {"ok", "partial"}
+    finally:
+        store.close()
+
+
+def test_compose_graph_v3_accepts_frozen_study_cohort_id_without_a_second_scope_mapping() -> None:
+    from tests.application.test_world_graph_capture import _unpublished_config
+    from trader.application.world_model.graph_capture import WorldGraphCaptureConfig
+    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+
+    cohort_id = "world_cohort:v1:" + "c" * 64
+    capture = _unpublished_config(study_cohort_id=cohort_id)
+    predictors, enricher = compose_local_graph_v3_lanes(
+        enabled=True,
+        capture=capture,
+        study_cohort_id="world_cohort:v1:" + "d" * 64,
+    )
+    assert enricher is not None
+    assert isinstance(enricher.config, WorldGraphCaptureConfig)
+    assert enricher.config.study_cohort_id == cohort_id
+    assert enricher.config.scope_mapping is capture.scope_mapping
+
+
+def test_compose_local_graph_injects_study_cohort_id_when_capture_is_composed(tmp_path) -> None:
+    from pathlib import Path
+
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import compose_local_graph_v3_lanes
+
+    store = WorldModelStore(tmp_path / "world_model.db")
+    cohort_id = "world_cohort:v1:" + "e" * 64
+    try:
+        predictors, enricher = compose_local_graph_v3_lanes(
+            enabled=True,
+            store=store,
+            config_dir=Path(__file__).resolve().parents[2] / "config",
+            study_cohort_id=cohort_id,
+        )
+        assert enricher is not None
+        assert enricher.config.study_cohort_id == cohort_id
+        assert store.counts()["episodes"] == 0
     finally:
         store.close()

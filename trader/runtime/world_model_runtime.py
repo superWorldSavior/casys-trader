@@ -169,9 +169,7 @@ class WorldModelBackgroundRunner:
             if self.graph_enricher is not None:
                 try:
                     enriched = tuple(
-                        self.graph_enricher.enrich(
-                            tuple(_clone(episode) for episode in capture_snapshot.episodes)
-                        )
+                        self.graph_enricher.enrich(tuple(_clone(episode) for episode in capture_snapshot.episodes))
                     )
                     capture_snapshot = dataclasses.replace(capture_snapshot, episodes=enriched)
                 except Exception as exc:  # noqa: BLE001 - V3 enrichment is fail-open for V1/V2
@@ -405,7 +403,12 @@ def _compose_graph_v3_predictors() -> tuple[object, ...]:
     )
 
 
-def _compose_graph_v3_capture(*, store: object | None, config_dir: str | Path | None) -> object | None:
+def _compose_graph_v3_capture(
+    *,
+    store: object | None,
+    config_dir: str | Path | None,
+    study_cohort_id: str | None = None,
+) -> object | None:
     if store is None or config_dir is None:
         return None
     path = getattr(store, "path", None)
@@ -427,7 +430,7 @@ def _compose_graph_v3_capture(*, store: object | None, config_dir: str | Path | 
     return WorldGraphCaptureConfig(
         scope_mapping=resolver.mapping,
         snapshot_service=service,
-        study_cohort_id=None,
+        study_cohort_id=study_cohort_id,
         max_depth=4,
         max_paths=32,
     )
@@ -440,6 +443,7 @@ def compose_local_graph_v3_lanes(
     predictors: Iterable[object] | None = None,
     store: object | None = None,
     config_dir: str | Path | None = None,
+    study_cohort_id: str | None = None,
 ) -> tuple[tuple[object, ...], WorldGraphEpisodeEnricher | None]:
     """Compose local V3 lanes only when the reused GRAPH_V3 flag is on and capture+predictors exist."""
 
@@ -447,9 +451,14 @@ def compose_local_graph_v3_lanes(
         resolved_enabled = graph_v3_enabled() if enabled is None else bool(enabled)
         if not resolved_enabled:
             return (), None
-        resolved_capture = capture if capture is not None else _compose_graph_v3_capture(
-            store=store,
-            config_dir=config_dir,
+        resolved_capture = (
+            capture
+            if capture is not None
+            else _compose_graph_v3_capture(
+                store=store,
+                config_dir=config_dir,
+                study_cohort_id=study_cohort_id,
+            )
         )
         if predictors is None:
             resolved_predictors: tuple[object, ...] = _compose_graph_v3_predictors()

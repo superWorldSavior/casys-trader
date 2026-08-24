@@ -484,24 +484,24 @@ def test_flag_off_keeps_two_lanes_without_an_enricher() -> None:
     assert len(identities) == 2
 
 
-def test_daemon_boot_wires_world_cohort_service_but_never_registers_or_starts() -> None:
+def test_daemon_boot_wires_world_cohort_service_and_operator_authorized_pilot_activation() -> None:
     from inspect import signature
     from pathlib import Path
 
     source = Path(daemon.__file__).read_text(encoding="utf-8")
-    boot_start = source.index("if _env_int(\"CASYS_WORLD_MODEL_SHADOW_ENABLED\"")
+    boot_start = source.index('if _env_int("CASYS_WORLD_MODEL_SHADOW_ENABLED"')
     boot = source[boot_start : source.index("claimed_resources.learning_sync_runner", boot_start)]
     assert "WorldCohortService(" in boot
     assert "repository=_world_model_store" in boot
     assert "query=_world_model_store" in boot
     assert "cohort_service=_world_cohort_service" in boot
+    assert "activate_world_shadow_pilot(" in boot
+    assert "_world_shadow_pilot_activation" in boot
+    assert boot.index("activate_world_shadow_pilot(") < boot.index("WorldModelRuntime(")
     assert "RegisterWorldCohort" not in boot
     assert "ArmWorldCohort" not in boot
     assert "StartWorldCohort" not in boot
     assert "AdmitWorldCohortSlot" not in boot
-    assert ".register(" not in boot
-    assert ".arm(" not in boot
-    assert ".start(" not in boot.replace("thread.start()", "")
     assert "HierarchicalDirichletWorldBaseline()" in boot
     assert "OnlineGRUWorldChallenger()" in boot
     assert "authority=shadow_only" in boot
@@ -703,13 +703,12 @@ def test_daemon_boot_wires_graph_v3_only_inside_shadow_without_starting_cohort()
     assert "compose_local_graph_v3_lanes" in boot
     assert "graph_enricher" in boot
     assert "_world_model_graph_v3" in boot
+    assert "study_cohort_id=" in boot
+    assert "activate_world_shadow_pilot(" in boot
     assert "RegisterWorldCohort" not in boot
     assert "ArmWorldCohort" not in boot
     assert "StartWorldCohort" not in boot
     assert "AdmitWorldCohortSlot" not in boot
-    assert ".register(" not in boot
-    assert ".arm(" not in boot
-    assert ".start(" not in boot.replace("thread.start()", "")
     assert "authority=shadow_only" in boot
 
 
@@ -839,13 +838,64 @@ def test_idle_unmapped_cycle_does_not_write_v3_from_graph_wiring_alone(tmp_path)
         result["_thread"].join(timeout=2)
         rows = store.list_eligible_episodes()
         versions = {
-            (row.get("feature_contract_version") or row["observation"]["feature_contract_version"])
-            for row in rows
+            (row.get("feature_contract_version") or row["observation"]["feature_contract_version"]) for row in rows
         }
         assert "market_ohlcv_causal.v1" in versions
         assert GRAPH_FEATURE_CONTRACT_VERSION not in versions
         assert store.list_collecting_cohort_ids() == ()
-        assert all((row.get("prediction_record") or {}).get("decision_effect", "none") == "none" for row in store.list_predictions())
+        assert all(
+            (row.get("prediction_record") or {}).get("decision_effect", "none") == "none"
+            for row in store.list_predictions()
+        )
     finally:
         runner.stop()
+        store.close()
+
+
+def test_pilot_activation_flag_defaults_on_and_is_the_explicit_skip_surface() -> None:
+    from pathlib import Path
+
+    source = Path(daemon.__file__).read_text(encoding="utf-8")
+    assert "CASYS_WORLD_SHADOW_PILOT_ACTIVATION" in source
+    assert "CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1" not in source
+    assert '_env_int("CASYS_WORLD_SHADOW_PILOT_ACTIVATION", 1)' in source
+
+
+def test_daemon_pilot_activation_does_not_write_episodes_on_boot_wiring(tmp_path) -> None:
+    from pathlib import Path
+
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import WorldModelRuntime
+
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: NOW)
+    service = WorldCohortService(repository=store, query=store)
+    try:
+        report = activate_world_shadow_pilot(
+            cohort_service=service,
+            config_dir=Path(daemon.__file__).resolve().parents[2] / "config",
+            now=NOW,
+            environ={},
+        )
+        assert report.status == "started"
+        assert report.episodes_appended == 0
+        assert store.counts()["episodes"] == 0
+        assert store.list_collecting_cohort_ids()
+        runtime = WorldModelRuntime(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=service,
+        )
+        assert store.counts()["episodes"] == 0
+        assert runtime.cohort_service is service
+        assert all(
+            (row.get("prediction_record") or {}).get("decision_effect", "none") == "none"
+            for row in store.list_predictions()
+        )
+    finally:
         store.close()

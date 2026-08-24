@@ -41,14 +41,20 @@ def _import_violations(path, prefixes: tuple[str, ...]) -> list[str]:
 
 def _top_level_definitions(path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return {
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    return {node.name for node in tree.body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
 _REPORTING_SHIMS = frozenset({"evaluation.py", "impact.py"})
+
+
+def test_world_pilot_activation_is_an_application_module() -> None:
+    path = REPO_ROOT / "trader" / "application" / "world_model" / "pilot_activation.py"
+    assert path.exists()
+    assert _import_violations(path, _FORBIDDEN_APPLICATION_PREFIXES) == []
+    source = path.read_text(encoding="utf-8")
+    assert "operator_authorized_on_boot" in source
+    assert "sqlite3" not in source
+    assert "def backfill" not in source
 
 
 def test_application_world_model_does_not_import_runtime_infrastructure_or_reporting() -> None:
@@ -91,9 +97,7 @@ def test_world_model_service_is_application_owned_with_runtime_adapter() -> None
     assert WorldModelShadowRuntime is WorldModelRuntime
     assert WorldModelRunner is WorldModelRuntime
 
-    runtime_source = (REPO_ROOT / "trader" / "runtime" / "world_model_runtime.py").read_text(
-        encoding="utf-8"
-    )
+    runtime_source = (REPO_ROOT / "trader" / "runtime" / "world_model_runtime.py").read_text(encoding="utf-8")
     assert "class WorldModelBackgroundRunner" in runtime_source
     assert "class WorldModelRuntime(WorldModelService)" in runtime_source
 

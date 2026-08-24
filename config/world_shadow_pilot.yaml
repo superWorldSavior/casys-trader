@@ -1,0 +1,67 @@
+schema_version: world_shadow_pilot.v1
+content_sha256: "add6e7a82cc0e9b9363c102db6581f031d6fbabdbc0a56030315b16243fbc56e"
+pilot_id: world_shadow_pilot.v1
+authority: shadow_only
+decision_effect: none
+recommendation: NO_GO
+causal_claim: false
+pnl_claim: false
+activation_policy: operator_authorized_on_boot
+enabled: true
+
+window:
+  planned_start: boot_event_time
+  duration_days: 7
+  collection_stop_kind: fixed_end
+
+bar_interval: "15m"
+venues: [EU, TW, US]
+horizons: [elapsed_4h.v1, elapsed_1d.v1]
+primary_horizon: elapsed_1d.v1
+label_contract: simple_return_band_50bp.v1
+sampling_policy_version: active_tradable_completed_bar.v1
+market_feature_contract: market_ohlcv_causal.v1
+context_feature_contract: market_ohlcv_context.v2
+graph_feature_contract: market_ohlcv_graph.v3
+ontology_revision: semantic_catalog.v1
+
+scope_mapping:
+  mapping_id: world_scope_mapping.v1
+  mapping_sha256: "b2393ea7d1812e4d3d82e37858b71c3cac19079ef35a23212b16914f1f8661c6"
+
+runtime_identity:
+  git_commit: "95bcb12d6aac83650ed7b5b3ed1e82a08663b823"
+  python_version: "3.11.9"
+  numpy_version: "1.26.4"
+  application_build_id: casys-trader.world.shadow_pilot.v1
+
+workers:
+  v1_shadow: true
+  context_v2: true
+  macro_source_only: true
+  graph_v3: true
+
+statistical_protocol:
+  pair_unit: unique_market_anchor
+  block_key: venue_session
+  ci_method: deterministic_block_bootstrap.v1
+  ci_level: 0.95
+  bootstrap_resamples: 2000
+  seed: 20260824
+
+support_gates:
+  mode: descriptive_only
+  descriptive_minimum_unique_anchors: 20
+  formal_minimum_unique_anchors: null
+
+cohorts:
+  - key: technical_c1
+    study_kind: pipeline_pilot
+    question: "Can paired market/status/company/macro/joint lanes be captured live for one week without causal violations or Trader decision effect?"
+    families: [markov, gru]
+    logical_lanes: [market, status_only, company, macro, joint]
+  - key: graph_v3
+    study_kind: pipeline_pilot
+    question: "Can a matched V3 graph lane be captured live beside C1 without contaminating technical C1 or Trader decisions?"
+    families: [markov, gru]
+    logical_lanes: [graph]
