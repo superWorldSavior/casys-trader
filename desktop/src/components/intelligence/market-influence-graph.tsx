@@ -453,8 +453,9 @@ export function MarketInfluenceGraphView({
         </span>
         <span>
           Group bubbles show membership; Drivers group families by a current
-          factor. Driver opacity follows its estimated activity; size shows
-          relative reach within each node type; companies stay uniform.
+          factor. Every connected driver stays in the graph; its opacity follows
+          the current context window. Driver marks stay compact; companies stay
+          uniform.
         </span>
         {graph.projection
           ? (
@@ -2411,7 +2412,7 @@ function createMarketForceGraph(
         (node) => {
           if (hasFocus && pathNodeIds.has(node.id)) return 1;
           const temporal = node.kind === "driver"
-            ? Math.max(0.3, Math.min(1, node.activity))
+            ? Math.max(0.08, Math.min(1, node.activity))
             : 1;
           return hasFocus ? temporal * 0.58 : temporal;
         },
@@ -2482,7 +2483,7 @@ function createMarketForceGraph(
         nodeRadius: node.radius * k,
         fontSize: node.kind === "market"
           ? 11
-          : node.kind === "company"
+          : node.kind === "company" || node.kind === "driver"
           ? 9
           : 10,
         priority,
@@ -2500,7 +2501,7 @@ function createMarketForceGraph(
         const visible = Boolean(placed?.visible);
         const screen = node.kind === "market"
           ? 11
-          : node.kind === "company"
+          : node.kind === "company" || node.kind === "driver"
           ? 9
           : 10;
         const dx = placed ? (placed.x - transform.applyX(node.x ?? 0)) / k : 0;

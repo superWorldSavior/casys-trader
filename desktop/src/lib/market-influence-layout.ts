@@ -34,7 +34,7 @@ const RADIUS_BOUNDS: Record<
 > = {
   market: { min: 15, max: 22 },
   domain: { min: 11.5, max: 16.5 },
-  driver: { min: 11.5, max: 16.5 },
+  driver: { min: 7.5, max: 11.5 },
   family: { min: 9, max: 14.5 },
 };
 

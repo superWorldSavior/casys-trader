@@ -76,6 +76,11 @@ un driver et sa cible : nature `observed` / `inferred` / `hypothesized`, fenêtr
 d'effet courante, fraîcheur et points de preuve. La vue ne transforme jamais
 cette association en causalité mesurée.
 
+La projection ne plafonne pas le nombre de drivers associés à une famille :
+toute association retenue est matérialisée. Les nœuds driver sont volontairement
+plus compacts que les domaines et les familles ; leur cycle temporel règle leur
+opacité au lieu de supprimer arbitrairement les facteurs les moins forts.
+
 ### Cycle de vie visuel d'un driver
 
 Le read model Desktop porte `activeFrom`, `expectedUntil` et `activity`.
@@ -85,6 +90,23 @@ de la durée causale. Sans fenêtre datée, le driver est `Provisional`. Avec un
 fenêtre, il passe visuellement de `Active` à `Fading`, puis `Historical` ; son
 opacité diminue sans supprimer le nœud. Une sélection le remet en pleine
 visibilité pour préserver la navigation.
+
+### Frontière de la temporalité apprise
+
+Aucun learner actuel n'estime la durée d'influence d'un driver. Markov et GRU
+apprennent une classe de mouvement aux horizons fixes 4 h, 1 jour et 3 jours ;
+les features graphe comptent des relations dans les fenêtres `0-4h`, `4-24h`,
+`1-7d` et `older`, avec `decay: none`. Le score `activity` ci-dessus est donc
+un seam de présentation alimenté aujourd'hui par la fraîcheur du brief, pas un
+résultat appris.
+
+La future capacité shadow devra apprendre une persistance par driver canonique
+(`macro_indicator` ou `event`) et cible, à partir d'un onset point-in-time et des
+`WorldOutcome` arrivés ensuite. Le `valid_until` d'une observation restera une
+borne de censure/fraîcheur, jamais une preuve que l'influence s'est arrêtée. Le
+read model de cette capacité pourra alors alimenter `activity` et réguler
+l'opacité de tous les drivers sans modifier leur présence dans le graphe ni
+introduire une relation `CAUSES`.
 
 Les patterns ne sont pas matérialisés dans cette version. Ils pourront émerger
 plus tard des épisodes et résultats shadow, puis être publiés comme objets

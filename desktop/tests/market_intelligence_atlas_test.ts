@@ -413,7 +413,7 @@ Deno.test("possible influence labels stay heuristic and have a safe fallback", (
   );
 });
 
-Deno.test("evidence links prefer shared sources, then symbols, then explicit topic matches", () => {
+Deno.test("evidence links keep every association and prefer sources, symbols, then topic matches", () => {
   const node = buildMarketAtlas({
     current: { X: {} },
     families: [
@@ -438,6 +438,7 @@ Deno.test("evidence links prefer shared sources, then symbols, then explicit top
         },
       ],
       rates: [{ point: "Rates remain restrictive.", symbols: ["AAA"] }],
+      usd: [{ point: "The dollar remains firm.", symbols: ["AAA"] }],
       inflation: [{ point: "Inflation reflects higher input prices." }],
     },
     families: {
@@ -460,6 +461,7 @@ Deno.test("evidence links prefer shared sources, then symbols, then explicit top
     [
       ["oil", "macro_indicator", "shared_source", "supportive"],
       ["rates", "macro_indicator", "shared_symbol", "supportive"],
+      ["usd", "macro_indicator", "shared_symbol", "supportive"],
       ["inflation", "macro_indicator", "topic_match", "supportive"],
     ],
   );

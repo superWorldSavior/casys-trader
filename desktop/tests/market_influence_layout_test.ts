@@ -375,6 +375,9 @@ Deno.test("semantic node size is bounded and scales with degree within kind", ()
     const radius = presented.radiusById.get(item.data.id) ?? 0;
     if (item.data.kind === "company") {
       assert(radius < 8);
+    } else if (item.data.kind === "driver") {
+      assert(radius >= 7.5);
+      assert(radius <= 11.5);
     } else {
       assert(radius >= 8);
       assert(radius <= 24);

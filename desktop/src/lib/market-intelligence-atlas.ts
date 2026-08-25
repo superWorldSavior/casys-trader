@@ -405,7 +405,6 @@ export function buildAtlasEvidenceLinks(
       right.strength - left.strength ||
       left.driverKey.localeCompare(right.driverKey)
     )
-    .slice(0, 3)
     .map(({ strength: _strength, ...link }) => link);
 }
 
