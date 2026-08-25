@@ -19,6 +19,7 @@ import type {
   UniversePayload,
   WorldIntelligencePayload,
 } from "@/lib/types";
+import type { WorldGraphExplorerPayload } from "@/lib/world-graph-explorer";
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path);
@@ -55,6 +56,10 @@ export function readOverview(): Promise<OverviewPayload> {
 
 export function readWorldIntelligence(limit = 240): Promise<WorldIntelligencePayload> {
   return getJson<WorldIntelligencePayload>(`/api/intelligence/world?limit=${limit}`);
+}
+
+export function readWorldGraph(): Promise<WorldGraphExplorerPayload> {
+  return getJson<WorldGraphExplorerPayload>("/api/world-graph");
 }
 
 export function readRegionIntelligence(params?: {

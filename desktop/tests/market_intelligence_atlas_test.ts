@@ -7,6 +7,7 @@ import {
   buildAtlasFamilyThreads,
   buildMarketAtlas,
   collectScopeKeys,
+  driverKind,
   isEvidenceUnavailable,
   normalizePriority,
   possibleInfluenceLabel,
@@ -449,11 +450,25 @@ Deno.test("evidence links prefer shared sources, then symbols, then explicit top
     },
   });
 
-  assertEquals(links.map((link) => [link.driverKey, link.kind, link.tone]), [
-    ["oil", "shared_source", "supportive"],
-    ["rates", "shared_symbol", "supportive"],
-    ["inflation", "topic_match", "supportive"],
-  ]);
+  assertEquals(
+    links.map((link) => [
+      link.driverKey,
+      link.driverKind,
+      link.kind,
+      link.tone,
+    ]),
+    [
+      ["oil", "macro_indicator", "shared_source", "supportive"],
+      ["rates", "macro_indicator", "shared_symbol", "supportive"],
+      ["inflation", "macro_indicator", "topic_match", "supportive"],
+    ],
+  );
+});
+
+Deno.test("driver kinds distinguish macro indicators events and observations", () => {
+  assertEquals(driverKind("brent"), "macro_indicator");
+  assertEquals(driverKind("geopolitics", "event"), "event");
+  assertEquals(driverKind("supply_chain", "watch"), "observed_signal");
 });
 
 Deno.test("opposing family observations make an evidence path mixed", () => {

@@ -108,6 +108,7 @@ type SimNode = SimulationNodeDatum & {
   clusterId: string | null;
   held: boolean;
   holdShare: number | null;
+  activity: number;
 };
 
 type SimLink = SimulationLinkDatum<SimNode> & {
@@ -377,7 +378,7 @@ export function MarketInfluenceGraphView({
           Possible influence
         </GraphLegend>
         <GraphLegend stroke="solid" color="#176887">
-          Shared evidence
+          Observed association
         </GraphLegend>
         <GraphLegend stroke="dotted" color="#b7c6cd">
           Market or domain
@@ -447,21 +448,32 @@ export function MarketInfluenceGraphView({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-hairline px-4 py-2.5 text-[10px] leading-relaxed text-faint sm:px-5">
         <span aria-live="polite" className="sr-only">{pathSummary}</span>
         <span>
-          Every market, domain and theme stays in view. Connections show
+          Every market, domain and family stays in view. Connections show
           evidence, possible influence or structure — not measured correlation.
         </span>
         <span>
-          Group bubbles show membership; Macro groups themes by a possible
-          domain factor. Size shows relative reach within each node type;
-          companies stay uniform.
+          Group bubbles show membership; Drivers group families by a current
+          factor. Driver opacity follows its estimated activity; size shows
+          relative reach within each node type; companies stay uniform.
         </span>
+        {graph.projection
+          ? (
+            <span>
+              Company geography is bound to the published World Graph; domains,
+              families and drivers remain typed intelligence projections.
+            </span>
+          )
+          : null}
         <span>
-          Colours reflect recorded theme priority or evidence tone. Freshness is
-          shown above.
+          Colours reflect recorded family priority or evidence tone. Freshness
+          is shown above.
         </span>
         <span className="sm:ml-auto">
           {graph.scopeCount} markets · {graph.domainCount} domains ·{" "}
-          {graph.familyCount} themes · {graph.companyCount} companies
+          {graph.familyCount} families · {graph.companyCount} companies
+          {graph.projection
+            ? ` · ${graph.projection.mappedCompanyCount}/${graph.projection.companyCount} World Graph linked`
+            : ""}
         </span>
       </div>
     </div>
@@ -504,7 +516,7 @@ function GraphExplorerPanel({
     ? "Markets"
     : lens === "domain"
     ? "Domains"
-    : "Factors";
+    : "Drivers";
   const showSelected = Boolean(
     selectedNode &&
       !selectedVisibleInExplorer(
@@ -525,7 +537,7 @@ function GraphExplorerPanel({
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search themes or companies"
+          placeholder="Search families or companies"
           className="h-9 w-full rounded-md border border-line bg-[#fbfcfd] px-3 text-[11px] text-fg outline-none placeholder:text-faint focus:border-accent/50 focus:ring-2 focus:ring-accent/10"
         />
       </div>
@@ -594,7 +606,7 @@ function GraphExplorerPanel({
                       )
                       : (
                         <p className="px-2 py-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
-                          {lens === "macro" ? "Other factors" : "Other"}
+                          {lens === "macro" ? "Other drivers" : "Other"}
                         </p>
                       )}
                     {open
@@ -825,6 +837,18 @@ function CompanyReading({
   const thread = guidedPortfolioPath(graph, node.data.id, originId);
   return (
     <>
+      {node.data.canonical?.mapped
+        ? (
+          <div className="border-b border-hairline px-4 py-3.5">
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+              World Graph
+            </p>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
+              {node.data.detail ?? "Canonical market identity linked"}
+            </p>
+          </div>
+        )
+        : null}
       {node.data.holding
         ? <CompanyHoldingDetail holding={node.data.holding} />
         : null}
@@ -1239,7 +1263,7 @@ function GroupReading({
   const unknownCount = held.length - known.length;
   const bits = [
     `${preferred.length} preferred ${
-      preferred.length === 1 ? "theme" : "themes"
+      preferred.length === 1 ? "family" : "families"
     }`,
     `${lower.length} lower-priority`,
     `${held.length} represented ${held.length === 1 ? "holding" : "holdings"}`,
@@ -1284,7 +1308,7 @@ function GroupReading({
       {themes.length
         ? (
           <GraphDetailLinks
-            title="Themes"
+            title="Families"
             nodes={themes}
             onChoose={onChoose}
           />
@@ -1317,6 +1341,7 @@ function DriverReading({
   const held = heldCompaniesThroughDirectLinks(graph, node.data.id);
   return (
     <>
+      <DriverActivationSummary node={node} />
       {held.length
         ? (
           <ConnectedHoldingsDetail
@@ -1332,7 +1357,7 @@ function DriverReading({
               Recorded context
             </p>
             <p className="mt-1.5 text-[12px] leading-relaxed text-fg">
-              Appears alongside these themes. This is context, not a measured
+              Appears alongside these families. This is context, not a measured
               cause.
             </p>
             <ul className="mt-2 space-y-2">
@@ -1398,6 +1423,61 @@ function DriverReading({
         )
         : null}
     </>
+  );
+}
+
+function DriverActivationSummary({
+  node,
+}: {
+  node: MarketInfluenceGraph["nodes"][number];
+}) {
+  const activity = Math.max(0, Math.min(1, node.data.activity ?? 1));
+  const dated = Boolean(node.data.activeFrom || node.data.expectedUntil);
+  const state = !dated
+    ? "Provisional"
+    : activity >= 0.75
+    ? "Active"
+    : activity >= 0.45
+    ? "Fading"
+    : "Historical";
+  const kind = node.data.driverKind === "macro_indicator"
+    ? "Macro indicator"
+    : node.data.driverKind === "event"
+    ? "Event"
+    : "Observed signal";
+  const from = recordedTimeLabel(node.data.activeFrom);
+  const until = recordedTimeLabel(node.data.expectedUntil);
+  return (
+    <div className="border-b border-hairline px-4 py-3.5">
+      <div className="flex items-center justify-between gap-3">
+        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+          {kind}
+        </p>
+        <span className="rounded-full border border-line bg-panel px-2 py-0.5 font-mono text-[8px] uppercase tracking-[0.1em] text-dim">
+          {state}
+        </span>
+      </div>
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-[#e4ecef]">
+        <span
+          aria-hidden="true"
+          className="block h-full rounded-full bg-[#5f8797] transition-[width]"
+          style={{ width: `${Math.round(activity * 100)}%` }}
+        />
+      </div>
+      {from || until
+        ? (
+          <p className="mt-2 text-[10px] leading-relaxed text-dim">
+            {from ? `Observed ${from}` : ""}
+            {from && until ? " · " : ""}
+            {until ? `Current context until ${until}` : ""}
+          </p>
+        )
+        : (
+          <p className="mt-2 text-[10px] leading-relaxed text-faint">
+            Duration is not estimated yet.
+          </p>
+        )}
+    </div>
   );
 }
 
@@ -1728,8 +1808,8 @@ function connectedGraphNodes(
 function graphKindLabel(
   kind: MarketInfluenceGraph["nodes"][number]["data"]["kind"],
 ): string {
-  if (kind === "driver") return "Market factor";
-  if (kind === "family") return "Theme";
+  if (kind === "driver") return "Driver";
+  if (kind === "family") return "Family";
   if (kind === "market") return "Market";
   if (kind === "domain") return "Domain";
   return "Company";
@@ -1792,7 +1872,7 @@ function GraphControls({
               ? "Markets"
               : value === "domain"
               ? "Domains"
-              : "Macro"}
+              : "Drivers"}
           </button>
         ))}
       </div>
@@ -2328,7 +2408,13 @@ function createMarketForceGraph(
       )
       .attr(
         "opacity",
-        (node) => hasFocus && !pathNodeIds.has(node.id) ? 0.58 : 1,
+        (node) => {
+          if (hasFocus && pathNodeIds.has(node.id)) return 1;
+          const temporal = node.kind === "driver"
+            ? Math.max(0.3, Math.min(1, node.activity))
+            : 1;
+          return hasFocus ? temporal * 0.58 : temporal;
+        },
       )
       .each(function (node) {
         const visual = nodeVisual(node);
@@ -2512,6 +2598,9 @@ function createMarketForceGraph(
         clusterId: clusterIdForNode(nextGraph, lens, node.data.id),
         held: Boolean(node.data.holding),
         holdShare: node.data.holding?.shareOfKnownGross ?? null,
+        activity: node.data.kind === "driver"
+          ? Math.max(0, Math.min(1, node.data.activity ?? 1))
+          : 1,
         x: seed.x,
         y: seed.y,
         vx: 0,
@@ -2528,6 +2617,7 @@ function createMarketForceGraph(
       prior.clusterId = next.clusterId;
       prior.held = next.held;
       prior.holdShare = next.holdShare;
+      prior.activity = next.activity;
       return prior;
     });
     links = nextGraph.edges.map((edge) => {
@@ -2562,6 +2652,9 @@ function createMarketForceGraph(
       node.clusterId = clusterIdForNode(nextGraph, lens, node.id);
       node.held = Boolean(source.data.holding);
       node.holdShare = source.data.holding?.shareOfKnownGross ?? null;
+      node.activity = source.data.kind === "driver"
+        ? Math.max(0, Math.min(1, source.data.activity ?? 1))
+        : 1;
     }
     const sourceEdges = new Map(
       nextGraph.edges.map((edge) => [edge.data.id, edge]),
@@ -3108,7 +3201,7 @@ function hullLabel(
   const node = graph.nodes.find((item) => item.data.id === hull.groupId);
   if (node) return displayNodeLabel(node.data);
   if (hull.groupId === "other") {
-    return lens === "macro" ? "Other factors" : "Other";
+    return lens === "macro" ? "Other drivers" : "Other";
   }
   return "";
 }

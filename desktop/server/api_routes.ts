@@ -19,6 +19,7 @@ export function mapApi(url: URL): string[] | null {
   }
   if (pathname === "/api/snapshot") return ["snapshot"];
   if (pathname === "/api/overview") return ["overview"];
+  if (pathname === "/api/world-graph") return ["world-graph"];
   if (pathname === "/api/intelligence/world") {
     return withQuery(url, "intelligence-world", ["limit"]);
   }

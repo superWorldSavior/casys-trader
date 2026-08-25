@@ -87,6 +87,7 @@ function fixture() {
   const evidence: AtlasEvidenceLink[] = [{
     driverKey: "oil",
     driverLabel: "Oil",
+    driverKind: "macro_indicator",
     kind: "shared_source",
     tone: "supportive",
     driverPoint: "Oil rose.",
@@ -118,6 +119,7 @@ function graphWithHoldings(
       links: [{
         driverKey: "oil",
         driverLabel: "Oil",
+        driverKind: "macro_indicator",
         kind: "shared_source",
         tone: "supportive",
         driverPoint: "Oil rose.",
@@ -235,6 +237,7 @@ Deno.test("heuristic edges cannot masquerade as recorded evidence", () => {
       links: [{
         driverKey: "oil",
         driverLabel: "Oil prices",
+        driverKind: "macro_indicator",
         kind: "topic_match",
         tone: "context",
         driverPoint: "Oil rose.",
@@ -296,6 +299,7 @@ Deno.test("documented evidence upgrades a repeated possible factor", () => {
       links: [{
         driverKey: "repeated-factor",
         driverLabel: repeatedLabel,
+        driverKind: "observed_signal",
         kind: "shared_source",
         tone: "context",
         driverPoint: "Recorded in the source material.",
@@ -310,7 +314,7 @@ Deno.test("documented evidence upgrades a repeated possible factor", () => {
   assert(factor);
   assert(factor.classes.includes("supported"));
   assertEquals(factor.classes.includes("heuristic"), false);
-  assertEquals(factor.data.detail, "Shared evidence");
+  assertEquals(factor.data.detail, "Observed association");
 });
 
 Deno.test("every family keeps its market and governed-domain structure", () => {
@@ -574,6 +578,7 @@ Deno.test("evidenced fallback prefers shared source or symbol, then best favored
   ): AtlasEvidenceLink => ({
     driverKey: "oil",
     driverLabel: "Oil",
+    driverKind: "macro_indicator",
     kind,
     tone: "supportive",
     driverPoint: "Oil moved.",
@@ -920,6 +925,7 @@ Deno.test("supported evidence edges carry source freshness, heuristic edges do n
         links: [{
           driverKey: "oil",
           driverLabel: "Oil",
+          driverKind: "macro_indicator",
           kind: "shared_source",
           tone: "supportive",
           driverPoint: "Oil rose.",
@@ -935,6 +941,7 @@ Deno.test("supported evidence edges carry source freshness, heuristic edges do n
         links: [{
           driverKey: "oil",
           driverLabel: "Oil",
+          driverKind: "macro_indicator",
           kind: "topic_match",
           tone: "context",
           driverPoint: "Oil rose.",

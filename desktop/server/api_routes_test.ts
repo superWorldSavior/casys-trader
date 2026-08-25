@@ -10,6 +10,7 @@ Deno.test("mapApi maps exact GET resources", () => {
     ["/api/intelligence/briefing", ["intelligence-briefing"]],
     ["/api/snapshot", ["snapshot"]],
     ["/api/overview", ["overview"]],
+    ["/api/world-graph", ["world-graph"]],
     ["/api/plans", ["plans"]],
     ["/api/universe", ["universe"]],
     ["/api/health", ["health"]],
@@ -86,6 +87,10 @@ Deno.test("mapApi omits missing or empty query values", () => {
   assertEquals(
     mapApi(url("/api/intelligence/news?ignored=1")),
     ["intelligence-news"],
+  );
+  assertEquals(
+    mapApi(url("/api/world-graph?cutoff=2020-01-01")),
+    ["world-graph"],
   );
 });
 

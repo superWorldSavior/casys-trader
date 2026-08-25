@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { MarketInfluenceGraphView } from "@/components/intelligence/market-influence-graph";
-import { useWorldIntelligence } from "@/hooks/use-intelligence";
+import { useWorldGraph, useWorldIntelligence } from "@/hooks/use-intelligence";
 import { formatAgo } from "@/lib/format";
 import {
   familyLabel,
@@ -18,6 +18,10 @@ import {
 } from "@/lib/market-intelligence-atlas";
 import { buildMarketInfluenceGraph } from "@/lib/market-influence-network";
 import type { MarketIntelligenceContext } from "@/lib/market-intelligence-reading";
+import {
+  bindWorldGraphProjection,
+  worldGraphIsAvailable,
+} from "@/lib/world-graph-explorer";
 import type {
   FamilyComparison,
   FamilyIntelligence,
@@ -51,6 +55,7 @@ export function MarketIntelligenceAtlas({
   onSelectScope,
 }: Props) {
   const worldQuery = useWorldIntelligence(30);
+  const worldGraphQuery = useWorldGraph();
   const layout = useMemo(
     () =>
       buildMarketAtlas({
@@ -90,7 +95,7 @@ export function MarketIntelligenceAtlas({
       }),
     [current, layout.nodes],
   );
-  const influenceGraph = useMemo(
+  const businessGraph = useMemo(
     () =>
       buildMarketInfluenceGraph({
         nodes: layout.nodes,
@@ -100,6 +105,13 @@ export function MarketIntelligenceAtlas({
         holdings,
       }),
     [companyMap, evidenceByNode, familyThreads, holdings, layout.nodes],
+  );
+  const influenceGraph = useMemo(
+    () =>
+      worldGraphIsAvailable(worldGraphQuery.data)
+        ? bindWorldGraphProjection(businessGraph, worldGraphQuery.data)
+        : businessGraph,
+    [businessGraph, worldGraphQuery.data],
   );
   const intelligenceContext = useMemo<MarketIntelligenceContext>(
     () => ({
@@ -148,12 +160,19 @@ export function MarketIntelligenceAtlas({
               : null}
           </p>
         </div>
-        <PriorityLegend />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <WorldGraphBindingStatus
+            pending={worldGraphQuery.isPending && !worldGraphQuery.data}
+            failed={Boolean(worldGraphQuery.error && !worldGraphQuery.data)}
+            graph={influenceGraph}
+          />
+          <PriorityLegend />
+        </div>
       </header>
 
       <p className="sr-only">
-        A complete directed map of markets, domains, themes, and possible
-        influences. Selecting an item highlights its path without removing any
+        A complete directed map of markets, domains, families, companies and
+        drivers. Selecting an item highlights its path without removing any
         other item.
       </p>
       <ul className="sr-only">
@@ -192,10 +211,53 @@ export function MarketIntelligenceAtlas({
   );
 }
 
+function WorldGraphBindingStatus({
+  pending,
+  failed,
+  graph,
+}: {
+  pending: boolean;
+  failed: boolean;
+  graph: ReturnType<typeof buildMarketInfluenceGraph>;
+}) {
+  const projection = graph.projection;
+  const label = projection
+    ? `${projection.mappedCompanyCount}/${projection.companyCount} linked`
+    : pending
+    ? "Linking World Graph"
+    : failed
+    ? "World Graph unavailable"
+    : "Business graph only";
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 font-mono text-[8px] uppercase tracking-[0.12em] ${
+        projection
+          ? "border-[#b7ccd5] bg-[#eef5f7] text-[#365865]"
+          : "border-line bg-white/70 text-faint"
+      }`}
+      title={projection
+        ? "Linked to the current published World Graph"
+        : undefined}
+    >
+      <span
+        aria-hidden="true"
+        className={`size-1.5 rounded-full ${
+          projection
+            ? "bg-[#26735a]"
+            : pending
+            ? "bg-[#b08a46]"
+            : "bg-[#9eafb7]"
+        }`}
+      />
+      {label}
+    </span>
+  );
+}
+
 function PriorityLegend() {
   return (
     <div
-      aria-label="Theme priority legend"
+      aria-label="Family priority legend"
       className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-dim"
     >
       <LegendItem color={PRIORITY_FILL.favored}>Casys prefers</LegendItem>
@@ -243,7 +305,7 @@ function atlasHeadline(scopes: AtlasScope[], nodes: AtlasNode[]): string {
     `${headlineThemeLabel(family, scope)} in ${scopeSentenceLabel(scope)}`
   ));
   const remaining = leaders.length - shown.length;
-  return `Leading themes: ${shown.join(" · ")}${
+  return `Leading families: ${shown.join(" · ")}${
     remaining > 0 ? ` · ${remaining} more market scopes` : ""
   }`;
 }
@@ -255,7 +317,7 @@ function scopeSentenceLabel(scope: string): string {
 
 function headlineThemeLabel(family: string, scope: string): string {
   const label = compactFamilyLabel(family, scope);
-  if (!label) return "theme";
+  if (!label) return "family";
   return `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
 }
 

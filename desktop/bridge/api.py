@@ -1015,6 +1015,16 @@ def handle_intelligence_news(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def handle_world_graph(_args: argparse.Namespace) -> dict[str, Any]:
+    from trader.application.world_model.graph_explorer import WorldGraphExplorerService
+    from trader.infrastructure.state_db.world_graph_explorer_query import (
+        SqliteWorldGraphExplorerQuery,
+    )
+
+    query = SqliteWorldGraphExplorerQuery(REPO_ROOT / "state" / "world_model.db")
+    return WorldGraphExplorerService(query).current_published_overview()
+
+
 def handle_intelligence_world(args: argparse.Namespace) -> dict[str, Any]:
     from trader.reporting.read_models.intelligence_timeline import load_world_timeline
 
@@ -1070,6 +1080,7 @@ HANDLERS = {
     "symbol-bars": handle_symbol_bars,
     "portfolio": handle_portfolio,
     "overview": handle_overview,
+    "world-graph": handle_world_graph,
     "intelligence-world": handle_intelligence_world,
     "intelligence-regions": handle_intelligence_regions,
     "intelligence-companies": handle_intelligence_companies,

@@ -106,11 +106,17 @@ export type AtlasMacroBriefInput = {
 export type AtlasEvidenceLink = {
   driverKey: string;
   driverLabel: string;
+  driverKind: AtlasDriverKind;
   kind: "shared_source" | "shared_symbol" | "topic_match";
   tone: "supportive" | "headwind" | "mixed" | "context";
   driverPoint: string;
   familyPoint: string;
 };
+
+export type AtlasDriverKind =
+  | "macro_indicator"
+  | "event"
+  | "observed_signal";
 
 export type AtlasLayout = {
   viewBox: { width: number; height: number };
@@ -385,6 +391,7 @@ export function buildAtlasEvidenceLinks(
     links.push({
       driverKey,
       driverLabel: readableDriverLabel(driverKey),
+      driverKind: driverKind(driverKey, strongest.driver.signal),
       kind: strongest.kind,
       tone: directionTone(sameStrength.map((match) => match.family.direction)),
       driverPoint: String(strongest.driver.point ?? "").trim(),
@@ -400,6 +407,24 @@ export function buildAtlasEvidenceLinks(
     )
     .slice(0, 3)
     .map(({ strength: _strength, ...link }) => link);
+}
+
+export function driverKind(
+  driverKey?: string | null,
+  signal?: string | null,
+): AtlasDriverKind {
+  const signalKey = String(signal ?? "").trim().toLowerCase();
+  if (signalKey === "event") return "event";
+  const key = String(driverKey ?? "").trim().toLowerCase();
+  if (
+    /(?:^|[_ -])(oil|brent|crude|gas|gold|rate|rates|yield|inflation|cpi|unemployment|usd|dollar|fx)(?:$|[_ -])/
+      .test(
+        ` ${key} `,
+      )
+  ) {
+    return "macro_indicator";
+  }
+  return "observed_signal";
 }
 
 function intersectionCount(

@@ -99,6 +99,7 @@ function atlasGraph(extraEvidence: AtlasEvidenceLink[] = []) {
     {
       driverKey: "oil",
       driverLabel: "Oil",
+      driverKind: "macro_indicator",
       kind: "shared_source",
       tone: "supportive",
       driverPoint: "Oil rose.",
@@ -531,6 +532,7 @@ Deno.test("macro grouping does not pick a dominant driver from many-to-many evid
   const graph = atlasGraph([{
     driverKey: "liquidity",
     driverLabel: "Global liquidity",
+    driverKind: "macro_indicator",
     kind: "shared_source",
     tone: "headwind",
     driverPoint: "Liquidity tightened.",

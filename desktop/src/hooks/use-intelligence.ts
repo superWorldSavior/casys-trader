@@ -5,6 +5,7 @@ import {
   readNewsFeed,
   readRegionIntelligence,
   readWorldIntelligence,
+  readWorldGraph,
 } from "@/lib/api";
 
 const INTELLIGENCE_STALE_TIME = 60_000;
@@ -15,6 +16,16 @@ export function useWorldIntelligence(limit = 240) {
     queryFn: () => readWorldIntelligence(limit),
     staleTime: INTELLIGENCE_STALE_TIME,
     refetchInterval: 120_000,
+  });
+}
+
+export function useWorldGraph() {
+  return useQuery({
+    queryKey: ["world-graph", "current-published-overview"],
+    queryFn: readWorldGraph,
+    staleTime: INTELLIGENCE_STALE_TIME,
+    refetchInterval: 120_000,
+    retry: 1,
   });
 }
 

@@ -30,6 +30,24 @@ function stubBridge(
   };
 }
 
+Deno.test("GET /api/world-graph maps to the world-graph resource", async () => {
+  const dist = await makeDist();
+  const bridge = stubBridge();
+  try {
+    const handler = createHandler({
+      distDir: dist,
+      invokeBridge: bridge.invoke,
+    });
+    const response = await handler(
+      new Request("http://127.0.0.1/api/world-graph?cutoff=2020-01-01"),
+    );
+    assertEquals(response.status, 200);
+    assertEquals(bridge.calls, [["world-graph"]]);
+  } finally {
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
 Deno.test("GET /api/snapshot maps to the bridge and returns JSON", async () => {
   const dist = await makeDist();
   const bridge = stubBridge();

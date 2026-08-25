@@ -1,7 +1,9 @@
-import type {
-  AtlasEvidenceLink,
-  AtlasFamilyThread,
-  AtlasNode,
+import {
+  type AtlasDriverKind,
+  type AtlasEvidenceLink,
+  type AtlasFamilyThread,
+  type AtlasNode,
+  driverKind,
 } from "./market-intelligence-atlas.ts";
 
 export type InfluenceNodeKind =
@@ -26,6 +28,19 @@ export type InfluenceEdgeBasis =
   | "market_membership"
   | "measured_correlation";
 
+export type InfluenceAssertionKind =
+  | "observed"
+  | "inferred"
+  | "hypothesized";
+
+export type CanonicalCompanyBinding = {
+  mapped: boolean;
+  instrumentId?: string;
+  venueId?: string;
+  countryId?: string;
+  regionId?: string;
+};
+
 export type InfluenceGraphNode = {
   data: {
     id: string;
@@ -40,6 +55,11 @@ export type InfluenceGraphNode = {
     rank?: number | null;
     detail?: string;
     holding?: CompanyHolding;
+    driverKind?: AtlasDriverKind;
+    activity?: number;
+    activeFrom?: string | null;
+    expectedUntil?: string | null;
+    canonical?: CanonicalCompanyBinding;
   };
   classes: string;
 };
@@ -59,6 +79,9 @@ export type InfluenceGraphEdge = {
     evidenceValidUntil?: string | null;
     evidenceStatus?: string | null;
     evidenceCoverage?: string | Record<string, unknown> | null;
+    effectiveFrom?: string | null;
+    effectiveUntil?: string | null;
+    assertionKind?: InfluenceAssertionKind;
   };
   classes: string;
 };
@@ -72,6 +95,20 @@ export type MarketInfluenceGraph = {
   companyCount: number;
   supportedPathCount: number;
   possiblePathCount: number;
+  projection?: {
+    schemaVersion: string;
+    status: string;
+    generatedAt: string | null;
+    cutoffAt: string | null;
+    revisionId: string | null;
+    canonicalNodeCount: number;
+    canonicalEdgeCount: number;
+    mappedCompanyCount: number;
+    companyCount: number;
+    missingCompanySymbols: readonly string[];
+    shadowOnly: boolean;
+    truncated: boolean;
+  };
 };
 
 export type EvidenceFreshness = {
@@ -107,6 +144,7 @@ export type MarketInfluenceGraphInput = {
   evidenceByNode?: readonly NodeEvidence[];
   companyNames?: Readonly<Record<string, string>>;
   holdings?: readonly HoldingInput[] | null;
+  now?: Date | string;
 };
 
 export function projectHoldings(
@@ -174,6 +212,7 @@ export function buildMarketInfluenceGraph(
     ]),
   );
   const holdings = projectHoldings(input.holdings);
+  const now = referenceDate(input.now);
 
   const addNode = (node: InfluenceGraphNode) => {
     const existing = nodeById.get(node.data.id);
@@ -189,6 +228,27 @@ export function buildMarketInfluenceGraph(
           .concat("supported")
           .join(" ");
         existing.data.detail = node.data.detail;
+      }
+      if (node.data.kind === "driver" && existing.data.kind === "driver") {
+        existing.data.activity = Math.max(
+          existing.data.activity ?? 0,
+          node.data.activity ?? 0,
+        );
+        existing.data.activeFrom = earliestTimestamp(
+          existing.data.activeFrom,
+          node.data.activeFrom,
+        );
+        existing.data.expectedUntil = latestTimestamp(
+          existing.data.expectedUntil,
+          node.data.expectedUntil,
+        );
+        if (
+          (!existing.data.driverKind ||
+            existing.data.driverKind === "observed_signal") &&
+          node.data.driverKind && node.data.driverKind !== "observed_signal"
+        ) {
+          existing.data.driverKind = node.data.driverKind;
+        }
       }
       return;
     }
@@ -280,6 +340,8 @@ export function buildMarketInfluenceGraph(
       thread.possibleInfluence,
       "Possible influence",
       "heuristic",
+      driverKind(thread.possibleInfluence),
+      { activity: 0.52 },
     ));
   }
   for (const evidence of input.evidenceByNode ?? []) {
@@ -287,8 +349,12 @@ export function buildMarketInfluenceGraph(
     for (const link of evidence.links) {
       addNode(driverNode(
         link.driverLabel,
-        link.kind === "topic_match" ? "Possible influence" : "Shared evidence",
+        link.kind === "topic_match"
+          ? "Possible influence"
+          : "Observed association",
         link.kind === "topic_match" ? "heuristic" : "supported",
+        link.driverKind,
+        driverActivation(evidence, now),
       ));
     }
   }
@@ -334,6 +400,7 @@ export function buildMarketInfluenceGraph(
         basis: "heuristic_domain",
         tone: "context",
         label: "Possible influence",
+        assertionKind: "hypothesized",
       },
       classes: "influence-path possible",
     });
@@ -366,6 +433,7 @@ export function buildMarketInfluenceGraph(
       const driverPoint = String(link.driverPoint ?? "").trim();
       const familyPoint = String(link.familyPoint ?? "").trim();
       const freshness = supported ? evidenceFreshness(evidence) : null;
+      const activation = driverActivation(evidence, now);
       addEdge({
         data: {
           id: edgeId(link.kind, source, target),
@@ -374,7 +442,12 @@ export function buildMarketInfluenceGraph(
           kind: supported ? "evidence" : "possible",
           basis: link.kind,
           tone: link.tone,
-          label: supported ? "Shared evidence" : "Possible influence",
+          label: supported ? "Observed association" : "Possible influence",
+          assertionKind: supported
+            ? link.kind === "shared_source" ? "observed" : "inferred"
+            : "hypothesized",
+          effectiveFrom: activation.activeFrom ?? null,
+          effectiveUntil: activation.expectedUntil ?? null,
           ...(supported && driverPoint ? { driverPoint } : {}),
           ...(supported && familyPoint ? { familyPoint } : {}),
           ...(freshness ?? {}),
@@ -620,6 +693,8 @@ function driverNode(
   label: string,
   detail: string,
   supportClass: "heuristic" | "supported",
+  kind: AtlasDriverKind,
+  activation: DriverActivation,
 ): InfluenceGraphNode {
   return {
     data: {
@@ -627,9 +702,88 @@ function driverNode(
       kind: "driver",
       label,
       detail,
+      driverKind: kind,
+      activity: activation.activity,
+      activeFrom: activation.activeFrom ?? null,
+      expectedUntil: activation.expectedUntil ?? null,
     },
     classes: `driver ${supportClass}`,
   };
+}
+
+type DriverActivation = {
+  activity: number;
+  activeFrom?: string | null;
+  expectedUntil?: string | null;
+};
+
+function driverActivation(
+  evidence: EvidenceFreshness,
+  now: Date,
+): DriverActivation {
+  const activeFrom = optionalTimestamp(evidence.as_of);
+  const expectedUntil = optionalTimestamp(evidence.valid_until);
+  const status = String(evidence.status ?? "").trim().toLowerCase();
+  let activity = status === "stale" || status === "expired" ? 0.34 : 1;
+  const until = expectedUntil ? Date.parse(expectedUntil) : Number.NaN;
+  const from = activeFrom ? Date.parse(activeFrom) : Number.NaN;
+  if (Number.isFinite(until)) {
+    const remaining = until - now.getTime();
+    if (remaining <= 0) {
+      activity = Math.min(activity, 0.3);
+    } else if (Number.isFinite(from) && until > from) {
+      const lifetime = until - from;
+      const fadeWindow = Math.max(60 * 60 * 1000, lifetime * 0.35);
+      if (remaining < fadeWindow) {
+        activity = Math.min(
+          activity,
+          0.46 + 0.54 * Math.max(0, remaining / fadeWindow),
+        );
+      }
+    }
+  }
+  return {
+    activity: Math.max(0.24, Math.min(1, activity)),
+    activeFrom,
+    expectedUntil,
+  };
+}
+
+function referenceDate(value?: Date | string): Date {
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value;
+  const parsed = typeof value === "string" ? new Date(value) : new Date();
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date();
+}
+
+function optionalTimestamp(value?: string | null): string | null {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function earliestTimestamp(
+  left?: string | null,
+  right?: string | null,
+): string | null {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  if (!Number.isFinite(leftTime)) return right;
+  if (!Number.isFinite(rightTime)) return left;
+  return leftTime <= rightTime ? left : right;
+}
+
+function latestTimestamp(
+  left?: string | null,
+  right?: string | null,
+): string | null {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  if (!Number.isFinite(leftTime)) return right;
+  if (!Number.isFinite(rightTime)) return left;
+  return leftTime >= rightTime ? left : right;
 }
 
 function edgeId(kind: string, source: string, target: string): string {

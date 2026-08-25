@@ -235,6 +235,10 @@ CASYS_WORLD_MODEL_GRAPH_ENABLED=0            # défaut
 CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1           # honore le YAML ; 0 saute l'auto-start
 ```
 
+Desktop lit une projection **courante** de ces têtes publiées via
+[l'explorateur World Graph](world-graph-explorer.md)
+(`world_graph_explorer.v1`). Ce n'est pas un cutoff historique arbitraire.
+
 Cette page **n'active rien**. Procédure : [opérer le World Model shadow](../../how-to/operate-world-model-shadow.md).
 Ce document n'est ni une promotion, ni un changement d'autorité, ni un feu
 vert trading.
