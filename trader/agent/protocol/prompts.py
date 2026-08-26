@@ -107,10 +107,14 @@ _OUTPUT_CONTRACT = (
     "= changer l'exposition ; même sens = renforcement, sens opposé = retournement.\n"
     "- strategy_exit{id?, limit?, stop?, qty_percent?, trail?, trail_offset?, protect?, "
     "exit_watch?, max_hold_minutes?} = patcher la règle de sortie d'une position ouverte.\n"
+    "  `exit_watch:null` ou `max_hold_minutes:null` annule explicitement cette règle ; "
+    "omettre la clé la laisse inchangée.\n"
     "- strategy_close{id?, qty?, qty_percent?} = sortie marché immédiate position-aware.\n"
     "- propose_indicator_watch{id?, conditions:[{symbol?, "
     f'indicator:"{_WATCH_INDICATOR_ENUM}", op:"{_WATCH_OPERATOR_ENUM}", value:<num>, '
-    f'interval?:"{_TIMEFRAME_ENUM}", window?:<int>, as_of?:"latest"}}], logic?:"all|any", '
+    f'interval?:"{_TIMEFRAME_ENUM}", window?:<int>, as_of?:"latest"}} '
+    "| {type:\"close\", symbol?, op:\"<|<=|>|>=|==|!=\", value:<prix>, "
+    f'interval?:"{_TIMEFRAME_ENUM}"}}], logic?:"all|any", '
     "ttl_minutes?:<int>, on_trigger?:\"WAKE|WAKE_WITH_ORDER_INTENT|EXECUTE_ORDER\", "
     "order?:{direction,qty,confidence,exit,rationale?}} "
     "= veille ou plan armé. `conditions` est une LISTE, même pour une seule condition : "
@@ -388,6 +392,8 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "stop avec qty_percent<100 => partial_stop_exit_not_supported. "
     "Sur position ouverte, un stop structurel peut aussi protéger un gain sous un swing récent, "
     "tant que le niveau résolu reste du bon côté du prix courant. "
+    "`exit_watch:null` ou `max_hold_minutes:null` retire explicitement cette règle ; "
+    "une clé absente la laisse inchangée. "
     "Sans plan ouvert, l'appel est un no-op tracé. "
     "`calls:[{strategy_exit}]` = HOLD + ajustement de gestion actif.\n"
     "- strategy_close{id?, qty?, qty_percent?} : sortie marché immédiate. "
@@ -604,12 +610,17 @@ def _indicator_watch_vocabulary() -> str:
         f"`indicator` canonique:\n{indicators}\n"
         f"`op` doit être l'un de: {operators}\n"
         f"Abréviation cockpit -> nom watch: {aliases}.\n"
+        "Condition de cours de clôture: `{type:\"close\",op,value,interval,...}`; "
+        "`indicator` doit alors être absent. Elle compare le close de la dernière "
+        "bougie réellement terminée avec les mêmes opérateurs.\n"
         "`value` doit être un nombre fini. Un label string connu est toléré et "
         "converti ; un label inconnu est rejeté. Exemples: chart_breakout == 1.0 "
         "pour breakout_up ; candlestick_signal == -0.5 pour shooting_star.\n"
         f"{label_mapping}\n"
-        "Watch minimale: `conditions:[{symbol,indicator,op,value,"
+        "Watch indicateur minimale: `conditions:[{symbol,indicator,op,value,"
         f'interval:"{_TIMEFRAME_ENUM}",window,as_of:"latest"}}]`; '
+        "watch close minimale: `conditions:[{type:\"close\",op,value,"
+        f'interval:"{_TIMEFRAME_ENUM}"}}]`; '
         "`ttl_minutes` est optionnel (défaut 240 minutes (4 h)) mais "
         "conseillé pour rendre l'horizon explicite. Une thèse overnight doit "
         "poser `ttl_minutes` explicitement (max 1440). Hors vocabulaire = rejet.\n"

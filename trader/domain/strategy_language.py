@@ -111,9 +111,11 @@ def _pine_exit_args(args: dict) -> dict:
         }
     if args.get("protect") is not None:
         out["protect"] = args["protect"]
-    if args.get("exit_watch") is not None:
+    # The key's presence is meaningful for strategy_exit: null explicitly
+    # clears the persisted rule, while an omitted key leaves it unchanged.
+    if "exit_watch" in args:
         out["exit_watch"] = args["exit_watch"]
-    if args.get("max_hold_minutes") is not None:
+    if "max_hold_minutes" in args:
         out["max_hold_minutes"] = args["max_hold_minutes"]
     return out
 

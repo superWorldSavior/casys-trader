@@ -1,7 +1,7 @@
 # Référence — Domain tools (la tournée d'outils du LLM)
 
 > **Type** : Reference (Diátaxis).
-> **État vérifié** : 2026-08-16.
+> **État vérifié** : 2026-08-26.
 > **Code** : `trader/agent/tools/` · **Registry** : `agent/tools/registry.TOOL_REGISTRY`
 > **Activation** : `CASYS_AGENT_TOOLS_ENABLED=1` · **Historique du design** : voir `git log` (specs 2026-06-29 / 2026-07-03 supprimées une fois livrées, cette page fait foi)
 
@@ -63,6 +63,27 @@ ce sont de vrais `TradePlan` ouverts sérialisés, pas les watches locales. La
 portée est volontairement globale pour permettre la conscience portefeuille ;
 `symbol` est un filtre optionnel, pas une limite implicite au symbole courant.
 `limit` est plafonné à 20. `as_of` reprend l'horodatage du snapshot de plans.
+
+Le « détail complet » est une projection opérationnelle déterministe, et non un
+`model_dump()` brut : chaque ligne contient l'identité/exposition (`id`,
+`symbol`, `side`, `quantity`, `remaining_quantity`, `opened_at`, prix d'entrée),
+toutes les règles de sortie actives (`hard_stop_price`, `take_profits`,
+`trailing_stop`, `profit_protection`, `max_hold_minutes`, `exit_watch`) et les
+champs nécessaires pour les interpréter (`reference_volatility`, watermarks,
+TP déjà remplis, état `triggered`, cooldown/expiration/dernier trigger de la
+watch). Les conditions d'`exit_watch` sont rendues sous leur forme canonique
+(`type`, dont `close`, `timeframe`, fenêtre, seuil, logique), sans rationale,
+ordre auxiliaire ni payload opaque.
+
+La projection exclut l'`entry_context` complet, l'ID de décision d'entrée et
+les métadonnées top-level de repli/runtime non nécessaires. La
+`last_llm_review` reste son petit allowlist existant. Les textes libres sont
+bornés (500 caractères pour la thèse, 240 pour les autres scalaires texte) ;
+les listes de TP, TP remplis et conditions d'`exit_watch` sont plafonnées à 12.
+Une exception de taille n'est jamais silencieuse : `take_profits_truncated`,
+`filled_take_profits_truncated` ou `exit_watch.conditions_truncated` vaut
+`true`. Les scalaires non finis deviennent `null`, donc le résultat reste du
+JSON strict.
 
 Sans provider (fallback batch), le handler retombe sur `active_watches_by_symbol`
 et rend des watches avec `as_of: null`. Ce mode est compatibilité/dégradé ; la
@@ -212,6 +233,8 @@ Vocabulaire compact de `strategy_entry.args.exit` et `strategy_exit.args` :
 | `protect.arm_r` | `profit_protection.arm_at_r` |
 | `protect.giveback` | `profit_protection.trigger_on_giveback_pct` |
 | `protect.lock_r` | remonte le stop à `entry +/- lock_r * R` au déclenchement |
+| `strategy_exit.exit_watch:null` | annule explicitement la veille de sortie ; clé absente = inchangé |
+| `strategy_exit.max_hold_minutes:null` | annule explicitement l'expiration temporelle ; clé absente = inchangé |
 
 **Contrat strict** : les seuls action tools d'ordre/sortie acceptés au runtime
 sont `strategy_entry`, `strategy_exit` et `strategy_close`. `exit_update` reste un

@@ -9,6 +9,7 @@ from trader.domain.world_episode import (
     AnchorBar,
     WorldEpisode,
     WorldObservation,
+    canonical_sha256,
 )
 from trader.interfaces.cli.world_model import read_world_model_status
 from trader.runtime import cli
@@ -699,3 +700,537 @@ def test_world_graph_report_and_nested_status_keep_c1_collecting_off_graph_activ
     assert nested["graph"]["gaps"]["cohort_activation"] == "no_graph_cohort"
     assert nested["decision_effect"] == "none"
     _assert_claims(nested["graph"])
+
+
+_PATTERN_CUTOFF = "2026-09-01T00:00:00+00:00"
+_PATTERN_EVAL_START = "2026-09-02T00:00:00+00:00"
+_PATTERN_EVAL_FP = "b" * 64
+
+
+def _pattern_discover_argv(*extra: str) -> list[str]:
+    return [
+        "world",
+        "pattern",
+        "discover",
+        "--formation-cutoff",
+        _PATTERN_CUTOFF,
+        "--evaluation-start-not-before",
+        _PATTERN_EVAL_START,
+        *extra,
+    ]
+
+
+def _forbid_pattern_store(monkeypatch) -> None:
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("WorldPatternStore must not be constructed")
+
+    monkeypatch.setattr(
+        "trader.infrastructure.state_db.world_pattern_store.WorldPatternStore",
+        boom,
+    )
+
+
+def _table_names(path: Path) -> set[str]:
+    import sqlite3
+
+    connection = sqlite3.connect(path)
+    try:
+        return {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        connection.close()
+
+
+def _count_table(path: Path, table: str) -> int:
+    import sqlite3
+
+    if not path.exists():
+        return 0
+    connection = sqlite3.connect(path)
+    try:
+        if table not in _table_names(path):
+            return 0
+        return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def test_world_pattern_parser_exposes_discover_evaluate_link_status_and_report() -> None:
+    parser = cli.build_parser()
+    discover = parser.parse_args(
+        [
+            "world",
+            "pattern",
+            "discover",
+            "--formation-cutoff",
+            _PATTERN_CUTOFF,
+            "--evaluation-start-not-before",
+            _PATTERN_EVAL_START,
+        ]
+    )
+    assert discover.world_command == "pattern"
+    assert discover.pattern_command == "discover"
+    assert discover.apply is False
+    assert discover.include_source_evidence is False
+    assert discover.hypothesis_id is None
+    assert discover.min_support == 20
+    assert discover.min_association == 0.10
+    assert discover.max_candidates == 20
+    evaluate = parser.parse_args(
+        [
+            "world",
+            "pattern",
+            "evaluate",
+            "--as-of",
+            "2026-09-10T00:00:00+00:00",
+            "--evaluation-cohort-id",
+            COHORT_ID,
+            "--evaluation-dataset-fingerprint",
+            _PATTERN_EVAL_FP,
+        ]
+    )
+    assert evaluate.pattern_command == "evaluate"
+    assert evaluate.apply is False
+    link = parser.parse_args(
+        ["world", "pattern", "link-outcomes", "--as-of", "2026-09-12T00:00:00+00:00"]
+    )
+    assert link.pattern_command == "link-outcomes"
+    assert link.apply is False
+    status = parser.parse_args(["world", "pattern", "status", "--json"])
+    assert status.pattern_command == "status"
+    report = parser.parse_args(["world", "pattern", "report", COHORT_ID, "--json"])
+    assert report.pattern_command == "report"
+    assert report.cohort_id == COHORT_ID
+    apply_args = parser.parse_args(
+        _pattern_discover_argv(
+            "--apply",
+            "--evaluation-cohort-id",
+            COHORT_ID,
+            "--evaluation-dataset-fingerprint",
+            _PATTERN_EVAL_FP,
+            "--hypothesis-id",
+            "pattern-hypothesis:v1:" + "a" * 64,
+            "--hypothesis-id",
+            "pattern-hypothesis:v1:" + "c" * 64,
+            "--include-source-evidence",
+        )
+    )
+    assert apply_args.apply is True
+    assert apply_args.include_source_evidence is True
+    assert apply_args.evaluation_cohort_id == COHORT_ID
+    assert apply_args.hypothesis_id == [
+        "pattern-hypothesis:v1:" + "a" * 64,
+        "pattern-hypothesis:v1:" + "c" * 64,
+    ]
+
+
+def test_world_pattern_discover_dry_run_missing_db_does_not_create(tmp_path, monkeypatch, capsys) -> None:
+    _forbid_pattern_store(monkeypatch)
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, _pattern_discover_argv("--json"))
+
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["command"] == "discover"
+    assert payload["apply"] is False
+    assert payload["exists"] is False
+    assert payload["candidates"] == []
+    assert payload["rejection_counts"].get("missing_db") == 1
+    assert payload["eligible_records"] == 0
+    assert payload["source_evidence_count"] == 0
+    assert payload["source_evidence_fingerprint"] == canonical_sha256([])
+    assert "source_evidence_ids" not in payload
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_pattern_discover_include_source_evidence_restores_ids(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _forbid_pattern_store(monkeypatch)
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv("--include-source-evidence", "--json"),
+    )
+
+    assert code == 0
+    assert payload["source_evidence_count"] == 0
+    assert payload["source_evidence_fingerprint"] == canonical_sha256([])
+    assert payload["source_evidence_ids"] == []
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+
+
+def test_world_pattern_discover_dry_run_partial_db_does_not_migrate(tmp_path, monkeypatch, capsys) -> None:
+    import sqlite3
+
+    _forbid_pattern_store(monkeypatch)
+    db_path = _db_path(tmp_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE dummy (id INTEGER)")
+    connection.commit()
+    connection.close()
+
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, _pattern_discover_argv("--json"))
+
+    assert code == 0
+    assert payload["apply"] is False
+    assert payload["candidates"] == []
+    assert payload["rejection_counts"].get("schema_unavailable") == 1
+    _assert_claims(payload)
+    assert _table_names(db_path) == {"dummy"}
+
+
+def test_world_pattern_apply_without_cohort_or_fingerprint_does_not_write(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _forbid_pattern_store(monkeypatch)
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, _pattern_discover_argv("--apply", "--json"))
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_apply"
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_pattern_apply_rejects_malformed_cohort_id_before_store(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _forbid_pattern_store(monkeypatch)
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv(
+            "--apply",
+            "--evaluation-cohort-id",
+            "world_cohort:graph_pilot",
+            "--evaluation-dataset-fingerprint",
+            _PATTERN_EVAL_FP,
+            "--json",
+        ),
+    )
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_apply"
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_pattern_apply_rejects_in_sample_batch_fingerprint(tmp_path, monkeypatch, capsys) -> None:
+    _forbid_pattern_store(monkeypatch)
+    dry_code, dry = _run_json(monkeypatch, capsys, tmp_path, _pattern_discover_argv("--json"))
+    assert dry_code == 0
+    batch_fp = dry["formation_dataset_fingerprint"]
+    assert len(batch_fp) == 64
+
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv(
+            "--apply",
+            "--evaluation-cohort-id",
+            COHORT_ID,
+            "--evaluation-dataset-fingerprint",
+            batch_fp,
+            "--json",
+        ),
+    )
+
+    assert code == 1
+    assert payload["error"]["code"] == "in_sample_dataset"
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+
+
+def test_world_pattern_apply_unknown_hypothesis_id_does_not_open_store(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _forbid_pattern_store(monkeypatch)
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv(
+            "--apply",
+            "--evaluation-cohort-id",
+            COHORT_ID,
+            "--evaluation-dataset-fingerprint",
+            _PATTERN_EVAL_FP,
+            "--hypothesis-id",
+            "pattern-hypothesis:v1:" + "d" * 64,
+            "--json",
+        ),
+    )
+
+    assert code == 1
+    assert payload["error"]["code"] == "unknown_hypothesis"
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+
+
+def test_world_pattern_apply_missing_db_is_store_missing(tmp_path, monkeypatch, capsys) -> None:
+    _forbid_pattern_store(monkeypatch)
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv(
+            "--apply",
+            "--evaluation-cohort-id",
+            COHORT_ID,
+            "--evaluation-dataset-fingerprint",
+            _PATTERN_EVAL_FP,
+            "--json",
+        ),
+    )
+
+    assert code == 1
+    assert payload["error"]["code"] == "store_missing"
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_pattern_apply_registers_and_is_idempotent(tmp_path, monkeypatch, capsys) -> None:
+    from tests.state_db.test_world_pattern_formation_query import _seed_many
+    from trader.domain.world_pattern import PatternEvaluationStarted, PatternHypothesisId
+    from trader.infrastructure.state_db.world_pattern_store import WorldPatternStore
+
+    _seed_many(tmp_path, monkeypatch, ("2330", "2454", "2303"))
+    argv = _pattern_discover_argv(
+        "--horizon",
+        "elapsed_1d.v1",
+        "--min-support",
+        "1",
+        "--min-association",
+        "0",
+        "--apply",
+        "--evaluation-cohort-id",
+        COHORT_ID,
+        "--evaluation-dataset-fingerprint",
+        _PATTERN_EVAL_FP,
+        "--json",
+    )
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, argv)
+
+    assert code == 0
+    assert payload["apply"] is True
+    assert payload["candidates"]
+    assert payload["applied"]
+    assert payload["evaluation_cohort_id"] == COHORT_ID
+    assert payload["evaluation_dataset_fingerprint"] == _PATTERN_EVAL_FP
+    assert payload["evaluation_dataset_fingerprint"] != payload["formation_dataset_fingerprint"]
+    assert "source_evidence_ids" not in payload
+    assert "source_evidence_count" in payload
+    assert len(payload["source_evidence_fingerprint"]) == 64
+    for candidate in payload["candidates"]:
+        assert payload["evaluation_dataset_fingerprint"] != candidate["spec"]["formation_dataset_fingerprint"]
+    _assert_claims(payload)
+    first_applied = payload["applied"]
+    store = WorldPatternStore(_db_path(tmp_path))
+    try:
+        for row in first_applied:
+            hypothesis = store.load(PatternHypothesisId(row["hypothesis_id"]))
+            assert hypothesis.status == "evaluating"
+            assert hypothesis.registered.registered_at.isoformat() == _PATTERN_CUTOFF
+            started = next(
+                event for event in hypothesis.events if isinstance(event, PatternEvaluationStarted)
+            )
+            assert started.started_at.isoformat() == _PATTERN_EVAL_START
+            assert hypothesis.evaluation_cohort_id == COHORT_ID
+    finally:
+        store.close()
+    assert _count_table(_db_path(tmp_path), "world_pattern_occurrence_events") == 0
+    assert _count_table(_db_path(tmp_path), "world_shadow_predictions") == 0
+
+    retry_code, retry = _run_json(monkeypatch, capsys, tmp_path, argv)
+    assert retry_code == 0
+    assert retry["applied"] == first_applied
+    assert _count_table(_db_path(tmp_path), "world_pattern_hypothesis_events") == 2 * len(first_applied)
+    assert _count_table(_db_path(tmp_path), "world_pattern_occurrence_events") == 0
+
+
+def test_world_pattern_apply_rejects_candidate_formation_fingerprint(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from tests.state_db.test_world_pattern_formation_query import _seed_many
+
+    _seed_many(tmp_path, monkeypatch, ("2330", "2454", "2303"))
+    dry_code, dry = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv(
+            "--horizon",
+            "elapsed_1d.v1",
+            "--min-support",
+            "1",
+            "--min-association",
+            "0",
+            "--json",
+        ),
+    )
+    assert dry_code == 0
+    assert dry["apply"] is False
+    assert dry["candidates"]
+    assert "source_evidence_ids" not in dry
+    assert dry["source_evidence_count"] >= 0
+    assert len(dry["source_evidence_fingerprint"]) == 64
+    assert _count_table(_db_path(tmp_path), "world_pattern_hypothesis_events") == 0
+    candidate_fp = dry["candidates"][0]["spec"]["formation_dataset_fingerprint"]
+
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv(
+            "--horizon",
+            "elapsed_1d.v1",
+            "--min-support",
+            "1",
+            "--min-association",
+            "0",
+            "--apply",
+            "--evaluation-cohort-id",
+            COHORT_ID,
+            "--evaluation-dataset-fingerprint",
+            candidate_fp,
+            "--json",
+        ),
+    )
+
+    assert code == 1
+    assert payload["error"]["code"] == "in_sample_dataset"
+    _assert_claims(payload)
+    assert _count_table(_db_path(tmp_path), "world_pattern_hypothesis_events") == 0
+
+
+def test_world_pattern_discover_omits_source_evidence_ids_unless_requested(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from tests.state_db.test_world_pattern_formation_query import _seed_many
+
+    _seed_many(tmp_path, monkeypatch, ("2330", "2454", "2303"))
+    concise_argv = _pattern_discover_argv(
+        "--horizon",
+        "elapsed_1d.v1",
+        "--min-support",
+        "1",
+        "--min-association",
+        "0",
+        "--json",
+    )
+    code, concise = _run_json(monkeypatch, capsys, tmp_path, concise_argv)
+    assert code == 0
+    assert concise["apply"] is False
+    assert "source_evidence_ids" not in concise
+    assert concise["source_evidence_count"] > 0
+    assert len(concise["source_evidence_fingerprint"]) == 64
+    _assert_claims(concise)
+
+    full_code, full = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        _pattern_discover_argv(
+            "--horizon",
+            "elapsed_1d.v1",
+            "--min-support",
+            "1",
+            "--min-association",
+            "0",
+            "--include-source-evidence",
+            "--json",
+        ),
+    )
+    assert full_code == 0
+    assert full["source_evidence_ids"]
+    assert full["source_evidence_count"] == len(full["source_evidence_ids"])
+    assert full["source_evidence_fingerprint"] == canonical_sha256(sorted(full["source_evidence_ids"]))
+    assert full["source_evidence_fingerprint"] == concise["source_evidence_fingerprint"]
+    assert full["source_evidence_count"] == concise["source_evidence_count"]
+    _assert_claims(full)
+    assert _count_table(_db_path(tmp_path), "world_pattern_hypothesis_events") == 0
+
+
+def test_world_pattern_report_missing_db_does_not_create(tmp_path, monkeypatch, capsys) -> None:
+    code, payload = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "pattern", "report", COHORT_ID, "--json"],
+    )
+
+    assert code == 0
+    assert payload["command"] == "report"
+    assert payload["schema_version"] == "world_pattern_report.v1"
+    assert payload["status"] == "not_started"
+    assert payload["exists"] is False
+    assert payload["cohort_id"] == COHORT_ID
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()
+    assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_pattern_evaluate_and_link_dry_run_do_not_construct_stores(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _forbid_pattern_store(monkeypatch)
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("WorldModelStore must not be constructed")
+
+    monkeypatch.setattr("trader.infrastructure.state_db.world_model_store.WorldModelStore", boom)
+    evaluate_code, evaluate = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        [
+            "world",
+            "pattern",
+            "evaluate",
+            "--as-of",
+            "2026-09-10T00:00:00+00:00",
+            "--evaluation-cohort-id",
+            COHORT_ID,
+            "--evaluation-dataset-fingerprint",
+            _PATTERN_EVAL_FP,
+            "--json",
+        ],
+    )
+    assert evaluate_code == 0
+    assert evaluate["command"] == "evaluate"
+    assert evaluate["apply"] is False
+    assert evaluate["matches"] == []
+    _assert_claims(evaluate)
+
+    link_code, link = _run_json(
+        monkeypatch,
+        capsys,
+        tmp_path,
+        ["world", "pattern", "link-outcomes", "--as-of", "2026-09-12T00:00:00+00:00", "--json"],
+    )
+    assert link_code == 0
+    assert link["command"] == "link-outcomes"
+    assert link["apply"] is False
+    assert link["statuses"] == []
+    _assert_claims(link)
+    assert not _db_path(tmp_path).exists()
+
+
+def test_world_pattern_status_missing_db_does_not_create(tmp_path, monkeypatch, capsys) -> None:
+    code, payload = _run_json(monkeypatch, capsys, tmp_path, ["world", "pattern", "status", "--json"])
+    assert code == 0
+    assert payload["command"] == "status"
+    assert payload["schema_version"] == "world_pattern_status.v1"
+    assert payload["status"] == "not_started"
+    assert payload["exists"] is False
+    _assert_claims(payload)
+    assert not _db_path(tmp_path).exists()

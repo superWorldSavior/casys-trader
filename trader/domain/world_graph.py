@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NamedTuple
 
 from trader.domain.world_availability import (
     AvailabilityEvidence,
@@ -103,6 +103,54 @@ WORLD_IDENTITY_LINK_SCHEMA = "world_entity_identity_link.v1"
 WORLD_IDENTITY_MAP_SCHEMA = "world_entity_identity_map.v1"
 WORLD_GRAPH_SNAPSHOT_SCHEMA = "world_graph_snapshot.v1"
 GRAPH_TRAVERSAL_POLICY_VERSION = "graph_traversal.v1"
+GRAPH_TRAVERSAL_V1_DIRECTIONS = MappingProxyType(
+    {
+        "PART_OF_WORLD": frozenset({"forward"}),
+        "LOCATED_IN": frozenset({"forward", "reverse"}),
+        "TRADED_ON": frozenset({"forward", "reverse"}),
+        "ISSUED_BY": frozenset({"forward"}),
+        "MEMBER_OF_FAMILY": frozenset({"forward"}),
+        "ABOUT": frozenset({"forward", "reverse"}),
+        "OBSERVES": frozenset({"forward", "reverse"}),
+        "DERIVED_FROM": frozenset({"forward"}),
+        "SUPERSEDES": frozenset({"forward"}),
+        "USES": frozenset({"forward"}),
+    }
+)
+# Sensor is a graph node, but it has no legal relation endpoint, so it is not a path kind.
+GRAPH_PATH_NODE_KINDS = WORLD_ENTITY_KINDS | frozenset(
+    {
+        "knowledge_artifact",
+        "world_observation",
+        "world_graph_snapshot",
+        "pattern_hypothesis",
+        "macro_source_fact_version",
+    }
+)
+_KNOWLEDGE_ENDPOINT_KINDS = MappingProxyType(
+    {
+        "ABOUT": (frozenset({"knowledge_artifact"}), WORLD_ENTITY_KINDS),
+        "OBSERVES": (frozenset({"world_observation"}), WORLD_ENTITY_KINDS),
+        "DERIVED_FROM": (
+            frozenset({"knowledge_artifact", "world_observation"}),
+            frozenset({"knowledge_artifact", "macro_source_fact_version"}),
+        ),
+        "USES": (
+            frozenset({"world_graph_snapshot", "pattern_hypothesis"}),
+            frozenset({"knowledge_artifact", "world_observation"}),
+        ),
+    }
+)
+_SUPERSEDES_KINDS = frozenset(
+    {
+        "knowledge_artifact",
+        "world_observation",
+        "macro_source_fact_version",
+        "world_graph_snapshot",
+        "pattern_hypothesis",
+    }
+)
+_TRAVERSAL_DIRECTIONS = frozenset({"forward", "reverse"})
 
 _RELATION_ID_PREFIX = "world_relation:v1"
 _LINK_ID_PREFIX = "world_entity_identity_link:v1"
@@ -634,6 +682,85 @@ def _validate_structural_endpoints(kind: str, source: WorldEntityRef, target: Wo
     sources, targets = allowed
     if source.kind not in sources or target.kind not in targets:
         raise ValueError(f"{kind} source/target kinds are not allowed")
+
+
+class IdFreeTraversalHop(NamedTuple):
+    source_kind: str
+    relation_kind: str
+    direction: str
+    target_kind: str
+    family: str
+
+
+def parse_graph_path_node_kind(value: Any, field_name: str) -> str:
+    kind = _required_text(value, field_name).lower()
+    if kind not in GRAPH_PATH_NODE_KINDS:
+        allowed = ", ".join(sorted(GRAPH_PATH_NODE_KINDS))
+        raise ValueError(f"{field_name} must be one of: {allowed}")
+    return kind
+
+
+def _canonical_structural_kinds_allowed(kind: str, source_kind: str, target_kind: str) -> bool:
+    if kind == "LOCATED_IN":
+        return (source_kind, target_kind) in _LOCATED_IN_PAIRS
+    allowed = _STRUCTURAL_ENDPOINTS.get(kind)
+    if allowed is None:
+        return False
+    sources, targets = allowed
+    return source_kind in sources and target_kind in targets
+
+
+def _canonical_knowledge_kinds_allowed(kind: str, source_kind: str, target_kind: str) -> bool:
+    if kind == "SUPERSEDES":
+        return source_kind in _SUPERSEDES_KINDS and source_kind == target_kind
+    allowed = _KNOWLEDGE_ENDPOINT_KINDS.get(kind)
+    if allowed is None:
+        return False
+    sources, targets = allowed
+    return source_kind in sources and target_kind in targets
+
+
+def validate_id_free_traversal_hop(
+    *,
+    source_kind: Any,
+    relation_kind: Any,
+    direction: Any,
+    target_kind: Any,
+) -> IdFreeTraversalHop:
+    """Validate a path hop by kinds only. Reverse walks the same canonical pairing."""
+
+    source = parse_graph_path_node_kind(source_kind, "source_kind")
+    target = parse_graph_path_node_kind(target_kind, "target_kind")
+    kind = _required_text(relation_kind, "relation_kind").upper().replace("-", "_")
+    _reject_forbidden_relation_kind(kind)
+    if kind in STRUCTURAL_RELATION_KINDS:
+        family = "structural"
+    elif kind in KNOWLEDGE_RELATION_KINDS:
+        family = "knowledge"
+    else:
+        allowed = ", ".join(sorted(STRUCTURAL_RELATION_KINDS | KNOWLEDGE_RELATION_KINDS))
+        raise ValueError(f"relation_kind must be a structural or knowledge kind: {allowed}")
+    walked = _required_text(direction, "direction").lower()
+    if walked not in _TRAVERSAL_DIRECTIONS:
+        raise ValueError("direction must be forward or reverse")
+    permitted = GRAPH_TRAVERSAL_V1_DIRECTIONS.get(kind, frozenset())
+    if walked not in permitted:
+        raise ValueError(f"direction {walked} is not allowed for {kind} under {GRAPH_TRAVERSAL_POLICY_VERSION}")
+    canonical_source, canonical_target = (target, source) if walked == "reverse" else (source, target)
+    pairing_ok = (
+        _canonical_structural_kinds_allowed(kind, canonical_source, canonical_target)
+        if family == "structural"
+        else _canonical_knowledge_kinds_allowed(kind, canonical_source, canonical_target)
+    )
+    if not pairing_ok:
+        raise ValueError(f"{kind} source/target kinds are not an allowed pair")
+    return IdFreeTraversalHop(
+        source_kind=source,
+        relation_kind=kind,
+        direction=walked,
+        target_kind=target,
+        family=family,
+    )
 
 
 def _relation_identity_payload(
@@ -3885,7 +4012,9 @@ class MacroGraphBridgeRegistry:
 
 __all__ = [
     "FORBIDDEN_RELATION_KINDS",
+    "GRAPH_PATH_NODE_KINDS",
     "GRAPH_TRAVERSAL_POLICY_VERSION",
+    "GRAPH_TRAVERSAL_V1_DIRECTIONS",
     "KNOWLEDGE_RELATION_KINDS",
     "MACRO_GRAPH_BLOCK_REASONS",
     "MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA",
@@ -3896,6 +4025,7 @@ __all__ = [
     "WORLD_GRAPH_SNAPSHOT_SCHEMA",
     "ancestry_distance_from_instrument_root",
     "reconstruct_macro_observes_provenance",
+    "IdFreeTraversalHop",
     "KnowledgeArtifactRef",
     "KnowledgeWorldRelation",
     "KnowledgeWorldRelationAsserted",
@@ -3954,6 +4084,7 @@ __all__ = [
     "fold_structural_relation_events_at_cutoff",
     "knowledge_write_requires_macro_bridge_fence",
     "macro_graph_bridge_event_requires_fence",
+    "parse_graph_path_node_kind",
     "parse_knowledge_relation_kind",
     "parse_macro_graph_bridge_event",
     "require_macro_observes_bridge_fence",
@@ -3961,6 +4092,7 @@ __all__ = [
     "parse_world_entity_event",
     "parse_world_entity_identity_event",
     "parse_world_graph_node_ref",
+    "validate_id_free_traversal_hop",
     "parse_world_ontology_revision_event",
     "parse_world_relation_event",
     "reconcile_world_graph_snapshot",

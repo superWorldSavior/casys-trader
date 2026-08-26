@@ -12,7 +12,6 @@ import copy
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from types import MappingProxyType
 from typing import Protocol
 
 import networkx as nx
@@ -21,6 +20,7 @@ from trader.domain.world_episode import parse_utc_timestamp
 from trader.domain.world_graph import (
     FORBIDDEN_RELATION_KINDS,
     GRAPH_TRAVERSAL_POLICY_VERSION,
+    GRAPH_TRAVERSAL_V1_DIRECTIONS,
     KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     MacroSourceFactVersionRef,
@@ -41,20 +41,6 @@ GRAPH_TRAVERSAL_MAX_PATHS = 32
 _FRESHNESS_4H = timedelta(hours=4)
 _FRESHNESS_24H = timedelta(hours=24)
 _FRESHNESS_7D = timedelta(days=7)
-GRAPH_TRAVERSAL_V1_DIRECTIONS = MappingProxyType(
-    {
-        "PART_OF_WORLD": frozenset({"forward"}),
-        "LOCATED_IN": frozenset({"forward", "reverse"}),
-        "TRADED_ON": frozenset({"forward", "reverse"}),
-        "ISSUED_BY": frozenset({"forward"}),
-        "MEMBER_OF_FAMILY": frozenset({"forward"}),
-        "ABOUT": frozenset({"forward", "reverse"}),
-        "OBSERVES": frozenset({"forward", "reverse"}),
-        "DERIVED_FROM": frozenset({"forward"}),
-        "SUPERSEDES": frozenset({"forward"}),
-        "USES": frozenset({"forward"}),
-    }
-)
 
 
 class _StructuralView(Protocol):

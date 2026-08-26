@@ -13,6 +13,7 @@ from trader.application.world_model.ontology_service import (
 )
 from trader.domain.world_graph import (
     GRAPH_TRAVERSAL_POLICY_VERSION,
+    GRAPH_TRAVERSAL_V1_DIRECTIONS,
     KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     StructuralWorldRelation,
@@ -22,6 +23,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevision,
     WorldStructuralRelationRef,
 )
+from trader.infrastructure.graph import world_temporal_networkx as nx_projector
 from trader.infrastructure.graph.world_temporal_networkx import (
     GRAPH_TRAVERSAL_MAX_DEPTH,
     GRAPH_TRAVERSAL_MAX_PATHS,
@@ -484,6 +486,12 @@ def test_projector_does_not_fold_supersession_or_read_a_current_graph() -> None:
     assert original.content_sha256 in digests
     assert correction.content_sha256 in digests
     assert correction.supersedes == original.relation_id
+
+
+def test_projector_imports_sole_graph_traversal_v1_directions() -> None:
+    assert nx_projector.GRAPH_TRAVERSAL_V1_DIRECTIONS is GRAPH_TRAVERSAL_V1_DIRECTIONS
+    source = inspect.getsource(nx_projector)
+    assert 'GRAPH_TRAVERSAL_V1_DIRECTIONS = MappingProxyType' not in source
 
 
 def test_foreign_knowledge_relation_is_dropped_from_the_bound_overlay() -> None:

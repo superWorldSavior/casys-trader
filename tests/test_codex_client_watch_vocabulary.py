@@ -49,6 +49,14 @@ def test_batch_prompt_liste_tous_les_operateurs_valides() -> None:
         assert op in prompt, f"opérateur watch manquant du prompt: {op}"
 
 
+def test_batch_prompt_expose_la_condition_close_typee() -> None:
+    prompt = _batch_prompt()
+
+    assert 'type:"close"' in prompt
+    assert "dernière bougie réellement terminée" in prompt
+    assert "`indicator` doit alors être absent" in prompt
+
+
 def test_batch_prompt_mappe_les_abreviations_cockpit_vers_les_noms_canoniques() -> None:
     # Racine du rejet : le cockpit montre `er`/`ac`, la watch exige les noms longs.
     prompt = _batch_prompt()

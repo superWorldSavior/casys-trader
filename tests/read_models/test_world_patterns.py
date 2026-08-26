@@ -34,8 +34,11 @@ from trader.infrastructure.state_db.world_model_query import (
     read_world_pattern_ledger,
 )
 from trader.reporting.read_models.world_patterns import (
+    WORLD_PATTERN_STATUS_SCHEMA,
     project_world_pattern_report,
+    project_world_pattern_status,
     read_world_pattern_report,
+    read_world_pattern_status,
 )
 
 
@@ -121,13 +124,16 @@ def _closed(hypothesis: PatternHypothesis | None = None) -> PatternHypothesis:
 
 
 def _short_path() -> tuple[PatternMatchedHop, ...]:
+    step = _step(0, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue")
     return (
         PatternMatchedHop(
-            ordinal=0,
-            subject_kind="macro_indicator",
-            predicate="state_changed",
-            object_kind="country",
-            direction="forward",
+            ordinal=step.ordinal,
+            source_kind=step.source_kind,
+            relation_kind=step.relation_kind,
+            direction=step.direction,
+            target_kind=step.target_kind,
+            freshness_bucket=step.freshness_bucket,
+            evidence_rule_version=step.evidence_rule_version,
             evidence_refs=("macro_source_fact_version:v1:" + "d" * 64,),
         ),
     )
@@ -264,7 +270,7 @@ def _matched_family(
     if second_hypothesis:
         other = _evaluating(
             spec=_spec(
-                steps=(_step(0, subject_kind="macro_indicator", predicate="state_changed", object_kind="country"),),
+                steps=(_step(0, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue"),),
                 model_identity="hierarchical_dirichlet_world_baseline@graph.v1",
             )
         )
@@ -316,13 +322,40 @@ def test_missing_database_is_read_only_not_started(tmp_path: Path) -> None:
     db_path = tmp_path / "world_model.db"
     ledger = read_world_pattern_ledger(db_path, COHORT_ID)
     report = read_world_pattern_report(tmp_path, COHORT_ID)
+    status = read_world_pattern_status(tmp_path, COHORT_ID)
 
     assert ledger["status"] == "not_started"
     assert ledger["exists"] is False
     assert report["status"] == "not_started"
     assert report["schema_version"] == "world_pattern_report.v1"
+    assert status["status"] == "not_started"
+    assert status["schema_version"] == WORLD_PATTERN_STATUS_SCHEMA
     _assert_bounded_claims(report)
+    _assert_bounded_claims(status)
     assert not db_path.exists()
+
+
+def test_status_lists_evaluating_hypothesis_with_zero_occurrences() -> None:
+    hypothesis = _evaluating()
+    payload = project_world_pattern_status(
+        {
+            "status": "loaded",
+            "exists": True,
+            "cohort_id": COHORT_ID,
+            "hypothesis_events": [event.to_dict() for event in hypothesis.events],
+            "occurrence_events": [],
+            "outcomes": [],
+        }
+    )
+    assert payload["schema_version"] == WORLD_PATTERN_STATUS_SCHEMA
+    assert payload["hypothesis_count"] == 1
+    assert payload["occurrence_count"] == 0
+    row = payload["hypotheses"][0]
+    assert row["hypothesis_id"] == hypothesis.hypothesis_id
+    assert row["status"] == "evaluating"
+    assert row["occurrence_count"] == 0
+    assert row["expected_horizon_ids"] == ["elapsed_4h.v1", "elapsed_1d.v1", "elapsed_3d.v1"]
+    _assert_bounded_claims(payload)
 
 
 def test_schema_unavailable_when_pattern_tables_are_missing(tmp_path: Path) -> None:

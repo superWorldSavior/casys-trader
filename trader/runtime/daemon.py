@@ -86,7 +86,7 @@ from trader.infrastructure.market_sources.data_source import (
 )
 from trader.infrastructure.market_sources.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
-from trader.domain.planning.protocols import SchedulerLike
+from trader.domain.planning.protocols import SchedulerLike, TradePlanStoreLike
 from trader.domain import decision_identity
 from trader.domain.process_trace import new_runtime_run_id
 from trader.infrastructure.files import decision_ledger
@@ -160,6 +160,38 @@ _RECALL_STORE_FAILED: bool = False
 def evaluate_plan(*args: object, **kwargs: object) -> object:
     """Legacy daemon monkeypatch hook for planned-exit evaluation."""
     return planned_exits_service.evaluate_plan(*args, **kwargs)
+
+
+def _publish_worker_cycle_context(
+    *,
+    handle: worker_cycle_context_runtime.WorkerCycleContextHandle,
+    cycle_id: str,
+    plan_store: TradePlanStoreLike,
+    bars_by_symbol: dict[str, list],
+    prices_by_symbol: dict[str, float],
+) -> None:
+    """Publish one atomic, post-exit snapshot for decision workers.
+
+    The store is read once so the raw plans used by ``strategy_exit`` validation
+    and the projected rows used by ``get_active_plans`` describe exactly the
+    same post-protection lifecycle state.
+    """
+
+    raw_open_plans = tuple(plan_store.open_plans())
+    handle.publish(
+        worker_cycle_context_runtime.WorkerCycleContext(
+            cycle_id=cycle_id,
+            as_of=cycle_id,
+            open_plans=worker_cycle_context_runtime.OpenPlansSnapshot(
+                rows=tuple(_plan_to_context_dict(plan) for plan in raw_open_plans),
+                raw_plans=raw_open_plans,
+            ),
+            exit_validation=worker_cycle_context_runtime.ExitValidationInputs(
+                bars_by_symbol=dict(bars_by_symbol),
+                prices_by_symbol=dict(prices_by_symbol),
+            ),
+        )
+    )
 
 
 def summarize_gross_rejections(decisions: list[dict]) -> dict | None:
@@ -960,11 +992,6 @@ def run_cycle(
         state_dir=STATE_DIR,
         backend=CANONICAL_STATE_BACKEND,
     )
-    _cycle_raw_open_plans: tuple[object, ...] = ()
-    _cycle_open_plan_rows: tuple[dict, ...] = ()
-    if worker_cycle_context is not None:
-        _cycle_raw_open_plans = tuple(plan_store.open_plans())
-        _cycle_open_plan_rows = tuple(_plan_to_context_dict(plan) for plan in _cycle_raw_open_plans)
     gate = RiskGate(RiskLimits.from_dict(risk_cfg))
     # Paper/exploration : si False, une ouverture SANS hard_stop n'est plus rejetée
     # (stop optionnel, position bornée par les seuls fusibles notionnels). Défaut
@@ -1085,21 +1112,6 @@ def run_cycle(
         now=world_model_snapshot_at,
         context_enabled=world_model_context,
     )
-    if worker_cycle_context is not None:
-        worker_cycle_context.publish(
-            worker_cycle_context_runtime.WorkerCycleContext(
-                cycle_id=cycle_id,
-                as_of=cycle_id,
-                open_plans=worker_cycle_context_runtime.OpenPlansSnapshot(
-                    rows=_cycle_open_plan_rows,
-                    raw_plans=_cycle_raw_open_plans,
-                ),
-                exit_validation=worker_cycle_context_runtime.ExitValidationInputs(
-                    bars_by_symbol=dict(tradable_bars_by_symbol),
-                    prices_by_symbol=dict(prices),
-                ),
-            )
-        )
     _log_cycle_progress(
         "[market] loaded ok=%d missing=%d",
         len(prices),
@@ -1154,6 +1166,15 @@ def run_cycle(
             triggers_by_symbol.setdefault(symbol, []).append(trigger)
             if symbol in symbols and symbol not in symbols_to_decide:
                 symbols_to_decide.append(symbol)
+
+    if worker_cycle_context is not None:
+        _publish_worker_cycle_context(
+            handle=worker_cycle_context,
+            cycle_id=cycle_id,
+            plan_store=plan_store,
+            bars_by_symbol=tradable_bars_by_symbol,
+            prices_by_symbol=prices,
+        )
 
     mark_end(stage_clock, "snapshot_ms")
     mark_start(stage_clock, "gate_scope_ms")

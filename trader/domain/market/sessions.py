@@ -594,6 +594,114 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
 
+def completed_intraday_bars(
+    bars: list[Bar],
+    *,
+    now: datetime,
+    target_interval: str,
+    source_interval: str | None = None,
+) -> list[Bar] | None:
+    """Return only bars proven closed at the semantic watch timeframe.
+
+    Market ``Bar.ts`` is the start of its source interval.  A direct 15m/1h/4h
+    row is therefore usable only after ``ts + target_interval``.  A semantic 4h
+    watch may instead declare ``source_interval="1h"``: source rows are first
+    closed individually, then only full groups are aggregated.  This preserves
+    the Yahoo aggregate representation (its resulting timestamp is the last
+    source 1h start, so its completion is ``ts + 1h``) without treating a
+    partial four-hour bucket as a closed candle.
+
+    ``None`` means timestamp or interval provenance cannot prove the result and
+    must be handled fail-closed.  Daily uses market-session semantics and stays
+    in ``_completed_daily_bars`` / ``assess_daily_freshness`` instead.
+    """
+
+    target = str(target_interval).strip().lower()
+    source = str(source_interval or target_interval).strip().lower()
+    if target == "1d" or source == "1d":
+        return None
+    target_minutes = _interval_minutes(target)
+    source_minutes = _interval_minutes(source)
+    if (
+        target_minutes is None
+        or source_minutes is None
+        or source_minutes <= 0
+        or target_minutes < source_minutes
+    ):
+        return None
+    ratio = target_minutes / source_minutes
+    if abs(ratio - round(ratio)) > 1e-9:
+        return None
+
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    source_duration = timedelta(minutes=source_minutes)
+    closed: list[tuple[datetime, Bar]] = []
+    for bar in bars:
+        timestamp = _parse_ts(str(bar.ts))
+        if timestamp is None:
+            return None
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp_utc = timestamp.astimezone(timezone.utc)
+        if timestamp_utc + source_duration <= now_utc:
+            closed.append((timestamp_utc, bar))
+    closed.sort(key=lambda item: item[0])
+    source_bars = [bar for _, bar in closed]
+    if target_minutes == source_minutes:
+        return source_bars
+    return aggregate_bars(
+        source_bars,
+        target_interval=target,
+        source_interval=source,
+    )
+
+
+def assess_completed_intraday_freshness(
+    bars: list[Bar],
+    *,
+    now: datetime,
+    target_interval: str,
+    source_interval: str | None = None,
+) -> Freshness:
+    """Assess freshness from the actual close of the last usable bar.
+
+    For a direct bar, its completion is ``ts + target_interval``.  For an
+    aggregate, ``aggregate_bars`` retains the last source timestamp, so its
+    completion is ``ts + source_interval``.  Treating every 4h aggregate as
+    ``ts + 4h`` would incorrectly discard valid Yahoo 4x1h bars; treating every
+    row as ``ts + source`` would be wrong for direct 4h providers.
+    """
+
+    if not bars:
+        return Freshness(False, "no_data", None)
+    target = str(target_interval).strip().lower()
+    source = str(source_interval or target_interval).strip().lower()
+    target_minutes = _interval_minutes(target)
+    source_minutes = _interval_minutes(source)
+    if (
+        target == "1d"
+        or source == "1d"
+        or target_minutes is None
+        or source_minutes is None
+        or target_minutes < source_minutes
+    ):
+        return Freshness(False, "unparseable_ts", None)
+    timestamp = _parse_ts(str(bars[-1].ts))
+    if timestamp is None:
+        return Freshness(False, "unparseable_ts", None)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    completed_at = timestamp.astimezone(timezone.utc) + timedelta(minutes=source_minutes)
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    delta_minutes = (now_utc - completed_at).total_seconds() / 60.0
+    if delta_minutes < -_CLOCK_SKEW_TOLERANCE_MINUTES:
+        return Freshness(False, "future_ts", None)
+    age_minutes = max(0.0, delta_minutes)
+    if age_minutes > freshness_budget_minutes(target):
+        return Freshness(False, "too_old", age_minutes)
+    return Freshness(True, None, age_minutes)
+
+
 def _aggregate_group(group: list[Bar]) -> Bar:
     return Bar(
         ts=group[-1].ts,
@@ -712,6 +820,8 @@ __all__ = [
     "last_completed_session_date",
     "assess_daily_freshness",
     "clamp_wake_to_session_open",
+    "completed_intraday_bars",
+    "assess_completed_intraday_freshness",
     "aggregate_bars",
     "classify_symbol_context",
     "explicit_mic_assignment",

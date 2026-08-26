@@ -37,8 +37,10 @@ une arête factuelle `CAUSES`.
 La vérité canonique reste constituée d'objets de domaine typés et immuables.
 NetworkX construit une projection fraîche pour traverser ou valider ces
 objets ; le graphe mutable NetworkX n'est jamais persisté. La première
-expérience ML reste un vecteur déterministe compact donné aux Markov/GRU dans
-une voie graphe distincte. Ni GNN, ni GraphRAG, ni Neo4j dans cette RFC.
+expérience ML reste un vecteur déterministe compact donné aux voies Markov/GRU
+dans une lane graphe distincte. La découverte de chaînes explicites est un
+service séparé (`explicit_graph_pattern.v1`) : elle ne couple pas, n'importe
+pas et n'entraîne pas de GRU. Ni GNN, ni GraphRAG, ni Neo4j dans cette RFC.
 
 ## 2. Ce qui existe et ce qui manque
 
@@ -465,13 +467,20 @@ uniquement kinds, relations, sens et buckets — jamais les IDs d'instrument ou
 d'entreprise comme feature.
 
 Le projecteur conserve le sens canonique de chaque arête, mais la politique de
-traversée peut emprunter explicitement une arête structurelle en sens inverse.
-Le sens (`forward | reverse`) entre dans la signature. Ainsi une observation
+traversée peut emprunter explicitement une arête en sens inverse. Le owner de
+cette algèbre est `world_graph` : il exporte la seule table
+`GRAPH_TRAVERSAL_V1_DIRECTIONS`, les kinds de nœuds de chemin (sans `sensor`,
+parce qu'aucun endpoint légal ne l'admet) et un validateur d'hop sans IDs.
+NetworkX importe cette table ; il ne la recopie pas.
+
+Le validateur vérifie la famille de relation (structurelle ou connaissance),
+l'appariement canonique des kinds d'endpoints, le sens (`reverse` échange les
+endpoints canoniques) et interdit `CAUSES`. Ainsi une observation
 `OBSERVES region` peut rejoindre une place par `LOCATED_IN(reverse)`, puis un
 instrument par `TRADED_ON(reverse)` ; depuis cet instrument, `ISSUED_BY` et
 `MEMBER_OF_FAMILY` forment deux branches sœurs. Il n'existe aucune arête
-inventée `family -> company`, et tout chemin non autorisé par la table des
-directions de `graph_traversal.v1` est rejeté.
+inventée `family -> company`, et tout hop hors table ou hors pair canonique
+est rejeté.
 
 Graphology peut servir plus tard à une visualisation frontend, mais le frontend
 est hors scope et ne devient jamais une source métier.
@@ -494,18 +503,20 @@ Une hypothèse est formulée **avant** ses occurrences d'évaluation :
   "steps": [
     {
       "ordinal": 0,
-      "subject_kind": "macro_indicator",
-      "predicate": "state_changed",
-      "object_kind": "country",
-      "lag_window": "0h..24h",
+      "source_kind": "world_observation",
+      "relation_kind": "OBSERVES",
+      "direction": "forward",
+      "target_kind": "country",
+      "freshness_bucket": "0-4h",
       "evidence_rule_version": "macro_path_rule.v1"
     },
     {
       "ordinal": 1,
-      "subject_kind": "country",
-      "predicate": "contains_venue",
-      "object_kind": "venue",
-      "lag_window": "0h..24h",
+      "source_kind": "country",
+      "relation_kind": "LOCATED_IN",
+      "direction": "reverse",
+      "target_kind": "venue",
+      "freshness_bucket": "4-24h",
       "evidence_rule_version": "market_ontology.v1"
     }
   ],
@@ -515,17 +526,58 @@ Une hypothèse est formulée **avant** ses occurrences d'évaluation :
   "feature_contract_fingerprint": "<sha256>",
   "feature_mask_id": "graph_content.v1",
   "feature_mask_fingerprint": "<sha256>",
-  "model_identity": "online_gru_world_challenger@graph.v1",
+  "model_identity": "explicit_graph_pattern.v1",
   "ontology_revision": "market_ontology.v1",
+  "stats": {
+    "support": 7,
+    "population_support": 20,
+    "class_counts": {"DOWN": 1, "FLAT": 2, "UP": 4},
+    "population_class_counts": {"DOWN": 6, "FLAT": 7, "UP": 7},
+    "smoothing_alpha": 1.0,
+    "association_metric": "total_variation.v1",
+    "association_score": 0.12,
+    "pattern_distribution": {"DOWN": 0.20, "FLAT": 0.30, "UP": 0.50},
+    "population_distribution": {"DOWN": 0.304347826, "FLAT": 0.347826087, "UP": 0.347826087}
+  },
   "source_refs": [],
   "causal_claim": false,
   "content_sha256": "<sha256>"
 }
 ```
 
-`steps` sont ordonnés, bornés et typés. Un prédicat d'hypothèse ne devient pas
-une relation factuelle. Le `formation_dataset_fingerprint` empêche d'évaluer
-comme prospective une hypothèse découverte sur les mêmes outcomes.
+`steps` sont une projection ID-free de `WorldTemporalPathStep` : kinds, relation
+ontologique, sens, bucket de fraîcheur et version de règle de preuve. Ils ne
+sont jamais insérés comme arêtes factuelles. Le hop appelle le validateur
+canonique de `world_graph`. L'identité d'occurrence exige tous ces champs.
+
+La forme non déployée `subject_kind` / `predicate` / `object_kind` /
+`lag_window` est retirée. Les tables live n'ont aucune ligne durable, donc
+`pattern_hypothesis.v1` adopte directement la projection corrigée. Il n'y a pas
+de contrat v2 ni de couche de compatibilité.
+
+Le `formation_dataset_fingerprint` empêche d'évaluer comme prospective une
+hypothèse découverte sur les mêmes outcomes. Il est calculé sur les preuves
+triées (épisode, snapshot id/hash, outcome id/hash, ancre temps-spécifique et
+signature de chemin) : un changement de label ou de preuve change l'identité.
+
+`stats` est un value object immuable persisté dans `PatternHypothesis.v1`.
+Les tables live sont vides : le contrat corrigé remplace directement v1, sans
+v2 ni couche legacy. Les comptages sont des ancres marché temps-spécifiques
+uniques (`venue`, `symbol`, `bar_interval`, `as_of_bar_ts`, `horizon`) — jamais
+des instances brutes de chemins, et jamais tous les timestamps d'un même
+symbole fusionnés. `support` est un entier positif ; `population_support >=
+support`. Les `class_counts` portent exactement DOWN/FLAT/UP, non négatifs, et
+somment `support` ; les comptes population somment `population_support`.
+`smoothing_alpha` est fini et `> 0`. La métrique d'association est
+exactement `total_variation.v1` (demi-somme des écarts absolus entre les
+distributions Laplace-lissées pattern et population), pas une divergence KL.
+`target.move_distribution` doit égaler la distribution pattern lissée.
+
+`PatternEvaluationStarted` porte un `evaluation_cohort_id` d'identité
+obligatoire. L'agrégat expose `PatternHypothesis.evaluation_cohort_id`.
+`PatternOccurrence.record` exige que son `cohort_id` soit exactement cette
+cohorte d'évaluation démarrée. Aucun défaut de compatibilité : les tables live
+n'ont aucune ligne.
 
 ### 9.1 Cycle de vie
 
@@ -551,7 +603,10 @@ mask, prédiction et IDs d'horizons attendus. Ces quatre champs doivent être
 identiques à ceux de l'hypothèse et de la lane de cohorte. Elle exclut
 `ready_at` de son payload ; le ledger
 retourne son `AvailabilityEvidence` après persistance, obligatoirement avant le
-target label.
+target label. Le matching prospectif fixe
+`expected_horizon_ids = (elapsed_4h.v1, elapsed_1d.v1, elapsed_3d.v1)`
+alors que la prévision shadow n'en porte qu'un (`PatternForecast` /
+`WorldPrediction`). L'occurrence est récupérable avant tout outcome.
 
 ### 10.2 `PatternOutcomeLink.v1`
 
@@ -572,6 +627,13 @@ Le link ne recopie ni `move_class`, ni rendement, ni timestamps du label. Le
 read model charge la feuille `WorldOutcome` canonique, vérifie ID/digest/horizon
 et lit sa sémantique. Une correction crée un nouveau link vers le nouvel event
 et supersède l'ancien ; jamais d'overwrite ni de deuxième autorité du label.
+Un replay du même leaf actif est idempotent. Une correction canonique dont
+`supersedes_event_id` pointe le leaf actuellement lié passe par
+`WorldPatternService.link`. Un saut de chaîne (C qui supersède B alors que A
+est lié) reste rejeté : les contrôles `supersedes` explicites ne sont pas
+assouplis. Seul `PatternOutcomeLinkService` lit les feuilles actives ; le
+matching n'inspecte aucune ligne d'outcome. Un horizon encore absent reste
+pending.
 
 ### 10.3 `PatternAssessment.v1`
 
@@ -652,15 +714,67 @@ un vecteur déterministe.
 
 ### 12.2 Découverte puis confirmation
 
-1. un pilote graphe collecte features, paths et outcomes ;
-2. une analyse offline groupe des occurrences par signature de chaîne et
-   propose des `PatternHypothesis` ;
-3. les hypothèses, seuils et population sont enregistrés ;
-4. une **nouvelle** période prospective les évalue ;
-5. contrôles négatifs et contre-exemples sont rapportés ;
-6. une hypothèse non confirmée reste dans l'audit mais n'est pas promue.
+1. un pilote graphe collecte le **compagnon** `WorldEpisode` graphe
+   (`world_feature.graph.v1`), ses outcomes, et le snapshot embarqué dans
+   `observation.graph` / `graph_features.snapshot`.
+   `WorldGraphSnapshot.root_episode_id` reste l'épisode **marché** sous-jacent
+   et est volontairement distinct de l'épisode graphe. Un record de formation
+   exige l'égalité `outcome.episode_id` / épisode graphe et
+   `embedded snapshot_id == snapshot.snapshot_id` ; il n'identifie jamais le
+   snapshot par l'ID de l'épisode graphe. Des lignes ancre/provenance
+   dupliquées avec des labels DOWN/FLAT/UP contradictoires sont rejetées
+   (pas d'overwrite silencieux) ; une preuve identique peut être dédupliquée ;
+2. `PatternDiscoveryService` projette des `PatternStep` (aucun second type de hop)
+   depuis l'ancestralité structurelle unique en avant — `TRADED_ON` vers la
+   venue, `LOCATED_IN` pays/région, `PART_OF_WORLD` vers world — plus les
+   branches racine `ISSUED_BY` / `MEMBER_OF_FAMILY`. Il n' inverse jamais
+   `TRADED_ON` vers des instruments frères et n'appelle pas NetworkX ;
+3. chaque overlay `OBSERVES`/`ABOUT` incident à un nœud visité prolonge la
+   chaîne jusqu'à la preuve (en général en reverse). Les overlays extérieurs
+   sont exclus. Les buckets de fraîcheur viennent de `effective_from` contre
+   `snapshot.cutoff_at`. `evidence_rule_version` est `GRAPH_PATH_RULE_VERSION`
+   pour tous les hops courants ;
+4. le groupement est (steps sémantiques, horizon, contrat/mask + fingerprints,
+   révision d'ontologie, `explicit_graph_pattern.v1`). La population est
+   l'ensemble des ancres temps-spécifiques éligibles de même horizon/provenance ;
+5. les candidats sont rangés par association desc, support desc, signature
+   asc, horizon asc, puis filtrés. Zéro candidat est un résultat valide ;
+6. `casys-trader world pattern discover` est un dry-run. `--apply` enregistre
+   puis démarre l'évaluation (`registered` → `evaluating`) sur une
+   `evaluation_cohort_id` et un `evaluation_dataset_fingerprint` distincts
+   du dataset de formation ;
+7. `casys-trader world pattern evaluate --as-of …` charge uniquement les
+   hypothèses `evaluating` de la `evaluation_cohort_id` demandée, scanne
+   uniquement les compagnons graphe référencés par `world_cohort_slots` de
+   cette cohorte (clé `world_feature.graph.v1`) et visibles à `as_of`,
+   **strictement après** `formation_cutoff` et `evaluation_start_not_before`.
+   Une cohorte vide ou absente ne retombe pas sur d'autres épisodes. Le
+   `evaluation_dataset_fingerprint` reste la clôture request/hypothèses. Il
+   projette les chemins via le module partagé `pattern_path.py`, et construit
+   des `WorldPrediction` shadow + `PatternOccurrence` **avant** toute lecture
+   de label. Horizons attendus : `elapsed_4h.v1`, `elapsed_1d.v1`,
+   `elapsed_3d.v1`. Dry-run par défaut ; `--apply` persiste via
+   `WorldModelStore.append_prediction` puis `WorldPatternService.record` ;
+8. `casys-trader world pattern link-outcomes --as-of …` est la seule phase
+   autorisée à lire les feuilles `WorldOutcome` actives. Elle lie
+   séparément 4h / 1d / 3d. Un replay du même leaf actif est idempotent ;
+   une correction canonique dont `supersedes_event_id` pointe le leaf
+   actuellement lié passe par `WorldPatternService.link`. Un horizon
+   manquant reste `pending` ; rien n'est fabriqué. Dry-run par défaut ;
+   `--apply` passe par `WorldPatternService.link` ;
+9. `casys-trader world pattern status [cohort_id]` est hypothèse-premier :
+   une hypothèse `evaluating` reste visible avec zéro occurrence.
+   `report` reste le read model d'assessment GRAPH-11.
 
-Il est interdit de découvrir et confirmer sur les mêmes outcomes.
+La projection de chemins n'appartient plus en privé à la découverte :
+`project_pattern_paths` / `paths_matching_steps` sont partagés. NetworkX
+n'est jamais appelé. Les `evidence_refs` restent hors de
+`PatternStep.identity_tuple()`.
+
+Il est interdit de découvrir et confirmer sur les mêmes outcomes. Le matching
+ne `SELECT` jamais `world_outcome_events`. La découverte n'émet aucun claim
+causal et n'emprunte pas le vocabulaire d'autorité runtime. Aucun câblage
+daemon dans ce lot : le World Model reste `shadow_only` / `NO_GO`.
 
 ### 12.3 Contrôles négatifs
 
@@ -696,7 +810,7 @@ décision séparée parce qu'il créerait un nouveau lien avec le chemin Trader.
 | Domaine graphe | `trader/domain/world_graph.py` | entités, relations, révisions, snapshots, events |
 | Domaine patterns | `trader/domain/world_pattern.py` | agrégats hypothesis/occurrence et lifecycle |
 | Application | `ontology_service.py`, `graph_observation_bridge.py`, `graph_ports.py` | commands/queries point-in-time, bridge et ports consumer-owned |
-| Application ML | `graph_features.py`, `pattern_service.py`, `pattern_ports.py` | profiles, features, admission/outcomes |
+| Application ML | `graph_features.py`, `pattern_service.py`, `pattern_ports.py`, `pattern_path.py`, `pattern_discovery.py`, `pattern_evaluation.py`, `pattern_outcome_link.py` | profiles, features, découverte unlabeled, matching prospectif, liaison d'outcomes |
 | Infrastructure graph | `trader/infrastructure/graph/world_temporal_networkx.py` | projection fraîche graphe uniquement |
 | Infrastructure état | `world_graph_store.py`, `world_pattern_store.py` | ledgers append-only séparés |
 | Reporting | `trader/reporting/read_models/world_patterns.py` | assessments et explications |
@@ -712,9 +826,8 @@ world_ontology_revisions
 world_graph_snapshots
 world_graph_snapshot_members
 world_macro_graph_bridge_events
-world_pattern_hypotheses
-world_pattern_events
-world_pattern_occurrences
+world_pattern_hypothesis_events
+world_pattern_occurrence_events
 world_pattern_outcome_links
 world_availability_receipts
 ```
@@ -890,11 +1003,19 @@ Lancement graphe `NO_GO` tant que :
 ### Patterns
 
 - hash d'une chaîne ordonnée ; permutation des steps = autre ID ;
+- `PatternFormationStats` : Laplace/TV, roundtrip, identité v1 ;
+- `evaluation_cohort_id` requis au start et recopié sur l'occurrence ;
+- scan d'évaluation borné aux refs graphe de `world_cohort_slots` ;
 - transitions d'agrégat autorisées/interdites ;
 - occurrence persistée avant outcome ;
 - correction par supersession ;
+- replay de link idempotent pour le même leaf actif ;
 - formation cutoff antérieur à évaluation ;
 - rejet même dataset pour découverte/confirmation ;
+- projection : pas de frères TRADED_ON reverse, pas d'overlays extérieurs ;
+- comptage par ancre temps-spécifique ; labels tardifs PIT rejetés ;
+- ranking déterministe ; provenance non mélangée ; fingerprint sensible aux preuves ;
+- aucun import GRU/NetworkX/infrastructure dans la découverte ;
 - contre-exemples, multiplicité et contrôles visibles dans assessment.
 
 ### Architecture/reporting/runtime
@@ -1158,20 +1279,11 @@ aucune valeur ; champ/hash manquant =
 
 ### Lot GRAPH-12 — runtime shadow et CLI
 
-- **depends_on** : `GRAPH-7`, `GRAPH-10`, `GRAPH-11`, `COHORT-7`, `MACRO-7` ;
-  cette dépendance sérialise `daemon.py` et les façades CLI partagées après
-  macro et cohorte.
-- **read_only_context** : `trader/runtime/world_model_runtime.py`,
-  `trader/interfaces/cli/world_model.py`.
-- **allowed_edits** : `trader/runtime/world_model_runtime.py`,
-  `trader/runtime/daemon.py`, `trader/interfaces/cli/world_model.py`,
-  `trader/runtime/cli.py`, `tests/runtime/test_world_model_runtime.py`,
-  `tests/runtime/test_daemon_world_model.py`,
-  `tests/test_cli_world_model.py`.
-- **sortie** : flag défaut off, lanes graphe locales, status/report budgets/gaps.
-- **tests** : `uv run pytest -q tests/runtime/test_world_model_runtime.py
-  tests/runtime/test_daemon_world_model.py tests/test_cli_world_model.py`.
-- **exit** : aucun restart/activation ; marché/contexte/Trader fail-open.
+Hors de ce lot de lifecycle prospectif. Le matching / link / status CLI
+existent déjà sous `world pattern` sans câbler le daemon, sans flag runtime
+et sans lane de trading. GRAPH-12 reste le lot futur pour
+`world_model_runtime.py` / `daemon.py` si une activation shadow locale est
+décidée ; le défaut reste off, `shadow_only`, `NO_GO`.
 
 ## 19. Contrat d'exécution pour Grok
 

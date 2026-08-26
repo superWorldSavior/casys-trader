@@ -439,6 +439,15 @@ def build_decide_tool_services(
         def action_validator_factory(cycle_id: str | None):
             def action_validator(symbol: str, exit_update: dict) -> ExitUpdateValidation:
                 try:
+                    raw_as_of = worker_cycle_context.get_open_plans_as_of(cycle_id)
+                    try:
+                        validation_now = (
+                            None
+                            if raw_as_of is None
+                            else datetime.fromisoformat(str(raw_as_of).replace("Z", "+00:00"))
+                        )
+                    except ValueError:
+                        validation_now = None
                     return validate_exit_update(
                         plan_store=SnapshotTradePlanStore(
                             worker_cycle_context.get_raw_open_plans(cycle_id)
@@ -447,6 +456,7 @@ def build_decide_tool_services(
                         exit_update=exit_update,
                         bars=worker_cycle_context.get_exit_validation_bars(symbol, cycle_id),
                         current_price=worker_cycle_context.get_exit_validation_price(symbol, cycle_id),
+                        now=validation_now,
                     )
                 except CycleContextUnavailable:
                     return ExitUpdateValidation(False, "cycle_context_unavailable", [])

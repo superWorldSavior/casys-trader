@@ -233,6 +233,7 @@ def _expected_exit_update_plan_snapshot(
     exit_update: dict,
     bars: list | None,
     current_price: float | None,
+    now: datetime,
 ) -> dict | None:
     """Derive the pure expected post-update snapshot before the store mutation."""
     try:
@@ -242,6 +243,7 @@ def _expected_exit_update_plan_snapshot(
             exit_update,
             bars=bars,
             reference_price=current_price,
+            now=now,
         )
     except (InvalidExitPlanError, StopIteration, ValueError):
         return None
@@ -498,6 +500,7 @@ def execute_one_cycle_decision(
                 exit_update=decision.exit_update,
                 bars=ctx.tradable_bars_by_symbol.get(sym),
                 current_price=ctx.prices.get(sym),
+                now=ctx.now,
             )
             exit_update_result = exit_update_service.apply_exit_update_to_open_plan(
                 plan_store=ctx.plan_store,
@@ -506,6 +509,7 @@ def execute_one_cycle_decision(
                 bars=ctx.tradable_bars_by_symbol.get(sym),
                 entry=entry,
                 current_price=ctx.prices.get(sym),
+                now=ctx.now,
             )
             if expected_exit_plan is not None:
                 _set_plan_receipt_expectation(

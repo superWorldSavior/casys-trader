@@ -49,7 +49,7 @@ _PATTERN_TABLES = frozenset(
         "world_pattern_outcome_links",
     }
 )
-_PATTERN_REQUIRED_TABLES = _PATTERN_TABLES | frozenset({"world_outcome_events"})
+_PATTERN_REQUIRED_TABLES = _PATTERN_TABLES
 _PATTERN_OCCURRENCE_FIELDS = (
     "event_id",
     "occurrence_id",
@@ -293,8 +293,12 @@ def read_world_cohort_catalog(db_path: str | Path) -> dict[str, Any]:
         }
 
 
-def read_world_pattern_ledger(db_path: str | Path, cohort_id: str) -> dict[str, Any]:
-    """Read reconstructible pattern events without creating or migrating the ledger."""
+def read_world_pattern_ledger(db_path: str | Path, cohort_id: str | None = None) -> dict[str, Any]:
+    """Read reconstructible pattern events without creating or migrating the ledger.
+
+    Hypothesis events for an evaluating cohort are included even when that
+    hypothesis has zero occurrences. Outcome rows are optional.
+    """
 
     path = Path(db_path)
     empty = {
@@ -326,6 +330,7 @@ def read_world_pattern_ledger(db_path: str | Path, cohort_id: str) -> dict[str, 
                 for row in occurrence_rows
                 if "hypothesis_id" in row.keys() and row["hypothesis_id"]
             }
+            hypothesis_ids.update(_hypothesis_ids_started_for_cohort(connection, cohort_id))
             occurrence_ids = {
                 str(row["occurrence_id"])
                 for row in occurrence_rows
@@ -337,13 +342,17 @@ def read_world_pattern_ledger(db_path: str | Path, cohort_id: str) -> dict[str, 
             prediction_rows: list[sqlite3.Row] = []
             if "world_shadow_predictions" in tables:
                 prediction_columns = _table_columns(connection, "world_shadow_predictions")
-                if "study_cohort_id" in prediction_columns:
+                if cohort_id is not None and "study_cohort_id" in prediction_columns:
                     prediction_rows = _fetch_predictions(connection, study_cohort_id=cohort_id)
                 else:
                     prediction_rows = _fetch_predictions(connection)
                 episode_ids.update(str(row["episode_id"]) for row in prediction_rows if row["episode_id"])
             episodes = _fetch_episodes(connection, episode_ids) if "world_episodes" in tables else []
-            outcomes = _fetch_outcomes(connection, episode_ids=episode_ids)
+            outcomes = (
+                _fetch_outcomes(connection, episode_ids=episode_ids)
+                if "world_outcome_events" in tables
+                else []
+            )
             receipt_rows: list[sqlite3.Row] = []
             if "world_availability_receipts" in tables:
                 receipt_rows = connection.execute(
@@ -471,14 +480,40 @@ def _fetch_outcomes(
     return list(connection.execute(sql, params).fetchall())
 
 
-def _fetch_pattern_occurrence_events(connection: sqlite3.Connection, cohort_id: str) -> list[sqlite3.Row]:
+def _fetch_pattern_occurrence_events(
+    connection: sqlite3.Connection,
+    cohort_id: str | None,
+) -> list[sqlite3.Row]:
     columns = _table_columns(connection, "world_pattern_occurrence_events")
     selected = [name for name in (*_PATTERN_OCCURRENCE_FIELDS, "payload_json") if name in columns]
-    sql = (
-        f"SELECT {', '.join(selected)} FROM world_pattern_occurrence_events "
-        "WHERE cohort_id=? ORDER BY sequence ASC, event_id ASC"
-    )
-    return list(connection.execute(sql, (cohort_id,)).fetchall())
+    sql = f"SELECT {', '.join(selected)} FROM world_pattern_occurrence_events"
+    params: tuple[str, ...] = ()
+    if cohort_id is not None:
+        sql += " WHERE cohort_id=?"
+        params = (cohort_id,)
+    sql += " ORDER BY sequence ASC, event_id ASC"
+    return list(connection.execute(sql, params).fetchall())
+
+
+def _hypothesis_ids_started_for_cohort(connection: sqlite3.Connection, cohort_id: str | None) -> set[str]:
+    columns = _table_columns(connection, "world_pattern_hypothesis_events")
+    selected = [name for name in (*_PATTERN_HYPOTHESIS_FIELDS, "payload_json") if name in columns]
+    sql = f"SELECT {', '.join(selected)} FROM world_pattern_hypothesis_events"
+    rows = list(connection.execute(sql).fetchall())
+    started: set[str] = set()
+    for row in rows:
+        hypothesis_id = str(row["hypothesis_id"]) if "hypothesis_id" in row.keys() and row["hypothesis_id"] else ""
+        if not hypothesis_id:
+            continue
+        if cohort_id is None:
+            started.add(hypothesis_id)
+            continue
+        if str(row["event_type"]) != "pattern_evaluation_started":
+            continue
+        payload = _json_object(row["payload_json"]) if "payload_json" in row.keys() else {}
+        if str(payload.get("evaluation_cohort_id") or "") == cohort_id:
+            started.add(hypothesis_id)
+    return started
 
 
 def _fetch_pattern_hypothesis_events(

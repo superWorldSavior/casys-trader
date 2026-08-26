@@ -9,13 +9,16 @@ labels. Discovery and prospective confirmation stay distinct datasets.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NamedTuple
 
+from trader.domain.world_driver import (
+    DriverState,
+    driver_state_required_for_relation,
+)
 from trader.domain.world_episode import (
     PREDICTION_CLASSES,
     WorldOutcome,
@@ -24,12 +27,12 @@ from trader.domain.world_episode import (
     parse_utc_timestamp,
 )
 from trader.domain.world_graph import (
-    FORBIDDEN_RELATION_KINDS,
-    KNOWLEDGE_RELATION_KINDS,
-    STRUCTURAL_RELATION_KINDS,
+    GRAPH_PATH_NODE_KINDS,
+    GRAPH_TRAVERSAL_V1_DIRECTIONS,
     WORLD_ENTITY_KINDS,
     PatternHypothesisRef,
     WorldEntityRef,
+    validate_id_free_traversal_hop,
 )
 
 
@@ -58,12 +61,15 @@ PATTERN_OCCURRENCE_EVENT_TYPES = frozenset(
     }
 )
 PATTERN_PATH_DIRECTIONS = frozenset({"forward", "reverse"})
+PATTERN_FRESHNESS_BUCKETS = frozenset({"0-4h", "4-24h", "1-7d", "older"})
+PATTERN_GRAPH_NODE_KINDS = GRAPH_PATH_NODE_KINDS
+PATTERN_ASSOCIATION_METRIC = "total_variation.v1"
+EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY = "explicit_graph_pattern.v1"
+PATTERN_EVALUATION_HORIZON_IDS = ("elapsed_4h.v1", "elapsed_1d.v1", "elapsed_3d.v1")
 _HYPOTHESIS_TERMINAL = frozenset({"evaluation_closed", "invalidated"})
 _MAX_PATTERN_STEPS = 8
-_LAG_WINDOW_RE = re.compile(
-    r"^(?P<start_count>\d+(?:\.\d+)?)(?P<start_unit>[mhd])\.\.(?P<end_count>\d+(?:\.\d+)?)(?P<end_unit>[mhd])$"
-)
-_LAG_UNIT_SECONDS = {"m": 60.0, "h": 3600.0, "d": 86400.0}
+_ASSOCIATION_ABS_TOL = 1e-12
+_DISTRIBUTION_ABS_TOL = 1e-12
 
 _HYPOTHESIS_ID_PREFIX = "pattern_hypothesis:v1"
 _OCCURRENCE_ID_PREFIX = "pattern_occurrence:v1"
@@ -148,6 +154,67 @@ def _entity_kind(value: Any, field_name: str) -> str:
     return kind
 
 
+def _freshness_bucket(value: Any) -> str:
+    bucket = _required_text(value, "freshness_bucket")
+    if bucket not in PATTERN_FRESHNESS_BUCKETS:
+        allowed = ", ".join(sorted(PATTERN_FRESHNESS_BUCKETS))
+        raise ValueError(f"freshness_bucket must be one of: {allowed}")
+    return bucket
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be a positive integer")
+    if value < 1:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _non_negative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be a nonnegative integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be a nonnegative integer")
+    return value
+
+
+def _finite_positive(value: Any, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field_name} must be a finite number greater than 0")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0.0:
+        raise ValueError(f"{field_name} must be a finite number greater than 0")
+    return number
+
+
+def _class_counts(value: Any, field_name: str, *, expected_total: int) -> Mapping[str, int]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping keyed by DOWN, FLAT, and UP")
+    if set(value) != set(PREDICTION_CLASSES):
+        raise ValueError(f"{field_name} must contain exactly DOWN, FLAT, and UP")
+    counts: dict[str, int] = {}
+    for label in PREDICTION_CLASSES:
+        counts[label] = _non_negative_int(value[label], f"{field_name}.{label}")
+    if sum(counts.values()) != expected_total:
+        raise ValueError(f"{field_name} must sum to {expected_total}")
+    return MappingProxyType(counts)
+
+
+def laplace_smoothed_distribution(counts: Mapping[str, int], *, alpha: float) -> Mapping[str, float]:
+    total = sum(int(counts[label]) for label in PREDICTION_CLASSES)
+    denominator = total + (alpha * len(PREDICTION_CLASSES))
+    return MappingProxyType(
+        {label: (float(counts[label]) + alpha) / denominator for label in PREDICTION_CLASSES}
+    )
+
+
+def total_variation_distance(
+    left: Mapping[str, float],
+    right: Mapping[str, float],
+) -> float:
+    return 0.5 * sum(abs(float(left[label]) - float(right[label])) for label in PREDICTION_CLASSES)
+
+
 def _move_distribution(value: Any) -> Mapping[str, float]:
     if not isinstance(value, Mapping):
         raise TypeError("move_distribution must be a mapping keyed by DOWN, FLAT, and UP")
@@ -165,31 +232,6 @@ def _move_distribution(value: Any) -> Mapping[str, float]:
     if not math.isclose(sum(normalized.values()), 1.0, abs_tol=1e-9):
         raise ValueError("move_distribution must sum to 1")
     return MappingProxyType(normalized)
-
-
-def _lag_window(value: Any) -> str:
-    text = _required_text(value, "lag_window")
-    match = _LAG_WINDOW_RE.fullmatch(text)
-    if match is None:
-        raise ValueError("lag_window must be a bounded interval like 0h..24h")
-    start = float(match.group("start_count")) * _LAG_UNIT_SECONDS[match.group("start_unit")]
-    end = float(match.group("end_count")) * _LAG_UNIT_SECONDS[match.group("end_unit")]
-    if start < 0.0 or end < 0.0 or start > end:
-        raise ValueError("lag_window start must be <= end")
-    return text
-
-
-def _normalize_predicate(value: Any) -> str:
-    text = _required_text(value, "predicate")
-    folded = re.sub(r"[^a-z0-9]+", "", text.lower())
-    if folded == "hypothesizedinfluence":
-        return "hypothesized_influence"
-    upper = text.upper()
-    if upper in FORBIDDEN_RELATION_KINDS or upper in STRUCTURAL_RELATION_KINDS or upper in KNOWLEDGE_RELATION_KINDS:
-        raise ValueError("predicate cannot be a factual or forbidden relation")
-    if not re.fullmatch(r"[a-z][a-z0-9_]*", text.lower()):
-        raise ValueError("predicate must be a typed hypothesis token, not a factual relation")
-    return text.lower()
 
 
 def _set_event_id(event: Any, prefix: str, payload: Mapping[str, Any], *, schema_version: str) -> None:
@@ -267,36 +309,161 @@ class PatternOutcomeLinkId:
         return self.value
 
 
+class _PatternHopIdentity(NamedTuple):
+    ordinal: int
+    source_kind: str
+    relation_kind: str
+    direction: str
+    target_kind: str
+    freshness_bucket: str
+    evidence_rule_version: str
+    driver_state: tuple[object, ...] | None
+
+
+def _resolved_hop_driver_state(relation_kind: str, driver_state: Any) -> DriverState | None:
+    if driver_state_required_for_relation(relation_kind):
+        if driver_state is None:
+            raise ValueError("OBSERVES/ABOUT hops require a DriverState")
+        if isinstance(driver_state, DriverState):
+            return driver_state
+        if isinstance(driver_state, Mapping):
+            return DriverState.from_mapping(driver_state)
+        raise TypeError("driver_state must be DriverState or a mapping")
+    if driver_state is not None:
+        raise ValueError("structural hops require driver_state=None")
+    return None
+
+
+def _pattern_hop_validated(
+    *,
+    ordinal: Any,
+    source_kind: Any,
+    relation_kind: Any,
+    direction: Any,
+    target_kind: Any,
+    freshness_bucket: Any,
+    evidence_rule_version: Any,
+    driver_state: Any = None,
+) -> tuple[_PatternHopIdentity, DriverState | None]:
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int):
+        raise TypeError("ordinal must be an integer")
+    if ordinal < 0:
+        raise ValueError("ordinal must be non-negative")
+    hop = validate_id_free_traversal_hop(
+        source_kind=source_kind,
+        relation_kind=relation_kind,
+        direction=direction,
+        target_kind=target_kind,
+    )
+    resolved = _resolved_hop_driver_state(hop.relation_kind, driver_state)
+    identity = _PatternHopIdentity(
+        ordinal=ordinal,
+        source_kind=hop.source_kind,
+        relation_kind=hop.relation_kind,
+        direction=hop.direction,
+        target_kind=hop.target_kind,
+        freshness_bucket=_freshness_bucket(freshness_bucket),
+        evidence_rule_version=_required_text(evidence_rule_version, "evidence_rule_version"),
+        driver_state=None if resolved is None else resolved.identity_tuple(),
+    )
+    return identity, resolved
+
+
+def _pattern_hop_identity(
+    *,
+    ordinal: Any,
+    source_kind: Any,
+    relation_kind: Any,
+    direction: Any,
+    target_kind: Any,
+    freshness_bucket: Any,
+    evidence_rule_version: Any,
+    driver_state: Any = None,
+) -> _PatternHopIdentity:
+    return _pattern_hop_validated(
+        ordinal=ordinal,
+        source_kind=source_kind,
+        relation_kind=relation_kind,
+        direction=direction,
+        target_kind=target_kind,
+        freshness_bucket=freshness_bucket,
+        evidence_rule_version=evidence_rule_version,
+        driver_state=driver_state,
+    )[0]
+
+
+def _pattern_hop_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    if "predicate" in value or "lag_window" in value or "subject_kind" in value or "object_kind" in value:
+        raise ValueError("pattern hops are an ID-free WorldTemporalPathStep projection; predicate and lag_window are gone")
+    if driver_state_required_for_relation(value.get("relation_kind")) and "driver_state" not in value:
+        raise ValueError("overlay hop mapping is missing driver_state")
+    return {
+        "ordinal": value.get("ordinal"),
+        "source_kind": value.get("source_kind"),
+        "relation_kind": value.get("relation_kind"),
+        "direction": value.get("direction"),
+        "target_kind": value.get("target_kind"),
+        "freshness_bucket": value.get("freshness_bucket"),
+        "evidence_rule_version": value.get("evidence_rule_version"),
+        "driver_state": value.get("driver_state"),
+    }
+
+
 @dataclass(frozen=True)
 class PatternStep:
-    """Ordered typed hop of a formulated chain. Never inserted as a factual graph edge."""
+    """ID-free WorldTemporalPathStep projection. Never inserted as a factual graph edge."""
 
     ordinal: int
-    subject_kind: str
-    predicate: str
-    object_kind: str
-    lag_window: str
+    source_kind: str
+    relation_kind: str
+    direction: str
+    target_kind: str
+    freshness_bucket: str
     evidence_rule_version: str
+    driver_state: DriverState | Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.ordinal, bool) or not isinstance(self.ordinal, int):
-            raise TypeError("ordinal must be an integer")
-        if self.ordinal < 0:
-            raise ValueError("ordinal must be non-negative")
-        object.__setattr__(self, "subject_kind", _entity_kind(self.subject_kind, "subject_kind"))
-        object.__setattr__(self, "object_kind", _entity_kind(self.object_kind, "object_kind"))
-        object.__setattr__(self, "predicate", _normalize_predicate(self.predicate))
-        object.__setattr__(self, "lag_window", _lag_window(self.lag_window))
-        object.__setattr__(self, "evidence_rule_version", _required_text(self.evidence_rule_version, "evidence_rule_version"))
+        hop, resolved = _pattern_hop_validated(
+            ordinal=self.ordinal,
+            source_kind=self.source_kind,
+            relation_kind=self.relation_kind,
+            direction=self.direction,
+            target_kind=self.target_kind,
+            freshness_bucket=self.freshness_bucket,
+            evidence_rule_version=self.evidence_rule_version,
+            driver_state=self.driver_state,
+        )
+        object.__setattr__(self, "ordinal", hop.ordinal)
+        object.__setattr__(self, "source_kind", hop.source_kind)
+        object.__setattr__(self, "relation_kind", hop.relation_kind)
+        object.__setattr__(self, "direction", hop.direction)
+        object.__setattr__(self, "target_kind", hop.target_kind)
+        object.__setattr__(self, "freshness_bucket", hop.freshness_bucket)
+        object.__setattr__(self, "evidence_rule_version", hop.evidence_rule_version)
+        object.__setattr__(self, "driver_state", resolved)
+
+    def identity_tuple(self) -> tuple[object, ...]:
+        return _pattern_hop_identity(
+            ordinal=self.ordinal,
+            source_kind=self.source_kind,
+            relation_kind=self.relation_kind,
+            direction=self.direction,
+            target_kind=self.target_kind,
+            freshness_bucket=self.freshness_bucket,
+            evidence_rule_version=self.evidence_rule_version,
+            driver_state=self.driver_state,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ordinal": self.ordinal,
-            "subject_kind": self.subject_kind,
-            "predicate": self.predicate,
-            "object_kind": self.object_kind,
-            "lag_window": self.lag_window,
+            "source_kind": self.source_kind,
+            "relation_kind": self.relation_kind,
+            "direction": self.direction,
+            "target_kind": self.target_kind,
+            "freshness_bucket": self.freshness_bucket,
             "evidence_rule_version": self.evidence_rule_version,
+            "driver_state": None if self.driver_state is None else self.driver_state.to_dict(),
         }
 
     @classmethod
@@ -305,14 +472,7 @@ class PatternStep:
             return value
         if not isinstance(value, Mapping):
             raise TypeError("pattern step must be PatternStep or a mapping")
-        return cls(
-            ordinal=value.get("ordinal"),
-            subject_kind=value.get("subject_kind"),
-            predicate=value.get("predicate"),
-            object_kind=value.get("object_kind"),
-            lag_window=value.get("lag_window"),
-            evidence_rule_version=value.get("evidence_rule_version"),
-        )
+        return cls(**_pattern_hop_mapping(value))
 
 
 def _steps_tuple(value: Sequence[Any] | None) -> tuple[PatternStep, ...]:
@@ -363,6 +523,108 @@ class PatternTarget:
 
 
 @dataclass(frozen=True)
+class PatternFormationStats:
+    """Persisted Laplace/TV formation evidence. Counts are unique time-specific anchors."""
+
+    support: int
+    population_support: int
+    class_counts: Mapping[str, Any]
+    population_class_counts: Mapping[str, Any]
+    smoothing_alpha: float
+    association_metric: str
+    association_score: float
+    pattern_distribution: Mapping[str, Any] | None = None
+    population_distribution: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        support = _positive_int(self.support, "support")
+        population_support = _positive_int(self.population_support, "population_support")
+        if population_support < support:
+            raise ValueError("population_support must be greater than or equal to support")
+        class_counts = _class_counts(self.class_counts, "class_counts", expected_total=support)
+        population_class_counts = _class_counts(
+            self.population_class_counts, "population_class_counts", expected_total=population_support
+        )
+        alpha = _finite_positive(self.smoothing_alpha, "smoothing_alpha")
+        metric = _required_text(self.association_metric, "association_metric")
+        if metric != PATTERN_ASSOCIATION_METRIC:
+            raise ValueError(f"association_metric must be {PATTERN_ASSOCIATION_METRIC}")
+        if isinstance(self.association_score, bool) or not isinstance(self.association_score, (int, float)):
+            raise TypeError("association_score must be a finite number in [0, 1]")
+        score = float(self.association_score)
+        if not math.isfinite(score) or score < 0.0 or score > 1.0:
+            raise ValueError("association_score must be in [0, 1]")
+        pattern_distribution = laplace_smoothed_distribution(class_counts, alpha=alpha)
+        population_distribution = laplace_smoothed_distribution(population_class_counts, alpha=alpha)
+        expected_score = total_variation_distance(pattern_distribution, population_distribution)
+        if not math.isclose(score, expected_score, rel_tol=0.0, abs_tol=_ASSOCIATION_ABS_TOL):
+            raise ValueError("association_score must equal 0.5 * sum(|pattern - population|)")
+        if self.pattern_distribution is not None:
+            provided_pattern = _move_distribution(self.pattern_distribution)
+            if any(
+                not math.isclose(provided_pattern[label], pattern_distribution[label], rel_tol=0.0, abs_tol=_DISTRIBUTION_ABS_TOL)
+                for label in PREDICTION_CLASSES
+            ):
+                raise ValueError("pattern_distribution must equal the Laplace-smoothed class_counts")
+        if self.population_distribution is not None:
+            provided_population = _move_distribution(self.population_distribution)
+            if any(
+                not math.isclose(
+                    provided_population[label],
+                    population_distribution[label],
+                    rel_tol=0.0,
+                    abs_tol=_DISTRIBUTION_ABS_TOL,
+                )
+                for label in PREDICTION_CLASSES
+            ):
+                raise ValueError("population_distribution must equal the Laplace-smoothed population_class_counts")
+        object.__setattr__(self, "support", support)
+        object.__setattr__(self, "population_support", population_support)
+        object.__setattr__(self, "class_counts", class_counts)
+        object.__setattr__(self, "population_class_counts", population_class_counts)
+        object.__setattr__(self, "smoothing_alpha", alpha)
+        object.__setattr__(self, "association_metric", metric)
+        object.__setattr__(self, "association_score", score)
+        object.__setattr__(self, "pattern_distribution", pattern_distribution)
+        object.__setattr__(self, "population_distribution", population_distribution)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "support": self.support,
+            "population_support": self.population_support,
+            "class_counts": {label: self.class_counts[label] for label in PREDICTION_CLASSES},
+            "population_class_counts": {
+                label: self.population_class_counts[label] for label in PREDICTION_CLASSES
+            },
+            "smoothing_alpha": self.smoothing_alpha,
+            "association_metric": self.association_metric,
+            "association_score": self.association_score,
+            "pattern_distribution": {label: self.pattern_distribution[label] for label in PREDICTION_CLASSES},
+            "population_distribution": {
+                label: self.population_distribution[label] for label in PREDICTION_CLASSES
+            },
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | PatternFormationStats) -> PatternFormationStats:
+        if isinstance(value, PatternFormationStats):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("pattern formation stats must be PatternFormationStats or a mapping")
+        return cls(
+            support=value.get("support"),
+            population_support=value.get("population_support"),
+            class_counts=value.get("class_counts") or {},
+            population_class_counts=value.get("population_class_counts") or {},
+            smoothing_alpha=value.get("smoothing_alpha"),
+            association_metric=value.get("association_metric"),
+            association_score=value.get("association_score"),
+            pattern_distribution=value.get("pattern_distribution"),
+            population_distribution=value.get("population_distribution"),
+        )
+
+
+@dataclass(frozen=True)
 class PatternHypothesisSpec:
     """Immutable formulated chain. Identity changes if the chain or evaluation contract changes."""
 
@@ -377,6 +639,7 @@ class PatternHypothesisSpec:
     feature_mask_fingerprint: str
     model_identity: str
     ontology_revision: str
+    stats: PatternFormationStats | Mapping[str, Any]
     source_refs: Sequence[str] = ()
     causal_claim: bool = False
     schema_version: str = PATTERN_HYPOTHESIS_SCHEMA
@@ -393,6 +656,17 @@ class PatternHypothesisSpec:
             raise ValueError("formation cutoff must precede evaluation")
         target = self.target if isinstance(self.target, PatternTarget) else PatternTarget.from_mapping(self.target)
         steps = _steps_tuple(self.steps)
+        stats = self.stats if isinstance(self.stats, PatternFormationStats) else PatternFormationStats.from_mapping(self.stats)
+        if any(
+            not math.isclose(
+                float(target.move_distribution[label]),
+                float(stats.pattern_distribution[label]),
+                rel_tol=0.0,
+                abs_tol=_DISTRIBUTION_ABS_TOL,
+            )
+            for label in PREDICTION_CLASSES
+        ):
+            raise ValueError("target.move_distribution must equal the Laplace-smoothed pattern distribution")
         if self.causal_claim is not False:
             raise ValueError("causal_claim must remain false")
         identity = {
@@ -412,6 +686,7 @@ class PatternHypothesisSpec:
             "feature_mask_fingerprint": _sha256_hex(self.feature_mask_fingerprint, "feature_mask_fingerprint"),
             "model_identity": _required_text(self.model_identity, "model_identity"),
             "ontology_revision": _required_text(self.ontology_revision, "ontology_revision"),
+            "stats": stats.to_dict(),
         }
         hypothesis_id = _prefixed_id(_HYPOTHESIS_ID_PREFIX, identity)
         if self.hypothesis_id is not None and _required_text(self.hypothesis_id, "hypothesis_id") != hypothesis_id:
@@ -434,6 +709,7 @@ class PatternHypothesisSpec:
         object.__setattr__(self, "feature_mask_fingerprint", identity["feature_mask_fingerprint"])
         object.__setattr__(self, "model_identity", identity["model_identity"])
         object.__setattr__(self, "ontology_revision", identity["ontology_revision"])
+        object.__setattr__(self, "stats", stats)
         object.__setattr__(self, "source_refs", source_refs)
         object.__setattr__(self, "causal_claim", False)
         object.__setattr__(self, "hypothesis_id", hypothesis_id)
@@ -454,6 +730,7 @@ class PatternHypothesisSpec:
             "feature_mask_fingerprint": self.feature_mask_fingerprint,
             "model_identity": self.model_identity,
             "ontology_revision": self.ontology_revision,
+            "stats": self.stats.to_dict(),
             "source_refs": list(self.source_refs),
             "causal_claim": self.causal_claim,
             "content_sha256": self.content_sha256,
@@ -477,6 +754,7 @@ class PatternHypothesisSpec:
             feature_mask_fingerprint=value.get("feature_mask_fingerprint"),
             model_identity=value.get("model_identity"),
             ontology_revision=value.get("ontology_revision"),
+            stats=value.get("stats") or {},
             source_refs=value.get("source_refs") or (),
             causal_claim=False if value.get("causal_claim") is None else value.get("causal_claim"),
             schema_version=value.get("schema_version", PATTERN_HYPOTHESIS_SCHEMA),
@@ -544,6 +822,7 @@ class PatternHypothesisRegistered:
 @dataclass(frozen=True)
 class PatternEvaluationStarted:
     hypothesis_id: str
+    evaluation_cohort_id: str
     started_at: datetime | str
     evaluation_dataset_fingerprint: str
     event_id: str | None = None
@@ -552,9 +831,11 @@ class PatternEvaluationStarted:
 
     def __post_init__(self) -> None:
         hypothesis_id = PatternHypothesisId(self.hypothesis_id).value
+        evaluation_cohort_id = _required_text(self.evaluation_cohort_id, "evaluation_cohort_id")
         started_at = parse_utc_timestamp(self.started_at, "started_at")
         fingerprint = _sha256_hex(self.evaluation_dataset_fingerprint, "evaluation_dataset_fingerprint")
         object.__setattr__(self, "hypothesis_id", hypothesis_id)
+        object.__setattr__(self, "evaluation_cohort_id", evaluation_cohort_id)
         object.__setattr__(self, "started_at", started_at)
         object.__setattr__(self, "evaluation_dataset_fingerprint", fingerprint)
         object.__setattr__(self, "event_type", "pattern_evaluation_started")
@@ -565,6 +846,7 @@ class PatternEvaluationStarted:
                 "event_type": "pattern_evaluation_started",
                 "schema_version": PATTERN_HYPOTHESIS_EVENT_SCHEMA,
                 "hypothesis_id": hypothesis_id,
+                "evaluation_cohort_id": evaluation_cohort_id,
                 "started_at": _iso(started_at),
                 "evaluation_dataset_fingerprint": fingerprint,
             },
@@ -577,6 +859,7 @@ class PatternEvaluationStarted:
             "event_type": self.event_type,
             "event_id": self.event_id,
             "hypothesis_id": self.hypothesis_id,
+            "evaluation_cohort_id": self.evaluation_cohort_id,
             "started_at": _iso(self.started_at),
             "evaluation_dataset_fingerprint": self.evaluation_dataset_fingerprint,
         }
@@ -589,6 +872,7 @@ class PatternEvaluationStarted:
             raise TypeError("evaluation started event must be a mapping")
         return cls(
             hypothesis_id=value.get("hypothesis_id"),
+            evaluation_cohort_id=value.get("evaluation_cohort_id"),
             started_at=value.get("started_at"),
             evaluation_dataset_fingerprint=value.get("evaluation_dataset_fingerprint"),
             event_id=value.get("event_id"),
@@ -825,14 +1109,23 @@ class PatternHypothesis:
                 return event.evaluation_dataset_fingerprint
         return None
 
+    @property
+    def evaluation_cohort_id(self) -> str | None:
+        for event in reversed(self.events):
+            if isinstance(event, PatternEvaluationStarted):
+                return event.evaluation_cohort_id
+        return None
+
     def start_evaluation(
         self,
         *,
         started_at: datetime | str,
         evaluation_dataset_fingerprint: str,
+        evaluation_cohort_id: str,
     ) -> PatternHypothesis:
         event = PatternEvaluationStarted(
             hypothesis_id=self.hypothesis_id,
+            evaluation_cohort_id=evaluation_cohort_id,
             started_at=started_at,
             evaluation_dataset_fingerprint=evaluation_dataset_fingerprint,
         )
@@ -845,6 +1138,7 @@ class PatternHypothesis:
             if (
                 current.started_at == event.started_at
                 and current.evaluation_dataset_fingerprint == event.evaluation_dataset_fingerprint
+                and current.evaluation_cohort_id == event.evaluation_cohort_id
             ):
                 return self
             raise ValueError("conflict: evaluation already started with a different dataset")
@@ -883,34 +1177,61 @@ def reconcile_pattern_hypothesis(existing: PatternHypothesis, incoming: PatternH
 
 @dataclass(frozen=True)
 class PatternMatchedHop:
+    """Occurrence hop: the same ID-free projection plus occurrence evidence refs."""
+
     ordinal: int
-    subject_kind: str
-    predicate: str
-    object_kind: str
-    direction: str = "forward"
+    source_kind: str
+    relation_kind: str
+    direction: str
+    target_kind: str
+    freshness_bucket: str
+    evidence_rule_version: str
+    driver_state: DriverState | Mapping[str, Any] | None = None
     evidence_refs: Sequence[str] = ()
 
     def __post_init__(self) -> None:
-        if isinstance(self.ordinal, bool) or not isinstance(self.ordinal, int):
-            raise TypeError("ordinal must be an integer")
-        if self.ordinal < 0:
-            raise ValueError("ordinal must be non-negative")
-        object.__setattr__(self, "subject_kind", _entity_kind(self.subject_kind, "subject_kind"))
-        object.__setattr__(self, "object_kind", _entity_kind(self.object_kind, "object_kind"))
-        object.__setattr__(self, "predicate", _normalize_predicate(self.predicate))
-        direction = _required_text(self.direction, "direction").lower()
-        if direction not in PATTERN_PATH_DIRECTIONS:
-            raise ValueError("direction must be forward or reverse")
-        object.__setattr__(self, "direction", direction)
+        hop, resolved = _pattern_hop_validated(
+            ordinal=self.ordinal,
+            source_kind=self.source_kind,
+            relation_kind=self.relation_kind,
+            direction=self.direction,
+            target_kind=self.target_kind,
+            freshness_bucket=self.freshness_bucket,
+            evidence_rule_version=self.evidence_rule_version,
+            driver_state=self.driver_state,
+        )
+        object.__setattr__(self, "ordinal", hop.ordinal)
+        object.__setattr__(self, "source_kind", hop.source_kind)
+        object.__setattr__(self, "relation_kind", hop.relation_kind)
+        object.__setattr__(self, "direction", hop.direction)
+        object.__setattr__(self, "target_kind", hop.target_kind)
+        object.__setattr__(self, "freshness_bucket", hop.freshness_bucket)
+        object.__setattr__(self, "evidence_rule_version", hop.evidence_rule_version)
+        object.__setattr__(self, "driver_state", resolved)
         object.__setattr__(self, "evidence_refs", _unique_text_tuple(self.evidence_refs, "evidence_refs"))
+
+    def identity_tuple(self) -> tuple[object, ...]:
+        return _pattern_hop_identity(
+            ordinal=self.ordinal,
+            source_kind=self.source_kind,
+            relation_kind=self.relation_kind,
+            direction=self.direction,
+            target_kind=self.target_kind,
+            freshness_bucket=self.freshness_bucket,
+            evidence_rule_version=self.evidence_rule_version,
+            driver_state=self.driver_state,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ordinal": self.ordinal,
-            "subject_kind": self.subject_kind,
-            "predicate": self.predicate,
-            "object_kind": self.object_kind,
+            "source_kind": self.source_kind,
+            "relation_kind": self.relation_kind,
             "direction": self.direction,
+            "target_kind": self.target_kind,
+            "freshness_bucket": self.freshness_bucket,
+            "evidence_rule_version": self.evidence_rule_version,
+            "driver_state": None if self.driver_state is None else self.driver_state.to_dict(),
             "evidence_refs": list(self.evidence_refs),
         }
 
@@ -920,14 +1241,9 @@ class PatternMatchedHop:
             return value
         if not isinstance(value, Mapping):
             raise TypeError("matched hop must be PatternMatchedHop or a mapping")
-        return cls(
-            ordinal=value.get("ordinal"),
-            subject_kind=value.get("subject_kind"),
-            predicate=value.get("predicate"),
-            object_kind=value.get("object_kind"),
-            direction=value.get("direction", "forward"),
-            evidence_refs=value.get("evidence_refs") or (),
-        )
+        payload = _pattern_hop_mapping(value)
+        payload["evidence_refs"] = value.get("evidence_refs") or ()
+        return cls(**payload)
 
 
 def _path_tuple(value: Sequence[Any] | None) -> tuple[PatternMatchedHop, ...]:
@@ -1562,12 +1878,7 @@ def _assert_path_matches_steps(path: Sequence[PatternMatchedHop], steps: Sequenc
     if len(path) != len(steps):
         raise ValueError("exact_path must apply every hypothesis step")
     for hop, step in zip(path, steps, strict=True):
-        if (
-            hop.ordinal != step.ordinal
-            or hop.subject_kind != step.subject_kind
-            or hop.predicate != step.predicate
-            or hop.object_kind != step.object_kind
-        ):
+        if hop.identity_tuple() != step.identity_tuple():
             raise ValueError("exact_path must match the formulated hypothesis steps")
 
 
@@ -1649,6 +1960,11 @@ class PatternOccurrence:
             raise ValueError("occurrence cannot be recorded before evaluation start")
         if hypothesis.status != "evaluating":
             raise ValueError(f"occurrence cannot be recorded while hypothesis is {hypothesis.status}")
+        started_cohort = hypothesis.evaluation_cohort_id
+        if started_cohort is None:
+            raise ValueError("occurrence cannot be recorded before evaluation start")
+        if _required_text(cohort_id, "cohort_id") != started_cohort:
+            raise ValueError("occurrence cohort_id must equal the started evaluation_cohort_id")
         spec = hypothesis.spec
         if evaluation_dataset_fingerprint is None:
             if hypothesis.evaluation_dataset_fingerprint is None:
@@ -1831,10 +2147,17 @@ __all__ = [
     "PATTERN_OCCURRENCE_SCHEMA",
     "PATTERN_OCCURRENCE_STATUSES",
     "PATTERN_OUTCOME_LINK_SCHEMA",
+    "GRAPH_TRAVERSAL_V1_DIRECTIONS",
+    "PATTERN_ASSOCIATION_METRIC",
+    "PATTERN_FRESHNESS_BUCKETS",
+    "PATTERN_GRAPH_NODE_KINDS",
     "PATTERN_PATH_DIRECTIONS",
+    "EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY",
+    "PATTERN_EVALUATION_HORIZON_IDS",
     "PatternEvaluationClosed",
     "PatternEvaluationStarted",
     "PatternForecast",
+    "PatternFormationStats",
     "PatternHypothesis",
     "PatternHypothesisEvent",
     "PatternHypothesisEventId",
@@ -1856,7 +2179,9 @@ __all__ = [
     "PatternOutcomeLinked",
     "PatternStep",
     "PatternTarget",
+    "laplace_smoothed_distribution",
     "parse_pattern_hypothesis_event",
+    "total_variation_distance",
     "parse_pattern_occurrence_event",
     "reconcile_pattern_hypothesis",
     "reconcile_pattern_occurrence",

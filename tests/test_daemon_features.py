@@ -8,7 +8,7 @@ from trader.runtime import daemon
 from trader.runtime.worker_cycle_context import WorkerCycleContextHandle
 from trader.agent.client import Decision
 from trader.market.market_data import Bar, MarketError
-from trader.planning.trade_plan import TakeProfit, TradePlan
+from trader.planning.trade_plan import ProfitProtection, TakeProfit, TradePlan, TrailingStop
 from trader.planning.scheduler import Scheduler
 from tests.conftest import write_runtime_config as _write_runtime_config
 
@@ -182,7 +182,11 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
             "id": "plan-spy",
             "symbol": "SPY",
             "side": "LONG",
+            "quantity": 10.0,
+            "remaining_quantity": 6.0,
+            "opened_at": now.isoformat(),
             "entry_price": 100.0,
+            "reference_volatility": None,
             "hard_stop_price": 95.0,
             "take_profits": [
                 {
@@ -193,7 +197,13 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
                     "after_fill": "",
                 }
             ],
-            "remaining_quantity": 6.0,
+            "trailing_stop": None,
+            "max_hold_minutes": None,
+            "high_watermark": None,
+            "low_watermark": None,
+            "filled_take_profits": [],
+            "profit_protection": None,
+            "exit_watch": None,
             "last_llm_review": {
                 "ts": now.isoformat(),
                 "verdict": "intact",
@@ -209,6 +219,134 @@ def test_run_cycle_met_a_jour_le_snapshot_des_plans_ouverts(
     assert [bar.close for bar in published.exit_validation.bars_by_symbol["SPY"]] == [100.0] * 32
 
 
+def test_plan_to_context_dict_expose_regles_de_sortie_et_suivi_sans_dump_brut() -> None:
+    long_text = "x" * 700
+    plan = TradePlan(
+        id="plan-exit-rules",
+        symbol="SPY",
+        side="LONG",
+        quantity=10.0,
+        remaining_quantity=4.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        reference_volatility=1.25,
+        hard_stop_price=97.0,
+        take_profits=[
+            TakeProfit(
+                name="tp1",
+                price=105.0,
+                fraction=0.5,
+                quantity=5.0,
+                after_fill="move_stop_to_breakeven",
+            )
+        ],
+        trailing_stop=TrailingStop(
+            enabled_after="tp1",
+            trail_type="volatility_multiple",
+            trail_value=1.5,
+            trail_floored=True,
+        ),
+        max_hold_minutes=240.0,
+        high_watermark=108.0,
+        low_watermark=99.0,
+        filled_take_profits=["tp1"],
+        profit_protection=ProfitProtection(
+            arm_at_r=1.0,
+            trigger_on_giveback_pct=0.35,
+            close_fraction=0.5,
+            move_stop_to="breakeven",
+            min_hold_minutes=30.0,
+            lock_r=0.25,
+            triggered=True,
+        ),
+        exit_watch={
+            "id": "SPY:exit-watch",
+            "created_at": "2026-06-05T12:00:00+00:00",
+            "expires_at": "2026-06-05T16:00:00+00:00",
+            "logic": "all",
+            "on_trigger": "WAKE",
+            "source": "exit_watch",
+            "cooldown_minutes": 15.0,
+            "last_triggered_at": "2026-06-05T12:30:00+00:00",
+            "conditions": [
+                {
+                    "symbol": "SPY",
+                    "indicator": "relative_strength",
+                    "op": "<=",
+                    "value": -0.2,
+                    "interval": "1h",
+                    "source_interval": "1h",
+                    "lookback": "5d",
+                    "window": 48,
+                    "as_of": "2026-06-05T12:00:00+00:00",
+                    "opaque": {"large": long_text},
+                }
+            ],
+            "rationale": long_text,
+            "order": {"secret": long_text},
+        },
+        entry_context={"large": long_text},
+        entry_decision_id="decision-private",
+        llm_fallback_reason="provider_private",
+        llm_confidence=0.73,
+    )
+
+    payload = daemon._plan_to_context_dict(plan)
+
+    assert payload["quantity"] == 10.0
+    assert payload["remaining_quantity"] == 4.0
+    assert payload["opened_at"] == "2026-06-05T12:00:00+00:00"
+    assert payload["reference_volatility"] == 1.25
+    assert payload["trailing_stop"] == {
+        "enabled_after": "tp1",
+        "trail_type": "volatility_multiple",
+        "trail_value": 1.5,
+        "trail_floored": True,
+    }
+    assert payload["max_hold_minutes"] == 240.0
+    assert payload["high_watermark"] == 108.0
+    assert payload["low_watermark"] == 99.0
+    assert payload["filled_take_profits"] == ["tp1"]
+    assert payload["profit_protection"] == {
+        "enabled": True,
+        "arm_at_r": 1.0,
+        "trigger_on_giveback_pct": 0.35,
+        "close_fraction": 0.5,
+        "move_stop_to": "breakeven",
+        "min_hold_minutes": 30.0,
+        "lock_r": 0.25,
+        "triggered": True,
+    }
+    assert payload["exit_watch"] == {
+        "id": "SPY:exit-watch",
+        "created_at": "2026-06-05T12:00:00+00:00",
+        "expires_at": "2026-06-05T16:00:00+00:00",
+        "logic": "all",
+        "on_trigger": "WAKE",
+        "source": "exit_watch",
+        "cooldown_minutes": 15.0,
+        "last_triggered_at": "2026-06-05T12:30:00+00:00",
+        "conditions": [
+            {
+                "symbol": "SPY",
+                "indicator": "relative_strength",
+                "op": "<=",
+                "value": -0.2,
+                "timeframe": "1h",
+                "source_interval": "1h",
+                "lookback": "5d",
+                "window": 48,
+                "as_of": "2026-06-05T12:00:00+00:00",
+            }
+        ],
+    }
+    assert "entry_context" not in payload
+    assert "entry_decision_id" not in payload
+    assert "llm_fallback_reason" not in payload
+    assert "llm_confidence" not in payload
+    assert json.dumps(payload, sort_keys=True, allow_nan=False)
+
+
 def test_plan_to_context_dict_borne_les_champs_textes_du_plan() -> None:
     long_text = "x" * 700
     plan = TradePlan(
@@ -221,7 +359,7 @@ def test_plan_to_context_dict_borne_les_champs_textes_du_plan() -> None:
         opened_at="2026-06-05T12:00:00+00:00",
         last_llm_review={
             "ts": "2026-06-05T12:10:00+00:00",
-            "verdict": "intact",
+            "verdict": long_text,
             "action": "HOLD",
             "intent": "HOLD",
             "llm_provider": "acpx",
@@ -236,12 +374,56 @@ def test_plan_to_context_dict_borne_les_champs_textes_du_plan() -> None:
     assert payload["entry_thesis"] == "x" * 500
     assert payload["last_llm_review"] == {
         "ts": "2026-06-05T12:10:00+00:00",
-        "verdict": "intact",
+        "verdict": "x" * 240,
         "action": "HOLD",
         "intent": "HOLD",
         "llm_provider": "acpx",
         "llm_model": "gpt-5",
     }
+
+
+def test_plan_to_context_dict_signale_les_regles_exceptionnellement_tronquees() -> None:
+    take_profits = [
+        TakeProfit(
+            name=f"tp{index}",
+            price=101.0 + index,
+            fraction=1.0 / 13,
+            quantity=1.0,
+        )
+        for index in range(13)
+    ]
+    conditions = [
+        {
+            "symbol": "SPY",
+            "indicator": "relative_strength",
+            "op": "<=",
+            "value": -0.2,
+            "timeframe": "1h",
+        }
+        for _ in range(13)
+    ]
+    plan = TradePlan(
+        id="plan-bounded",
+        symbol="SPY",
+        side="LONG",
+        quantity=13.0,
+        remaining_quantity=13.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T12:00:00+00:00",
+        take_profits=take_profits,
+        filled_take_profits=[take_profit.name for take_profit in take_profits],
+        exit_watch={"conditions": conditions},
+    )
+
+    payload = daemon._plan_to_context_dict(plan)
+
+    assert len(payload["take_profits"]) == 12
+    assert payload["take_profits_truncated"] is True
+    assert len(payload["filled_take_profits"]) == 12
+    assert payload["filled_take_profits_truncated"] is True
+    assert len(payload["exit_watch"]["conditions"]) == 12
+    assert payload["exit_watch"]["conditions_truncated"] is True
+    assert json.dumps(payload, sort_keys=True, allow_nan=False)
 
 
 def test_run_cycle_utilise_la_source_injectee_sans_appeler_market_get_bars(

@@ -397,3 +397,107 @@ def test_world_ontology_attestation_is_application_owned_and_composed_at_runtime
     assert daemon_source.index("compose_world_ontology_attestation(") < daemon_source.index(
         "activate_world_shadow_pilot("
     )
+
+
+def test_world_driver_is_stdlib_domain() -> None:
+    path = REPO_ROOT / "trader" / "domain" / "world_driver.py"
+    assert path.exists()
+    assert _domain_import_violations([path], REPO_ROOT) == []
+
+    from trader.domain.world_driver import DriverRegimeBundle, DriverState
+    from trader.domain.world_pattern import PATTERN_HYPOTHESIS_SCHEMA, PATTERN_OCCURRENCE_SCHEMA, PatternStep
+
+    assert DriverRegimeBundle.__module__ == "trader.domain.world_driver"
+    assert DriverState.__module__ == "trader.domain.world_driver"
+    assert PATTERN_HYPOTHESIS_SCHEMA == "pattern_hypothesis.v1"
+    assert PATTERN_OCCURRENCE_SCHEMA == "pattern_occurrence.v1"
+    source = path.read_text(encoding="utf-8")
+    assert "trader.application" not in source
+    assert "trader.infrastructure" not in source
+    assert "trader.runtime" not in source
+    assert "class DriverRegimeBundle" in source
+    assert "class DriverState" in source
+    assert "driver_state" in inspect.signature(PatternStep).parameters
+
+
+def test_pattern_discovery_driver_binding_stays_application_owned() -> None:
+    ports_path = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_discovery_ports.py"
+    discovery_path = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_discovery.py"
+    path_mod = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_path.py"
+    evaluation_path = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_evaluation.py"
+    evaluation_ports = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_evaluation_ports.py"
+    evaluation_request = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_evaluation_request.py"
+    outcome_link = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_outcome_link.py"
+    for path in (
+        ports_path,
+        discovery_path,
+        path_mod,
+        evaluation_path,
+        evaluation_ports,
+        evaluation_request,
+        outcome_link,
+    ):
+        assert path.exists()
+        assert _import_violations(path, _FORBIDDEN_APPLICATION_PREFIXES) == []
+        source = path.read_text(encoding="utf-8")
+        assert "trader.infrastructure" not in source
+        assert "networkx" not in source.lower()
+        assert "trader.application.world_model.gru" not in source
+
+    from trader.application.world_model.pattern_discovery_ports import (
+        PatternDriverStateBinding,
+        PatternFormationRecord,
+    )
+    from trader.application.world_model.pattern_evaluation import PatternEvaluationService
+    from trader.application.world_model.pattern_outcome_link import PatternOutcomeLinkService
+    from trader.application.world_model.pattern_path import project_pattern_paths
+
+    assert PatternDriverStateBinding.__module__ == "trader.application.world_model.pattern_discovery_ports"
+    assert "driver_state_bindings" in inspect.signature(PatternFormationRecord).parameters
+    assert PatternEvaluationService.__module__ == "trader.application.world_model.pattern_evaluation"
+    assert PatternOutcomeLinkService.__module__ == "trader.application.world_model.pattern_outcome_link"
+    assert project_pattern_paths.__module__ == "trader.application.world_model.pattern_path"
+    assert "world_outcome_events" not in evaluation_path.read_text(encoding="utf-8")
+    assert "WorldOutcome" not in evaluation_path.read_text(encoding="utf-8")
+    assert "world_outcome_events" not in path_mod.read_text(encoding="utf-8")
+
+
+def test_pattern_formation_query_is_a_readonly_state_adapter() -> None:
+    path = REPO_ROOT / "trader" / "infrastructure" / "state_db" / "world_pattern_formation_query.py"
+    assert path.exists()
+    source = path.read_text(encoding="utf-8")
+    assert "class SqlitePatternFormationSource" in source
+    assert "WorldGraphStore(" not in source
+    assert "WorldModelStore(" not in source
+    assert "StateDb(" not in source
+    assert "apply_current_world_model_schema" not in source
+    assert "immutable=1" not in source
+    assert "networkx" not in source.lower()
+
+
+def test_pattern_evaluation_and_outcome_queries_are_readonly_state_adapters() -> None:
+    evaluation = REPO_ROOT / "trader" / "infrastructure" / "state_db" / "world_pattern_evaluation_query.py"
+    catalog = REPO_ROOT / "trader" / "infrastructure" / "state_db" / "world_pattern_catalog_query.py"
+    outcomes = REPO_ROOT / "trader" / "infrastructure" / "state_db" / "world_pattern_outcome_query.py"
+    daemon = REPO_ROOT / "trader" / "runtime" / "daemon.py"
+    for path in (evaluation, catalog, outcomes):
+        assert path.exists()
+        source = path.read_text(encoding="utf-8")
+        assert "mode=ro" in source
+        assert "query_only=ON" in source
+        assert "WorldGraphStore(" not in source
+        assert "WorldModelStore(" not in source
+        assert "StateDb(" not in source
+        assert "apply_current_world_model_schema" not in source
+        assert "immutable=1" not in source
+        assert "networkx" not in source.lower()
+    evaluation_source = evaluation.read_text(encoding="utf-8")
+    catalog_source = catalog.read_text(encoding="utf-8")
+    assert "world_outcome_events" not in evaluation_source
+    assert "WorldOutcome" not in evaluation_source
+    assert "world_outcome_events" not in catalog_source
+    assert "world_outcome_events" in outcomes.read_text(encoding="utf-8")
+    daemon_source = daemon.read_text(encoding="utf-8")
+    assert "PatternEvaluationService" not in daemon_source
+    assert "PatternOutcomeLinkService" not in daemon_source
+    assert "world pattern evaluate" not in daemon_source

@@ -791,11 +791,38 @@ def test_path_budget_marks_partial_snapshot_and_does_not_invent_members() -> Non
     assert bundle.paths.status == "graph_budget_exceeded"
     assert bundle.snapshot.status == "partial"
     assert bundle.snapshot.missingness["budget"] == "graph_budget_exceeded"
-    member_ids = {ref.relation_id for ref in bundle.snapshot.structural_relation_refs} | {
-        ref.relation_id for ref in bundle.snapshot.knowledge_relation_refs
-    }
     path_ids = {step.relation_id for path in bundle.paths.paths for step in path.steps}
-    assert member_ids == path_ids
+    structural_ids = {ref.relation_id for ref in bundle.snapshot.structural_relation_refs}
+    assert structural_ids == {item.relation_id for item in bundle.structural_relations}
+    assert structural_ids <= path_ids
+    visited = {_instrument().node_id}
+    for path in bundle.paths.paths:
+        for step in path.steps:
+            visited.add(step.source_node_id)
+            visited.add(step.target_node_id)
+    for relation in bundle.knowledge_relations:
+        endpoints = set()
+        for node in (relation.source, relation.target):
+            node_id = getattr(node, "node_id", None)
+            if node_id is None:
+                payload = node.to_dict()
+                node_id = (
+                    payload.get("observation_id")
+                    or payload.get("artifact_id")
+                    or payload.get("snapshot_id")
+                    or payload.get("hypothesis_id")
+                    or payload.get("fact_version_id")
+                )
+            endpoints.add(node_id)
+        assert endpoints & visited
+    knowledge_ids = {ref.relation_id for ref in bundle.snapshot.knowledge_relation_refs}
+    path_knowledge_ids = {
+        step.relation_id
+        for path in bundle.paths.paths
+        for step in path.steps
+        if step.family == "knowledge"
+    }
+    assert path_knowledge_ids <= knowledge_ids
 
 
 def test_unpublished_ontology_is_a_missing_snapshot_without_traversal_authority() -> None:
@@ -894,3 +921,52 @@ def test_later_structural_relation_is_visible_only_after_superseding_revision() 
     assert after.snapshot.ontology_hash == successor.content_sha256
     assert extra_ref in after.snapshot.structural_relation_refs
     assert extra in after.structural_relations
+
+
+def test_world_targeted_observes_is_member_at_default_depth_without_path_invention() -> None:
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    observes = _knowledge(target=_world())
+    _seed_rfc_graph(ledger, mapping, knowledge=(observes,))
+    bundle = _service(ledger).build(_request(mapping))
+    path_ids = {step.relation_id for path in bundle.paths.paths for step in path.steps}
+    visited = {_instrument().node_id}
+    ancestry_kinds = []
+    for path in bundle.paths.paths:
+        kinds = tuple(step.kind for step in path.steps)
+        if kinds == ("TRADED_ON", "LOCATED_IN", "LOCATED_IN", "PART_OF_WORLD"):
+            ancestry_kinds = list(kinds)
+        for step in path.steps:
+            visited.add(step.source_node_id)
+            visited.add(step.target_node_id)
+    assert ancestry_kinds == ["TRADED_ON", "LOCATED_IN", "LOCATED_IN", "PART_OF_WORLD"]
+    assert _world().node_id in visited
+    assert observes.relation_id not in path_ids
+    assert observes in bundle.knowledge_relations
+    assert any(ref.relation_id == observes.relation_id for ref in bundle.snapshot.knowledge_relation_refs)
+    assert bundle.snapshot.status == "complete"
+    assert dict(bundle.snapshot.missingness) == {}
+    structural_ids = {item.relation_id for item in bundle.structural_relations}
+    assert structural_ids <= path_ids
+    assert all(step.relation_id != observes.relation_id for path in bundle.paths.paths for step in path.steps)
+
+
+def test_knowledge_outside_visited_nodes_is_excluded_from_snapshot_membership() -> None:
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    on_world = _knowledge(target=_world())
+    outsider = _knowledge(
+        source=WorldObservationRef(observation_id=f"world_observation:v1:{'e' * 64}"),
+        target=WorldEntityRef(kind="country", entity_id="iso-3166:US"),
+        source_refs=(
+            f"macro_world_observation:v1:{'e' * 64}",
+            macro_observes_producer_ref(MACRO_PRODUCER_VERSION),
+        ),
+    )
+    _seed_rfc_graph(ledger, mapping, knowledge=(on_world, outsider))
+    bundle = _service(ledger).build(_request(mapping))
+    member_ids = {item.relation_id for item in bundle.knowledge_relations}
+    assert on_world.relation_id in member_ids
+    assert outsider.relation_id not in member_ids
+    assert all(ref.relation_id != outsider.relation_id for ref in bundle.snapshot.knowledge_relation_refs)
+    assert bundle.snapshot.status == "complete"

@@ -4,6 +4,7 @@ from trader.domain.planning import indicator_watch as indicator_watch_mod
 from trader.domain.planning.armed_order import ARMED_ORDER_MAX_TTL_MINUTES
 from trader.domain.planning.indicator_watch import (
     DEFAULT_WATCH_TTL_MINUTES,
+    WATCH_REJECT_INVALID_CONDITION_TYPE,
     WATCH_REJECT_INVALID_OPERATOR,
     WATCH_REJECT_MISSING_THRESHOLD,
     WATCH_REJECT_NON_FINITE_THRESHOLD,
@@ -126,6 +127,35 @@ def test_summarize_watch_resume_une_veille() -> None:
             }
         ],
     }
+
+
+def test_summarize_watch_expose_une_condition_close_sans_indicator() -> None:
+    summary = indicator_watch_mod.summarize_watch(
+        {
+            "id": "close-1",
+            "symbol": "SPY",
+            "on_trigger": "WAKE",
+            "conditions": [
+                {
+                    "type": "close",
+                    "symbol": "SPY",
+                    "op": "<",
+                    "value": 100.0,
+                    "timeframe": "15m",
+                },
+            ],
+        }
+    )
+
+    assert summary["conditions"] == [
+        {
+            "type": "close",
+            "symbol": "SPY",
+            "op": "<",
+            "value": 100.0,
+            "timeframe": "15m",
+        },
+    ]
 
 
 def test_summarize_watch_conserve_order_de_wake_with_order_intent() -> None:
@@ -258,6 +288,68 @@ def test_normalize_indicator_watch_borne_et_persiste_une_combinaison_multi_timef
     assert watch["order"]["action"] == "BUY"
 
 
+def test_normalize_indicator_watch_accepte_une_condition_close_typee() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+
+    watch = normalize_indicator_watch(
+        {
+            "conditions": [
+                {"type": "close", "op": "<", "value": 100.0, "interval": "15m"},
+            ],
+        },
+        owner_symbol="SPY",
+        now=now,
+    )
+
+    assert watch is not None
+    condition = watch["conditions"][0]
+    assert condition["type"] == "close"
+    assert "indicator" not in condition
+    assert condition["op"] == "<"
+    assert condition["value"] == 100.0
+    assert condition["interval"] == "15m"
+
+
+def test_normalize_close_4h_transporte_la_source_1h_au_scanner() -> None:
+    watch = normalize_indicator_watch(
+        {
+            "conditions": [
+                {"type": "close", "op": "<", "value": 100.0, "interval": "4h"},
+            ],
+        },
+        owner_symbol="SPY",
+        now=datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert watch is not None
+    condition = watch["conditions"][0]
+    request = indicator_watch_mod.watch_market_requests([watch])[0]
+    assert condition["source_interval"] == "1h"
+    assert request.interval == "4h"
+    assert request.source_interval == "1h"
+
+
+def test_close_type_rejects_un_indicateur_ambigu() -> None:
+    result = build_indicator_watch(
+        {
+            "conditions": [
+                {"type": "close", "indicator": "return", "op": "<", "value": 100.0},
+            ],
+        },
+        owner_symbol="SPY",
+        now=datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.watch is None
+    assert result.rejections == [
+        {
+            "reason": WATCH_REJECT_INVALID_CONDITION_TYPE,
+            "indicator": None,
+            "raw_value": "close_with_indicator",
+        },
+    ]
+
+
 def test_normalize_indicator_watch_conditions_sans_seuil_invalident_la_watch() -> None:
     # CONTRAT RÉVISÉ (filet atomique, phase 3) : une seule condition rejetée invalide
     # TOUTE la veille — on ne persiste jamais une watch amputée. L'ancien contrat
@@ -382,6 +474,32 @@ def test_evaluate_indicator_watches_declenche_quand_combinaison_est_vraie() -> N
     assert triggered[0]["symbol"] == "SPY"
     assert triggered[0]["on_trigger"] == "WAKE"
     assert triggered[0]["matched"][0]["indicator"] == "z_score"
+
+
+def test_evaluate_indicator_watches_compare_le_close_type() -> None:
+    watch = normalize_indicator_watch(
+        {
+            "conditions": [
+                {"type": "close", "op": "<", "value": 100.0, "interval": "15m"},
+            ],
+        },
+        owner_symbol="SPY",
+        now=datetime(2026, 6, 6, 10, 0, tzinfo=timezone.utc),
+    )
+    assert watch is not None
+
+    triggered = evaluate_indicator_watches(
+        [watch],
+        {("SPY", "15m"): _bars(110.0, 99.5)},
+        now=datetime(2026, 6, 6, 10, 5, tzinfo=timezone.utc),
+    )
+
+    assert len(triggered) == 1
+    matched = triggered[0]["matched"][0]
+    assert matched["type"] == "close"
+    assert "indicator" not in matched
+    assert matched["actual"] == 99.5
+    assert matched["op"] == "<"
 
 
 def test_evaluate_indicator_watches_declenche_relative_strength_avec_pairs() -> None:

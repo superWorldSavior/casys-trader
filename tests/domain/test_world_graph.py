@@ -31,7 +31,10 @@ from trader.domain.world_graph import (
     STRUCTURAL_RELATION_KINDS,
     WORLD_ENTITY_KINDS,
     WORLD_GRAPH_SNAPSHOT_SCHEMA,
+    GRAPH_PATH_NODE_KINDS,
+    GRAPH_TRAVERSAL_V1_DIRECTIONS,
     ancestry_distance_from_instrument_root,
+    validate_id_free_traversal_hop,
     reconstruct_macro_observes_provenance,
     KnowledgeArtifactRef,
     KnowledgeWorldRelation,
@@ -1635,3 +1638,53 @@ def test_cursor_is_ordinal_not_datetime_and_first_seen_cannot_move_it() -> None:
     assert replayed == reservation
     with pytest.raises(FrozenInstanceError):
         later.ordinal = 9  # type: ignore[misc]
+
+
+def test_id_free_traversal_hop_owns_v1_directions_and_canonical_pairs() -> None:
+    assert "sensor" not in GRAPH_PATH_NODE_KINDS
+    assert GRAPH_TRAVERSAL_V1_DIRECTIONS["TRADED_ON"] == frozenset({"forward", "reverse"})
+    assert GRAPH_TRAVERSAL_V1_DIRECTIONS["ISSUED_BY"] == frozenset({"forward"})
+    hop = validate_id_free_traversal_hop(
+        source_kind="venue",
+        relation_kind="TRADED_ON",
+        direction="reverse",
+        target_kind="instrument",
+    )
+    assert hop.family == "structural"
+    assert hop.source_kind == "venue"
+    assert hop.target_kind == "instrument"
+    observes = validate_id_free_traversal_hop(
+        source_kind="country",
+        relation_kind="OBSERVES",
+        direction="reverse",
+        target_kind="world_observation",
+    )
+    assert observes.family == "knowledge"
+    with pytest.raises(ValueError, match="pair|source/target"):
+        validate_id_free_traversal_hop(
+            source_kind="instrument",
+            relation_kind="TRADED_ON",
+            direction="forward",
+            target_kind="company",
+        )
+    with pytest.raises(ValueError, match="direction|ISSUED_BY"):
+        validate_id_free_traversal_hop(
+            source_kind="company",
+            relation_kind="ISSUED_BY",
+            direction="reverse",
+            target_kind="instrument",
+        )
+    with pytest.raises(ValueError, match="CAUSES|forbidden|causal"):
+        validate_id_free_traversal_hop(
+            source_kind="instrument",
+            relation_kind="CAUSES",
+            direction="forward",
+            target_kind="venue",
+        )
+    with pytest.raises(ValueError, match="source_kind"):
+        validate_id_free_traversal_hop(
+            source_kind="sensor",
+            relation_kind="OBSERVES",
+            direction="forward",
+            target_kind="country",
+        )

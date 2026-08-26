@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Callable, Protocol
 
 from trader.domain.planning.protocols import TradePlanStoreLike
@@ -42,6 +43,19 @@ def _noop_model_performance(**_payload: object) -> None:
     return None
 
 
+def _deterministic_json_snapshot(value: object) -> object:
+    """Return a detached, canonical JSON value for a persistence receipt."""
+    return json.loads(
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+
+
 def plan_snapshot(plan: TradePlan) -> dict:
     """Minimal JSON-serialisable snapshot of a plan at exit time."""
     return {
@@ -68,6 +82,12 @@ def plan_snapshot(plan: TradePlan) -> dict:
             else None
         ),
         "max_hold_minutes": plan.max_hold_minutes,
+        "profit_protection": (
+            _deterministic_json_snapshot(plan.profit_protection.model_dump(mode="json"))
+            if plan.profit_protection is not None
+            else None
+        ),
+        "exit_watch": _deterministic_json_snapshot(plan.exit_watch),
         "filled_take_profits": list(plan.filled_take_profits),
         "high_watermark": plan.high_watermark,
         "low_watermark": plan.low_watermark,

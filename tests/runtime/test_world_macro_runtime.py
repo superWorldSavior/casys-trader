@@ -455,7 +455,6 @@ def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping
     for market_venue, instrument in historical:
         resolved = mapping.resolve(WorldMarketAnchorRef(market_venue=market_venue, instrument=instrument))
         assert resolved.status == "resolved", (market_venue, instrument)
-    assert len(mapping.entries) == 50
 
     collection_ids = {(scope.kind, scope.entity_id) for scope in collection_scopes(operator)}
     assert collection_ids == {
@@ -503,6 +502,7 @@ def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping
         sleeper=lambda _seconds: None,
         graph_enabled=True,
     )
+    assert bundle.mapping.entries == mapping.entries
     first = bundle.runner.trigger(now=NOW, reason="full-mapping")
     assert first["triggered"] is True
     first["_thread"].join(timeout=15.0)
@@ -510,7 +510,6 @@ def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping
     bundle.runner.stop()
     assert captured
     assert captured[0] is bundle.mapping
-    assert len(captured[0].entries) == 50
     assert any(entry.venue.entity_id == "mic:XTAI" for entry in captured[0].entries)
     assert any(entry.venue.entity_id == "mic:XNAS" for entry in captured[0].entries)
 

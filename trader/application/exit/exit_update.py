@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError
@@ -53,6 +54,7 @@ def apply_exit_update_to_open_plan(
     bars: list | None,
     entry: dict,
     current_price: float | None = None,
+    now: datetime | None = None,
 ) -> ExitUpdateResult:
     """Apply an exit_update request to the symbol's open plan and trace the result."""
     entry["exit_update"] = copy.deepcopy(exit_update)
@@ -70,6 +72,7 @@ def apply_exit_update_to_open_plan(
             exit_update,
             bars=bars,
             reference_price=current_price if current_price is not None else _current_decision_price(entry),
+            now=now,
             trace_out=trace,
         )
     except (InvalidExitPlanError, ValueError) as exc:
@@ -101,6 +104,7 @@ def validate_exit_update(
     exit_update: dict,
     bars: list | None,
     current_price: float | None = None,
+    now: datetime | None = None,
 ) -> ExitUpdateValidation:
     """Dry-run an exit_update request against the symbol's open plan."""
     open_plans = [p for p in plan_store.open_plans() if p.symbol == symbol]
@@ -115,6 +119,7 @@ def validate_exit_update(
             exit_update,
             bars=bars,
             reference_price=current_price,
+            now=now,
             trace_out=trace,
         )
     except (InvalidExitPlanError, ValueError) as exc:

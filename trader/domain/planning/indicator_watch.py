@@ -35,6 +35,7 @@ _ON_TRIGGERS = {"WAKE", "WAKE_WITH_ORDER_INTENT", "EXECUTE_ORDER"}
 _CROSS_ASSET_INDICATORS = {"relative_strength", "spread_zscore"}
 
 WATCH_REJECT_NOT_MAPPING = "not_a_mapping"
+WATCH_REJECT_INVALID_CONDITION_TYPE = "invalid_condition_type"
 WATCH_REJECT_UNKNOWN_INDICATOR = "unknown_indicator"
 WATCH_REJECT_INVALID_OPERATOR = "invalid_operator"
 WATCH_REJECT_MISSING_THRESHOLD = "missing_threshold"
@@ -56,6 +57,21 @@ _ABS_OPS: dict[str, Callable[[float, float], bool]] = {
 # une notation qui sera rejetée (cf rejet réel `op="eq"`).
 WATCH_VALID_OPERATORS: tuple[str, ...] = tuple(_OPS) + tuple(_ABS_OPS)
 DEFAULT_WATCH_TTL_MINUTES = 240.0
+
+
+class WatchMarketRequest(NamedTuple):
+    """Market data needed to evaluate one semantic watch timeframe.
+
+    ``interval`` is the timeframe observed by the condition.  ``source_interval``
+    is the lower-level series that must be fetched first; notably a governed 4h
+    watch is built from closed 1h bars rather than trusting a provider's trailing
+    4h row.
+    """
+
+    symbol: str
+    interval: str
+    source_interval: str
+    lookback: str
 
 
 class IndicatorWatchResult(NamedTuple):
@@ -157,7 +173,7 @@ def _no_conditions_rejection(raw: dict) -> dict:
         "indicator": None,
         "raw_value": None,
         "received_keys": sorted(str(key) for key in raw),
-        "expected": "conditions:[{indicator,op,value,interval,window}]",
+        "expected": "conditions:[{indicator,op,value,interval,window}|{type:close,op,value,interval}]",
     }
 
 
@@ -167,16 +183,42 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
             None,
             {"reason": WATCH_REJECT_NOT_MAPPING, "indicator": None, "raw_value": None},
         )
-    indicator = str(raw.get("indicator") or raw.get("name") or "")
-    if indicator not in DEFAULT_INDICATORS:
+    condition_type = str(raw.get("type") or "indicator").lower()
+    if condition_type not in {"indicator", "close"}:
         return (
             None,
             {
-                "reason": WATCH_REJECT_UNKNOWN_INDICATOR,
-                "indicator": indicator or None,
-                "raw_value": None,
+                "reason": WATCH_REJECT_INVALID_CONDITION_TYPE,
+                "indicator": None,
+                "raw_value": condition_type,
             },
         )
+    if condition_type == "close":
+        # A close condition is deliberately distinct from the semantic indicator
+        # catalogue.  Keeping ``indicator`` absent makes a persisted close level
+        # auditable and prevents a raw OHLC field from silently becoming a new
+        # governed derived indicator.
+        if raw.get("indicator") is not None or raw.get("name") is not None:
+            return (
+                None,
+                {
+                    "reason": WATCH_REJECT_INVALID_CONDITION_TYPE,
+                    "indicator": None,
+                    "raw_value": "close_with_indicator",
+                },
+            )
+        indicator = "close"
+    else:
+        indicator = str(raw.get("indicator") or raw.get("name") or "")
+        if indicator not in DEFAULT_INDICATORS:
+            return (
+                None,
+                {
+                    "reason": WATCH_REJECT_UNKNOWN_INDICATOR,
+                    "indicator": indicator or None,
+                    "raw_value": None,
+                },
+            )
     op = str(raw.get("op") or raw.get("operator") or ">=").lower()
     if op not in _OPS and op not in _ABS_OPS:
         return (
@@ -214,21 +256,23 @@ def _condition_from_raw(raw: object, *, owner_symbol: str) -> tuple[dict | None,
         window=_bounded_int(raw.get("window"), default=48, minimum=2, maximum=240),
         as_of=None if raw.get("as_of") is None else str(raw["as_of"]),
     )
-    return (
-        {
-            "symbol": str(raw.get("symbol") or owner_symbol),
-            "indicator": indicator,
-            "op": op,
-            "value": threshold,
-            "interval": temporal["timeframe"],
-            "timeframe": temporal["timeframe"],
-            "source_interval": temporal["source_interval"],
-            "lookback": temporal["lookback"],
-            "window": temporal["window"],
-            "as_of": temporal["as_of"],
-        },
-        None,
-    )
+    condition = {
+        "symbol": str(raw.get("symbol") or owner_symbol),
+        "op": op,
+        "value": threshold,
+        "interval": temporal["timeframe"],
+        "timeframe": temporal["timeframe"],
+        "source_interval": temporal["source_interval"],
+        "lookback": temporal["lookback"],
+        "window": temporal["window"],
+        "as_of": temporal["as_of"],
+    }
+    if condition_type == "close":
+        condition["type"] = "close"
+    else:
+        # Preserve the persisted shape of legacy indicator conditions exactly.
+        condition["indicator"] = indicator
+    return (condition, None)
 def _summarize_watch_conditions(conditions: object) -> list[dict]:
     if not isinstance(conditions, list):
         return []
@@ -238,6 +282,7 @@ def _summarize_watch_conditions(conditions: object) -> list[dict]:
             continue
         summary = {
             "symbol": condition.get("symbol"),
+            "type": condition.get("type"),
             "indicator": condition.get("indicator"),
             "op": condition.get("op"),
             "value": condition.get("value"),
@@ -423,13 +468,13 @@ def watch_market_requests(
     watches: list[dict],
     *,
     universe_symbols: list[str] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Return unique `(symbol, interval, lookback)` requests required by watches."""
-    seen: set[tuple[str, str, str]] = set()
-    requests: list[tuple[str, str, str]] = []
+) -> list[WatchMarketRequest]:
+    """Return unique, typed market-data requests required by watches."""
+    seen: set[WatchMarketRequest] = set()
+    requests: list[WatchMarketRequest] = []
 
-    def add(symbol: str, interval: str, lookback: str) -> None:
-        item = (symbol, interval, lookback)
+    def add(symbol: str, interval: str, source_interval: str, lookback: str) -> None:
+        item = WatchMarketRequest(symbol, interval, source_interval, lookback)
         if item in seen:
             return
         seen.add(item)
@@ -439,9 +484,10 @@ def watch_market_requests(
         for condition in watch.get("conditions", []):
             symbol = str(condition.get("symbol"))
             interval = str(condition.get("interval") or "1h")
+            source_interval = str(condition.get("source_interval") or interval)
             lookback = str(condition.get("lookback") or "5d")
-            add(symbol, interval, lookback)
+            add(symbol, interval, source_interval, lookback)
             if condition.get("indicator") in _CROSS_ASSET_INDICATORS:
                 for peer in _same_family_symbols(symbol, universe_symbols):
-                    add(peer, interval, lookback)
+                    add(peer, interval, source_interval, lookback)
     return requests

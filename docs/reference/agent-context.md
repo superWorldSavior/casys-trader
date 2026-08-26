@@ -109,6 +109,14 @@ Le résumé focalisé sert surtout d'anti-doublon/OCO avant d'empiler des scéna
 L'outil `get_active_plans` ne sert que si le détail local et ce résumé ne
 suffisent pas.
 
+Le détail global reste une projection opérationnelle bornée : il expose les
+règles de sortie persistées (`hard_stop`, TP, trailing, protection de gain,
+max-hold, exit-watch) et leur suivi (watermarks, TP remplis, volatilité de
+référence, expiration/cooldown de watch), mais jamais le gros `entry_context`
+ou un payload auxiliaire de watch. Les limites et indicateurs explicites de
+troncature sont définis dans [agent-tools](agent-tools.md#get_active_plans) ;
+un flag `*_truncated` interdit d'inférer qu'une règle absente n'existe pas.
+
 ## Learnings : compétence, situation, expérience
 
 - `learnings.global` + `guardrails` restent poussés : compétence générale lente.

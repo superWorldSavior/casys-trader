@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -285,6 +285,103 @@ def test_execute_one_cycle_decision_applies_exit_update_with_current_price(tmp_p
     assert records[0]["plan_effect"]["status"] == "verified"
     assert records[0]["plan_effect"]["expected_mutation"]["kind"] == "upsert"
     assert records[0]["plan_effect"]["expected_plan"] == records[0]["plan_effect"]["observed_plan"]
+
+
+def test_exit_watch_amendment_uses_cycle_time_for_persisted_receipt() -> None:
+    opened_at = _NOW - timedelta(minutes=60)
+    store = MemoryTradePlanStore()
+    store.upsert(
+        create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=1.0,
+            entry_price=100.0,
+            opened_at=opened_at.isoformat(),
+            raw_exit_plan={"hard_stop": 95.0},
+        )
+    )
+    ctx, records = _context(plan_store=store, held_symbols={"SPY"})
+    state = DecisionExecutionState(snap=SimpleNamespace(equity=100_000.0), gross=0.0)
+
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="add post-entry review",
+            intent="HOLD",
+            exit_update={
+                "max_hold_minutes": 90,
+                "exit_watch": {
+                    "ttl_minutes": 120,
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+            },
+        ),
+        state=state,
+        ctx=ctx,
+    )
+
+    watch = store.open_plans()[0].exit_watch
+    assert watch is not None
+    assert watch["created_at"] == _NOW.isoformat()
+    assert watch["expires_at"] == (opened_at + timedelta(minutes=90)).isoformat()
+    assert records[0]["exit_update_applied"] is True
+    assert records[0]["plan_effect"]["status"] == "verified"
+    assert records[0]["plan_effect"]["expected_plan"] == records[0]["plan_effect"]["observed_plan"]
+
+
+def test_exit_watch_receipt_detects_store_that_drops_the_amendment() -> None:
+    initial_plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=1.0,
+        entry_price=100.0,
+        opened_at=_NOW.isoformat(),
+        raw_exit_plan={"hard_stop": 95.0},
+    )
+
+    class DropExitWatchUpsertStore(MemoryTradePlanStore):
+        def upsert(self, plan) -> None:
+            if plan.exit_watch is not None:
+                plan = plan.model_copy(update={"exit_watch": None})
+            super().upsert(plan)
+
+    store = DropExitWatchUpsertStore([initial_plan])
+    ctx, records = _context(plan_store=store, held_symbols={"SPY"})
+    state = DecisionExecutionState(snap=SimpleNamespace(equity=100_000.0), gross=0.0)
+
+    execute_one_cycle_decision(
+        sym="SPY",
+        index=1,
+        total=1,
+        decision=Decision(
+            symbol="SPY",
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.8,
+            rationale="add post-entry review",
+            intent="HOLD",
+            exit_update={
+                "exit_watch": {
+                    "ttl_minutes": 30,
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+            },
+        ),
+        state=state,
+        ctx=ctx,
+    )
+
+    assert records[0]["exit_update_applied"] is True
+    assert store.open_plans()[0].exit_watch is None
+    assert records[0]["plan_effect"]["status"] == "mismatch"
+    assert records[0]["plan_effect"]["reason"] == "plan_receipt_mismatch"
+    assert records[0]["plan_effect"]["expected_plan"]["exit_watch"] is not None
 
 
 def test_rejected_exit_update_without_open_plan_has_verified_non_effect_receipt() -> None:

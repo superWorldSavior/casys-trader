@@ -9,6 +9,8 @@ Couvre :
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from trader.agent import client as codex_client
@@ -98,6 +100,49 @@ class TestParsingExitUpdate:
         }])
         assert d.exit_update is not None
         assert d.exit_update["take_profits"] == [{"type": "risk_multiple", "r": 2.0, "fraction": 1.0}]
+
+    def test_exit_update_exit_watch_et_max_hold(self) -> None:
+        d = _parse_calls([{
+            "tool": "strategy_exit",
+            "args": {
+                "exit_watch": {
+                    "ttl_minutes": 45,
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+                "max_hold_minutes": 90,
+            },
+        }])
+
+        assert d.exit_update is not None
+        assert d.exit_update["max_hold_minutes"] == 90
+        assert d.exit_update["exit_watch"]["ttl_minutes"] == 45
+
+    def test_strategy_exit_null_clear_rules_survit_du_parse_a_l_application(self) -> None:
+        decision = _parse_calls([{
+            "tool": "strategy_exit",
+            "args": {"exit_watch": None, "max_hold_minutes": None},
+        }])
+        assert decision.exit_update == {"exit_watch": None, "max_hold_minutes": None}
+
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-07-03T10:00:00+00:00",
+            raw_exit_plan={
+                "max_hold_minutes": 90,
+                "exit_watch": {
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+            },
+        )
+        assert decision.exit_update is not None
+
+        patched = apply_exit_update(plan, decision.exit_update)
+
+        assert patched.exit_watch is None
+        assert patched.max_hold_minutes is None
 
     def test_exit_update_args_vides_pas_de_champ(self) -> None:
         """strategy_exit avec args vides → pas de decision.exit_update (no-op propre)."""
@@ -195,6 +240,204 @@ class TestApplyExitUpdate:
         assert patched.hard_stop_price == 97.0
         assert patched.trailing_stop is not None
         assert patched.trailing_stop.trail_value == 2.0
+
+    def test_patch_exit_watch_et_max_hold_depuis_l_horloge_du_cycle(self) -> None:
+        opened_at = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)
+        amended_at = opened_at + timedelta(minutes=60)
+        plan = _plan(opened_at=opened_at.isoformat())
+
+        patched = apply_exit_update(
+            plan,
+            {
+                "max_hold_minutes": 90,
+                "exit_watch": {
+                    "id": "wrong-id",
+                    "symbol": "AAPL",
+                    "created_at": "2000-01-01T00:00:00+00:00",
+                    "expires_at": "2099-01-01T00:00:00+00:00",
+                    "last_triggered_at": "2000-01-01T00:00:00+00:00",
+                    "ttl_minutes": 120,
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+            },
+            now=amended_at,
+        )
+
+        assert patched.id == plan.id
+        assert patched.symbol == plan.symbol == "SPY"
+        assert patched.max_hold_minutes == 90.0
+        assert patched.exit_watch is not None
+        assert patched.exit_watch["id"].startswith("SPY:")
+        assert patched.exit_watch["symbol"] == "SPY"
+        assert patched.exit_watch["conditions"][0]["symbol"] == "SPY"
+        assert patched.exit_watch["created_at"] == amended_at.isoformat()
+        assert patched.exit_watch["expires_at"] == (opened_at + timedelta(minutes=90)).isoformat()
+        assert "last_triggered_at" not in patched.exit_watch
+
+    def test_patch_exit_watch_exige_l_horloge_de_decision(self) -> None:
+        with pytest.raises(InvalidExitPlanError, match="exit_watch_now_required"):
+            apply_exit_update(
+                _plan(),
+                {
+                    "exit_watch": {
+                        "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                    }
+                },
+            )
+
+    def test_patch_max_hold_exige_l_horloge_de_decision(self) -> None:
+        with pytest.raises(InvalidExitPlanError, match="max_hold_now_required"):
+            apply_exit_update(_plan(), {"max_hold_minutes": 90})
+
+    def test_patch_max_hold_raccourci_borne_la_veille_existante(self) -> None:
+        opened_at = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at=opened_at.isoformat(),
+            raw_exit_plan={
+                "max_hold_minutes": 180,
+                "exit_watch": {
+                    "ttl_minutes": 180,
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+            },
+        )
+
+        patched = apply_exit_update(
+            plan,
+            {"max_hold_minutes": 45},
+            now=opened_at + timedelta(minutes=30),
+        )
+
+        assert patched.max_hold_minutes == 45.0
+        assert patched.exit_watch is not None
+        assert patched.exit_watch["expires_at"] == (opened_at + timedelta(minutes=45)).isoformat()
+
+    def test_clear_exit_watch_et_max_hold(self) -> None:
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-07-03T10:00:00+00:00",
+            raw_exit_plan={
+                "max_hold_minutes": 90,
+                "exit_watch": {
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+            },
+        )
+
+        patched = apply_exit_update(plan, {"exit_watch": None, "max_hold_minutes": None})
+
+        assert patched.exit_watch is None
+        assert patched.max_hold_minutes is None
+
+    def test_max_hold_hors_plage_calendrier_est_rejete_a_l_entree(self) -> None:
+        with pytest.raises(InvalidExitPlanError, match="max_hold_minutes_out_of_range"):
+            create_trade_plan(
+                symbol="SPY",
+                side="LONG",
+                quantity=10.0,
+                entry_price=100.0,
+                opened_at="2026-07-03T10:00:00+00:00",
+                raw_exit_plan={
+                    "max_hold_minutes": 1e308,
+                    "exit_watch": {
+                        "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                    },
+                },
+            )
+
+    def test_max_hold_hors_plage_calendrier_est_rejete_au_remplacement(self) -> None:
+        plan = _plan()
+
+        with pytest.raises(InvalidExitPlanError, match="max_hold_minutes_out_of_range"):
+            apply_exit_update(
+                plan,
+                {
+                    "max_hold_minutes": 1e308,
+                    "exit_watch": {
+                        "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                    },
+                },
+                now=datetime(2026, 7, 3, 11, 0, tzinfo=timezone.utc),
+            )
+
+        assert plan.max_hold_minutes is None
+        assert plan.exit_watch is None
+
+    def test_max_hold_deja_echu_requiert_strategy_close_sans_cloture_implicite(self) -> None:
+        opened_at = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)
+        now = opened_at + timedelta(minutes=60)
+        plan = _plan(opened_at=opened_at.isoformat())
+        update = {"max_hold_minutes": 30}
+
+        with pytest.raises(
+            InvalidExitPlanError,
+            match="max_hold_deadline_elapsed_use_strategy_close",
+        ):
+            apply_exit_update(plan, update, now=now)
+
+        store = _store_with_plan(plan)
+        validation = exit_update_service.validate_exit_update(
+            plan_store=store,
+            symbol="SPY",
+            exit_update=update,
+            bars=None,
+            now=now,
+        )
+        entry: dict = {}
+        result = exit_update_service.apply_exit_update_to_open_plan(
+            plan_store=store,
+            symbol="SPY",
+            exit_update=update,
+            bars=None,
+            now=now,
+            entry=entry,
+        )
+
+        assert validation.would_apply is False
+        assert validation.reason == "resolve_failed:max_hold_deadline_elapsed_use_strategy_close"
+        assert result.applied is False
+        assert result.reason == "resolve_failed:max_hold_deadline_elapsed_use_strategy_close"
+        assert store.open_plans() == [plan]
+        assert entry["exit_update_applied"] is False
+
+    def test_exit_watch_invalide_n_efface_pas_la_veille_existante(self) -> None:
+        plan = create_trade_plan(
+            symbol="SPY",
+            side="LONG",
+            quantity=10.0,
+            entry_price=100.0,
+            opened_at="2026-07-03T10:00:00+00:00",
+            raw_exit_plan={
+                "exit_watch": {
+                    "conditions": [{"indicator": "trend_slope", "op": "<", "value": 0}],
+                },
+            },
+        )
+
+        with pytest.raises(InvalidExitPlanError, match="exit_watch_invalid"):
+            apply_exit_update(
+                plan,
+                {"exit_watch": {"conditions": [{"indicator": "unknown", "op": "<", "value": 0}]}},
+                now=datetime(2026, 7, 3, 11, 0, tzinfo=timezone.utc),
+            )
+
+        assert plan.exit_watch is not None
+
+    @pytest.mark.parametrize("invalid_max_hold", [0, -1, float("inf"), float("nan")])
+    def test_max_hold_invalide_est_rejete(self, invalid_max_hold: float) -> None:
+        plan = _plan()
+
+        with pytest.raises(InvalidExitPlanError):
+            apply_exit_update(plan, {"max_hold_minutes": invalid_max_hold})
+
+        assert plan.max_hold_minutes is None
 
     def test_update_vide_retourne_plan_identique(self) -> None:
         """Update dict non-None mais sans champs reconnus → plan inchangé."""

@@ -27,7 +27,9 @@ from trader.domain.world_episode import (
 from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeatureGroup, WorldFeatureMask
 from trader.domain.world_graph import WorldEntityRef
 from trader.domain.world_pattern import (
+    PATTERN_ASSOCIATION_METRIC,
     PatternEvaluationStarted,
+    PatternFormationStats,
     PatternHypothesis,
     PatternHypothesisId,
     PatternHypothesisRegistered,
@@ -65,7 +67,7 @@ EPISODE_ID = f"world-episode:v1:{'b' * 64}"
 FORMATION_FP = canonical_sha256({"dataset": "formation-pilot"})
 EVAL_FP = canonical_sha256({"dataset": "prospective-confirm"})
 SOURCE_SHA = "c" * 64
-COHORT_ID = "world_cohort:graph_pilot"
+COHORT_ID = "world_cohort:v1:" + "c" * 64
 
 _PATTERN_TABLES = (
     "world_pattern_hypothesis_events",
@@ -98,15 +100,38 @@ def _mask(contract: WorldFeatureContract | None = None) -> WorldFeatureMask:
     return WorldFeatureMask.bind(resolved, mask_id="graph_content.v1", selected_groups=("market",))
 
 
-def _step(ordinal: int, *, subject_kind: str, predicate: str, object_kind: str) -> PatternStep:
+def _step(
+    ordinal: int,
+    *,
+    source_kind: str,
+    relation_kind: str,
+    target_kind: str,
+    direction: str = "forward",
+    freshness_bucket: str = "0-4h",
+) -> PatternStep:
     return PatternStep(
         ordinal=ordinal,
-        subject_kind=subject_kind,
-        predicate=predicate,
-        object_kind=object_kind,
-        lag_window="0h..24h",
+        source_kind=source_kind,
+        relation_kind=relation_kind,
+        direction=direction,
+        target_kind=target_kind,
+        freshness_bucket=freshness_bucket,
         evidence_rule_version="macro_path_rule.v1" if ordinal == 0 else "market_ontology.v1",
     )
+
+
+def _stats(**overrides: object) -> PatternFormationStats:
+    values: dict[str, object] = {
+        "support": 7,
+        "population_support": 7,
+        "class_counts": {"DOWN": 1, "FLAT": 2, "UP": 4},
+        "population_class_counts": {"DOWN": 1, "FLAT": 2, "UP": 4},
+        "smoothing_alpha": 1.0,
+        "association_metric": PATTERN_ASSOCIATION_METRIC,
+        "association_score": 0.0,
+    }
+    values.update(overrides)
+    return PatternFormationStats(**values)  # type: ignore[arg-type]
 
 
 def _spec(**overrides: object) -> PatternHypothesisSpec:
@@ -120,8 +145,8 @@ def _spec(**overrides: object) -> PatternHypothesisSpec:
             move_distribution={"DOWN": 0.20, "FLAT": 0.30, "UP": 0.50},
         ),
         "steps": (
-            _step(0, subject_kind="macro_indicator", predicate="state_changed", object_kind="country"),
-            _step(1, subject_kind="country", predicate="contains_venue", object_kind="venue"),
+            _step(0, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue"),
+            _step(1, source_kind="venue", relation_kind="LOCATED_IN", target_kind="country", freshness_bucket="4-24h"),
         ),
         "formation_cutoff": FORMATION,
         "formation_dataset_fingerprint": FORMATION_FP,
@@ -131,6 +156,7 @@ def _spec(**overrides: object) -> PatternHypothesisSpec:
         "feature_mask_fingerprint": mask.fingerprint,
         "model_identity": "online_gru_world_challenger@graph.v1",
         "ontology_revision": "market_ontology.v1",
+        "stats": _stats(),
         "source_refs": (),
         "causal_claim": False,
     }
@@ -144,7 +170,11 @@ def _registered(**overrides: object) -> PatternHypothesisRegistered:
 
 def _evaluating(registered: PatternHypothesisRegistered | None = None) -> PatternHypothesis:
     hypothesis = PatternHypothesis.from_events((registered if registered is not None else _registered(),))
-    return hypothesis.start_evaluation(started_at=EVAL_STARTED, evaluation_dataset_fingerprint=EVAL_FP)
+    return hypothesis.start_evaluation(
+        started_at=EVAL_STARTED,
+        evaluation_dataset_fingerprint=EVAL_FP,
+        evaluation_cohort_id=COHORT_ID,
+    )
 
 
 def _instrument() -> WorldEntityRef:
@@ -152,23 +182,23 @@ def _instrument() -> WorldEntityRef:
 
 
 def _path() -> tuple[PatternMatchedHop, PatternMatchedHop]:
-    return (
+    steps = (
+        _step(0, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue"),
+        _step(1, source_kind="venue", relation_kind="LOCATED_IN", target_kind="country", freshness_bucket="4-24h"),
+    )
+    refs = (("macro_source_fact_version:v1:" + "d" * 64,), ("world_observation:v1:" + "e" * 64,))
+    return tuple(
         PatternMatchedHop(
-            ordinal=0,
-            subject_kind="macro_indicator",
-            predicate="state_changed",
-            object_kind="country",
-            direction="forward",
-            evidence_refs=("macro_source_fact_version:v1:" + "d" * 64,),
-        ),
-        PatternMatchedHop(
-            ordinal=1,
-            subject_kind="country",
-            predicate="contains_venue",
-            object_kind="venue",
-            direction="reverse",
-            evidence_refs=("world_observation:v1:" + "e" * 64,),
-        ),
+            ordinal=step.ordinal,
+            source_kind=step.source_kind,
+            relation_kind=step.relation_kind,
+            direction=step.direction,
+            target_kind=step.target_kind,
+            freshness_bucket=step.freshness_bucket,
+            evidence_rule_version=step.evidence_rule_version,
+            evidence_refs=evidence,
+        )
+        for step, evidence in zip(steps, refs, strict=True)
     )
 
 
@@ -332,6 +362,7 @@ def test_identical_event_repairs_missing_receipt_after_head_advances(
     registered = _registered()
     started = PatternEvaluationStarted(
         hypothesis_id=registered.hypothesis_id,
+        evaluation_cohort_id=COHORT_ID,
         started_at=EVAL_STARTED,
         evaluation_dataset_fingerprint=EVAL_FP,
     )
@@ -406,6 +437,7 @@ def test_new_event_id_does_not_insert_when_unique_sequence_conflicts(
     store.append_event(registered)
     started = PatternEvaluationStarted(
         hypothesis_id=registered.hypothesis_id,
+        evaluation_cohort_id=COHORT_ID,
         started_at=EVAL_STARTED,
         evaluation_dataset_fingerprint=EVAL_FP,
     )
@@ -544,6 +576,7 @@ def test_sequences_are_per_aggregate_and_replay_keeps_original_sequence(tmp_path
     store.append_event(second)
     started = PatternEvaluationStarted(
         hypothesis_id=first.hypothesis_id,
+        evaluation_cohort_id=COHORT_ID,
         started_at=EVAL_STARTED,
         evaluation_dataset_fingerprint=EVAL_FP,
     )
@@ -727,3 +760,26 @@ def test_never_seals_receipt_for_conflicting_payload(tmp_path: Path) -> None:
         )
     ]
     assert canonical_sha256(other.to_dict()) not in hashes
+
+
+def test_evaluating_hypothesis_is_listed_with_zero_occurrences(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    hypothesis = _evaluating()
+    store.append_event(hypothesis.registered)
+    started = next(event for event in hypothesis.events if isinstance(event, PatternEvaluationStarted))
+    store.append_event(started)
+    listed = store.list_evaluating_hypotheses(
+        evaluation_cohort_id=COHORT_ID,
+        evaluation_dataset_fingerprint=EVAL_FP,
+    )
+    assert [item.hypothesis_id for item in listed] == [hypothesis.hypothesis_id]
+    assert store.list_recorded_occurrences(evaluation_cohort_id=COHORT_ID) == ()
+    from trader.infrastructure.state_db.world_pattern_catalog_query import SqlitePatternCatalogQuery
+
+    catalog = SqlitePatternCatalogQuery(store.path)
+    assert [item.hypothesis_id for item in catalog.list_evaluating_hypotheses(
+        evaluation_cohort_id=COHORT_ID,
+        evaluation_dataset_fingerprint=EVAL_FP,
+    )] == [hypothesis.hypothesis_id]
+    assert catalog.list_recorded_occurrences(evaluation_cohort_id=COHORT_ID) == ()
+    store.close()

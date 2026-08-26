@@ -310,11 +310,15 @@ def _compact_exit_plan(raw: object) -> dict | None:
     compact_protection = _compact_protection(protection)
     if compact_protection is not None:
         out["profit_protection"] = compact_protection
-    if raw.get("exit_watch") is not None:
+    # Preserve an explicit null as an internal clear operation. `get()` would
+    # collapse it into key absence and make a public strategy_exit unable to
+    # remove a rule it had previously added.
+    if "exit_watch" in raw:
         out["exit_watch"] = raw["exit_watch"]
-    max_hold = _first_present(raw, "max_hold_minutes", "max_hold_m")
-    if max_hold is not None:
-        out["max_hold_minutes"] = max_hold
+    if "max_hold_minutes" in raw:
+        out["max_hold_minutes"] = raw["max_hold_minutes"]
+    elif "max_hold_m" in raw:
+        out["max_hold_minutes"] = raw["max_hold_m"]
     return out or None
 
 

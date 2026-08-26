@@ -1,9 +1,15 @@
 import math
+from datetime import datetime, timezone
 
 import pytest
 
 from trader.infrastructure.market_sources.yahoo_client import RawBar
-from trader.market.market_data import Bar, aggregate_bars
+from trader.market.market_data import (
+    Bar,
+    aggregate_bars,
+    assess_completed_intraday_freshness,
+    completed_intraday_bars,
+)
 
 
 def _bar(index: int, close: float) -> Bar:
@@ -74,6 +80,42 @@ def test_aggregate_bars_4h_regroupe_les_barres_1h_par_paquets_de_quatre() -> Non
     assert aggregated[0].volume == 406.0
     assert aggregated[1].ts == "t7"
     assert aggregated[1].close == 107.0
+
+
+def test_completed_intraday_direct_4h_uses_the_target_close_time() -> None:
+    direct = [
+        Bar(
+            ts="2026-06-05T08:00:00+00:00",
+            open=100.0,
+            high=102.0,
+            low=99.0,
+            close=101.0,
+            volume=1.0,
+        )
+    ]
+
+    before_close = completed_intraday_bars(
+        direct,
+        now=datetime(2026, 6, 5, 11, 59, tzinfo=timezone.utc),
+        target_interval="4h",
+        source_interval="4h",
+    )
+    after_close = completed_intraday_bars(
+        direct,
+        now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        target_interval="4h",
+        source_interval="4h",
+    )
+    freshness = assess_completed_intraday_freshness(
+        after_close,
+        now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+        target_interval="4h",
+        source_interval="4h",
+    )
+
+    assert before_close == []
+    assert after_close == direct
+    assert freshness.fresh is True
 
 
 def test_aggregate_bars_1h_regroupe_les_barres_15m_par_paquets_de_quatre() -> None:

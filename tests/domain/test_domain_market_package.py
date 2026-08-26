@@ -40,6 +40,8 @@ MARKET_DATA_IMPORT_STAR_EXPORTS = (
     "last_completed_session_date",
     "assess_daily_freshness",
     "clamp_wake_to_session_open",
+    "completed_intraday_bars",
+    "assess_completed_intraday_freshness",
     "aggregate_bars",
     "classify_symbol_context",
     "explicit_mic_assignment",

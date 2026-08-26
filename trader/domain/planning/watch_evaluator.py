@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import operator
 from datetime import datetime
 from typing import Callable
@@ -54,39 +55,56 @@ def _evaluate_condition(
     bars: list[object],
     bars_by_key: dict[tuple[str, str], list[object]],
 ) -> dict:
-    indicator = str(condition["indicator"])
-    try:
-        window = int(condition.get("window") or 48)
-        if indicator in _CROSS_ASSET_INDICATORS:
-            interval = str(condition.get("interval") or "1h")
-            bars_by_symbol = {
-                symbol: symbol_bars
-                for (symbol, key_interval), symbol_bars in bars_by_key.items()
-                if key_interval == interval
-            }
-            snapshot = build_indicator_snapshot(
-                bars_by_symbol,
-                symbols=list(bars_by_symbol),
-                names=[indicator],
-                window=window,
-            )
-            values = snapshot.get(str(condition["symbol"]), {"indicators": {}})["indicators"]
+    condition_type = str(condition.get("type") or "indicator").lower()
+    indicator = condition.get("indicator")
+    actual: float | None
+    if condition_type == "close":
+        try:
+            latest = bars[-1]
+            raw_close = latest["close"] if isinstance(latest, dict) else getattr(latest, "close")
+            candidate = float(raw_close)
+            actual = candidate if math.isfinite(candidate) else None
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            actual = None
+    elif condition_type == "indicator" and isinstance(indicator, str):
+        try:
+            window = int(condition.get("window") or 48)
+            if indicator in _CROSS_ASSET_INDICATORS:
+                interval = str(condition.get("interval") or "1h")
+                bars_by_symbol = {
+                    symbol: symbol_bars
+                    for (symbol, key_interval), symbol_bars in bars_by_key.items()
+                    if key_interval == interval
+                }
+                snapshot = build_indicator_snapshot(
+                    bars_by_symbol,
+                    symbols=list(bars_by_symbol),
+                    names=[indicator],
+                    window=window,
+                )
+                values = snapshot.get(str(condition["symbol"]), {"indicators": {}})["indicators"]
+            else:
+                values = compute_indicator_values(
+                    bars,
+                    names=[indicator],
+                    window=window,
+                )
+        except Exception:
+            actual = None
         else:
-            values = compute_indicator_values(
-                bars,
-                names=[indicator],
-                window=window,
-            )
-    except Exception:
-        actual = None
+            actual = values.get(indicator)
     else:
-        actual = values.get(indicator)
-    threshold = float(condition["value"])
-    op = str(condition["op"])
-    matched = _compare(actual, op, threshold)
-    return {
+        actual = None
+    try:
+        threshold = float(condition["value"])
+        op = str(condition["op"])
+        matched = math.isfinite(threshold) and _compare(actual, op, threshold)
+    except (KeyError, TypeError, ValueError):
+        threshold = None
+        op = str(condition.get("op") or "")
+        matched = False
+    result = {
         "symbol": condition["symbol"],
-        "indicator": indicator,
         "op": op,
         "value": threshold,
         "actual": actual,
@@ -94,6 +112,11 @@ def _evaluate_condition(
         "window": condition.get("window"),
         "matched": matched,
     }
+    if condition_type == "close":
+        result["type"] = "close"
+    elif isinstance(indicator, str):
+        result["indicator"] = indicator
+    return result
 
 
 def evaluate_indicator_watches(

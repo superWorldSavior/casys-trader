@@ -439,7 +439,7 @@ def test_watch_rejetee_par_le_vrai_juge_du_domaine() -> None:
     assert result is corrected
     error = captured[1]["tool_results"][0]["error"]
     assert error[0]["reason"] == "no_conditions"
-    assert error[0]["expected"] == "conditions:[{indicator,op,value,interval,window}]"
+    assert error[0]["expected"] == "conditions:[{indicator,op,value,interval,window}|{type:close,op,value,interval}]"
     # L'agent doit voir la clé fautive qu'il a envoyée pour se corriger.
     assert "condition" in error[0]["received_keys"]
 

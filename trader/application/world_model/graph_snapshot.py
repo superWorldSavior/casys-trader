@@ -31,9 +31,11 @@ from trader.domain.world_graph import (
     KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
+    SensorRef,
     StructuralWorldRelation,
     WorldEntityIdentityLink,
     WorldEntityRef,
+    WorldGraphNodeRef,
     WorldGraphSnapshot,
     WorldKnowledgeRelationRef,
     WorldOntologyRevision,
@@ -217,6 +219,35 @@ def _knowledge_receipts(ledger: WorldGraphLedger, cutoff: datetime) -> dict[str,
     return receipts
 
 
+def _canonical_node_id(node: WorldGraphNodeRef) -> str:
+    """Stable id matching path-step node ids. Application-level; not a NetworkX projection."""
+
+    if isinstance(node, (WorldEntityRef, SensorRef)):
+        return node.node_id
+    payload = node.to_dict()
+    for key in ("observation_id", "artifact_id", "snapshot_id", "hypothesis_id", "fact_version_id"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    raise ValueError(f"graph node is missing a stable id: {payload}")
+
+
+def _path_visited_node_ids(root_node_id: str, paths: WorldGraphPathSet) -> set[str]:
+    node_ids = {root_node_id}
+    for path in paths.paths:
+        for step in path.steps:
+            node_ids.add(step.source_node_id)
+            node_ids.add(step.target_node_id)
+    return node_ids
+
+
+def _knowledge_touches_visited(relation: KnowledgeWorldRelation, visited_node_ids: set[str]) -> bool:
+    return (
+        _canonical_node_id(relation.source) in visited_node_ids
+        or _canonical_node_id(relation.target) in visited_node_ids
+    )
+
+
 def _artifact_ids(relations: Sequence[KnowledgeWorldRelation]) -> tuple[str, ...]:
     ids: set[str] = set()
     for relation in relations:
@@ -348,15 +379,13 @@ class WorldGraphSnapshotService:
             max_paths=request.max_paths,
         )
         relation_ids = {step.relation_id for path in paths.paths for step in path.steps}
-        node_ids = {request.root_entity.node_id}
-        for path in paths.paths:
-            for step in path.steps:
-                node_ids.add(step.source_node_id)
-                node_ids.add(step.target_node_id)
+        node_ids = _path_visited_node_ids(request.root_entity.node_id, paths)
         structural_members = tuple(
             relation for relation in view.structural_relations if relation.relation_id in relation_ids
         )
-        knowledge_members = tuple(relation for relation in overlay.relations if relation.relation_id in relation_ids)
+        knowledge_members = tuple(
+            relation for relation in overlay.relations if _knowledge_touches_visited(relation, node_ids)
+        )
         receipts = _knowledge_receipts(self._ledger, request.cutoff_at)
         knowledge_refs: set[WorldKnowledgeRelationRef] = set()
         for relation in knowledge_members:

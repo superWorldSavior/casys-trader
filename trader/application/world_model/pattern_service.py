@@ -98,6 +98,7 @@ class RegisterPatternHypothesis:
 @dataclass(frozen=True)
 class StartPatternEvaluation:
     hypothesis_id: PatternHypothesisId | str
+    evaluation_cohort_id: str
     started_at: datetime | str
     evaluation_dataset_fingerprint: str
 
@@ -112,6 +113,7 @@ class RecordPatternOccurrence:
     forecast: PatternForecast | WorldPrediction | Mapping[str, Any]
     artifact_refs: Sequence[str] = ()
     fact_refs: Sequence[str] = ()
+    expected_horizon_ids: Sequence[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +232,7 @@ class WorldPatternService:
             next_hypothesis = hypothesis.start_evaluation(
                 started_at=command.started_at,
                 evaluation_dataset_fingerprint=command.evaluation_dataset_fingerprint,
+                evaluation_cohort_id=command.evaluation_cohort_id,
             )
         except ValueError as exc:
             _raise_conflict(exc)
@@ -248,6 +251,7 @@ class WorldPatternService:
             forecast=command.forecast,
             artifact_refs=command.artifact_refs,
             fact_refs=command.fact_refs,
+            expected_horizon_ids=command.expected_horizon_ids,
         )
         existing = self._try_load_occurrence(incoming.occurrence_id)
         if existing is None:

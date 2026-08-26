@@ -383,6 +383,14 @@ def _cmd_world_scope(args: argparse.Namespace) -> int:
     return code
 
 
+def _cmd_world_pattern(args: argparse.Namespace) -> int:
+    from trader.interfaces.cli.world_model import dispatch_world_pattern
+
+    payload, code = dispatch_world_pattern(args, state_dir=daemon.STATE_DIR)
+    _print_json(payload)
+    return code
+
+
 def _dashboard_url(path: object) -> str:
     return f"http://127.0.0.1:8137/{getattr(path, 'name', path)}"
 
@@ -1110,6 +1118,73 @@ def build_parser() -> argparse.ArgumentParser:
     graph_report.add_argument("cohort_id", nargs="?")
     graph_report.add_argument("--json", action="store_true")
     graph_report.set_defaults(func=_cmd_world_graph)
+
+    pattern = world_sub.add_parser("pattern", help="hypothèses de patterns graphe shadow")
+    pattern_sub = pattern.add_subparsers(dest="pattern_command", required=True)
+    pattern_discover = pattern_sub.add_parser(
+        "discover",
+        help="découverte as-of ; dry-run par défaut, --apply enregistre et démarre",
+    )
+    pattern_discover.add_argument("--formation-cutoff", required=True)
+    pattern_discover.add_argument("--evaluation-start-not-before", required=True)
+    pattern_discover.add_argument("--horizon", action="append")
+    pattern_discover.add_argument("--min-support", type=int, default=20)
+    pattern_discover.add_argument("--min-association", type=float, default=0.10)
+    pattern_discover.add_argument("--max-candidates", type=int, default=20)
+    pattern_discover.add_argument("--smoothing-alpha", type=float, default=1.0)
+    pattern_discover.add_argument("--hypothesis-id", action="append")
+    pattern_discover.add_argument(
+        "--apply",
+        action="store_true",
+        help="enregistre et démarre les candidats affichés (défaut: dry-run)",
+    )
+    pattern_discover.add_argument("--evaluation-cohort-id")
+    pattern_discover.add_argument("--evaluation-dataset-fingerprint")
+    pattern_discover.add_argument(
+        "--include-source-evidence",
+        action="store_true",
+        help="inclut la liste complète source_evidence_ids (défaut: compte + empreinte)",
+    )
+    pattern_discover.add_argument("--json", action="store_true")
+    pattern_discover.set_defaults(func=_cmd_world_pattern)
+    pattern_evaluate = pattern_sub.add_parser(
+        "evaluate",
+        help="matching prospectif unlabeled borné à la cohorte d'évaluation ; dry-run par défaut, --apply persiste prévisions et occurrences",
+    )
+    pattern_evaluate.add_argument("--as-of", required=True)
+    pattern_evaluate.add_argument("--evaluation-cohort-id", required=True)
+    pattern_evaluate.add_argument("--evaluation-dataset-fingerprint", required=True)
+    pattern_evaluate.add_argument("--hypothesis-id", action="append")
+    pattern_evaluate.add_argument(
+        "--apply",
+        action="store_true",
+        help="persiste WorldPrediction shadow et PatternOccurrence (défaut: dry-run)",
+    )
+    pattern_evaluate.add_argument("--json", action="store_true")
+    pattern_evaluate.set_defaults(func=_cmd_world_pattern)
+    pattern_link = pattern_sub.add_parser(
+        "link-outcomes",
+        help="lie ou corrige les feuilles 4h/1d/3d déjà observées ; replay idempotent ; dry-run par défaut, --apply persiste",
+    )
+    pattern_link.add_argument("--as-of", required=True)
+    pattern_link.add_argument("--evaluation-cohort-id")
+    pattern_link.add_argument("--hypothesis-id", action="append")
+    pattern_link.add_argument("--occurrence-id", action="append")
+    pattern_link.add_argument(
+        "--apply",
+        action="store_true",
+        help="persiste les PatternOutcomeLink disponibles (défaut: dry-run)",
+    )
+    pattern_link.add_argument("--json", action="store_true")
+    pattern_link.set_defaults(func=_cmd_world_pattern)
+    pattern_status = pattern_sub.add_parser("status", help="catalogue hypothèse-premier, y compris zéro occurrence")
+    pattern_status.add_argument("cohort_id", nargs="?")
+    pattern_status.add_argument("--json", action="store_true")
+    pattern_status.set_defaults(func=_cmd_world_pattern)
+    pattern_report = pattern_sub.add_parser("report", help="rapport reconstructible")
+    pattern_report.add_argument("cohort_id")
+    pattern_report.add_argument("--json", action="store_true")
+    pattern_report.set_defaults(func=_cmd_world_pattern)
 
     scope = world_sub.add_parser("scope", help="mapping de scopes World shadow")
     scope_sub = scope.add_subparsers(dest="scope_command", required=True)

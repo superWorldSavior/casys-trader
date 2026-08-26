@@ -16,6 +16,7 @@ Cas couverts :
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -690,10 +691,12 @@ def test_strategy_exit_cycle_match_valide_sur_contexte_worker_sans_refetch(monke
 
     raw_plan = object()
     runtime_bars = [("runtime", SYMBOL)]
+    cycle_now = datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc)
+    cycle_id = cycle_now.isoformat()
     validation = ExitUpdateValidation(would_apply=False, reason="resolve_failed:test", warnings=[])
     calls: dict[str, object] = {}
     handle = _published_cycle_context(
-        cycle_id="cycle-1",
+        cycle_id=cycle_id,
         raw_plans=(raw_plan,),
         bars_by_symbol={SYMBOL: runtime_bars},
         prices_by_symbol={SYMBOL: 432.1},
@@ -714,7 +717,7 @@ def test_strategy_exit_cycle_match_valide_sur_contexte_worker_sans_refetch(monke
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
         tool_services=_cycle_services(tmp_path, handle),
-        cycle_id="cycle-1",
+        cycle_id=cycle_id,
         session_backends=_session_backends(),
         task_id="t",
     )
@@ -728,6 +731,7 @@ def test_strategy_exit_cycle_match_valide_sur_contexte_worker_sans_refetch(monke
     assert validate_call["exit_update"] == {"hard_stop": {"mode": "structural"}}
     assert validate_call["bars"] == runtime_bars
     assert validate_call["current_price"] == 432.1
+    assert validate_call["now"] == cycle_now
     assert feedback["error"] == "resolve_failed:test"
 
 

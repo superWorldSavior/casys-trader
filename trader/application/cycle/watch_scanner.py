@@ -61,12 +61,15 @@ def _usable_watch_bars(
     *,
     symbol: str,
     interval: str,
+    source_interval: str | None = None,
     now: datetime,
     kind: str,
 ) -> list | None:
     """Return bars usable by a watch, or None when stale.
 
-    Daily watches follow completed-session semantics; intraday keeps its age budget.
+    Daily watches follow completed-session semantics.  Intraday watches first
+    prove that each source bar is closed, then aggregate complete source groups
+    when their semantic target differs (the governed 4h = 4x1h case).
     """
     if not bars:
         return bars
@@ -78,10 +81,20 @@ def _usable_watch_bars(
             return None
         freshness = market.assess_daily_freshness(usable, now=now, symbol=symbol)
     else:
-        freshness = market.assess_freshness(
+        usable = market.completed_intraday_bars(
             usable,
             now=now,
-            max_age_minutes=market.freshness_budget_minutes(interval),
+            target_interval=interval,
+            source_interval=source_interval,
+        )
+        if usable is None:
+            log.debug("%s bars invalid timestamp or interval %s/%s", kind, symbol, interval)
+            return None
+        freshness = market.assess_completed_intraday_freshness(
+            usable,
+            now=now,
+            target_interval=interval,
+            source_interval=source_interval,
         )
     if freshness.fresh:
         return usable
@@ -95,6 +108,65 @@ def _usable_watch_bars(
         age,
     )
     return None
+
+
+def _load_watch_bars(
+    watches: list[dict],
+    *,
+    symbols: list[str],
+    now: datetime,
+    data_source: DataSource,
+    kind: str,
+    is_connection_market_error: MarketErrorClassifier,
+    warning: WarningLogger,
+    existing_bars_by_source: dict[tuple[str, str], list] | None = None,
+) -> dict[tuple[str, str], list]:
+    """Fetch source series once, then materialize closed target-timeframe bars.
+
+    A watch's target is intentionally separate from the provider request: 4h
+    conditions read 1h source rows and aggregate only after current source bars
+    have been excluded.  This is what makes the partial trailing 4h bucket
+    unobservable to the evaluator.
+    """
+
+    raw_cache: dict[tuple[str, str, str], list] = {}
+    results: dict[tuple[str, str], list] = {}
+    existing = existing_bars_by_source or {}
+    for request in watch_market_requests(watches, universe_symbols=symbols):
+        source_key = (request.symbol, request.source_interval)
+        if source_key in existing:
+            bars = existing[source_key]
+        else:
+            cache_key = (*source_key, request.lookback)
+            if cache_key not in raw_cache:
+                try:
+                    raw_cache[cache_key] = data_source.get_bars(
+                        request.symbol,
+                        lookback=request.lookback,
+                        interval=request.source_interval,
+                    )
+                except MarketError as exc:
+                    if is_connection_market_error(exc):
+                        raise
+                    warning(
+                        f"{kind} data unavailable %s/%s: %s",
+                        request.symbol,
+                        request.source_interval,
+                        exc.code,
+                    )
+                    continue
+            bars = raw_cache[cache_key]
+        usable = _usable_watch_bars(
+            bars,
+            symbol=request.symbol,
+            interval=request.interval,
+            source_interval=request.source_interval,
+            now=now,
+            kind=kind,
+        )
+        if usable is not None:
+            results[(request.symbol, request.interval)] = usable
+    return results
 
 
 def exit_watch_cooldown_elapsed(watch: dict, *, now: datetime) -> bool:
@@ -126,25 +198,15 @@ def scan_indicator_watches(
         return []
 
     warning = log.warning if log_warning is None else log_warning
-    bars_by_key: dict[tuple[str, str], list] = {}
-    for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
-        try:
-            bars = data_source.get_bars(symbol, lookback=lookback, interval=interval)
-        except MarketError as exc:
-            if is_connection_market_error(exc):
-                raise
-            warning("indicator_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
-            continue
-        usable = _usable_watch_bars(
-            bars,
-            symbol=symbol,
-            interval=interval,
-            now=now,
-            kind="indicator_watch",
-        )
-        if usable is None:
-            continue
-        bars_by_key[(symbol, interval)] = usable
+    bars_by_key = _load_watch_bars(
+        watches,
+        symbols=symbols,
+        now=now,
+        data_source=data_source,
+        kind="indicator_watch",
+        is_connection_market_error=is_connection_market_error,
+        warning=warning,
+    )
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
     for event in triggered:
@@ -184,39 +246,16 @@ def scan_exit_watches(
         return []
 
     warning = log.warning if log_warning is None else log_warning
-    bars_by_key: dict[tuple[str, str], list] = {}
-    for symbol, bars in bars_by_symbol.items():
-        usable = bars
-        if bars_interval.strip().lower() == "1d":
-            usable = _usable_watch_bars(
-                bars,
-                symbol=symbol,
-                interval=bars_interval,
-                now=now,
-                kind="exit_watch",
-            )
-        bars_by_key[(symbol, bars_interval)] = [] if usable is None else usable
-    for symbol, interval, lookback in watch_market_requests(watches, universe_symbols=symbols):
-        key = (symbol, interval)
-        if key in bars_by_key:
-            continue
-        try:
-            bars = data_source.get_bars(symbol, lookback=lookback, interval=interval)
-        except MarketError as exc:
-            if is_connection_market_error(exc):
-                raise
-            warning("exit_watch data unavailable %s/%s: %s", symbol, interval, exc.code)
-            continue
-        usable = _usable_watch_bars(
-            bars,
-            symbol=symbol,
-            interval=interval,
-            now=now,
-            kind="exit_watch",
-        )
-        if usable is None:
-            continue
-        bars_by_key[key] = usable
+    bars_by_key = _load_watch_bars(
+        watches,
+        symbols=symbols,
+        now=now,
+        data_source=data_source,
+        kind="exit_watch",
+        is_connection_market_error=is_connection_market_error,
+        warning=warning,
+        existing_bars_by_source={(symbol, bars_interval): bars for symbol, bars in bars_by_symbol.items()},
+    )
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
     enriched: list[dict] = []

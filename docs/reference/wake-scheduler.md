@@ -66,8 +66,8 @@ la main pour redire HOLD, poser un plan, annuler une veille ou proposer un ordre
 ## `indicator_watch`
 
 Une `indicator_watch` est une question posée au marché :
-`symbol x indicator x timeframe x op x value`, avec `logic=all|any` et un
-`ttl_minutes`. Si le modèle omet `ttl_minutes`, le défaut est 240 minutes
+`symbol x (indicator|close) x timeframe x op x value`, avec `logic=all|any`
+et un `ttl_minutes`. Si le modèle omet `ttl_minutes`, le défaut est 240 minutes
 (4 h). Une thèse overnight doit poser `ttl_minutes` explicitement
 (max 1440). Les plans `EXECUTE_ORDER` restent plafonnés à
 `ARMED_ORDER_MAX_TTL_MINUTES` (240 minutes, D12).
@@ -76,6 +76,15 @@ Invariants runtime :
 
 - les watches sont atomiques : une seule condition rejetée invalide toute la
   watch ;
+- une condition dérivée garde le contrat historique
+  `{indicator,op,value,interval,...}`. Une condition de prix de clôture est
+  explicitement typée : `{type:"close",op:"<|<=|>|>=|==|!=",value:<prix>,
+  interval:"15m|1h|4h|..."}` ; son champ `indicator` doit être absent ;
+- une condition intraday ne lit jamais la bougie en formation. Les timestamps
+  de source sont des débuts de bougie : une 15m/1h n'est exploitable qu'après
+  sa fin. Une 4h gouvernée est reconstruite depuis quatre 1h déjà closes ; le
+  groupe final incomplet est écarté. Le daily conserve sa règle séparée de
+  dernière séance terminée ;
 - tant qu'une watch active existe pour le symbole, le symbole dort hors du cycle
   périodique normal ;
 - le `next_wake` du symbole est calé sur l'expiration active la plus proche ;

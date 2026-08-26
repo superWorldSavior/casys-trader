@@ -28,8 +28,10 @@ from trader.domain.world_episode import (
 from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeatureGroup, WorldFeatureMask
 from trader.domain.world_graph import WorldEntityRef
 from trader.domain.world_pattern import (
+    PATTERN_ASSOCIATION_METRIC,
     PatternEvaluationClosed,
     PatternEvaluationStarted,
+    PatternFormationStats,
     PatternHypothesis,
     PatternHypothesisEvent,
     PatternHypothesisId,
@@ -62,6 +64,7 @@ BOOT = datetime(2026, 9, 5, tzinfo=UTC)
 EPISODE_ID = f"world-episode:v1:{'b' * 64}"
 FORMATION_FP = canonical_sha256({"dataset": "formation-pilot"})
 EVAL_FP = canonical_sha256({"dataset": "prospective-confirm"})
+EVAL_COHORT = "world_cohort:graph_pilot"
 SOURCE_SHA = "c" * 64
 STORE_ID = "world-pattern-jsonl.v1"
 _PORTS_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_ports.py"
@@ -92,21 +95,42 @@ def _mask(contract: WorldFeatureContract | None = None) -> WorldFeatureMask:
     return WorldFeatureMask.bind(resolved, mask_id="graph_content.v1", selected_groups=("market",))
 
 
-def _step(ordinal: int, *, subject_kind: str, predicate: str, object_kind: str) -> PatternStep:
+def _step(
+    ordinal: int,
+    *,
+    source_kind: str,
+    relation_kind: str,
+    target_kind: str,
+    direction: str = "forward",
+    freshness_bucket: str = "0-4h",
+) -> PatternStep:
     return PatternStep(
         ordinal=ordinal,
-        subject_kind=subject_kind,
-        predicate=predicate,
-        object_kind=object_kind,
-        lag_window="0h..24h",
+        source_kind=source_kind,
+        relation_kind=relation_kind,
+        direction=direction,
+        target_kind=target_kind,
+        freshness_bucket=freshness_bucket,
         evidence_rule_version="macro_path_rule.v1" if ordinal == 0 else "market_ontology.v1",
     )
 
 
 def _default_steps() -> tuple[PatternStep, PatternStep]:
     return (
-        _step(0, subject_kind="macro_indicator", predicate="state_changed", object_kind="country"),
-        _step(1, subject_kind="country", predicate="contains_venue", object_kind="venue"),
+        _step(0, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue"),
+        _step(1, source_kind="venue", relation_kind="LOCATED_IN", target_kind="country", freshness_bucket="4-24h"),
+    )
+
+
+def _stats() -> PatternFormationStats:
+    return PatternFormationStats(
+        support=7,
+        population_support=7,
+        class_counts={"DOWN": 1, "FLAT": 2, "UP": 4},
+        population_class_counts={"DOWN": 1, "FLAT": 2, "UP": 4},
+        smoothing_alpha=1.0,
+        association_metric=PATTERN_ASSOCIATION_METRIC,
+        association_score=0.0,
     )
 
 
@@ -129,6 +153,7 @@ def _spec(**overrides: object) -> PatternHypothesisSpec:
         "feature_mask_fingerprint": mask.fingerprint,
         "model_identity": "online_gru_world_challenger@graph.v1",
         "ontology_revision": "market_ontology.v1",
+        "stats": _stats(),
         "source_refs": (),
         "causal_claim": False,
     }
@@ -141,24 +166,25 @@ def _instrument() -> WorldEntityRef:
 
 
 def _path() -> tuple[PatternMatchedHop, PatternMatchedHop]:
-    return (
-        PatternMatchedHop(
-            ordinal=0,
-            subject_kind="macro_indicator",
-            predicate="state_changed",
-            object_kind="country",
-            direction="forward",
-            evidence_refs=("macro_source_fact_version:v1:" + "d" * 64,),
-        ),
-        PatternMatchedHop(
-            ordinal=1,
-            subject_kind="country",
-            predicate="contains_venue",
-            object_kind="venue",
-            direction="reverse",
-            evidence_refs=("world_observation:v1:" + "e" * 64,),
-        ),
-    )
+    hops = []
+    for step, refs in zip(
+        _default_steps(),
+        (("macro_source_fact_version:v1:" + "d" * 64,), ("world_observation:v1:" + "e" * 64,)),
+        strict=True,
+    ):
+        hops.append(
+            PatternMatchedHop(
+                ordinal=step.ordinal,
+                source_kind=step.source_kind,
+                relation_kind=step.relation_kind,
+                direction=step.direction,
+                target_kind=step.target_kind,
+                freshness_bucket=step.freshness_bucket,
+                evidence_rule_version=step.evidence_rule_version,
+                evidence_refs=refs,
+            )
+        )
+    return (hops[0], hops[1])
 
 
 def _prediction(**overrides: object) -> WorldPrediction:
@@ -347,12 +373,20 @@ def _register(service, spec: PatternHypothesisSpec | None = None, *, registered_
     return service.register(RegisterPatternHypothesis(spec=spec or _spec(), registered_at=registered_at))
 
 
-def _start(service, hypothesis_id: str, *, started_at: datetime = EVAL_STARTED, fingerprint: str = EVAL_FP):
+def _start(
+    service,
+    hypothesis_id: str,
+    *,
+    started_at: datetime = EVAL_STARTED,
+    fingerprint: str = EVAL_FP,
+    evaluation_cohort_id: str = EVAL_COHORT,
+):
     from trader.application.world_model.pattern_service import StartPatternEvaluation
 
     return service.start(
         StartPatternEvaluation(
             hypothesis_id=hypothesis_id,
+            evaluation_cohort_id=evaluation_cohort_id,
             started_at=started_at,
             evaluation_dataset_fingerprint=fingerprint,
         )
@@ -548,8 +582,8 @@ def test_definition_variant_mints_a_new_hypothesis_id() -> None:
         service,
         _spec(
             steps=(
-                _step(0, subject_kind="country", predicate="contains_venue", object_kind="venue"),
-                _step(1, subject_kind="macro_indicator", predicate="state_changed", object_kind="country"),
+                _step(0, source_kind="venue", relation_kind="LOCATED_IN", target_kind="country", freshness_bucket="4-24h"),
+                _step(1, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue"),
             )
         ),
     )
@@ -596,6 +630,7 @@ def test_start_rejects_in_sample_confirmation_and_is_idempotent() -> None:
         service.start(
             StartPatternEvaluation(
                 hypothesis_id=hypothesis_id,
+                evaluation_cohort_id=EVAL_COHORT,
                 started_at=EVAL_STARTED,
                 evaluation_dataset_fingerprint=other,
             )
@@ -848,3 +883,28 @@ def test_identical_retry_repairs_receipt_without_moving_first_seen() -> None:
     again = _start(service, registered.event.hypothesis_id)
     assert again.evidence is not None
     assert again.evidence.first_seen_at == BOOT
+
+
+def test_start_and_record_bind_evaluation_cohort_id() -> None:
+    from trader.application.world_model.pattern_service import StartPatternEvaluation
+
+    service, store = _service()
+    registered = _register(service)
+    with pytest.raises(TypeError):
+        service.start(
+            StartPatternEvaluation(
+                hypothesis_id=registered.event.hypothesis_id,
+                started_at=EVAL_STARTED,
+                evaluation_dataset_fingerprint=EVAL_FP,
+            )
+        )
+    started = _start(service, registered.event.hypothesis_id, evaluation_cohort_id=EVAL_COHORT)
+    assert isinstance(started.event, PatternEvaluationStarted)
+    assert started.event.evaluation_cohort_id == EVAL_COHORT
+    loaded = store.load(PatternHypothesisId(started.event.hypothesis_id))
+    assert loaded.evaluation_cohort_id == EVAL_COHORT
+    with pytest.raises(ValueError, match="evaluation_cohort_id|cohort"):
+        _record(service, started.event.hypothesis_id, cohort_id="world_cohort:other")
+    recorded = _record(service, started.event.hypothesis_id, cohort_id=EVAL_COHORT)
+    occurrence = store.load(PatternOccurrenceId(recorded.event.occurrence_id))
+    assert occurrence.spec.cohort_id == EVAL_COHORT

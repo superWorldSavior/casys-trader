@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader.domain.planning.exit_plan_spec import (
     STRUCTURAL_HARD_STOP_ANCHORS as STRUCTURAL_HARD_STOP_ANCHORS,
@@ -429,6 +429,15 @@ def create_trade_plan(
         None if reference_volatility is None else _positive_float(reference_volatility, "reference_volatility")
     )
     validate_exit_plan(raw, reference_volatility=parsed_reference_volatility)
+    max_hold_minutes = (
+        None
+        if raw.get("max_hold_minutes") is None
+        else _positive_float(raw["max_hold_minutes"], "max_hold_minutes")
+    )
+    # A max hold is an executable lifecycle deadline, not merely a large float.
+    # Check the actual calendar range up front so creating a watch can never
+    # leak an implementation OverflowError from datetime/timedelta.
+    _max_hold_deadline_from_opened_at(opened_at, max_hold_minutes)
     take_profits: list[TakeProfit] = []
     remaining_fraction = 1.0
     for index, item in enumerate(raw.get("take_profits", []) or []):
@@ -486,7 +495,7 @@ def create_trade_plan(
         raw.get("exit_watch"),
         symbol=symbol,
         opened_at=opened_at,
-        max_ttl_minutes=float(raw.get("max_hold_minutes") or 24 * 60),
+        max_ttl_minutes=max_hold_minutes or float(24 * 60),
     )
 
     return TradePlan(
@@ -501,11 +510,7 @@ def create_trade_plan(
         hard_stop_price=_parse_price(raw.get("hard_stop")),
         take_profits=take_profits,
         trailing_stop=trailing_stop,
-        max_hold_minutes=(
-            None
-            if raw.get("max_hold_minutes") is None
-            else float(raw["max_hold_minutes"])
-        ),
+        max_hold_minutes=max_hold_minutes,
         high_watermark=float(entry_price),
         low_watermark=float(entry_price),
         profit_protection=profit_protection,
@@ -589,15 +594,22 @@ def _normalize_exit_watch(
     symbol: str,
     opened_at: str,
     max_ttl_minutes: float,
+    now: datetime | None = None,
+    preserve_last_triggered_at: bool = True,
 ) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    try:
-        created_at = datetime.fromisoformat(opened_at)
-    except ValueError:
-        created_at = datetime.now(timezone.utc)
+    if now is None:
+        try:
+            created_at = datetime.fromisoformat(opened_at)
+        except ValueError:
+            created_at = datetime.now(timezone.utc)
+    else:
+        created_at = now
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
+    else:
+        created_at = created_at.astimezone(timezone.utc)
     watch = normalize_indicator_watch(
         raw,
         owner_symbol=symbol,
@@ -617,9 +629,90 @@ def _normalize_exit_watch(
         minimum=1.0,
         maximum=24 * 60.0,
     )
-    if raw.get("last_triggered_at"):
+    if preserve_last_triggered_at and raw.get("last_triggered_at"):
         watch["last_triggered_at"] = str(raw["last_triggered_at"])
     return watch
+
+
+def _max_hold_deadline_from_opened_at(
+    opened_at: str,
+    max_hold_minutes: float | None,
+) -> datetime | None:
+    """Build a representable max-hold deadline or raise a domain error."""
+    if max_hold_minutes is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise InvalidExitPlanError("max_hold_opened_at_invalid") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    try:
+        return parsed + timedelta(minutes=max_hold_minutes)
+    except OverflowError as exc:
+        raise InvalidExitPlanError("max_hold_minutes_out_of_range") from exc
+
+
+def _effective_max_hold_minutes(
+    plan: TradePlan,
+    update: dict,
+    resolved: dict,
+) -> float | None:
+    raw = (
+        resolved.get("max_hold_minutes")
+        if "max_hold_minutes" in update
+        else plan.max_hold_minutes
+    )
+    return None if raw is None else _positive_float(raw, "max_hold_minutes")
+
+
+def _max_hold_deadline(plan: TradePlan, max_hold_minutes: float | None) -> datetime | None:
+    return _max_hold_deadline_from_opened_at(plan.opened_at, max_hold_minutes)
+
+
+def _as_utc(now: datetime) -> datetime:
+    if now.tzinfo is None:
+        return now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc)
+
+
+def _exit_watch_ttl_limit(
+    plan: TradePlan,
+    *,
+    max_hold_minutes: float | None,
+    now: datetime,
+) -> float:
+    deadline = _max_hold_deadline(plan, max_hold_minutes)
+    if deadline is None:
+        return float(24 * 60)
+    remaining_minutes = (deadline - now).total_seconds() / 60.0
+    if remaining_minutes <= 0:
+        raise InvalidExitPlanError("exit_watch_max_hold_elapsed")
+    return remaining_minutes
+
+
+def _cap_exit_watch_expiry_at_max_hold(
+    watch: dict,
+    *,
+    max_hold_deadline: datetime | None,
+) -> dict:
+    """Keep an already persisted watch from outliving a shortened max hold."""
+    if max_hold_deadline is None:
+        return watch
+    try:
+        expires_at = datetime.fromisoformat(str(watch.get("expires_at")).replace("Z", "+00:00"))
+    except ValueError:
+        expires_at = None
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        else:
+            expires_at = expires_at.astimezone(timezone.utc)
+        if expires_at <= max_hold_deadline:
+            return watch
+    return {**watch, "expires_at": max_hold_deadline.isoformat()}
 
 
 def apply_exit_update(
@@ -628,20 +721,24 @@ def apply_exit_update(
     *,
     bars: list | None = None,
     reference_price: float | None = None,
+    now: datetime | None = None,
     trace_out: dict | None = None,
 ) -> TradePlan:
     """Patche les champs de sortie d'un TradePlan ouvert via un dict update normalisé.
 
     `update` est issu de `_compact_exit_plan` (clés internes : hard_stop?, take_profits?,
-    trailing_stop?, profit_protection?). Seuls les champs PRÉSENTS dans `update` sont
-    patchés ; les autres champs du plan restent inchangés.
+    trailing_stop?, profit_protection?, exit_watch?, max_hold_minutes?). Seuls les
+    champs PRÉSENTS dans `update` sont patchés ; les autres champs du plan restent
+    inchangés.
 
     Pour les TP en risk_multiple sans hard_stop dans l'update, utilise le
     `plan.hard_stop_price` existant comme référence de distance (injection transparente).
 
     Raises:
         InvalidExitPlanError: si la résolution du stop/TP échoue (bars manquants pour
-            structural, stop_distance introuvable pour risk_multiple, etc.).
+            structural, stop_distance introuvable pour risk_multiple, etc.). Un
+            amendement de ``exit_watch`` ou un nouveau ``max_hold_minutes`` non nul
+            exige aussi l'horloge de décision ``now``.
     """
     if not update:
         return plan
@@ -703,6 +800,58 @@ def apply_exit_update(
 
     if "profit_protection" in update:
         patches["profit_protection"] = _profit_protection_from_raw(resolved.get("profit_protection"))
+
+    effective_max_hold: float | None = None
+    max_hold_deadline: datetime | None = None
+    if "max_hold_minutes" in update or "exit_watch" in update:
+        effective_max_hold = _effective_max_hold_minutes(plan, update, resolved)
+        if "max_hold_minutes" in update or (
+            "exit_watch" in update and resolved.get("exit_watch") is not None
+        ):
+            max_hold_deadline = _max_hold_deadline(plan, effective_max_hold)
+        if "max_hold_minutes" in update and max_hold_deadline is not None:
+            if now is None:
+                raise InvalidExitPlanError("max_hold_now_required")
+            if max_hold_deadline <= _as_utc(now):
+                raise InvalidExitPlanError("max_hold_deadline_elapsed_use_strategy_close")
+
+    if "max_hold_minutes" in update:
+        patches["max_hold_minutes"] = effective_max_hold
+
+    if "exit_watch" in update:
+        raw_exit_watch = resolved.get("exit_watch")
+        if raw_exit_watch is None:
+            # La présence explicite de null est l'opération de clear du contrat
+            # interne. Une forme non vide mais invalide est, elle, rejetée plus bas.
+            patches["exit_watch"] = None
+        else:
+            if now is None:
+                raise InvalidExitPlanError("exit_watch_now_required")
+            amended_at = _as_utc(now)
+            normalized_exit_watch = _normalize_exit_watch(
+                raw_exit_watch,
+                symbol=plan.symbol,
+                opened_at=plan.opened_at,
+                now=amended_at,
+                max_ttl_minutes=_exit_watch_ttl_limit(
+                    plan,
+                    max_hold_minutes=effective_max_hold,
+                    now=amended_at,
+                ),
+                preserve_last_triggered_at=False,
+            )
+            if normalized_exit_watch is None:
+                # Un remplacement invalide ne doit jamais effacer la veille
+                # active : l'amendement est atomiquement rejeté.
+                raise InvalidExitPlanError("exit_watch_invalid")
+            patches["exit_watch"] = normalized_exit_watch
+    elif "max_hold_minutes" in update and isinstance(plan.exit_watch, dict):
+        capped_exit_watch = _cap_exit_watch_expiry_at_max_hold(
+            plan.exit_watch,
+            max_hold_deadline=max_hold_deadline,
+        )
+        if capped_exit_watch != plan.exit_watch:
+            patches["exit_watch"] = capped_exit_watch
 
     if not patches:
         return plan

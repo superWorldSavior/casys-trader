@@ -359,10 +359,17 @@ def test_run_cycle_exit_watch_reveille_agent_sans_sortie_auto(monkeypatch, tmp_p
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     process_state = daemon.CycleProcessState()
     process_state.last_llm_at[(str(state_dir), "SPY")] = now - timedelta(minutes=15)
-    data_source = make_data_source(lambda symbol, lookback, interval: [
-        Bar(ts="2026-06-05T11:00:00+00:00", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
-        Bar(ts=now.isoformat(), open=98.0, high=99.0, low=97.0, close=98.0, volume=1000.0),
-    ])
+    def get_bars(symbol, lookback, interval):
+        if interval == "1h":
+            return [
+                Bar(ts="2026-06-05T10:00:00+00:00", open=100.0, high=101.0, low=99.0, close=100.0, volume=1000.0),
+                Bar(ts="2026-06-05T11:00:00+00:00", open=98.0, high=99.0, low=97.0, close=98.0, volume=1000.0),
+            ]
+        return [
+            Bar(ts="2026-06-05T12:00:00+00:00", open=98.0, high=99.0, low=97.0, close=98.0, volume=1000.0),
+        ]
+
+    data_source = make_data_source(get_bars)
 
     def decide(**kwargs) -> Decision:
         contexts.append(kwargs["context"])

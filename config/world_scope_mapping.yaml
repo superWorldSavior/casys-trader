@@ -1,7 +1,7 @@
 schema_version: world_scope_mapping.v1
 mapping_id: world_scope_mapping.v1
 taxonomy_version: sessions_mic.v1
-content_sha256: 4f46ec22147945ca33be8a502df7c27eec0d6d7e54696f9c8dd4b007032961a4
+content_sha256: 722fd197b961f2cc394b46ddac6c56c7005af6a62cd9fda7dee58dbd6169924c
 unmapped_policy: admit_as_missing_status_only
 ambiguous_policy: admit_as_missing_status_only
 no_logical_venue_mic_fallback: true
@@ -635,6 +635,25 @@ entries:
   taxonomy_version: sessions_mic.v1
 - anchor:
     market_venue: EU
+    instrument: VNA.DE
+  venue:
+    kind: venue
+    entity_id: mic:XETR
+  country:
+    kind: country
+    entity_id: iso-3166:DE
+  region:
+    kind: region
+    entity_id: iso-un-m49:150
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.domain.market.sessions.explicit_mic_for_symbol:.DE=XETR
+  - trader.market.rotation.wiring.venue_of:VNA.DE=EU
+  taxonomy_version: sessions_mic.v1
+- anchor:
+    market_venue: EU
     instrument: VOLV-B.ST
   venue:
     kind: venue
@@ -651,6 +670,25 @@ entries:
   provider_proofs:
   - trader.domain.market.sessions._VENUE_MIC:.ST=XSTO
   - trader.market.rotation.wiring.venue_of:.ST=EU
+  taxonomy_version: sessions_mic.v1
+- anchor:
+    market_venue: EU
+    instrument: YAR.OL
+  venue:
+    kind: venue
+    entity_id: mic:XOSL
+  country:
+    kind: country
+    entity_id: iso-3166:NO
+  region:
+    kind: region
+    entity_id: iso-un-m49:150
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.domain.market.sessions.explicit_mic_for_symbol:.OL=XOSL
+  - trader.market.rotation.wiring.venue_of:YAR.OL=EU
   taxonomy_version: sessions_mic.v1
 - anchor:
     market_venue: TW
@@ -784,6 +822,25 @@ entries:
   provider_proofs:
   - trader.domain.market.sessions._VENUE_MIC:.TW=XTAI
   - trader.market.rotation.wiring.venue_of:.TW=TW
+  taxonomy_version: sessions_mic.v1
+- anchor:
+    market_venue: TW
+    instrument: 2303.TW
+  venue:
+    kind: venue
+    entity_id: mic:XTAI
+  country:
+    kind: country
+    entity_id: iso-3166:TW
+  region:
+    kind: region
+    entity_id: iso-un-m49:030
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.domain.market.sessions.explicit_mic_for_symbol:.TW=XTAI
+  - trader.market.rotation.wiring.venue_of:2303.TW=TW
   taxonomy_version: sessions_mic.v1
 - anchor:
     market_venue: TW
@@ -955,6 +1012,25 @@ entries:
   provider_proofs:
   - trader.domain.market.sessions.explicit_mic_for_symbol:.TW=XTAI
   - trader.market.rotation.wiring.venue_of:2492.TW=TW
+  taxonomy_version: sessions_mic.v1
+- anchor:
+    market_venue: TW
+    instrument: 2886.TW
+  venue:
+    kind: venue
+    entity_id: mic:XTAI
+  country:
+    kind: country
+    entity_id: iso-3166:TW
+  region:
+    kind: region
+    entity_id: iso-un-m49:030
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.domain.market.sessions.explicit_mic_for_symbol:.TW=XTAI
+  - trader.market.rotation.wiring.venue_of:2886.TW=TW
   taxonomy_version: sessions_mic.v1
 - anchor:
     market_venue: TW
@@ -1243,6 +1319,26 @@ entries:
   taxonomy_version: sessions_mic.v1
 - anchor:
     market_venue: US
+    instrument: ABT
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:ABT=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
     instrument: ALB
   venue:
     kind: venue
@@ -1303,6 +1399,46 @@ entries:
   taxonomy_version: listing_exchange.v1
 - anchor:
     market_venue: US
+    instrument: BIO
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:BIO=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: CAG
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:CAG=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
     instrument: COP
   venue:
     kind: venue
@@ -1318,6 +1454,66 @@ entries:
     entity_id: market
   provider_proofs:
   - trader.market.rotation.wiring.venue_of:COP=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: DASH
+  venue:
+    kind: venue
+    entity_id: mic:XNAS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:DASH=US
+  - yfinance.exchange:NMS
+  - yfinance.exchange:NMS=mic:XNAS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: DIS
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:DIS=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: EL
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:EL=US
   - yfinance.exchange:NYQ
   - yfinance.exchange:NYQ=mic:XNYS
   taxonomy_version: listing_exchange.v1
@@ -1363,6 +1559,26 @@ entries:
   taxonomy_version: listing_exchange.v1
 - anchor:
     market_venue: US
+    instrument: GIS
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:GIS=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
     instrument: GM
   venue:
     kind: venue
@@ -1380,6 +1596,46 @@ entries:
   - trader.domain.market.sessions._mic_for_symbol.default=XNYS
   - trader.market.rotation.wiring.venue_of:GM=US
   taxonomy_version: sessions_mic.v1
+- anchor:
+    market_venue: US
+    instrument: INTU
+  venue:
+    kind: venue
+    entity_id: mic:XNAS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:INTU=US
+  - yfinance.exchange:NMS
+  - yfinance.exchange:NMS=mic:XNAS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: LLY
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:LLY=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
 - anchor:
     market_venue: US
     instrument: MPC
@@ -1439,6 +1695,26 @@ entries:
   - trader.market.rotation.wiring.venue_of:NEM=US
   - yfinance.exchange:NYQ
   - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: NVDA
+  venue:
+    kind: venue
+    entity_id: mic:XNAS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:NVDA=US
+  - yfinance.exchange:NMS
+  - yfinance.exchange:NMS=mic:XNAS
   taxonomy_version: listing_exchange.v1
 - anchor:
     market_venue: US
@@ -1522,6 +1798,126 @@ entries:
   taxonomy_version: listing_exchange.v1
 - anchor:
     market_venue: US
+    instrument: RSG
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:RSG=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: SCHW
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:SCHW=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: STLA
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:STLA=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: TGT
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:TGT=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: TMO
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:TMO=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
+    instrument: VLO
+  venue:
+    kind: venue
+    entity_id: mic:XNYS
+  country:
+    kind: country
+    entity_id: iso-3166:US
+  region:
+    kind: region
+    entity_id: iso-un-m49:021
+  world:
+    kind: world
+    entity_id: market
+  provider_proofs:
+  - trader.market.rotation.wiring.venue_of:VLO=US
+  - yfinance.exchange:NYQ
+  - yfinance.exchange:NYQ=mic:XNYS
+  taxonomy_version: listing_exchange.v1
+- anchor:
+    market_venue: US
     instrument: WBD
   venue:
     kind: venue
@@ -1540,4 +1936,4 @@ entries:
   - yfinance.exchange:NMS
   - yfinance.exchange:NMS=mic:XNAS
   taxonomy_version: listing_exchange.v1
-operator_config_sha256: c64929ec0a9083b32c8d1fe9de8f2d90a7bbda258aaafd3d7167bf40e52deadd
+operator_config_sha256: 043ffd69988cbe09177134aef9f8367adc901885c7886e1fd7a80600055e78c7

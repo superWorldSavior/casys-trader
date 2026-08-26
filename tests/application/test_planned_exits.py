@@ -10,6 +10,52 @@ from trader.planning.trade_plan import create_trade_plan
 from tests.plan_store_fakes import MemoryTradePlanStore
 
 
+def test_plan_snapshot_captures_amendable_rules_as_detached_canonical_json() -> None:
+    from trader.application.exit.planned_exits import plan_snapshot
+
+    plan = create_trade_plan(
+        symbol="SPY",
+        side="LONG",
+        quantity=1.0,
+        entry_price=100.0,
+        opened_at="2026-06-05T14:00:00+00:00",
+        raw_exit_plan={
+            "hard_stop": 95.0,
+            "profit_protection": {
+                "arm_at_r": 1.0,
+                "trigger_on_giveback_pct": 0.35,
+                "close_fraction": 0.5,
+                "lock_r": 0.25,
+            },
+        },
+    ).model_copy(
+        update={
+            "exit_watch": {
+                "z": {"b": 2, "a": 1},
+                "a": [{"d": 4, "c": 3}],
+            }
+        }
+    )
+
+    snapshot = plan_snapshot(plan)
+
+    assert snapshot["profit_protection"] == {
+        "enabled": True,
+        "arm_at_r": 1.0,
+        "trigger_on_giveback_pct": 0.35,
+        "close_fraction": 0.5,
+        "move_stop_to": "breakeven",
+        "min_hold_minutes": 10.0,
+        "lock_r": 0.25,
+        "triggered": False,
+    }
+    assert list(snapshot["exit_watch"]) == ["a", "z"]
+    assert list(snapshot["exit_watch"]["a"][0]) == ["c", "d"]
+    assert list(snapshot["exit_watch"]["z"]) == ["a", "b"]
+    plan.exit_watch["a"][0]["c"] = "mutated"
+    assert snapshot["exit_watch"]["a"][0]["c"] == 3
+
+
 def test_planned_exits_executes_take_profit_and_records_performance(tmp_path) -> None:
     from trader.application.exit.planned_exits import apply_planned_exits
 

@@ -381,6 +381,52 @@ def test_get_active_plans_avec_provider_filtre_par_symbole():
     assert result.result["as_of"] == "2026-07-02T10:00:00+00:00"
 
 
+def test_get_active_plans_provider_preserve_la_condition_exit_watch_close():
+    from trader.domain.trade_plan import TradePlan
+    from trader.runtime.agent_cycle_context import plan_to_context_dict
+
+    plan = TradePlan(
+        id="plan-close-watch",
+        symbol="SPY",
+        side="LONG",
+        quantity=1.0,
+        remaining_quantity=1.0,
+        entry_price=100.0,
+        opened_at="2026-08-26T08:00:00+00:00",
+        exit_watch={
+            "conditions": [
+                {
+                    "type": "close",
+                    "symbol": "SPY",
+                    "op": "<",
+                    "value": 98.0,
+                    "interval": "15m",
+                }
+            ]
+        },
+    )
+    context = ToolContext(
+        now=datetime(2026, 8, 26, 8, 0, tzinfo=UTC),
+        allowed_symbols=frozenset({"SPY"}),
+        open_plans_provider=lambda: [plan_to_context_dict(plan)],
+    )
+
+    result, _ = agent_tools.execute_tool_call(
+        AgentToolCall(id="c1", tool="get_active_plans", args={"symbol": "SPY"}),
+        context,
+    )
+
+    condition = result.result["rows"][0]["exit_watch"]["conditions"][0]
+    assert condition == {
+        "type": "close",
+        "symbol": "SPY",
+        "op": "<",
+        "value": 98.0,
+        "timeframe": "15m",
+    }
+    assert "indicator" not in condition
+
+
 def test_get_active_plans_fallback_watches_filtre_par_symbole_et_limite():
     result, _ = agent_tools.execute_tool_call(
         AgentToolCall(id="c1", tool="get_active_plans", args={"symbol": "2330.TW", "limit": 1}),

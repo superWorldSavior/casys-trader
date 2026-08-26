@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -89,6 +89,8 @@ _OCCURRENCE_EVENTS = (
 __all__ = [
     "WORLD_PATTERN_TABLES",
     "WorldPatternStore",
+    "rehydrate_pattern_hypothesis_event",
+    "rehydrate_pattern_occurrence_event",
 ]
 
 
@@ -102,6 +104,32 @@ def _json_load(text: str) -> Any:
 
 def _payload_conflict(event_id: str) -> PatternPayloadConflict:
     return PatternPayloadConflict(f"event_id {event_id!r} already exists with different canonical content")
+
+
+def rehydrate_pattern_hypothesis_event(row: Mapping[str, Any]) -> PatternHypothesisEvent:
+    try:
+        payload = _json_load(row["payload_json"])
+        event = parse_pattern_hypothesis_event(payload)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("tamper: existing event cannot be rehydrated") from exc
+    if canonical_sha256(event.to_dict()) != row["payload_sha256"]:
+        raise ValueError("tamper: pattern hypothesis event payload hash mismatch")
+    if event.event_id != row["event_id"]:
+        raise ValueError("tamper: pattern hypothesis event id mismatch")
+    return event
+
+
+def rehydrate_pattern_occurrence_event(row: Mapping[str, Any]) -> PatternOccurrenceEvent:
+    try:
+        payload = _json_load(row["payload_json"])
+        event = parse_pattern_occurrence_event(payload)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("tamper: existing event cannot be rehydrated") from exc
+    if canonical_sha256(event.to_dict()) != row["payload_sha256"]:
+        raise ValueError("tamper: pattern occurrence event payload hash mismatch")
+    if event.event_id != row["event_id"]:
+        raise ValueError("tamper: pattern occurrence event id mismatch")
+    return event
 
 
 class WorldPatternStore:
@@ -171,7 +199,7 @@ class WorldPatternStore:
             )
             if not rows:
                 raise LookupError(identity.value)
-            return PatternHypothesis.from_events(tuple(self._rehydrate_hypothesis_row(row) for row in rows))
+            return PatternHypothesis.from_events(tuple(rehydrate_pattern_hypothesis_event(row) for row in rows))
         if isinstance(identity, PatternOccurrenceId):
             rows = self._db.query_all(
                 f"SELECT * FROM {_OCCURRENCE_TABLE} WHERE occurrence_id=? ORDER BY sequence ASC, event_id ASC",  # noqa: S608
@@ -179,8 +207,85 @@ class WorldPatternStore:
             )
             if not rows:
                 raise LookupError(identity.value)
-            return PatternOccurrence.from_events(tuple(self._rehydrate_occurrence_row(row) for row in rows))
+            return PatternOccurrence.from_events(tuple(rehydrate_pattern_occurrence_event(row) for row in rows))
         raise TypeError("load requires PatternHypothesisId or PatternOccurrenceId")
+
+    def list_hypothesis_ids(self) -> tuple[str, ...]:
+        rows = self._db.query_all(
+            f"SELECT DISTINCT hypothesis_id FROM {_HYPOTHESIS_TABLE} ORDER BY hypothesis_id ASC"  # noqa: S608
+        )
+        return tuple(str(row["hypothesis_id"]) for row in rows)
+
+    def list_hypotheses(self) -> tuple[PatternHypothesis, ...]:
+        return tuple(self.load(PatternHypothesisId(item)) for item in self.list_hypothesis_ids())
+
+    def list_evaluating_hypotheses(
+        self,
+        *,
+        evaluation_cohort_id: str,
+        evaluation_dataset_fingerprint: str,
+        hypothesis_ids: Sequence[str] | None = None,
+    ) -> tuple[PatternHypothesis, ...]:
+        requested = None if hypothesis_ids is None else frozenset(hypothesis_ids)
+        evaluating: list[PatternHypothesis] = []
+        for hypothesis in self.list_hypotheses():
+            if hypothesis.status != "evaluating":
+                continue
+            if hypothesis.evaluation_cohort_id != evaluation_cohort_id:
+                continue
+            if hypothesis.evaluation_dataset_fingerprint != evaluation_dataset_fingerprint:
+                continue
+            if requested is not None and hypothesis.hypothesis_id not in requested:
+                continue
+            evaluating.append(hypothesis)
+        return tuple(evaluating)
+
+    def list_occurrence_ids(
+        self,
+        *,
+        evaluation_cohort_id: str | None = None,
+        hypothesis_ids: Sequence[str] | None = None,
+        occurrence_ids: Sequence[str] | None = None,
+    ) -> tuple[str, ...]:
+        clauses = ["event_type = 'pattern_occurrence_recorded'"]
+        params: list[str] = []
+        if evaluation_cohort_id is not None:
+            clauses.append("cohort_id = ?")
+            params.append(evaluation_cohort_id)
+        if hypothesis_ids is not None:
+            if not hypothesis_ids:
+                return ()
+            placeholders = ",".join("?" for _ in hypothesis_ids)
+            clauses.append(f"hypothesis_id IN ({placeholders})")
+            params.extend(hypothesis_ids)
+        if occurrence_ids is not None:
+            if not occurrence_ids:
+                return ()
+            placeholders = ",".join("?" for _ in occurrence_ids)
+            clauses.append(f"occurrence_id IN ({placeholders})")
+            params.extend(occurrence_ids)
+        sql = (
+            f"SELECT DISTINCT occurrence_id FROM {_OCCURRENCE_TABLE} "  # noqa: S608
+            f"WHERE {' AND '.join(clauses)} ORDER BY occurrence_id ASC"
+        )
+        rows = self._db.query_all(sql, tuple(params))
+        return tuple(str(row["occurrence_id"]) for row in rows)
+
+    def list_recorded_occurrences(
+        self,
+        *,
+        evaluation_cohort_id: str | None = None,
+        hypothesis_ids: Sequence[str] | None = None,
+        occurrence_ids: Sequence[str] | None = None,
+    ) -> tuple[PatternOccurrence, ...]:
+        return tuple(
+            self.load(PatternOccurrenceId(item))
+            for item in self.list_occurrence_ids(
+                evaluation_cohort_id=evaluation_cohort_id,
+                hypothesis_ids=hypothesis_ids,
+                occurrence_ids=occurrence_ids,
+            )
+        )
 
     def evidence_for(
         self,
@@ -490,30 +595,6 @@ class WorldPatternStore:
             first_seen = self._remember_receipt(receipt)
             evidence = AvailabilityEvidence(receipt=receipt, first_seen_at=first_seen)
         return OccurrenceEventEnvelope(event=event, evidence=evidence)
-
-    def _rehydrate_hypothesis_row(self, row: Any) -> PatternHypothesisEvent:
-        try:
-            payload = _json_load(row["payload_json"])
-            event = parse_pattern_hypothesis_event(payload)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("tamper: existing event cannot be rehydrated") from exc
-        if canonical_sha256(event.to_dict()) != row["payload_sha256"]:
-            raise ValueError("tamper: pattern hypothesis event payload hash mismatch")
-        if event.event_id != row["event_id"]:
-            raise ValueError("tamper: pattern hypothesis event id mismatch")
-        return event
-
-    def _rehydrate_occurrence_row(self, row: Any) -> PatternOccurrenceEvent:
-        try:
-            payload = _json_load(row["payload_json"])
-            event = parse_pattern_occurrence_event(payload)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("tamper: existing event cannot be rehydrated") from exc
-        if canonical_sha256(event.to_dict()) != row["payload_sha256"]:
-            raise ValueError("tamper: pattern occurrence event payload hash mismatch")
-        if event.event_id != row["event_id"]:
-            raise ValueError("tamper: pattern occurrence event id mismatch")
-        return event
 
     def _event_row(self, table: str, event_id: str) -> Any:
         return self._db.query_one(

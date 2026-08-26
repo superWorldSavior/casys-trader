@@ -33,6 +33,7 @@ from trader.domain.world_feature_contract import (
     TOPOLOGY_STATUS_ONLY_MASK_ID,
 )
 from trader.domain.world_pattern import (
+    PATTERN_EVALUATION_HORIZON_IDS,
     PatternHypothesis,
     PatternOccurrence,
 )
@@ -41,6 +42,7 @@ from trader.reporting.read_models.world_prediction_integrity import contains_for
 
 
 WORLD_PATTERN_REPORT_SCHEMA = "world_pattern_report.v1"
+WORLD_PATTERN_STATUS_SCHEMA = "world_pattern_status.v1"
 PATTERN_ASSESSMENT_SCHEMA = "pattern_assessment.v1"
 ASSESSMENT_CONCLUSIONS = frozenset(
     {
@@ -96,6 +98,92 @@ def read_world_pattern_report(state_dir: str | Path, cohort_id: str) -> dict[str
     db_path = Path(state_dir) / "world_model.db"
     ledger = read_world_pattern_ledger(db_path, cohort_id)
     return project_world_pattern_report(ledger, db_path=db_path)
+
+
+def read_world_pattern_status(state_dir: str | Path, cohort_id: str | None = None) -> dict[str, Any]:
+    """Hypothesis-first status, including evaluating hypotheses with zero occurrences."""
+
+    db_path = Path(state_dir) / "world_model.db"
+    ledger = read_world_pattern_ledger(db_path, cohort_id)
+    return project_world_pattern_status(ledger, db_path=db_path)
+
+
+def project_world_pattern_status(
+    ledger: Mapping[str, Any],
+    *,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Rebuild ``world_pattern_status.v1`` without requiring an occurrence or label."""
+
+    path = None if db_path is None else str(db_path)
+    cohort_id = ledger.get("cohort_id")
+    payload = {
+        "schema_version": WORLD_PATTERN_STATUS_SCHEMA,
+        "db_path": path,
+        "cohort_id": cohort_id,
+        "status": str(ledger.get("status") or "unavailable"),
+        "exists": bool(ledger.get("exists")),
+        "hypotheses": [],
+        **_CLAIM_FIELDS,
+    }
+    if "missing_tables" in ledger:
+        payload["missing_tables"] = list(ledger["missing_tables"])
+    if "error" in ledger:
+        payload["error"] = ledger["error"]
+    if payload["status"] != "loaded":
+        return payload
+    excluded: defaultdict[str, int] = defaultdict(int)
+    hypotheses = _reconstruct_hypotheses(ledger.get("hypothesis_events") or (), excluded=excluded)
+    occurrences = _reconstruct_occurrences(ledger.get("occurrence_events") or (), excluded=excluded)
+    by_hypothesis: dict[str, list[PatternOccurrence]] = defaultdict(list)
+    for occurrence in occurrences:
+        if cohort_id and occurrence.spec.cohort_id != cohort_id:
+            continue
+        by_hypothesis[occurrence.hypothesis_id].append(occurrence)
+    rows: list[dict[str, Any]] = []
+    for hypothesis_id in sorted(hypotheses):
+        hypothesis = hypotheses[hypothesis_id]
+        items = by_hypothesis.get(hypothesis_id, [])
+        expected = (
+            list(PATTERN_EVALUATION_HORIZON_IDS)
+            if hypothesis.status == "evaluating"
+            else [hypothesis.spec.target.horizon_id]
+        )
+        if items:
+            expected = list(items[0].spec.expected_horizon_ids)
+        linked: dict[str, int] = {horizon_id: 0 for horizon_id in expected}
+        pending: dict[str, int] = {horizon_id: 0 for horizon_id in expected}
+        for occurrence in items:
+            for horizon_id in occurrence.spec.expected_horizon_ids:
+                if occurrence.active_outcome_link(horizon_id) is None:
+                    pending[horizon_id] = pending.get(horizon_id, 0) + 1
+                else:
+                    linked[horizon_id] = linked.get(horizon_id, 0) + 1
+        if not items and hypothesis.status == "evaluating":
+            for horizon_id in expected:
+                pending[horizon_id] = 0
+        rows.append(
+            {
+                "hypothesis_id": hypothesis_id,
+                "status": hypothesis.status,
+                "evaluation_cohort_id": hypothesis.evaluation_cohort_id,
+                "evaluation_dataset_fingerprint": hypothesis.evaluation_dataset_fingerprint,
+                "target_horizon_id": hypothesis.spec.target.horizon_id,
+                "expected_horizon_ids": expected,
+                "occurrence_count": len(items),
+                "linked_horizons": linked,
+                "pending_horizons": pending,
+            }
+        )
+    payload.update(
+        {
+            "hypotheses": rows,
+            "hypothesis_count": len(rows),
+            "occurrence_count": sum(item["occurrence_count"] for item in rows),
+            "exclusions": dict(sorted(excluded.items())),
+        }
+    )
+    return payload
 
 
 def project_world_pattern_report(
@@ -441,9 +529,7 @@ def _score_occurrence(
     elif len(topology_rows) > 1:
         excluded["ambiguous_topology_member"] += len(topology_rows)
     hops = occurrence.exact_path
-    path_signature = tuple(
-        (hop.ordinal, hop.subject_kind, hop.predicate, hop.object_kind, hop.direction) for hop in hops
-    )
+    path_signature = tuple(hop.identity_tuple() for hop in hops)
     truncated_signature = path_signature[:-1] if len(path_signature) > 1 else path_signature
     return _ScoredPair(
         hypothesis_id=occurrence.hypothesis_id,
@@ -833,7 +919,7 @@ def _truncated_chain_control(
         signature = pairs[0].truncated_signature
     elif hypothesis is not None and len(hypothesis.spec.steps) > 1:
         steps = hypothesis.spec.steps[:-1]
-        signature = tuple((step.ordinal, step.subject_kind, step.predicate, step.object_kind) for step in steps)
+        signature = tuple(step.identity_tuple() for step in steps)
     return {
         "control_id": "truncated_chain",
         "status": "evaluated" if signature else "unavailable",
@@ -1091,6 +1177,9 @@ __all__ = [
     "ASSESSMENT_CONCLUSIONS",
     "PATTERN_ASSESSMENT_SCHEMA",
     "WORLD_PATTERN_REPORT_SCHEMA",
+    "WORLD_PATTERN_STATUS_SCHEMA",
     "project_world_pattern_report",
+    "project_world_pattern_status",
     "read_world_pattern_report",
+    "read_world_pattern_status",
 ]
