@@ -324,6 +324,10 @@ class WorldScopeMapping:
             mapping_sha256=self.content_sha256,
         )
 
+    def contains_anchor(self, anchor: WorldMarketAnchorRef) -> bool:
+        query = WorldMarketAnchorRef.from_mapping(anchor)
+        return any(entry.anchor == query for entry in self.entries)
+
     def content_payload(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,

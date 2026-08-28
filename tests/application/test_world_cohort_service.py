@@ -312,6 +312,17 @@ class _MemoryWorldCohortStore:
                 collecting.append(cohort)
         return tuple(collecting)
 
+    def list_live_cohorts(self) -> tuple[WorldCohort, ...]:
+        live: list[WorldCohort] = []
+        for cohort_id in sorted(self.manifests):
+            try:
+                cohort = self.load(WorldCohortId(cohort_id))
+            except (LookupError, TypeError, ValueError):
+                continue
+            if cohort.phase in {CohortPhase.REGISTERED, CohortPhase.ARMED, CohortPhase.COLLECTING}:
+                live.append(cohort)
+        return tuple(live)
+
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
         envelope = self.envelopes.get(event.event_id)
         if envelope is None:
@@ -464,12 +475,15 @@ def _collecting(service, store, manifest: WorldCohortManifest | None = None):
 
 def test_memory_store_lists_collecting_cohorts_only() -> None:
     service, store = _service()
-    service.register(RegisterWorldCohort(manifest=_manifest()))
+    registered = service.register(RegisterWorldCohort(manifest=_manifest()))
     assert store.list_collecting_cohorts() == ()
+    live_registered = store.list_live_cohorts()
+    assert [item.cohort_id for item in live_registered] == [registered.event.cohort_id]
     collecting = _collecting(service, store)
     listed = store.list_collecting_cohorts()
     assert [item.cohort_id for item in listed] == [collecting.cohort_id]
     assert listed[0].phase is CohortPhase.COLLECTING
+    assert [item.cohort_id for item in store.list_live_cohorts()] == [collecting.cohort_id]
 
 
 def test_ports_are_consumer_owned_typed_contracts() -> None:
@@ -502,6 +516,10 @@ def test_ports_are_consumer_owned_typed_contracts() -> None:
     collecting_hints = get_type_hints(WorldCohortQuery.list_collecting_cohorts)
     assert list(inspect.signature(WorldCohortQuery.list_collecting_cohorts).parameters) == ["self"]
     assert collecting_hints["return"] == tuple[WorldCohort, ...]
+
+    live_hints = get_type_hints(WorldCohortQuery.list_live_cohorts)
+    assert list(inspect.signature(WorldCohortQuery.list_live_cohorts).parameters) == ["self"]
+    assert live_hints["return"] == tuple[WorldCohort, ...]
 
     envelope_hints = get_type_hints(WorldCohortQuery.envelope_for)
     assert list(inspect.signature(WorldCohortQuery.envelope_for).parameters) == ["self", "event"]

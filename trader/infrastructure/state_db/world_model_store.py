@@ -55,6 +55,8 @@ from trader.domain.world_episode import (
     parse_utc_timestamp,
 )
 from trader.domain.world_graph import WorldEntityRef, WorldGraphSnapshot
+from trader.domain.world_scope import WorldScopeMapping
+from trader.domain.world_scope_lifecycle import WorldScopeMappingGeneration
 from trader.infrastructure.state_db.availability_receipt import (
     UtcClock,
     _seal_world_availability_receipt,
@@ -75,6 +77,7 @@ __all__ = [
     "WORLD_PATTERN_LIFECYCLE_EVENTS_DDL",
     "WORLD_PREDICTION_IDENTITY_INDEX_DDL",
     "WORLD_PREDICTION_RECORDED_AT_INDEX_DDL",
+    "WORLD_SCOPE_MAPPING_GENERATIONS_DDL",
     "WorldModelConflictError",
     "WorldModelSchemaMismatchError",
     "WorldModelStore",
@@ -82,6 +85,7 @@ __all__ = [
     "ensure_world_prediction_identity_index",
     "ensure_world_prediction_recorded_at_index",
     "ensure_world_pattern_lifecycle_events_schema",
+    "ensure_world_scope_mapping_generations_schema",
 ]
 
 
@@ -129,6 +133,7 @@ def apply_current_world_model_schema(db: StateDb) -> None:
     ensure_world_pattern_lifecycle_events_schema(db)
     ensure_world_prediction_identity_index(db)
     ensure_world_prediction_recorded_at_index(db)
+    ensure_world_scope_mapping_generations_schema(db)
     _assert_current_world_model_schema(db)
 
 
@@ -164,6 +169,7 @@ WORLD_MODEL_REQUIRED_TABLES = frozenset(
         "world_pattern_occurrence_events",
         "world_pattern_outcome_links",
         "world_relation_events",
+        "world_scope_mapping_generations",
         "world_shadow_predictions",
     }
 )
@@ -242,6 +248,46 @@ WORLD_PREDICTION_RECORDED_AT_INDEX_DDL = """
 CREATE INDEX IF NOT EXISTS idx_world_predictions_recorded_at
             ON world_shadow_predictions(recorded_at, prediction_id)
             """
+
+
+WORLD_SCOPE_MAPPING_GENERATIONS_DDL = (
+    """
+CREATE TABLE IF NOT EXISTS world_scope_mapping_generations (
+                mapping_id        TEXT NOT NULL,
+                mapping_sha256    TEXT NOT NULL,
+                payload_json      TEXT NOT NULL,
+                payload_sha256    TEXT NOT NULL,
+                recorded_at       TEXT NOT NULL,
+                PRIMARY KEY (mapping_id, mapping_sha256)
+            )
+            """,
+    """
+CREATE INDEX IF NOT EXISTS idx_world_scope_mapping_generations_hash
+            ON world_scope_mapping_generations(mapping_sha256, mapping_id)
+            """,
+    """
+CREATE TRIGGER IF NOT EXISTS world_scope_mapping_generations_no_delete
+            BEFORE DELETE ON world_scope_mapping_generations
+            BEGIN
+                SELECT RAISE(ABORT, 'world_scope_mapping_generations are append-only');
+            END
+            """,
+    """
+CREATE TRIGGER IF NOT EXISTS world_scope_mapping_generations_no_update
+            BEFORE UPDATE ON world_scope_mapping_generations
+            BEGIN
+                SELECT RAISE(ABORT, 'world_scope_mapping_generations are append-only');
+            END
+            """,
+)
+
+
+def ensure_world_scope_mapping_generations_schema(db: StateDb) -> None:
+    """Idempotently add the mapping-generation ledger to an already-applied v1 file."""
+
+    with db.transaction() as cur:
+        for statement in WORLD_SCOPE_MAPPING_GENERATIONS_DDL:
+            cur.execute(statement)
 
 
 def ensure_world_prediction_recorded_at_index(db: StateDb) -> None:
@@ -983,6 +1029,7 @@ CREATE INDEX IF NOT EXISTS idx_world_episodes_market_slot_candidates
             WHERE feature_contract_version = 'world_feature.market.v1'
             """,
             *WORLD_PATTERN_LIFECYCLE_EVENTS_DDL,
+            *WORLD_SCOPE_MAPPING_GENERATIONS_DDL,
         ],
     ),
 ]
@@ -2134,6 +2181,78 @@ class WorldModelStore:
             if cohort.phase is CohortPhase.COLLECTING and cohort.started_event is not None:
                 collecting.append(cohort)
         return tuple(collecting)
+
+    def list_live_cohorts(self) -> tuple[WorldCohort, ...]:
+        """Return REGISTERED, ARMED, or COLLECTING aggregates. Never mutates."""
+
+        rows = self._db.query_all("SELECT cohort_id FROM world_cohort_manifests ORDER BY cohort_id")
+        live: list[WorldCohort] = []
+        for row in rows:
+            try:
+                cohort = self.load(WorldCohortId(row["cohort_id"]))
+            except (LookupError, TypeError, ValueError):
+                continue
+            if cohort.phase in {CohortPhase.REGISTERED, CohortPhase.ARMED, CohortPhase.COLLECTING}:
+                live.append(cohort)
+        return tuple(live)
+
+    def persist_mapping_generation(
+        self,
+        mapping: WorldScopeMapping | WorldScopeMappingGeneration,
+    ) -> WorldScopeMappingGeneration:
+        generation = WorldScopeMappingGeneration.from_mapping(mapping)
+        payload = generation.mapping.to_dict()
+        payload_json = canonical_json(payload)
+        payload_sha256 = canonical_sha256(payload)
+        existing = self._db.query_one(
+            "SELECT payload_sha256 FROM world_scope_mapping_generations WHERE mapping_id=? AND mapping_sha256=?",
+            (generation.mapping_id, generation.mapping_sha256),
+        )
+        if existing is not None:
+            if existing["payload_sha256"] != payload_sha256:
+                raise WorldModelConflictError(
+                    "mapping generation already exists with different canonical content"
+                )
+            return generation
+        recorded_at = _utc_now()
+        try:
+            with self._db.transaction() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO world_scope_mapping_generations(
+                        mapping_id, mapping_sha256, payload_json, payload_sha256, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        generation.mapping_id,
+                        generation.mapping_sha256,
+                        payload_json,
+                        payload_sha256,
+                        recorded_at,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            recovered = self._db.query_one(
+                "SELECT payload_sha256 FROM world_scope_mapping_generations WHERE mapping_id=? AND mapping_sha256=?",
+                (generation.mapping_id, generation.mapping_sha256),
+            )
+            if recovered is not None:
+                if recovered["payload_sha256"] != payload_sha256:
+                    raise WorldModelConflictError(
+                        "mapping generation already exists with different canonical content"
+                    ) from exc
+                return generation
+            raise WorldModelConflictError("conflicting mapping generation") from exc
+        return generation
+
+    def load_mapping_generation(self, mapping_id: str, mapping_sha256: str) -> WorldScopeMappingGeneration | None:
+        row = self._db.query_one(
+            "SELECT payload_json FROM world_scope_mapping_generations WHERE mapping_id=? AND mapping_sha256=?",
+            (mapping_id, mapping_sha256),
+        )
+        if row is None:
+            return None
+        return WorldScopeMappingGeneration.from_mapping(_json_load(row["payload_json"]))
 
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
         parsed = self._require_cohort_event(event)

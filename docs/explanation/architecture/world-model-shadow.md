@@ -152,8 +152,8 @@ La révision dérivée de `world_scope_mapping.v1` est
 Un store vide publie. Une nouvelle génération append puis supersede
 l'active dans le même ledger ; les têtes déjà collectées restent
 lisibles au cutoff PIT. Les cohortes pilotes encore `COLLECTING` de la
-même forme sont invalidées (`mapping_generation_drift`) avant d'armer
-la successeure.
+même forme restent pinées sur leur génération de mapping ; le graphe
+live publie B, les ancres nouvelles attendent la successeure.
 Snapshot `unmapped`/`ambiguous` : `world_graph_snapshot.v1` avec
 `root_entity=null`, zéro membre. Une relation `OBSERVES` porte le
 producteur et le scope natif ; la distance d'ancestry se reconstruit

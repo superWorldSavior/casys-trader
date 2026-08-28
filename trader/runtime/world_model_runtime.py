@@ -17,6 +17,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
+from trader.application.world_model.scope_mapping_ports import WorldScopeMappingGenerationQuery
 from trader.application.world_model.service import (
     DEFAULT_HORIZONS,
     WorldModelService,
@@ -762,6 +763,19 @@ def build_universe_written_scope_observer(config_dir: str | Path):
     return _observe
 
 
+def _wire_mapping_generations(
+    store: object,
+    mapping_generations: WorldScopeMappingGenerationQuery | None,
+) -> WorldScopeMappingGenerationQuery | None:
+    if mapping_generations is not None:
+        return mapping_generations
+    load = getattr(store, "load_mapping_generation", None)
+    persist = getattr(store, "persist_mapping_generation", None)
+    if callable(load) and callable(persist):
+        return store
+    return None
+
+
 def _wire_cohort_service(store: object, cohort_service: object | None) -> object | None:
     if cohort_service is not None:
         return cohort_service
@@ -846,6 +860,7 @@ class WorldModelRuntime(WorldModelService):
         run_id: str = "world_shadow.v1",
         cohort_service: object | None = None,
         scope_resolver: object | None = None,
+        mapping_generations: WorldScopeMappingGenerationQuery | None = None,
     ) -> None:
         resolved = _wire_cohort_service(store, cohort_service)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
@@ -869,6 +884,7 @@ class WorldModelRuntime(WorldModelService):
             run_id=run_id,
             cohort_service=resolved,
             scope_resolver=scope_resolver if scope_resolver is not None else _default_scope_resolver(),
+            mapping_generations=_wire_mapping_generations(store, mapping_generations),
         )
 
 

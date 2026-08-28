@@ -2241,6 +2241,7 @@ def main(
                         now=now(),
                         environ=os.environ,
                         ontology_proof=_ontology_attestation,
+                        mapping_generations=_world_model_store,
                     )
                     if _pilot_report.status != "skipped":
                         _pilot_graph_cohort_id = _pilot_report.graph_cohort_id
@@ -2334,6 +2335,7 @@ def main(
                 lookback=DEFAULT_RUNTIME_LOOKBACK,
                 cohort_service=_world_cohort_service,
                 horizons=_world_model_horizons or DEFAULT_HORIZONS,
+                mapping_generations=_world_model_store,
             )
             _world_resource_guard = None
             try:

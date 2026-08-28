@@ -168,8 +168,8 @@ Les suffixes `.v1` des schémas payload (`world_feature.market.v1`,
 …) sont des **révisions de sérialisation**, pas des générations de capacité.
 
 Une rotation de mapping **ne** requiert **pas** d'archive DB : publish +
-supersede dans le même ledger, invalidation append-only des cohortes
-pilotes encore `COLLECTING` de la même forme. Un cutover store (autre
+supersede dans le même ledger. Une cohorte `COLLECTING` de la même
+forme reste pinée sur sa génération. Un cutover store (autre
 identité de **schéma**) reste hors de cette génération. Le runtime **ne
 lit jamais** un ledger héritage. Pas de contrat tombstone actif, pas de
 reader d'ancien reçu.
@@ -191,9 +191,12 @@ de contenu** est la génération. L'instance d'ontologie est
 `market_ontology:v1:<mapping_sha256>`. Une rotation d'univers réconcilie
 les symboles manquants depuis les métadonnées provider (MIC explicite,
 XNYS vs XNAS) ; les lignes déjà mappées ne sont pas réécrites. Un
-contenu nouveau produit un nouveau `content_sha256`, une nouvelle
-révision publiée (append + supersede) et un nouveau manifeste de
-cohorte, sans bump `world_scope_mapping.v2`. Dry-run :
+contenu nouveau produit un nouveau `content_sha256` et une nouvelle
+révision publiée (append + supersede), sans bump
+`world_scope_mapping.v2`. La génération est persistée append-only
+avant activation. Une cohorte déjà `COLLECTING` de la même forme
+réutilise son manifeste piné ; les ancres absentes de ce pin attendent
+la fenêtre suivante. Dry-run :
 `casys-trader world scope reconcile` ; `--apply` persiste. L'observer
 de rotation et le boot sont fail-open et n'ont pas d'autorité Trader.
 
@@ -223,9 +226,11 @@ rotation de mapping.
 Pas de `DELETE`/`VACUUM` du ledger live. `shadow_only` /
 `decision_effect=none` / `causal_claim=false` / `pnl_claim=false`
 inchangés. Les cohortes déjà collectées restent pinées sur leur hash et
-lisibles. Une génération B invalide les cohortes pilotes encore
-`COLLECTING` de la même forme (`mapping_generation_drift`) puis pine
-la successeure. Aucun SHA de génération n'est figé dans le domaine.
+lisibles. Une génération B de contenu seul **ne** coupe **pas** une
+cohorte `COLLECTING` same-shape : elle reste pinée, les nouvelles
+ancres attendent B. La successeure n'est armée qu'après clôture /
+complétion, ou si aucun live same-shape n'existe. Aucun SHA de
+génération n'est figé dans le domaine.
 Détail : [RFC macro §6.2 / §17](../superpowers/specs/2026-08-23-world-model-macro-source-only-design.md).
 
 ## Claims autorisés après une semaine

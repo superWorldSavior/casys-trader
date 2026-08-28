@@ -2778,6 +2778,58 @@ def world_cohort_lane_signature(lanes: Sequence[WorldLaneDefinition | Mapping[st
     return tuple(sorted(lane.lane_id for lane in resolved))
 
 
+_LIVE_COHORT_PHASES = frozenset({CohortPhase.REGISTERED, CohortPhase.ARMED, CohortPhase.COLLECTING})
+
+
+def is_same_shape_mapping_cohort(
+    cohort: WorldCohort,
+    *,
+    mapping_id: str,
+    lane_signature: Sequence[str],
+    study_kind: StudyKind | str,
+    question: str,
+) -> bool:
+    """True when the cohort is the same mapping family and pilot shape. Hash may differ."""
+
+    if not isinstance(cohort, WorldCohort):
+        raise TypeError("cohort must be WorldCohort")
+    pin = cohort.manifest.scope_mapping
+    if pin is None:
+        return False
+    if pin.mapping_id != _required_text(mapping_id, "mapping_id"):
+        return False
+    expected_kind = _enum(StudyKind, study_kind, "study_kind")
+    if cohort.manifest.study_kind is not expected_kind:
+        return False
+    if cohort.manifest.question != _required_text(question, "question"):
+        return False
+    expected_lanes = tuple(_required_text(item, "lane_signature[]") for item in lane_signature)
+    return world_cohort_lane_signature(cohort.manifest.lanes) == tuple(sorted(expected_lanes))
+
+
+def is_live_same_shape_mapping_cohort(
+    cohort: WorldCohort,
+    *,
+    mapping_id: str,
+    lane_signature: Sequence[str],
+    study_kind: StudyKind | str,
+    question: str,
+) -> bool:
+    """True when a non-terminal same-shape cohort must stay pinned to its mapping generation."""
+
+    if not isinstance(cohort, WorldCohort):
+        raise TypeError("cohort must be WorldCohort")
+    if cohort.phase not in _LIVE_COHORT_PHASES:
+        return False
+    return is_same_shape_mapping_cohort(
+        cohort,
+        mapping_id=mapping_id,
+        lane_signature=lane_signature,
+        study_kind=study_kind,
+        question=question,
+    )
+
+
 def is_prior_mapping_generation_cohort(
     cohort: WorldCohort,
     *,
@@ -2796,17 +2848,16 @@ def is_prior_mapping_generation_cohort(
     pin = cohort.manifest.scope_mapping
     if pin is None:
         return False
-    expected_id = _required_text(mapping_id, "mapping_id")
     expected_hash = _sha256_hex(mapping_sha256, "mapping_sha256")
-    if pin.mapping_id != expected_id or pin.mapping_sha256 == expected_hash:
+    if pin.mapping_sha256 == expected_hash:
         return False
-    expected_kind = _enum(StudyKind, study_kind, "study_kind")
-    if cohort.manifest.study_kind is not expected_kind:
-        return False
-    if cohort.manifest.question != _required_text(question, "question"):
-        return False
-    expected_lanes = tuple(_required_text(item, "lane_signature[]") for item in lane_signature)
-    return world_cohort_lane_signature(cohort.manifest.lanes) == tuple(sorted(expected_lanes))
+    return is_same_shape_mapping_cohort(
+        cohort,
+        mapping_id=mapping_id,
+        lane_signature=lane_signature,
+        study_kind=study_kind,
+        question=question,
+    )
 
 
 __all__ = [
@@ -2849,7 +2900,9 @@ __all__ = [
     "WorldCohortId",
     "WorldCohortInvalidated",
     "WorldCohortLaneBlocked",
+    "is_live_same_shape_mapping_cohort",
     "is_prior_mapping_generation_cohort",
+    "is_same_shape_mapping_cohort",
     "world_cohort_lane_signature",
     "WorldCohortLaneRestored",
     "WorldCohortManifest",

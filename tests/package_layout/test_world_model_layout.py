@@ -53,8 +53,11 @@ def test_world_pilot_activation_is_an_application_module() -> None:
     assert _import_violations(path, _FORBIDDEN_APPLICATION_PREFIXES) == []
     source = path.read_text(encoding="utf-8")
     assert "operator_authorized_on_boot" in source
-    assert "MAPPING_GENERATION_DRIFT" in source
-    assert "list_collecting_cohorts" in source
+    assert "persist_mapping_generation" in source
+    assert "is_live_same_shape_mapping_cohort" in source
+    assert "list_live_cohorts" in source
+    assert "_close_prior_mapping_generations" not in source
+    assert "MAPPING_GENERATION_DRIFT" not in source
     assert "sqlite3" not in source
     assert "def backfill" not in source
 
@@ -222,7 +225,11 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
         WorldScopeResolution,
     )
     from trader.domain.world_scope_listing import propose_world_scope_mapping_entry
-    from trader.domain.world_scope_lifecycle import plan_world_scope_mapping_generation
+    from trader.domain.world_scope_lifecycle import (
+        WorldScopeMappingGeneration,
+        decide_cohort_anchor_admission,
+        plan_world_scope_mapping_generation,
+    )
     from trader.domain.world_ontology_lifecycle import (
         WorldOntologyLifecycleSpec,
         plan_world_ontology_publication,
@@ -244,6 +251,8 @@ def test_world_availability_and_scope_kernels_are_stdlib_domain() -> None:
     assert WorldScopeResolution.__module__ == "trader.domain.world_scope"
     assert propose_world_scope_mapping_entry.__module__ == "trader.domain.world_scope_listing"
     assert plan_world_scope_mapping_generation.__module__ == "trader.domain.world_scope_lifecycle"
+    assert WorldScopeMappingGeneration.__module__ == "trader.domain.world_scope_lifecycle"
+    assert decide_cohort_anchor_admission.__module__ == "trader.domain.world_scope_lifecycle"
     assert WorldOntologyLifecycleSpec.__module__ == "trader.domain.world_ontology_lifecycle"
     assert plan_world_ontology_publication.__module__ == "trader.domain.world_ontology_lifecycle"
     assert classify_macro_graph_bridge.__module__ == "trader.domain.world_graph_bridge_lifecycle"

@@ -35,6 +35,7 @@ def _activate(store: WorldModelStore, *, ontology_proof=None):
         environ={},
         runtime_identity=_FixedIdentity(IDENTITY_A),
         ontology_proof=ontology_proof,
+        mapping_generations=store,
     )
 
 
@@ -142,6 +143,7 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
             "activate_world_shadow_pilot("
         )
         assert world_boot.index("ensure_published") < world_boot.index("activate_world_shadow_pilot(")
+        assert "mapping_generations=_world_model_store" in world_boot
         assert "graph_enabled=_world_model_graph" in boot
         assert "compose_world_resource_guard(" in world_boot
         assert "compose_pattern_shadow_workflow(" in world_boot

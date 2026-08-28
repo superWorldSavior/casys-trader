@@ -11,6 +11,7 @@ from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.cohort_service import WorldCohortService
 from trader.application.world_model.world_scope_resolver import WorldScopeResolver
 from trader.domain.world_cohort import (
+    CloseWorldCohort,
     CohortPhase,
     InvalidationReason,
     LaneOperationalStatus,
@@ -18,6 +19,7 @@ from trader.domain.world_cohort import (
     WorldCohortId,
     WorldRuntimeIdentity,
 )
+from trader.domain.world_scope_lifecycle import WorldScopeMappingGeneration
 from trader.domain.world_episode import (
     MARKET_FEATURE_CONTRACT_ID,
     AnchorBar,
@@ -83,6 +85,23 @@ class _FixedOntologyProof:
         return self.proof
 
 
+class _MemoryMappingGenerationStore:
+    def __init__(self) -> None:
+        self.generations: dict[tuple[str, str], WorldScopeMappingGeneration] = {}
+
+    def persist_mapping_generation(self, mapping) -> WorldScopeMappingGeneration:
+        generation = WorldScopeMappingGeneration.from_mapping(mapping)
+        key = (generation.mapping_id, generation.mapping_sha256)
+        existing = self.generations.get(key)
+        if existing is not None and existing.mapping_sha256 != generation.mapping_sha256:
+            raise ValueError("mapping generation already exists with different canonical content")
+        self.generations[key] = generation
+        return generation
+
+    def load_mapping_generation(self, mapping_id: str, mapping_sha256: str) -> WorldScopeMappingGeneration | None:
+        return self.generations.get((mapping_id, mapping_sha256))
+
+
 def _service():
     store = _MemoryWorldCohortStore()
     return WorldCohortService(repository=store, query=store), store
@@ -115,6 +134,7 @@ def _activate(
     environ=None,
     mapping=None,
     config_dir=CONFIG_DIR,
+    mapping_generations=None,
 ):
     from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
 
@@ -127,6 +147,7 @@ def _activate(
         runtime_identity=_FixedIdentity(identity),
         ontology_proof=_FixedOntologyProof(ontology_proof),
         mapping=live,
+        mapping_generations=mapping_generations,
     )
 
 
@@ -311,64 +332,82 @@ def _mapping_generation_b():
     return mapping_a, mapping_b
 
 
-def test_old_cohort_stays_readable_and_new_generation_pins_new_mapping() -> None:
+def test_content_rotation_reuses_collecting_same_shape_cohort() -> None:
     mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
     service, store = _service()
     first = _activate(
         cohort_service=service,
         mapping=mapping_a,
         ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
     )
     first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
     first_hashes = {
         key: store.load(WorldCohortId(cohort_id)).manifest.manifest_sha256 for key, cohort_id in first_ids.items()
+    }
+    first_events = {
+        key: tuple(event.event_id for event in store.load(WorldCohortId(cohort_id)).events)
+        for key, cohort_id in first_ids.items()
     }
     assert {store.load(WorldCohortId(cohort_id)).phase for cohort_id in first_ids.values()} == {CohortPhase.COLLECTING}
     second = _activate(
         cohort_service=service,
         mapping=mapping_b,
         ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
         now=BOOT + timedelta(days=1),
     )
     second_ids = {item["key"]: item["cohort_id"] for item in second.cohorts}
-    assert set(first_ids.values()).isdisjoint(set(second_ids.values()))
+    assert second_ids == first_ids
+    assert second.window["planned_start_not_before"] == BOOT
+    assert second.window["collection_stop_at"] == BOOT + timedelta(days=7)
     for key, cohort_id in first_ids.items():
         loaded = store.load(WorldCohortId(cohort_id))
-        assert loaded.phase is CohortPhase.INVALIDATED
-        assert loaded.events[-1].event_type == "world_cohort_invalidated"
-        assert loaded.events[-1].reason is InvalidationReason.MAPPING_GENERATION_DRIFT
-        assert loaded.events[-1].scope == "mapping_generation"
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert all(event.event_type != "world_cohort_invalidated" for event in loaded.events)
         assert loaded.manifest.manifest_sha256 == first_hashes[key]
         assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_a.content_sha256
+        assert tuple(event.event_id for event in loaded.events) == first_events[key]
         if key == "graph":
             assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_a)
-    for key, cohort_id in second_ids.items():
-        loaded = store.load(WorldCohortId(cohort_id))
-        assert loaded.phase is CohortPhase.COLLECTING
-        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
-        if key == "graph":
-            assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_b)
+    assert generations.load_mapping_generation(mapping_a.mapping_id, mapping_a.content_sha256) is not None
+    assert generations.load_mapping_generation(mapping_b.mapping_id, mapping_b.content_sha256) is not None
 
 
-def test_scope_resolution_cannot_repin_a_new_mapping_under_an_old_manifest() -> None:
-    from trader.application.world_model.service import _scope_resolution_for
+def test_scope_resolution_uses_pinned_generation_and_skips_later_anchors() -> None:
+    from trader.application.world_model.service import _AnchorDeferredToNextCohort, _scope_resolution_for
 
     mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
     service, store = _service()
     report = _activate(
         cohort_service=service,
         mapping=mapping_a,
         ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
     )
     cohort = store.load(WorldCohortId(report.cohorts[0]["cohort_id"]))
+    live_resolver = WorldScopeResolver(mapping=mapping_b, operator_config_sha256="0" * 64)
+    pinned_entry = mapping_a.entries[0]
+    resolution = _scope_resolution_for(
+        cohort,
+        venue=pinned_entry.anchor.market_venue,
+        symbol=pinned_entry.anchor.instrument,
+        resolver=live_resolver,
+        mapping_generations=generations,
+    )
+    assert resolution is not None
+    assert resolution.mapping_sha256 == mapping_a.content_sha256
+    assert resolution.status == "resolved"
     new_entry = mapping_b.entries[-1]
-
-    with pytest.raises(ValueError, match="scope resolution mapping identity must match the manifest"):
+    with pytest.raises(_AnchorDeferredToNextCohort, match="anchor_introduced_in_later_generation"):
         _scope_resolution_for(
             cohort,
             venue=new_entry.anchor.market_venue,
             symbol=new_entry.anchor.instrument,
-            resolver=WorldScopeResolver(mapping=mapping_b, operator_config_sha256="0" * 64),
+            resolver=live_resolver,
+            mapping_generations=generations,
         )
 
 
@@ -403,19 +442,23 @@ def test_unrelated_collecting_cohort_is_untouched_by_mapping_generation() -> Non
 
 def test_mapping_generation_b_reactivation_is_idempotent() -> None:
     mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
     service, store = _service()
-    _activate(
+    first = _activate(
         cohort_service=service,
         mapping=mapping_a,
         ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
     )
     first_b = _activate(
         cohort_service=service,
         mapping=mapping_b,
         ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
         now=BOOT + timedelta(days=1),
     )
-    first_ids = {item["key"]: item["cohort_id"] for item in first_b.cohorts}
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    assert {item["key"]: item["cohort_id"] for item in first_b.cohorts} == first_ids
     first_event_ids = {
         key: tuple(event.event_id for event in store.load(WorldCohortId(cohort_id)).events)
         for key, cohort_id in first_ids.items()
@@ -424,14 +467,87 @@ def test_mapping_generation_b_reactivation_is_idempotent() -> None:
         cohort_service=service,
         mapping=mapping_b,
         ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
         now=BOOT + timedelta(days=2),
     )
     assert {item["cohort_id"] for item in second_b.cohorts} == set(first_ids.values())
     for key, cohort_id in first_ids.items():
         loaded = store.load(WorldCohortId(cohort_id))
         assert loaded.phase is CohortPhase.COLLECTING
-        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_a.content_sha256
         assert tuple(event.event_id for event in loaded.events) == first_event_ids[key]
+
+
+def test_closed_cohort_lets_activation_start_successor_pinned_to_current_mapping() -> None:
+    mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    for cohort_id in first_ids.values():
+        service.close(WorldCohortId(cohort_id), CloseWorldCohort(reason="fixed_end reached"))
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.COLLECTION_CLOSED
+    successor = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        now=BOOT + timedelta(days=1),
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    assert set(successor_ids.values()).isdisjoint(set(first_ids.values()))
+    for key, cohort_id in first_ids.items():
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.COLLECTION_CLOSED
+    for key, cohort_id in successor_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
+        if key == "graph":
+            assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_b)
+
+
+def test_already_invalidated_cohort_is_not_revived_by_mapping_rotation() -> None:
+    from trader.domain.world_cohort import InvalidateWorldCohort
+
+    mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    for cohort_id in first_ids.values():
+        service.invalidate(
+            WorldCohortId(cohort_id),
+            InvalidateWorldCohort(
+                reason=InvalidationReason.ACCEPTED_DRIFT,
+                scope="cohort",
+                proofs=("historical",),
+                occurred_at=BOOT + timedelta(hours=1),
+            ),
+        )
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.INVALIDATED
+    successor = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        now=BOOT + timedelta(days=1),
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    assert set(successor_ids.values()).isdisjoint(set(first_ids.values()))
+    for cohort_id in first_ids.values():
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.INVALIDATED
+    for cohort_id in successor_ids.values():
+        assert store.load(WorldCohortId(cohort_id)).manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
 
 
 def test_old_immutable_cohort_ids_are_not_rewritten_or_auto_claimed() -> None:
@@ -492,6 +608,7 @@ def test_two_concurrent_disjoint_cohorts_filter_foreign_refs_and_propagate_scope
             cohort_service=cohort_service,
             identity=IDENTITY_A,
             ontology_proof=_matching_graph_proof(),
+            mapping_generations=store,
         )
         by_key = {item["key"]: item for item in report.cohorts}
         c1_id = WorldCohortId(by_key["technical_c1"]["cohort_id"])
@@ -505,6 +622,7 @@ def test_two_concurrent_disjoint_cohorts_filter_foreign_refs_and_propagate_scope
             horizons=("elapsed_4h.v1",),
             cohort_service=cohort_service,
             scope_resolver=resolver,
+            mapping_generations=store,
         )
         mapped_v1 = _episode(venue="TW", symbol="2301.TW", contract=MARKET_FEATURE_CONTRACT_ID)
         mapped_v3 = _episode(venue="TW", symbol="2301.TW", contract=GRAPH_FEATURE_CONTRACT_ID)
@@ -561,5 +679,155 @@ def test_scope_resolution_is_required_when_manifest_declares_mapping(tmp_path: P
         assert collecting
         for cohort_id in collecting:
             assert cohort_service.list_slots(cohort_id) == ()
+    finally:
+        store.close()
+
+
+def test_pinned_generation_admits_a_anchors_and_skips_b_only_without_failing_batch(tmp_path: Path) -> None:
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.service import WorldModelService
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+
+    mapping_a, mapping_b = _mapping_generation_b()
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: BOOT)
+    try:
+        cohort_service = WorldCohortService(repository=store, query=store)
+        report = _activate(
+            cohort_service=cohort_service,
+            identity=IDENTITY_A,
+            mapping=mapping_a,
+            ontology_proof=_matching_graph_proof(mapping_a),
+            mapping_generations=store,
+        )
+        by_key = {item["key"]: item for item in report.cohorts}
+        c1_id = WorldCohortId(by_key["technical_c1"]["cohort_id"])
+        runtime = WorldModelService(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=cohort_service,
+            scope_resolver=WorldScopeResolver(mapping=mapping_b, operator_config_sha256="0" * 64),
+            mapping_generations=store,
+        )
+        pinned_entry = next(entry for entry in mapping_a.entries if entry.anchor.market_venue == "TW")
+        new_entry = mapping_b.entries[-1]
+        pinned_episode = _episode(
+            venue=pinned_entry.anchor.market_venue,
+            symbol=pinned_entry.anchor.instrument,
+            contract=MARKET_FEATURE_CONTRACT_ID,
+        )
+        later_episode = _episode(
+            venue=new_entry.anchor.market_venue,
+            symbol=new_entry.anchor.instrument,
+            contract=MARKET_FEATURE_CONTRACT_ID,
+        )
+        captured = runtime.capture_and_predict((pinned_episode, later_episode), now=CAPTURE)
+        assert captured["errors"] == []
+        assert captured["cohort_slots_deferred_to_next_generation"] == 1
+        slots = {slot.symbol: slot for slot in cohort_service.list_slots(c1_id)}
+        assert pinned_entry.anchor.instrument in slots
+        assert slots[pinned_entry.anchor.instrument].scope_resolution.mapping_sha256 == mapping_a.content_sha256
+        assert slots[pinned_entry.anchor.instrument].scope_resolution.status == "resolved"
+        assert new_entry.anchor.instrument not in slots
+    finally:
+        store.close()
+
+
+def test_prior_lifecycle_generation_is_not_reused_while_still_collecting(tmp_path: Path) -> None:
+    import yaml
+
+    from tests.application.test_world_pilot_activation import CONFIG_PATH, _write_hashed_pilot_config
+
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        identity=IDENTITY_A,
+        ontology_proof=_matching_graph_proof(),
+        mapping_generations=generations,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    assert {store.load(WorldCohortId(cohort_id)).phase for cohort_id in first_ids.values()} == {CohortPhase.COLLECTING}
+    payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    payload["lifecycle_generation"] = int(payload["lifecycle_generation"]) + 1
+    next_dir = _write_hashed_pilot_config(tmp_path / "lifecycle_generation_next", payload)
+    successor = _activate(
+        cohort_service=service,
+        identity=IDENTITY_A,
+        ontology_proof=_matching_graph_proof(),
+        mapping_generations=generations,
+        config_dir=next_dir,
+        now=BOOT + timedelta(days=1),
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    assert set(successor_ids) == {"technical_c1", "graph"}
+    assert set(successor_ids.values()).isdisjoint(set(first_ids.values()))
+    for cohort_id in first_ids.values():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert all(event.event_type != "world_cohort_invalidated" for event in loaded.events)
+        assert loaded.manifest.planned_start_not_before == BOOT
+    for cohort_id in successor_ids.values():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert loaded.manifest.planned_start_not_before == BOOT + timedelta(days=1)
+
+
+def test_configured_mapping_generation_query_fails_closed_when_pin_is_missing() -> None:
+    from trader.application.world_model.service import _scope_resolution_for
+
+    mapping_a, _mapping_b = _mapping_generation_b()
+    empty = _MemoryMappingGenerationStore()
+    service, store = _service()
+    report = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+    )
+    cohort = store.load(WorldCohortId(report.cohorts[0]["cohort_id"]))
+    entry = mapping_a.entries[0]
+    with pytest.raises(ValueError, match="pinned_generation_unavailable"):
+        _scope_resolution_for(
+            cohort,
+            venue=entry.anchor.market_venue,
+            symbol=entry.anchor.instrument,
+            resolver=WorldScopeResolver(mapping=mapping_a, operator_config_sha256="0" * 64),
+            mapping_generations=empty,
+        )
+
+
+def test_capture_records_pinned_generation_unavailable_without_admitting(tmp_path: Path) -> None:
+    from trader.application.world_model.baseline import HierarchicalDirichletWorldBaseline
+    from trader.application.world_model.service import WorldModelService
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: BOOT)
+    try:
+        cohort_service = WorldCohortService(repository=store, query=store)
+        report = _activate(
+            cohort_service=cohort_service,
+            identity=IDENTITY_A,
+            ontology_proof=_matching_graph_proof(),
+        )
+        by_key = {item["key"]: item for item in report.cohorts}
+        c1_id = WorldCohortId(by_key["technical_c1"]["cohort_id"])
+        runtime = WorldModelService(
+            store=store,
+            predictor=HierarchicalDirichletWorldBaseline(),
+            labeler=None,
+            bar_provider=None,
+            horizons=("elapsed_4h.v1",),
+            cohort_service=cohort_service,
+            scope_resolver=WorldScopeResolver.load(CONFIG_DIR),
+            mapping_generations=store,
+        )
+        episode = _episode(venue="TW", symbol="2301.TW", contract=MARKET_FEATURE_CONTRACT_ID)
+        captured = runtime.capture_and_predict((episode,), now=CAPTURE)
+        assert captured["errors"]
+        assert any("pinned_generation_unavailable" in str(item.get("error")) for item in captured["errors"])
+        assert captured["cohort_slots_deferred_to_next_generation"] == 0
+        assert cohort_service.list_slots(c1_id) == ()
     finally:
         store.close()

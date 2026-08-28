@@ -75,6 +75,10 @@ class WorldCohortQuery(Protocol):
         """Reconstructed collecting aggregates. Never registers, arms, or starts."""
         ...
 
+    def list_live_cohorts(self) -> tuple[WorldCohort, ...]:
+        """REGISTERED, ARMED, or COLLECTING aggregates. Never mutates."""
+        ...
+
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope: ...
 
 

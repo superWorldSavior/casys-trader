@@ -28,12 +28,18 @@ from trader.application.world_model.protocols import (
     WorldModelLedger,
     WorldPredictor,
 )
+from trader.application.world_model.scope_mapping_ports import WorldScopeMappingGenerationQuery
 from trader.domain.world_cohort import (
     AdmitWorldCohortSlot,
     LaneOperationalStatus,
     WorldCohortSlot,
 )
-from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeResolution
+from trader.domain.world_scope import WorldMarketAnchorRef, WorldScopeMapping, WorldScopeResolution
+from trader.domain.world_scope_lifecycle import (
+    CohortAnchorAdmissionDecision,
+    WorldScopeMappingGeneration,
+    decide_cohort_anchor_admission,
+)
 from trader.domain.world_episode import (
     DEFAULT_WORLD_HORIZONS,
     SamplingSlotCapture,
@@ -425,6 +431,7 @@ class WorldModelService:
         run_id: str = "world_shadow.v1",
         cohort_service: object | None = None,
         scope_resolver: object | None = None,
+        mapping_generations: WorldScopeMappingGenerationQuery | None = None,
     ) -> None:
         normalized = _normalise_horizons(horizons)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
@@ -446,6 +453,7 @@ class WorldModelService:
         self.run_id = str(run_id).strip() or "world_shadow.v1"
         self.cohort_service = cohort_service
         self.scope_resolver = scope_resolver
+        self.mapping_generations = mapping_generations
         self.log = logger or logging.getLogger("casys-trader")
         self._lock = threading.Lock()
         self._running: str | None = None
@@ -606,6 +614,7 @@ class WorldModelService:
             "model_reconcile_skipped_unresettable": 0,
             "model_updates_by_model": {},
             "model_replayed_by_model": {},
+            "cohort_slots_deferred_to_next_generation": 0,
             "errors": [],
         }
 
@@ -1688,6 +1697,7 @@ class WorldModelService:
                         venue=venue,
                         symbol=symbol,
                         resolver=self.scope_resolver,
+                        mapping_generations=self.mapping_generations,
                     )
                     slot = _slot_from_captured(
                         cohort,
@@ -1698,6 +1708,10 @@ class WorldModelService:
                         scope_resolution=resolution,
                     )
                     admit(AdmitWorldCohortSlot(slot=slot, started_evidence=evidence))
+                except _AnchorDeferredToNextCohort:
+                    deferred = report.get("cohort_slots_deferred_to_next_generation", 0)
+                    report["cohort_slots_deferred_to_next_generation"] = int(deferred) + 1
+                    continue
                 except Exception as exc:  # noqa: BLE001 - admission failure stays shadow-local
                     self._error(report, stage="cohort_admit", error=exc)
         self._invalidate_cohort_runtime_state()
@@ -1764,22 +1778,50 @@ def _episode_completed_bar_end(episode: object) -> datetime | None:
         return None
 
 
+class _AnchorDeferredToNextCohort(Exception):
+    """Skip slot admission for an anchor introduced after the pinned generation."""
+
+
+def _load_pinned_mapping_generation(
+    mapping: object,
+    mapping_generations: WorldScopeMappingGenerationQuery,
+) -> WorldScopeMappingGeneration:
+    mapping_id = getattr(mapping, "mapping_id", None)
+    mapping_sha256 = getattr(mapping, "mapping_sha256", None)
+    if not isinstance(mapping_id, str) or not isinstance(mapping_sha256, str):
+        raise ValueError("pinned_generation_unavailable")
+    loaded = mapping_generations.load_mapping_generation(mapping_id, mapping_sha256)
+    if loaded is None:
+        raise ValueError("pinned_generation_unavailable")
+    return WorldScopeMappingGeneration.from_mapping(loaded)
+
+
 def _scope_resolution_for(
     cohort: object,
     *,
     venue: str,
     symbol: str,
     resolver: object | None,
+    mapping_generations: WorldScopeMappingGenerationQuery | None = None,
 ) -> WorldScopeResolution | None:
     mapping = getattr(getattr(cohort, "manifest", None), "scope_mapping", None)
     if mapping is None:
         return None
+    anchor = WorldMarketAnchorRef(market_venue=venue, instrument=symbol)
+    if mapping_generations is not None:
+        pinned = _load_pinned_mapping_generation(mapping, mapping_generations)
+        live = getattr(resolver, "mapping", None) if resolver is not None else None
+        live_mapping = live if isinstance(live, WorldScopeMapping) else None
+        decision = decide_cohort_anchor_admission(pinned=pinned, live=live_mapping, anchor=anchor)
+        if decision.decision is CohortAnchorAdmissionDecision.SKIP_UNTIL_NEXT_COHORT:
+            raise _AnchorDeferredToNextCohort(decision.reason)
+        return decision.resolution
     if resolver is None:
         raise ValueError("scope resolution is required when the manifest declares scope_mapping")
     resolve = getattr(resolver, "resolve", None)
     if not callable(resolve):
         raise TypeError("scope_resolver must expose resolve(anchor)")
-    resolution = resolve(WorldMarketAnchorRef(market_venue=venue, instrument=symbol))
+    resolution = resolve(anchor)
     if not isinstance(resolution, WorldScopeResolution):
         resolution = WorldScopeResolution.from_mapping(resolution)
     if resolution.mapping_id != mapping.mapping_id or resolution.mapping_sha256 != mapping.mapping_sha256:

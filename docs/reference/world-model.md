@@ -1,7 +1,7 @@
 # Référence — World Model shadow
 
 > **Type** : Reference (Diátaxis).
-> **État vérifié** : 2026-08-27.
+> **État vérifié** : 2026-08-28.
 > **Code** : `trader/domain/world_episode.py` ·
 > `trader/application/world_model/` ·
 > `trader/infrastructure/state_db/world_model_store.py` ·
@@ -35,9 +35,9 @@ Les voies de capacité live sont `market`, `context`, `macro_source` et
 `world_availability_receipt.v1`, `world_episode.v1`, …) sont des révisions
 de sérialisation, pas des générations de capacité.
 
-Une génération de mapping se publie et se supersede dans le même ledger ;
-les cohortes pilotes encore `COLLECTING` de la même forme sont invalidées
-en append-only. Un cutover store (archive hors ligne) n'est pas requis
+Une génération de `world_scope_mapping.v1` se publie et se supersede dans le même ledger.
+Chaque génération est persistée immuablement ; une cohorte `COLLECTING`
+de la même forme reste pinée sur ce hash. Un cutover store (archive hors ligne) n'est pas requis
 pour un nouveau hash de mapping. Le runtime ne lit jamais un ledger
 héritage. Pas de contrat tombstone actif.
 

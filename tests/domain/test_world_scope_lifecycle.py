@@ -14,7 +14,10 @@ from trader.domain.world_scope import (
 )
 from trader.domain.world_scope_lifecycle import (
     MAPPING_GENERATION_ACTIONS,
+    CohortAnchorAdmissionDecision,
+    WorldScopeMappingGeneration,
     WorldScopeMappingGenerationPlan,
+    decide_cohort_anchor_admission,
     plan_world_scope_mapping_generation,
 )
 
@@ -171,3 +174,77 @@ def test_generation_plan_rejects_schema_id_bump() -> None:
             added_anchors=(),
             preserved_conflicts=(),
         )
+
+
+def test_mapping_generation_is_immutable_and_reuses_scope_mapping_invariants() -> None:
+    mapping = _mapping(
+        _entry(
+            market_venue="US",
+            instrument="GM",
+            venue="mic:XNYS",
+            country="iso-3166:US",
+            region="iso-un-m49:021",
+        )
+    )
+    generation = WorldScopeMappingGeneration(mapping=mapping)
+    assert generation.mapping_id == WORLD_SCOPE_MAPPING_SCHEMA
+    assert generation.mapping_sha256 == mapping.content_sha256
+    assert generation.contains_anchor(WorldMarketAnchorRef(market_venue="US", instrument="GM"))
+    assert not generation.contains_anchor(WorldMarketAnchorRef(market_venue="US", instrument="REGN"))
+    replayed = WorldScopeMappingGeneration.from_mapping(generation.to_dict())
+    assert replayed.mapping_sha256 == generation.mapping_sha256
+    with pytest.raises(FrozenInstanceError):
+        generation.mapping = mapping  # type: ignore[misc]
+    with pytest.raises(ValueError, match="world_scope_mapping.v1"):
+        WorldScopeMappingGeneration(mapping=WorldScopeMapping(mapping_id="world_scope_mapping.v2", entries=mapping.entries))
+
+
+def test_later_generation_anchor_is_skipped_while_pinned_and_unmapped_admit() -> None:
+    pinned = _mapping(
+        _entry(
+            market_venue="US",
+            instrument="GM",
+            venue="mic:XNYS",
+            country="iso-3166:US",
+            region="iso-un-m49:021",
+        )
+    )
+    live = _mapping(
+        _entry(
+            market_venue="US",
+            instrument="GM",
+            venue="mic:XNYS",
+            country="iso-3166:US",
+            region="iso-un-m49:021",
+        ),
+        _entry(
+            market_venue="US",
+            instrument="REGN",
+            venue="mic:XNAS",
+            country="iso-3166:US",
+            region="iso-un-m49:021",
+            proofs=("yfinance.exchange:NMS=mic:XNAS",),
+        ),
+    )
+    gm = decide_cohort_anchor_admission(
+        pinned=pinned,
+        live=live,
+        anchor=WorldMarketAnchorRef(market_venue="US", instrument="GM"),
+    )
+    assert gm.decision is CohortAnchorAdmissionDecision.ADMIT
+    assert gm.resolution.mapping_sha256 == pinned.content_sha256
+    skipped = decide_cohort_anchor_admission(
+        pinned=pinned,
+        live=live,
+        anchor=WorldMarketAnchorRef(market_venue="US", instrument="REGN"),
+    )
+    assert skipped.decision is CohortAnchorAdmissionDecision.SKIP_UNTIL_NEXT_COHORT
+    assert skipped.resolution is None
+    unmapped = decide_cohort_anchor_admission(
+        pinned=pinned,
+        live=live,
+        anchor=WorldMarketAnchorRef(market_venue="US", instrument="ZZZZ"),
+    )
+    assert unmapped.decision is CohortAnchorAdmissionDecision.ADMIT
+    assert unmapped.resolution.status == "unmapped"
+    assert unmapped.resolution.mapping_sha256 == pinned.content_sha256

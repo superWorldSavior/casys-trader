@@ -18,13 +18,22 @@ Le hash de contenu est la génération. Les lignes existantes sont
 append-only (jamais réécrites). Un contenu nouveau crée un nouveau hash
 et un nouvel identifiant d'instance d'ontologie
 `market_ontology:v1:<mapping_sha256>`, sans `world_scope_mapping.v2` /
-`market_ontology.v2`. Les cohortes déjà collectées restent pinées sur
-leur hash. Une nouvelle cohorte pine le hash courant et la révision
-dérivée. Les cohortes pilotes encore `COLLECTING` de la même forme
-(même `mapping_id`, même signature de lanes, hash différent) sont
-invalidées en append-only (`mapping_generation_drift`) avant d'armer B.
-Elles restent lisibles. Les cohortes d'une autre forme ne sont pas
-touchées.
+`market_ontology.v2`. Chaque génération de mapping est un objet
+immuable persisté dans `world_model.db` avant activation. Les cohortes
+déjà collectées restent pinées sur leur hash. Une cohorte `COLLECTING`
+de la même forme (même `mapping_id`, même signature de lanes) reste
+pinée sur la génération de son manifeste jusqu'à la fin de fenêtre ou
+une invalidation pour un contrat sémantique / runtime réellement
+incompatible. Une rotation de contenu seul (`world_scope_mapping.v1`,
+instruments ajoutés ou corrigés) **ne** l'invalide **pas** et n'émet
+pas `mapping_generation_drift`. Les ancres nouvelles attendent la
+cohorte successeure. Quand aucune cohorte de même forme n'est live,
+l'activation pine B. Les cohortes déjà invalidées restent historiques.
+
+> **Mise à jour 2026-08-28** : le paragraphe d'origine invalidait les
+> `COLLECTING` same-shape sur simple drift de hash. Ce n'est plus le
+> comportement. `mapping_generation_drift` reste un motif historique
+> lisible, jamais un cutover de contenu.
 
 Publication ontologique dans le **même** store append-only : store vide →
 publier la génération courante. Store déjà publié, même famille de

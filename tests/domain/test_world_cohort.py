@@ -925,6 +925,29 @@ def test_prior_mapping_generation_predicate_matches_same_shape_different_hash_on
         study_kind="pipeline_pilot",
         question=registered.manifest.question,
     )
+    from trader.domain.world_cohort import is_live_same_shape_mapping_cohort, is_same_shape_mapping_cohort
+
+    assert is_same_shape_mapping_cohort(
+        collecting,
+        mapping_id=mapping.mapping_id,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question=collecting.manifest.question,
+    )
+    assert is_live_same_shape_mapping_cohort(
+        collecting,
+        mapping_id=mapping.mapping_id,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question=collecting.manifest.question,
+    )
+    assert is_live_same_shape_mapping_cohort(
+        registered,
+        mapping_id=mapping.mapping_id,
+        lane_signature=signature,
+        study_kind="pipeline_pilot",
+        question=registered.manifest.question,
+    )
 
 
 def test_arm_requires_runtime_match_required_sensors_and_allows_optional_gaps() -> None:

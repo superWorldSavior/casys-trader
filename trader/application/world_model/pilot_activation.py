@@ -32,6 +32,7 @@ from trader.application.world_model.cohort_service import WorldCohortService
 from trader.application.world_model.encoding import world_lane_encoder_profile
 from trader.application.world_model.gru import MODEL_ID as GRU_MODEL_ID
 from trader.application.world_model.runtime_identity import MeasuredWorldRuntimeIdentityService
+from trader.application.world_model.scope_mapping_ports import WorldScopeMappingGenerationRepository
 from trader.domain.world_cohort import (
     COHORT_AUTHORITY,
     COHORT_DECISION_EFFECT,
@@ -52,7 +53,7 @@ from trader.domain.world_cohort import (
     WorldRuntimeIdentity,
     WorldRuntimeIdentityIntent,
     WorldSensorRequirement,
-    is_prior_mapping_generation_cohort,
+    is_live_same_shape_mapping_cohort,
     world_cohort_lane_signature,
 )
 from trader.domain.world_episode import SUPPORTED_WORLD_HORIZONS, canonical_sha256, parse_utc_timestamp
@@ -592,48 +593,56 @@ def _lane_signature_for_spec(spec: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _close_prior_mapping_generations(
+def _persist_mapping_generation(
+    mapping_generations: WorldScopeMappingGenerationRepository | None,
+    mapping: WorldScopeMapping,
+) -> None:
+    if mapping_generations is None:
+        return
+    mapping_generations.persist_mapping_generation(mapping)
+
+
+def _reusable_same_shape_cohort(
     service: WorldCohortService,
+    config: WorldShadowPilotConfig,
     spec: Mapping[str, Any],
     *,
     mapping: WorldScopeMapping,
-    now: datetime,
-) -> tuple[str, ...]:
-    """Append-only: invalidate collecting same-shape predecessors. Never rewrite."""
+) -> WorldCohort | None:
+    """Return the live same-shape cohort of this operator lifecycle, pinned to its mapping."""
 
     key = _required_text(spec.get("key"), "cohorts[].key")
     study_kind = _required_text(spec.get("study_kind"), "cohorts[].study_kind")
     question = _required_text(spec.get("question"), "cohorts[].question")
     signature = _lane_signature_for_spec(spec)
-    closed: list[str] = []
-    for cohort in service.query.list_collecting_cohorts():
-        if not is_prior_mapping_generation_cohort(
+    logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
+    graph = "graph" in logicals
+    matches: list[WorldCohort] = []
+    for cohort in service.query.list_live_cohorts():
+        if not is_live_same_shape_mapping_cohort(
             cohort,
             mapping_id=mapping.mapping_id,
-            mapping_sha256=mapping.content_sha256,
             lane_signature=signature,
             study_kind=study_kind,
             question=question,
         ):
             continue
         pin = cohort.manifest.scope_mapping
-        envelope = service.invalidate(
-            WorldCohortId(cohort.cohort_id),
-            InvalidateWorldCohort(
-                reason=InvalidationReason.MAPPING_GENERATION_DRIFT,
-                scope="mapping_generation",
-                proofs=(
-                    key,
-                    mapping.mapping_id,
-                    mapping.content_sha256,
-                    "" if pin is None else pin.mapping_sha256,
-                ),
-                occurred_at=now,
-            ),
+        if pin is None:
+            continue
+        expected_id = _stable_cohort_id(
+            config,
+            key,
+            mapping_sha256=pin.mapping_sha256,
+            ontology_revision=cohort.manifest.ontology_revision if graph else None,
         )
-        if envelope.event.event_type == "world_cohort_invalidated":
-            closed.append(cohort.cohort_id)
-    return tuple(closed)
+        if cohort.cohort_id != expected_id:
+            continue
+        matches.append(cohort)
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item.manifest.planned_start_not_before, item.cohort_id))
+    return matches[0]
 
 
 def _activate_one(
@@ -646,18 +655,22 @@ def _activate_one(
     ontology_proof: WorldOntologyProofQuery | None,
     mapping: WorldScopeMapping,
 ) -> dict[str, Any]:
-    _close_prior_mapping_generations(service, spec, mapping=mapping, now=now)
     key = _required_text(spec.get("key"), "cohorts[].key")
     logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
     graph = "graph" in logicals
     ontology_pin = market_ontology_revision_id(mapping) if graph else None
-    cohort_id = _stable_cohort_id(
-        config,
-        key,
-        mapping_sha256=mapping.content_sha256,
-        ontology_revision=ontology_pin,
-    )
-    existing = _try_load(service, cohort_id)
+    reusable = _reusable_same_shape_cohort(service, config, spec, mapping=mapping)
+    if reusable is not None:
+        cohort_id = reusable.cohort_id
+        existing = reusable
+    else:
+        cohort_id = _stable_cohort_id(
+            config,
+            key,
+            mapping_sha256=mapping.content_sha256,
+            ontology_revision=ontology_pin,
+        )
+        existing = _try_load(service, cohort_id)
     if existing is not None:
         if existing.manifest.runtime_identity != measured:
             drifted = _block_lanes_for_drift(service, existing)
@@ -837,6 +850,7 @@ def activate_world_shadow_pilot(
     runtime_identity: WorldRuntimeIdentityPort | None = None,
     ontology_proof: WorldOntologyProofQuery | None = None,
     mapping: WorldScopeMapping | None = None,
+    mapping_generations: WorldScopeMappingGenerationRepository | None = None,
 ) -> WorldShadowPilotActivation:
     """Idempotently register/arm/start approved shadow cohorts. Never backfills."""
 
@@ -865,6 +879,10 @@ def activate_world_shadow_pilot(
                 return _skip("mapping_unavailable", config=config)
         if live_mapping.mapping_id != WORLD_SCOPE_MAPPING_ID:
             return _skip("mapping_unavailable", config=config)
+        try:
+            _persist_mapping_generation(mapping_generations, live_mapping)
+        except Exception:  # noqa: BLE001 - mapping generation persist cannot block market/Trader
+            return _skip("mapping_generation_unavailable", config=config)
         try:
             measured = _measure_runtime_identity(
                 config,

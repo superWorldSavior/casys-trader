@@ -30,6 +30,7 @@ from trader.infrastructure.state_db.world_model_store import (
     WORLD_PATTERN_LIFECYCLE_EVENTS_DDL,
     WORLD_PREDICTION_IDENTITY_INDEX_DDL,
     WORLD_PREDICTION_RECORDED_AT_INDEX_DDL,
+    WORLD_SCOPE_MAPPING_GENERATIONS_DDL,
     WorldModelConflictError,
     WorldModelSchemaMismatchError,
     WorldModelStore,
@@ -834,6 +835,9 @@ def test_current_schema_is_a_single_fresh_definition() -> None:
     assert ", study_cohort_id TEXT" not in sql
     for statement in WORLD_PATTERN_LIFECYCLE_EVENTS_DDL:
         assert statement in WORLD_MODEL_MIGRATIONS[0][1]
+    for statement in WORLD_SCOPE_MAPPING_GENERATIONS_DDL:
+        assert statement in WORLD_MODEL_MIGRATIONS[0][1]
+    assert "world_scope_mapping_generations" in sql
     assert WORLD_PREDICTION_IDENTITY_INDEX_DDL in WORLD_MODEL_MIGRATIONS[0][1]
     assert "world_pattern_lifecycle_events" in sql
     assert "idx_world_pattern_lifecycle_events_cohort_start" in sql
