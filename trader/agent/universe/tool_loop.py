@@ -22,7 +22,11 @@ from trader.agent.universe.prompt import (
     parse_universe_completion,
 )
 from trader.agent.universe.tools import make_get_company_briefs_spec
-from trader.application.universe import UniverseAgentDecision, UniverseCompositionRequest
+from trader.application.universe import (
+    UniverseAgentDecision,
+    UniverseCompositionRequest,
+    validate_universe_decision,
+)
 
 _ALLOWED_TOOLS = frozenset({"get_company_briefs"})
 # Fusible anti-boucle-infinie, PAS un réglage : l'agent fait autant de pulls micro
@@ -102,6 +106,32 @@ def _with_tool_trace(
     )
 
 
+def _complete_one_repair(
+    *,
+    request: UniverseCompositionRequest,
+    router: llm.LlmRouter,
+    timeout_s: int,
+    tool_results: list[dict[str, Any]],
+    invalid_response: str,
+    parse_error: str,
+    validation_errors: tuple[str, ...] | None = None,
+) -> UniverseAgentDecision:
+    """Issue the single allowed repair call, then parse without a second retry."""
+
+    repair_prompt = build_universe_repair_prompt(
+        request,
+        invalid_response=invalid_response,
+        parse_error=parse_error,
+        tool_results=tool_results,
+        company_context_index=True,
+        validation_errors=validation_errors,
+    )
+    repaired = router.complete(repair_prompt, timeout_s=timeout_s)
+    if isinstance(repaired, llm.LlmFailure):
+        _raise_failure(repaired)
+    return _parse_final(repaired, baseline=request.baseline)
+
+
 def _parse_final_with_repair(
     completion: llm.LlmCompletion,
     *,
@@ -110,24 +140,39 @@ def _parse_final_with_repair(
     timeout_s: int,
     tool_results: list[dict[str, Any]],
 ) -> UniverseAgentDecision:
-    """Retry once only when the final payload is structurally invalid."""
+    """Retry once when the final payload fails parse or the canonical contract."""
 
     try:
-        return _parse_final(completion, baseline=request.baseline)
+        decision = _parse_final(completion, baseline=request.baseline)
     except UniverseAgentPayloadError as exc:
         if "legacy_contract_not_allowed" in str(exc):
             raise
-        repair_prompt = build_universe_repair_prompt(
-            request,
+        return _complete_one_repair(
+            request=request,
+            router=router,
+            timeout_s=timeout_s,
+            tool_results=tool_results,
             invalid_response=completion.text,
             parse_error=str(exc),
-            tool_results=tool_results,
-            company_context_index=True,
         )
-        repaired = router.complete(repair_prompt, timeout_s=timeout_s)
-        if isinstance(repaired, llm.LlmFailure):
-            _raise_failure(repaired)
-        return _parse_final(repaired, baseline=request.baseline)
+
+    semantic_errors = validate_universe_decision(request, decision)
+    if not semantic_errors:
+        return decision
+    try:
+        return _complete_one_repair(
+            request=request,
+            router=router,
+            timeout_s=timeout_s,
+            tool_results=tool_results,
+            invalid_response=completion.text,
+            parse_error="semantic_contract_invalid",
+            validation_errors=semantic_errors,
+        )
+    except UniverseAgentPayloadError:
+        # Repair did not parse. Keep the first parsed decision so application
+        # validation still reports the stable contract errors (and backoff).
+        return decision
 
 
 def compose_with_tool_loop(

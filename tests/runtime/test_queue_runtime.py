@@ -191,7 +191,7 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends(
     logger = RecordingLogger()
     handler_kwargs: list[dict] = []
     build_calls: list[dict] = []
-    acpx_backend = llm.AcpxBackend(provider="acpx", model="gpt-5.5")
+    cursor_backend = llm.CursorAgentBackend(provider="cursor-agent", workspace=str(tmp_path / "scratch"))
     non_session_backend = object()
 
     class FakeCodexClient:
@@ -201,7 +201,7 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends(
         pass
 
     class FakeRouter:
-        backends = [acpx_backend, non_session_backend]
+        backends = [cursor_backend, non_session_backend]
 
     def fake_build_default_router_from_env(**kwargs):
         build_calls.append(kwargs)
@@ -234,7 +234,7 @@ def test_start_decide_queue_construit_et_filtre_les_session_backends(
 
     assert build_calls == [{"spark_model": "gpt-5.5"}]
     assert handler_kwargs[0]["codex_client"] is FakeCodexClient
-    assert handler_kwargs[0]["session_backends"] == [acpx_backend]
+    assert handler_kwargs[0]["session_backends"] == [cursor_backend]
 
 
 def test_start_decide_queue_sans_max_rounds_construit_et_filtre_les_session_backends(
@@ -350,7 +350,7 @@ def test_start_decide_queue_sans_acpx_backend_leve_runtimeerror(tmp_path: Path, 
 
     monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
 
-    with pytest.raises(RuntimeError, match="aucun AcpxBackend"):
+    with pytest.raises(RuntimeError, match="aucun backend LLM à session"):
         queue_runtime.start_decide_queue(
             enabled=True,
             state_dir=tmp_path,
@@ -393,7 +393,7 @@ def test_start_decide_queue_acpx_backend_sans_binaire_executable_leve_runtimeerr
     monkeypatch.setattr(llm, "build_default_router_from_env", fake_build_default_router_from_env)
     monkeypatch.setattr(shutil, "which", lambda _bin: None)
 
-    with pytest.raises(RuntimeError, match="acpx introuvable"):
+    with pytest.raises(RuntimeError, match="binaire du backend LLM introuvable"):
         queue_runtime.start_decide_queue(
             enabled=True,
             state_dir=tmp_path,
@@ -414,6 +414,108 @@ def test_start_decide_queue_acpx_backend_sans_binaire_executable_leve_runtimeerr
 
     assert FakeLedger.instances == []
     assert FakePool.instances == []
+
+
+def _start_decide_with_session_backends(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    backends: list[object],
+    which,
+) -> None:
+    _reset_fakes()
+    logger = RecordingLogger()
+
+    class FakeCodexClient:
+        DEFAULT_MODEL = "gpt-5.5"
+
+    class FakeRouter:
+        def __init__(self) -> None:
+            self.backends = backends
+
+    monkeypatch.setattr(llm, "build_default_router_from_env", lambda **_kwargs: FakeRouter())
+    monkeypatch.setattr(shutil, "which", which)
+
+    queue_runtime.start_decide_queue(
+        enabled=True,
+        state_dir=tmp_path,
+        parallelism=3,
+        decision_batch_size=5,
+        default_decision_batch_size=5,
+        codex_client=FakeCodexClient,
+        tool_services=object(),
+        now_ms_fn=lambda: 12345,
+        logger=logger,
+        factories=queue_runtime.DecideQueueFactories(
+            task_ledger_cls=FakeLedger,
+            resource_pools_cls=FakePools,
+            decide_pool_cls=FakePool,
+            make_decide_handler=lambda **_kwargs: "decide-handler",
+        ),
+    )
+
+
+def test_start_decide_queue_cursor_primaire_exige_cursor_agent_meme_si_acpx_est_la(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cursor_backend = llm.CursorAgentBackend(provider="cursor-agent", workspace=str(tmp_path / "scratch"))
+    grok_fallback = llm.AcpxBackend(provider="acpx", model="grok-4.6", acpx_bin="acpx", agent="grok-build")
+
+    def which(name: str) -> str | None:
+        return "/usr/local/bin/acpx" if name == "acpx" else None
+
+    with pytest.raises(RuntimeError, match="binaire du backend LLM introuvable"):
+        _start_decide_with_session_backends(
+            tmp_path,
+            monkeypatch,
+            backends=[cursor_backend, grok_fallback],
+            which=which,
+        )
+
+    assert FakeLedger.instances == []
+    assert FakePool.instances == []
+
+
+def test_start_decide_queue_acpx_primaire_ne_exige_pas_cursor_agent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    grok_primary = llm.AcpxBackend(provider="acpx", model="grok-4.6", acpx_bin="acpx", agent="grok-build")
+    cursor_fallback = llm.CursorAgentBackend(provider="cursor-agent", workspace=str(tmp_path / "scratch"))
+
+    def which(name: str) -> str | None:
+        return "/usr/local/bin/acpx" if name == "acpx" else None
+
+    _start_decide_with_session_backends(
+        tmp_path,
+        monkeypatch,
+        backends=[grok_primary, cursor_fallback],
+        which=which,
+    )
+
+    assert FakePool.instances[0].started is True
+    assert FakeLedger.instances[0].recovered_at == [12345]
+
+
+def test_start_decide_queue_cursor_primaire_passe_sans_acpx(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cursor_backend = llm.CursorAgentBackend(provider="cursor-agent", workspace=str(tmp_path / "scratch"))
+    grok_fallback = llm.AcpxBackend(provider="acpx", model="grok-4.6", acpx_bin="acpx", agent="grok-build")
+
+    def which(name: str) -> str | None:
+        return "/usr/local/bin/cursor-agent" if name == "cursor-agent" else None
+
+    _start_decide_with_session_backends(
+        tmp_path,
+        monkeypatch,
+        backends=[cursor_backend, grok_fallback],
+        which=which,
+    )
+
+    assert FakePool.instances[0].started is True
 
 
 def test_start_execute_queue_requires_sqlite_backend(tmp_path: Path) -> None:
@@ -442,9 +544,7 @@ def test_start_execute_queue_requires_sqlite_backend(tmp_path: Path) -> None:
     assert runtime.ledger is None
     assert runtime.pool is None
     assert FakeLedger.instances == []
-    assert logger.warnings == [
-        ("[queue_execute] activation ignorée — requiert le backend sqlite",)
-    ]
+    assert logger.warnings == [("[queue_execute] activation ignorée — requiert le backend sqlite",)]
 
 
 def test_start_execute_queue_builds_shared_sqlite_stack(tmp_path: Path) -> None:

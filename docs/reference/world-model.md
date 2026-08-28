@@ -1,7 +1,7 @@
 # Référence — World Model shadow
 
 > **Type** : Reference (Diátaxis).
-> **État vérifié** : 2026-08-22.
+> **État vérifié** : 2026-08-27.
 > **Code** : `trader/domain/world_episode.py` ·
 > `trader/application/world_model/` ·
 > `trader/infrastructure/state_db/world_model_store.py` ·
@@ -72,12 +72,11 @@ Horizons **fixes**, sans fallback silencieux :
 | 1 j | `timedelta(days=1)` | `elapsed_1d.v1` |
 | 3 j | `timedelta(days=3)` | `elapsed_3d.v1` |
 
-`elapsed_3d.v1` est supporté pour la prochaine cohorte comme métrique swing
-supplémentaire. La cohorte active conserve `4 h + 1 j`, avec `1 j` primaire ;
-un manifeste futur peut déclarer `4 h + 1 j + 3 j` tout en gardant `1 j`
-primaire. Les prédicteurs liés à une cohorte ne calculent que les horizons de
-leur propre manifeste, ce qui permet aux cohortes de se chevaucher sans fuite
-de protocole.
+Le pilote committe actif déclare `elapsed_4h.v1`, `elapsed_1d.v1` (primaire)
+et `elapsed_3d.v1`. `lifecycle_generation: 3` frappe de nouveaux `cohort_id` ;
+les IDs de génération 2 ne sont pas réutilisés. Les prédicteurs liés à une
+cohorte ne calculent que les horizons de leur propre manifeste, ce qui permet
+aux cohortes de se chevaucher sans fuite de protocole.
 
 `anchor_end_at` est l'horloge de transition : la barre d'ancrage doit être
 close. `target_at = anchor_end_at + duration`. Un intervalle source plus long
@@ -118,6 +117,37 @@ scorable. Le cutoff logique seul ne suffit pas : le worker est asynchrone.
 Un redémarrage reconstruit l'état en rejouant épisodes puis labels dans
 l'ordre causal. Les deux modèles restent `shadow_only` / `NO_GO`.
 
+## Patterns graphe prospectifs
+
+Le détecteur explicite `explicit_graph_pattern.v1` est complémentaire à
+Markov/GRU : il cherche des chaînes typées dans les snapshots du graphe, pas
+des motifs cachés dans l'état récurrent du GRU. Ses agrégats DDD sont
+`PatternHypothesis` et `PatternOccurrence`; leurs transitions sont des events
+append-only. `PatternDiscoveryCompleted` ferme une fois pour toutes le dataset
+de formation d'une cohorte, y compris quand la sélection contient zéro
+hypothèse.
+
+`PatternShadowWorkflow` orchestre automatiquement le lifecycle dans le worker
+background, après la capture du batch :
+
+1. sélection de l'unique cohorte graphe `collecting` et preuve de son start ;
+2. découverte/rejeu à `formation_cutoff` gelé ;
+3. matching prospectif strictement après la prochaine frontière de barre ;
+4. persistance des `WorldPrediction`/occurrences shadow ;
+5. liaison, en dernier, des feuilles 4 h / 1 j / 3 j déjà disponibles.
+
+Le marqueur durable autorise l'évaluation ; une écriture échouée ne peut pas
+être remplacée par l'état local du process. Replays et retries utilisent des
+identités canoniques déterministes. Toutes les étapes restent
+`shadow_only`, `decision_effect=none`, `causal_claim=false`, `NO_GO`.
+
+`world pattern status` projette les events durables
+`world_pattern_lifecycle_events` : `formation_cutoff`,
+`evaluation_start_not_before`, identifiants/compte sélectionnés, empreintes
+et autorité de replay (`event_id` / `started_event_id`). Ce n'est pas une
+étiquette, ni une claim causale. Le pilote **ne ferme ni n'archive** les
+hypothèses : `PatternEvaluationClosed` reste hors de ce périmètre.
+
 ## Évaluation
 
 Owner : `reporting/read_models/world_evaluation.py` (`world_shadow_evaluation.v2`).
@@ -157,8 +187,29 @@ association descriptive future exige :
 ## Persistance
 
 `state/world_model.db` est un journal dédié, indépendant de `casys.db` et de
-`decisions.jsonl`. WAL SQLite, transactions courtes, `UPDATE`/`DELETE`
-refusés. Le query adapter ouvre en `mode=ro` et ne crée ni ne migre la base.
+`decisions.jsonl`. Il contient aussi les tables append-only de lifecycle,
+hypothèses, occurrences et liens d'outcomes patterns. WAL SQLite, transactions
+courtes, `UPDATE`/`DELETE` refusés. Les query adapters de formation,
+d'évaluation, de catalogue et d'outcomes ouvrent en `mode=ro` et ne créent ni
+ne migrent la base.
+
+Les journées UTC closes de `world_shadow_predictions` peuvent être projetées
+dans `state/world_model_archive/` en Parquet ZSTD. Chaque partition publiée a
+un manifeste `verified` (schéma et types physiques, bornes, cardinalité,
+unicité, hash ordonné du contenu et hash du fichier). L'export lit le ledger
+via un index `recorded_at` additif (bornes `[jour, jour suivant[`) et refuse
+la journée UTC ouverte. Un miroir Parquet endommagé est quarantiné (jamais
+écrasé ni effacé) puis reconstruit depuis SQLite, sans bloquer les jours
+suivants. Cette projection reste `shadow_only`,
+`decision_effect=none` et `source_retained=true` : elle ne permet actuellement
+aucun `DELETE`, `VACUUM` ou remplacement de `world_model.db`. Le futur cutover
+hot/cold devra d'abord fournir un index d'identités et des query adapters
+SQLite + Parquet avec tests de parité.
+
+Les nouvelles prédictions référencent l'épisode canonique par `episode_id`,
+`feature_hash` et `input_sha256` au lieu de recopier son observation complète.
+Les read models rejoignent une vue légère de l'épisode ; les anciennes lignes
+contenant `input` restent lisibles.
 
 ## Activation
 

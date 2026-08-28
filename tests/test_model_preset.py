@@ -16,6 +16,15 @@ import pytest
 from scripts import model_preset
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_injected_llm_env(monkeypatch) -> None:
+    """Host CODEX_HOME / npm cache must not leak into preset resolution tests."""
+
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("NPM_CONFIG_CACHE", raising=False)
+    monkeypatch.delenv("npm_config_cache", raising=False)
+
+
 @pytest.fixture
 def env_file(tmp_path, monkeypatch):
     path = tmp_path / ".env"
@@ -97,8 +106,37 @@ def test_preset_grok_brain_low_analystes_medium(env_file) -> None:
     assert f"TRADER_COMPANY_MICRO_GROK_HOME={root}/ops/grok-home-medium" in text
     assert "TRADER_ACPX_AGENT=grok-build" in text
     assert "TRADER_MODEL=grok-4.6" in text
+    assert "TRADER_FALLBACK_ACPX_AGENT=cursor" in text
+    assert "TRADER_FALLBACK_MODEL=cursor-grok-4.6-xhigh" in text
     assert "TRADER_REASONING_EFFORT=" not in text
     assert "KIMI_CODE_HOME=" not in text
+
+
+def test_preset_cursor_grok_place_les_cinq_roles_sur_cursor_et_inverse_le_brain(env_file) -> None:
+    _apply("cursor-grok", write=True)
+
+    text = env_file.read_text(encoding="utf-8")
+    assert "casys:model-preset=cursor-grok" in text
+    assert "TRADER_ACPX_AGENT=cursor" in text
+    assert "TRADER_MODEL=cursor-grok-4.6-xhigh" in text
+    assert "TRADER_FALLBACK_ACPX_AGENT=grok-build" in text
+    assert "TRADER_FALLBACK_MODEL=grok-4.6" in text
+    for role in ("CONSOLIDATOR", "UNIVERSE", "COMPANY_MICRO", "NEWS_MACRO"):
+        assert f"TRADER_{role}_ACPX_AGENT=cursor" in text
+        assert f"TRADER_{role}_MODEL=cursor-grok-4.6-xhigh" in text
+
+
+def test_preset_cursor_grok_versionne_le_timeout_par_appel_depuis_env_propre(env_file) -> None:
+    env_file.write_text("", encoding="utf-8")
+
+    _apply("cursor-grok", write=True)
+
+    text = env_file.read_text(encoding="utf-8")
+    begin = text.index("# >>> casys:model-preset=cursor-grok >>>")
+    end = text.index("# <<< casys:model-preset <<<")
+    block = text[begin:end]
+    assert "CASYS_ACPX_CALL_TIMEOUT_S=600" in block
+    assert text.count("CASYS_ACPX_CALL_TIMEOUT_S=") == 1
 
 
 def test_bascule_kimi_vers_grok_retire_kimi_et_pose_les_homes(env_file) -> None:

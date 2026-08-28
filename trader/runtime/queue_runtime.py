@@ -154,6 +154,21 @@ class QueueRuntimes:
     execute: ExecuteQueueRuntime
 
 
+def _primary_session_backend_bin(backend: object) -> str:
+    """Executable required at boot for the primary session transport.
+
+    Fallback binaries stay optional: Cursor as primary must have
+    ``cursor-agent`` even if acpx/grok is on PATH, and Grok/ACPX as
+    primary must not fail boot solely because ``cursor-agent`` is absent.
+    """
+
+    from trader.infrastructure.llm.cursor_backend import CursorAgentBackend
+
+    if isinstance(backend, CursorAgentBackend):
+        return str(getattr(backend, "cursor_bin", "") or "")
+    return str(getattr(backend, "acpx_bin", "") or "")
+
+
 def _stop_pool_after_failed_start(
     pool: StartablePool | None,
     *,
@@ -205,16 +220,15 @@ def start_decide_queue(
         from trader.agent import llm
 
         router = llm.build_default_router_from_env(spark_model=codex_client.DEFAULT_MODEL)
-        session_backends = [b for b in router.backends if isinstance(b, llm.AcpxBackend)]
+        session_backends = [b for b in router.backends if isinstance(b, llm.SessionLlmBackend)]
         if not session_backends:
             raise RuntimeError(
-                "[queue_decide] aucun AcpxBackend : le tour d'outils en file requiert un transport acpx "
-                "(vérifier TRADER_ACPX_BIN / provider spark)"
+                "[queue_decide] aucun backend LLM à session : le tour d'outils en file requiert "
+                "un transport session-capable (vérifier le provider Trader)"
             )
-        if not any(shutil.which(b.acpx_bin) for b in session_backends):
+        if shutil.which(_primary_session_backend_bin(session_backends[0])) is None:
             raise RuntimeError(
-                "[queue_decide] acpx introuvable sur le PATH pour le tour d'outils en file "
-                "(vérifier TRADER_ACPX_BIN)"
+                "[queue_decide] binaire du backend LLM introuvable sur le PATH pour le tour d'outils en file"
             )
         lease_ms = _decide_session_lease_ms(
             decision_timeout_s=decision_timeout_s,
@@ -378,9 +392,7 @@ def trade_plan_evaluator_from_worker_context(
             position_avg_price=position_avg_price,
             require_hard_stop=inputs.require_hard_stop,
             gate=gate,
-            reference_volatility=(
-                inputs.reference_volatility_by_symbol.get(symbol)
-            ),
+            reference_volatility=(inputs.reference_volatility_by_symbol.get(symbol)),
             bars=tuple(inputs.bars_by_symbol.get(symbol, [])),
             max_quantity=max_quantity,
             commission_model=inputs.commission_model,
@@ -436,22 +448,19 @@ def build_decide_tool_services(
     action_validator_factory = None
     trade_plan_evaluator_factory = None
     if worker_cycle_context is not None:
+
         def action_validator_factory(cycle_id: str | None):
             def action_validator(symbol: str, exit_update: dict) -> ExitUpdateValidation:
                 try:
                     raw_as_of = worker_cycle_context.get_open_plans_as_of(cycle_id)
                     try:
                         validation_now = (
-                            None
-                            if raw_as_of is None
-                            else datetime.fromisoformat(str(raw_as_of).replace("Z", "+00:00"))
+                            None if raw_as_of is None else datetime.fromisoformat(str(raw_as_of).replace("Z", "+00:00"))
                         )
                     except ValueError:
                         validation_now = None
                     return validate_exit_update(
-                        plan_store=SnapshotTradePlanStore(
-                            worker_cycle_context.get_raw_open_plans(cycle_id)
-                        ),
+                        plan_store=SnapshotTradePlanStore(worker_cycle_context.get_raw_open_plans(cycle_id)),
                         symbol=symbol,
                         exit_update=exit_update,
                         bars=worker_cycle_context.get_exit_validation_bars(symbol, cycle_id),

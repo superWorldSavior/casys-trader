@@ -116,13 +116,14 @@ def decide(
     llm_router: llm.LlmRouter | None = None,
 ) -> Decision | ContextResearchRequest:
     """Appelle Codex (via acpx) et renvoie une Decision validée. Tout échec -> HOLD."""
+    router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
     prompt = build_prompt(
         mandate=mandate,
         memory=memory,
         context=context,
         allow_context_request=allow_context_request,
+        execution_capability=llm.execution_capability_of(router),
     )
-    router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
     completion = router.complete(prompt, timeout_s=timeout_s)
     if isinstance(completion, llm.LlmFailure):
         return _hold_from_llm_failure(symbol, completion)
@@ -161,6 +162,7 @@ def decide_batch(
     session_followup: bool = False,
     llm_router: llm.LlmRouter | None = None,
     complete_fn: Callable[[str, int], llm.LlmCompletion | llm.LlmFailure] | None = None,
+    execution_capability: llm.LlmExecutionCapability | None = None,
 ) -> dict[str, Decision | ContextResearchRequest] | BatchToolCallRequest:
     """UN seul appel modèle pour TOUS les symboles dus : le contexte partagé n'est
     envoyé qu'une fois (vs N fois en mode par-symbole). Isolation per-élément +
@@ -174,12 +176,23 @@ def decide_batch(
     if not symbols:
         return {}
     payload = [{"symbol": sym, **(per_symbol.get(sym) or {})} for sym in symbols]
+    router = (
+        None
+        if complete_fn is not None
+        else (llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model))
+    )
     if session_followup:
         prompt = build_session_followup_prompt(
             symbols_payload=payload,
             allow_tool_calls=allow_tool_calls,
         )
     else:
+        if execution_capability is not None:
+            capability = execution_capability
+        elif router is not None:
+            capability = llm.execution_capability_of(router)
+        else:
+            capability = llm.LlmExecutionCapability.none()
         prompt = build_batch_prompt(
             mandate=mandate,
             memory=memory,
@@ -190,11 +203,12 @@ def decide_batch(
             use_symbol_calls_contract=use_symbol_calls_contract,
             max_tool_calls_per_symbol=max_tool_calls_per_symbol,
             max_rounds=max_rounds,
+            execution_capability=capability,
         )
     if complete_fn is not None:
         completion = complete_fn(prompt, timeout_s)
     else:
-        router = llm_router or llm.build_default_router_from_env(acpx_bin=acpx_bin, spark_model=model)
+        assert router is not None
         completion = router.complete(prompt, timeout_s=timeout_s)
     if isinstance(completion, llm.LlmFailure):
         return {sym: _hold_from_llm_failure(sym, completion) for sym in symbols}

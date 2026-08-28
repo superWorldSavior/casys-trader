@@ -27,6 +27,9 @@ from trader.infrastructure.state_db.world_model_store import (
     WORLD_MODEL_MIGRATIONS,
     WORLD_MODEL_REQUIRED_TABLES,
     WORLD_MODEL_SCHEMA_VERSION,
+    WORLD_PATTERN_LIFECYCLE_EVENTS_DDL,
+    WORLD_PREDICTION_IDENTITY_INDEX_DDL,
+    WORLD_PREDICTION_RECORDED_AT_INDEX_DDL,
     WorldModelConflictError,
     WorldModelSchemaMismatchError,
     WorldModelStore,
@@ -310,6 +313,21 @@ def test_predictions_are_immutable_and_listed_deterministically(store: WorldMode
     assert rows[0]["prediction"]["p_up"] == 0.6
     assert rows[0]["horizon_code"] == "elapsed_4h.v1"
     assert [row["prediction_id"] for row in store.list_predictions(horizon_id="elapsed_4h.v1")] == ["prediction-1"]
+    assert store.list_prediction_identities() == [
+        {
+            "episode_id": DEFAULT_EPISODE_ID,
+            "horizon_code": "elapsed_4h.v1",
+            "model_kind": "markov",
+            "model_version": "markov-v1",
+        }
+    ]
+    plan = store._db.query_all(
+        "EXPLAIN QUERY PLAN "
+        "SELECT DISTINCT episode_id, horizon_code, model_kind, model_version "
+        "FROM world_shadow_predictions "
+        "ORDER BY episode_id, horizon_code, model_kind, model_version"
+    )
+    assert any("COVERING INDEX idx_world_predictions_identity" in str(row["detail"]) for row in plan)
 
     conflict = deepcopy(prediction)
     conflict["prediction"]["p_up"] = 0.5  # type: ignore[index]
@@ -814,6 +832,12 @@ def test_current_schema_is_a_single_fresh_definition() -> None:
     assert "ALTER TABLE" not in sql
     assert sql.count("CREATE TABLE IF NOT EXISTS world_shadow_predictions") == 1
     assert ", study_cohort_id TEXT" not in sql
+    for statement in WORLD_PATTERN_LIFECYCLE_EVENTS_DDL:
+        assert statement in WORLD_MODEL_MIGRATIONS[0][1]
+    assert WORLD_PREDICTION_IDENTITY_INDEX_DDL in WORLD_MODEL_MIGRATIONS[0][1]
+    assert "world_pattern_lifecycle_events" in sql
+    assert "idx_world_pattern_lifecycle_events_cohort_start" in sql
+    assert "idx_world_pattern_lifecycle_events_evaluation_ready" in sql
 
 
 def test_unrecognized_migration_version_is_rejected_while_cold_and_exact_restart_work(
@@ -1091,6 +1115,118 @@ def test_incomplete_current_version_missing_tables_is_rejected(tmp_path: Path) -
     db.close()
     with pytest.raises(WorldModelSchemaMismatchError, match="missing required tables"):
         WorldModelStore(db_path)
+
+
+def test_existing_v1_db_missing_only_lifecycle_table_is_added_non_destructively(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    db = StateDb(db_path)
+    prior_v1 = [stmt for stmt in WORLD_MODEL_MIGRATIONS[0][1] if stmt not in WORLD_PATTERN_LIFECYCLE_EVENTS_DDL]
+    db.apply_migrations([(1, prior_v1)])
+    keep_id = "world_cohort:v1:" + "c" * 64
+    with db.transaction() as cur:
+        cur.execute(
+            """
+            INSERT INTO world_cohort_manifests(
+                cohort_id, manifest_sha256, payload_json, payload_sha256, recorded_at
+            ) VALUES (?, ?, '{}', ?, ?)
+            """,
+            (keep_id, "a" * 64, "b" * 64, "2026-08-22T00:00:00+00:00"),
+        )
+    names = {row["name"] for row in db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "world_pattern_lifecycle_events" not in names
+    assert "world_episodes" in names
+    assert "world_pattern_hypothesis_events" in names
+    versions = [int(row["version"]) for row in db.query_all("SELECT version FROM schema_migrations")]
+    assert versions == [1]
+    db.close()
+
+    store = WorldModelStore(db_path)
+    try:
+        names = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "world_pattern_lifecycle_events" in names
+        kept = store._db.query_one(
+            "SELECT cohort_id FROM world_cohort_manifests WHERE cohort_id=?",
+            (keep_id,),
+        )
+        assert kept is not None
+        assert kept["cohort_id"] == keep_id
+        versions = [int(row["version"]) for row in store._db.query_all("SELECT version FROM schema_migrations")]
+        assert versions == [WORLD_MODEL_SCHEMA_VERSION] == [1]
+        triggers = {row["name"] for row in store._db.query_all("SELECT name FROM sqlite_master WHERE type='trigger'")}
+        assert "world_pattern_lifecycle_events_no_update" in triggers
+        assert "world_pattern_lifecycle_events_no_delete" in triggers
+    finally:
+        store.close()
+
+
+def test_existing_v1_db_gets_prediction_identity_index_non_destructively(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    db = StateDb(db_path)
+    prior_v1 = [stmt for stmt in WORLD_MODEL_MIGRATIONS[0][1] if stmt != WORLD_PREDICTION_IDENTITY_INDEX_DDL]
+    db.apply_migrations([(1, prior_v1)])
+    indexes = {
+        row["name"]
+        for row in db.query_all(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='world_shadow_predictions'"
+        )
+    }
+    assert "idx_world_predictions_identity" not in indexes
+    db.close()
+
+    store = WorldModelStore(db_path)
+    try:
+        indexes = {
+            row["name"]
+            for row in store._db.query_all(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='world_shadow_predictions'"
+            )
+        }
+        assert "idx_world_predictions_identity" in indexes
+        versions = [int(row["version"]) for row in store._db.query_all("SELECT version FROM schema_migrations")]
+        assert versions == [WORLD_MODEL_SCHEMA_VERSION] == [1]
+    finally:
+        store.close()
+
+
+def test_existing_v1_db_gets_prediction_recorded_at_index_non_destructively(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    db = StateDb(db_path)
+    prior_v1 = [stmt for stmt in WORLD_MODEL_MIGRATIONS[0][1] if stmt != WORLD_PREDICTION_RECORDED_AT_INDEX_DDL]
+    db.apply_migrations([(1, prior_v1)])
+    indexes = {
+        row["name"]
+        for row in db.query_all(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='world_shadow_predictions'"
+        )
+    }
+    assert "idx_world_predictions_recorded_at" not in indexes
+    db.close()
+
+    store = WorldModelStore(db_path)
+    try:
+        indexes = {
+            row["name"]
+            for row in store._db.query_all(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='world_shadow_predictions'"
+            )
+        }
+        assert "idx_world_predictions_recorded_at" in indexes
+        assert "idx_world_predictions_identity" in indexes
+        versions = [int(row["version"]) for row in store._db.query_all("SELECT version FROM schema_migrations")]
+        assert versions == [WORLD_MODEL_SCHEMA_VERSION] == [1]
+        plan = store._db.query_all(
+            "EXPLAIN QUERY PLAN "
+            "SELECT recorded_at, prediction_id FROM world_shadow_predictions "
+            "WHERE recorded_at < ? ORDER BY recorded_at, prediction_id",
+            ("2026-08-25",),
+        )
+        assert any(
+            "COVERING INDEX idx_world_predictions_recorded_at" in str(row["detail"])
+            and "recorded_at<?" in str(row["detail"])
+            for row in plan
+        )
+    finally:
+        store.close()
 
 
 def test_graph_slot_lookup_survives_reopen(tmp_path: Path) -> None:

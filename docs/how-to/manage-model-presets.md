@@ -5,9 +5,12 @@
 > `ops/model-presets/*.env` · **Cible** : `.env`.
 
 Un preset configure ensemble les cinq rôles LLM : brain trader,
-consolidateur, agent Univers, analyste micro et analyste macro/news. Le daemon
-ne relit pas le `.env` à chaud : toute bascule réellement écrite doit être
-suivie d'un redémarrage.
+consolidateur, agent Univers, analyste micro et analyste macro/news. Le
+preset versionné actuel est `cursor-grok` (Cursor CLI xhigh non-fast, repli
+xAI `grok-build`/`grok-4.6`, timeout par-appel 600 s). Le daemon ne relit
+pas le `.env` à chaud : toute bascule réellement écrite doit être suivie
+d'un redémarrage. L'autorité reste `ops/model-presets/*.env` via
+`scripts/model_preset.py`, pas une édition manuelle du `.env` live.
 
 ## 1. Inspecter l'état courant
 

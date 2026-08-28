@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -15,6 +16,43 @@ from .acpx import (
     _profile_config_identity,
 )
 from .common import _clean
+
+_CURSOR_GROK_XHIGH_NONFAST_MODEL = "cursor-grok-4.6-xhigh"
+_CURSOR_GROK_XHIGH_NONFAST_DISPLAY_NAME = "Cursor Grok 4.6 Extra High"
+
+
+def _cursor_agent_profile_fingerprint(backend: object) -> str | None:
+    """Capture the fixed native Cursor invocation, never an ACP profile."""
+
+    cursor_bin = _clean(getattr(backend, "cursor_bin", None))
+    resolved = shutil.which(cursor_bin) if cursor_bin else None
+    if resolved is None or _clean(getattr(backend, "model", None)) != _CURSOR_GROK_XHIGH_NONFAST_MODEL:
+        return None
+    try:
+        executable = Path(resolved).resolve(strict=True)
+        executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    if getattr(backend, "allow_native_exec", None) is not False:
+        return None
+    causal = {
+        "schema": "cursor_cli_execution_profile_v2",
+        "entrypoint": str(executable),
+        "entrypoint_sha256": executable_hash,
+        "model": _CURSOR_GROK_XHIGH_NONFAST_MODEL,
+        "announced_model": _CURSOR_GROK_XHIGH_NONFAST_DISPLAY_NAME,
+        "reasoning_effort": "xhigh",
+        "fast": False,
+        "mode": "ask",
+        "sandbox": "enabled",
+        "native_exec": False,
+        "workspace": "temporary_outside_repository",
+        "executable_path": "system_minimal",
+    }
+    return (
+        "sha256:"
+        + hashlib.sha256(json.dumps(causal, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    )
 
 
 def _provider_endpoint_fingerprint(backend: object) -> str | None:
@@ -75,6 +113,14 @@ def model_profiles_from_backends(backends: object, *, repo_root: str | Path) -> 
                     transport=acpx_transport_cache[configured_acpx_bin],
                     adapter=_agent_adapter_fingerprint(invocation) if invocation is not None else None,
                 ),
+            }
+        elif type(backend).__name__ == "CursorAgentBackend":
+            profile = {
+                "configured_model": model,
+                "transport": "cursor-cli",
+                "agent": "cursor-agent",
+                "reasoning_effort": "xhigh",
+                "profile_fingerprint": _cursor_agent_profile_fingerprint(backend),
             }
         else:
             profile = {

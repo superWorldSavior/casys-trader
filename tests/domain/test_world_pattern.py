@@ -26,6 +26,8 @@ from trader.domain.world_graph import (
 from trader.domain.world_macro import MACRO_PRODUCER_VERSION, MACRO_TRANSFORM_VERSION
 from trader.domain.world_pattern import (
     PATTERN_ASSOCIATION_METRIC,
+    PATTERN_DISCOVERY_COMPLETED_EVENT_TYPE,
+    PATTERN_DISCOVERY_COMPLETED_SCHEMA,
     PATTERN_EVALUATION_HORIZON_IDS,
     PATTERN_HYPOTHESIS_EVENT_TYPES,
     PATTERN_HYPOTHESIS_SCHEMA,
@@ -33,6 +35,7 @@ from trader.domain.world_pattern import (
     PATTERN_OCCURRENCE_EVENT_TYPES,
     PATTERN_OCCURRENCE_SCHEMA,
     PATTERN_OUTCOME_LINK_SCHEMA,
+    PatternDiscoveryCompleted,
     PatternEvaluationClosed,
     PatternEvaluationStarted,
     PatternForecast,
@@ -864,7 +867,10 @@ def test_formation_stats_invariants_and_spec_roundtrip() -> None:
             association_metric=PATTERN_ASSOCIATION_METRIC,
             association_score=0.99,
         )
-    spec = _spec(target=PatternTarget(entity_kind="instrument", horizon_id="elapsed_1d.v1", move_distribution=pattern), stats=stats)
+    spec = _spec(
+        target=PatternTarget(entity_kind="instrument", horizon_id="elapsed_1d.v1", move_distribution=pattern),
+        stats=stats,
+    )
     assert spec.stats.association_metric == PATTERN_ASSOCIATION_METRIC
     assert PatternHypothesisSpec.from_mapping(spec.to_dict()) == spec
     with pytest.raises(ValueError, match="move_distribution"):
@@ -1043,3 +1049,98 @@ def test_prospective_occurrence_keeps_4h_1d_3d_pending_until_linked() -> None:
     assert linked.active_outcome_link("elapsed_1d.v1") is not None
     assert linked.active_outcome_link("elapsed_4h.v1") is None
     assert linked.active_outcome_link("elapsed_3d.v1") is None
+
+
+DISCOVERY_COHORT = f"world_cohort:v1:{canonical_sha256({'cohort': 'discovery'})}"
+DISCOVERY_STARTED = f"world_cohort_event:v1:{canonical_sha256({'started': 'discovery'})}"
+DISCOVERY_MANIFEST = canonical_sha256({"manifest": "pattern-discovery"})
+DISCOVERY_HYP_A = f"pattern_hypothesis:v1:{'a' * 64}"
+DISCOVERY_HYP_B = f"pattern_hypothesis:v1:{'b' * 64}"
+
+
+def _discovery_completed(**overrides: object) -> PatternDiscoveryCompleted:
+    values: dict[str, object] = {
+        "evaluation_cohort_id": DISCOVERY_COHORT,
+        "manifest_sha256": DISCOVERY_MANIFEST,
+        "formation_dataset_fingerprint": FORMATION_FP,
+        "evaluation_dataset_fingerprint": EVAL_FP,
+        "started_event_id": DISCOVERY_STARTED,
+        "formation_cutoff": FORMATION,
+        "evaluation_start_not_before": EVAL_NOT_BEFORE,
+        "selected_hypothesis_ids": (),
+        "selected_count": 0,
+    }
+    values.update(overrides)
+    return PatternDiscoveryCompleted(**values)  # type: ignore[arg-type]
+
+
+def test_pattern_discovery_completed_zero_selection_roundtrip_and_determinism() -> None:
+    event = _discovery_completed()
+    assert event.schema_version == PATTERN_DISCOVERY_COMPLETED_SCHEMA
+    assert event.event_type == PATTERN_DISCOVERY_COMPLETED_EVENT_TYPE
+    assert event.selected_hypothesis_ids == ()
+    assert event.selected_count == 0
+    assert event.shadow_only is True
+    assert event.decision_effect == "none"
+    assert event.learning_authority == "shadow_only"
+    assert event.event_id.startswith("pattern_discovery_completed:v1:")
+    assert event.evaluation_cohort_id == DISCOVERY_COHORT
+    assert event.started_event_id == DISCOVERY_STARTED
+    replayed = PatternDiscoveryCompleted.from_mapping(event.to_dict())
+    assert replayed == event
+    assert replayed.event_id == event.event_id
+    assert PatternDiscoveryCompleted.from_mapping(json.loads(json.dumps(event.to_dict()))) == event
+    same = _discovery_completed()
+    assert same.event_id == event.event_id
+    selected = _discovery_completed(selected_hypothesis_ids=(DISCOVERY_HYP_A, DISCOVERY_HYP_B), selected_count=2)
+    assert selected.selected_count == 2
+    assert selected.selected_hypothesis_ids == (DISCOVERY_HYP_A, DISCOVERY_HYP_B)
+    assert selected.event_id != event.event_id
+    assert selected.event_id.startswith("pattern_discovery_completed:v1:")
+    assert PatternDiscoveryCompleted.from_mapping(selected.to_dict()) == selected
+
+
+def test_pattern_discovery_completed_is_frozen() -> None:
+    event = _discovery_completed()
+    with pytest.raises(FrozenInstanceError):
+        event.selected_count = 1  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        event.shadow_only = False  # type: ignore[misc]
+    with pytest.raises((TypeError, AttributeError)):
+        event.selected_hypothesis_ids.append(DISCOVERY_HYP_A)  # type: ignore[attr-defined]
+
+
+def test_pattern_discovery_completed_rejects_invalid_order_hash_id_duplicates_count_and_claims() -> None:
+    with pytest.raises(ValueError, match="strictly later|formation_cutoff"):
+        _discovery_completed(evaluation_start_not_before=FORMATION)
+    with pytest.raises(ValueError, match="strictly later|formation_cutoff"):
+        _discovery_completed(formation_cutoff=EVAL_NOT_BEFORE, evaluation_start_not_before=FORMATION)
+    with pytest.raises(ValueError, match="sha256"):
+        _discovery_completed(manifest_sha256=DISCOVERY_MANIFEST.upper())
+    with pytest.raises(ValueError, match="sha256"):
+        _discovery_completed(formation_dataset_fingerprint="F" * 64)
+    with pytest.raises(ValueError, match="sha256"):
+        _discovery_completed(evaluation_dataset_fingerprint="0" * 63)
+    with pytest.raises(ValueError, match="evaluation_cohort_id"):
+        _discovery_completed(evaluation_cohort_id="world_cohort:graph_pilot")
+    with pytest.raises(ValueError, match="started_event_id"):
+        _discovery_completed(started_event_id=f"pattern_hypothesis_event:v1:{'c' * 64}")
+    with pytest.raises(ValueError, match="hypothesis_id"):
+        _discovery_completed(selected_hypothesis_ids=("not-a-hypothesis-id",), selected_count=1)
+    with pytest.raises(ValueError, match="duplicates"):
+        _discovery_completed(selected_hypothesis_ids=(DISCOVERY_HYP_A, DISCOVERY_HYP_A), selected_count=2)
+    with pytest.raises(ValueError, match="selected_count"):
+        _discovery_completed(selected_hypothesis_ids=(DISCOVERY_HYP_A,), selected_count=0)
+    with pytest.raises(ValueError, match="selected_count"):
+        _discovery_completed(selected_count=1)
+    with pytest.raises(ValueError, match="shadow_only"):
+        _discovery_completed(shadow_only=False)
+    with pytest.raises(ValueError, match="decision_effect"):
+        _discovery_completed(decision_effect="trade")
+    with pytest.raises(ValueError, match="learning_authority"):
+        _discovery_completed(learning_authority="live")
+    valid = _discovery_completed()
+    with pytest.raises(ValueError, match="event_id"):
+        PatternDiscoveryCompleted.from_mapping(
+            {**valid.to_dict(), "event_id": f"pattern_discovery_completed:v1:{'0' * 64}"}
+        )

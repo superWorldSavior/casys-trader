@@ -26,7 +26,7 @@ NOW = datetime(2026, 8, 24, 4, 0, tzinfo=UTC)
 CONFIG_PATH = REPO_ROOT / "config" / "world_shadow_resource_budget.yaml"
 MODULE_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "resource_budget.py"
 PORTS_PATH = REPO_ROOT / "trader" / "application" / "world_model" / "resource_ports.py"
-GiB = 1024 ** 3
+GiB = 1024**3
 
 
 class FakeProbe:
@@ -80,7 +80,8 @@ def test_committed_resource_budget_config_is_versioned_hashed_and_conservative()
     assert claimed == canonical_sha256(hashed)
     budget = load_world_shadow_resource_budget(REPO_ROOT / "config")
     assert budget.content_sha256 == claimed
-    assert budget.max_db_bytes == DEFAULT_MAX_DB_BYTES
+    assert budget.max_db_bytes == 3 * GiB
+    assert DEFAULT_MAX_DB_BYTES == 2 * GiB
     assert budget.min_free_bytes == DEFAULT_MIN_FREE_BYTES
     assert budget.warn_interval_seconds == DEFAULT_WARN_INTERVAL_SECONDS
     source = CONFIG_PATH.read_text(encoding="utf-8")

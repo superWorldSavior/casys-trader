@@ -123,6 +123,9 @@ class MemoryWorldStore:
     def list_predictions(self) -> list[dict[str, object]]:
         return list(self.predictions.values())
 
+    def list_prediction_identities(self) -> list[dict[str, object]]:
+        return list(self.predictions.values())
+
     def list_pending_episodes(
         self,
         *,
@@ -604,6 +607,91 @@ def test_background_runner_preserves_the_snapshot_clock_for_delayed_prediction()
     assert runtime.mature_clock == NOW
     assert runtime.capture_clock == NOW
     assert runner.status()["capture"]["as_of"] == NOW.isoformat()
+
+
+def test_background_runner_runs_pattern_lifecycle_after_capture() -> None:
+    calls: list[tuple[str, object]] = []
+
+    class RecordingRuntime:
+        def mature_pending(self, now: datetime, **_kwargs) -> dict[str, object]:
+            calls.append(("mature", now))
+            return {"status": "ok"}
+
+        def capture_and_predict(self, _episodes, *, now: datetime) -> dict[str, object]:
+            calls.append(("capture", now))
+            return {"status": "ok"}
+
+    class Result:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "completed", "authority": "shadow_only"}
+
+    class PatternWorkflow:
+        def run(self, as_of: datetime) -> Result:
+            calls.append(("patterns", as_of))
+            return Result()
+
+    runner = WorldModelBackgroundRunner(
+        runtime=RecordingRuntime(),  # type: ignore[arg-type]
+        pattern_workflow=PatternWorkflow(),
+    )
+    triggered = runner.trigger(episodes=[_episode("e-pattern")], now=NOW)
+    triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
+
+    assert calls == [("mature", NOW), ("capture", NOW), ("patterns", NOW)]
+    assert runner.status()["pattern_lifecycle"] == {
+        "status": "completed",
+        "authority": "shadow_only",
+    }
+
+
+def test_background_runner_pattern_failure_is_fail_open_and_reported() -> None:
+    class RecordingRuntime:
+        def mature_pending(self, _now: datetime, **_kwargs) -> dict[str, object]:
+            return {"status": "ok"}
+
+        def capture_and_predict(self, _episodes, **_kwargs) -> dict[str, object]:
+            return {"status": "ok"}
+
+    class BrokenPatternWorkflow:
+        def run(self, _as_of: datetime) -> object:
+            raise OSError("pattern store unavailable")
+
+    runner = WorldModelBackgroundRunner(
+        runtime=RecordingRuntime(),  # type: ignore[arg-type]
+        pattern_workflow=BrokenPatternWorkflow(),
+    )
+    triggered = runner.trigger(episodes=[_episode("e-pattern-fail")], now=NOW)
+    triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
+
+    status = runner.status()
+    assert status["status"] == "partial"
+    assert status["capture"] == {"status": "ok"}
+    assert status["errors"][-1]["stage"] == "pattern_lifecycle"
+
+
+def test_background_runner_propagates_partial_pattern_status_without_raising() -> None:
+    class RecordingRuntime:
+        def mature_pending(self, _now: datetime, **_kwargs) -> dict[str, object]:
+            return {"status": "ok"}
+
+        def capture_and_predict(self, _episodes, **_kwargs) -> dict[str, object]:
+            return {"status": "ok"}
+
+    class PartialPatternWorkflow:
+        def run(self, _as_of: datetime) -> dict[str, object]:
+            return {"status": "partial", "stages": [{"stage": "evaluation", "status": "failed"}]}
+
+    runner = WorldModelBackgroundRunner(
+        runtime=RecordingRuntime(),  # type: ignore[arg-type]
+        pattern_workflow=PartialPatternWorkflow(),
+    )
+    triggered = runner.trigger(episodes=[_episode("e-pattern-partial")], now=NOW)
+    triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
+
+    status = runner.status()
+    assert status["status"] == "partial"
+    assert status["errors"] == []
+    assert status["pattern_lifecycle"]["status"] == "partial"
 
 
 def test_real_domain_store_labeler_and_restart_rehydrate_all_models(tmp_path) -> None:

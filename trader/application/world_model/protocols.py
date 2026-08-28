@@ -37,6 +37,8 @@ class WorldModelLedger(Protocol):
 
     def list_predictions(self) -> Sequence[Mapping[str, object]]: ...
 
+    def list_prediction_identities(self) -> Sequence[Mapping[str, object]]: ...
+
     def list_observed_outcomes(
         self,
         *,

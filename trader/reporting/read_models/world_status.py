@@ -86,7 +86,11 @@ def read_world_model_status(
             payload["error"] = ledger["error"]
         return payload
 
-    evaluation = evaluate_shadow(ledger["predictions"], ledger["outcomes"])
+    evaluation = evaluate_shadow(
+        ledger["predictions"],
+        ledger["outcomes"],
+        episodes=ledger.get("episodes") or (),
+    )
     impact = evaluate_world_shadow_impact(ledger["predictions"], ledger["outcomes"])
     return {
         **base,

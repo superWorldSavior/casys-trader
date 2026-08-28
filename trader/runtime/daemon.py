@@ -2203,6 +2203,7 @@ def main(
                 WorldModelBackgroundRunner,
                 WorldModelRuntime,
                 compose_local_graph_lanes,
+                compose_pattern_shadow_workflow,
                 compose_world_ontology_attestation,
                 compose_world_resource_guard,
             )
@@ -2309,6 +2310,20 @@ def main(
                         exc,
                     )
                     graph_enricher = None
+            pattern_workflow = None
+            if graph_enricher is not None:
+                try:
+                    pattern_workflow = compose_pattern_shadow_workflow(
+                        enabled=True,
+                        store=_world_model_store,
+                        macro_root=STATE_DIR / "world_macro",
+                    )
+                except Exception as exc:  # noqa: BLE001 - patterns cannot block graph/market/Trader
+                    log.warning(
+                        "[world_model_shadow] pattern lifecycle disabled after compose failure: %s:%s",
+                        type(exc).__name__,
+                        exc,
+                    )
             _world_model_runtime = WorldModelRuntime(
                 store=_world_model_store,
                 predictor=HierarchicalDirichletWorldBaseline(),
@@ -2337,6 +2352,7 @@ def main(
                 logger=log,
                 context_enricher=context_enricher,
                 graph_enricher=graph_enricher,
+                pattern_workflow=pattern_workflow,
                 resource_guard=_world_resource_guard,
             )
             claimed_resources.world_model_store = _world_model_store
@@ -2347,10 +2363,11 @@ def main(
             if graph_enricher is not None:
                 _world_model_lane_count += 2
             log.info(
-                "[world_model_shadow] enabled db=%s authority=shadow_only context=%s graph=%s lanes=%s resource_budget=%s",
+                "[world_model_shadow] enabled db=%s authority=shadow_only context=%s graph=%s patterns=%s lanes=%s resource_budget=%s",
                 STATE_DIR / "world_model.db",
                 int(_world_model_context),
                 int(graph_enricher is not None),
+                int(pattern_workflow is not None),
                 _world_model_lane_count,
                 "on" if _world_resource_guard is not None else "off",
             )

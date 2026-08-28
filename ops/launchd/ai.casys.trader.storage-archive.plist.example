@@ -5,6 +5,8 @@
     <key>Label</key>
     <string>ai.casys.trader.storage-archive</string>
 
+    <!-- Agent-generated storage retention only. World Prediction Parquet export
+         stays manual/shadow until a separate scheduling decision. -->
     <!-- uv as an absolute path: launchd does not inherit the shell PATH. -->
     <key>ProgramArguments</key>
     <array>
@@ -16,10 +18,19 @@
         <string>--older-than</string>
         <string>7</string>
         <string>--apply</string>
+        <string>--output-format</string>
+        <string>jsonl</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>/ABSOLUTE/PATH/TO/casys-trader</string>
+
+    <!-- launchd PATH is /usr/bin:/bin; ACPX is `#!/usr/bin/env node`. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
 
     <!-- Sunday 04:00: outside the session on EU/US/TW venues. -->
     <key>StartCalendarInterval</key>
@@ -46,5 +57,8 @@
     <true/>
     <key>Nice</key>
     <integer>10</integer>
+    <!-- 077 octal: files created by the job stay owner-only. -->
+    <key>Umask</key>
+    <integer>63</integer>
 </dict>
 </plist>

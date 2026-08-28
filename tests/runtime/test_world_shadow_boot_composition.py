@@ -15,7 +15,11 @@ from trader.domain.world_feature_contract import (
 )
 from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
-from trader.runtime.world_model_runtime import WorldModelBackgroundRunner, compose_world_resource_guard
+from trader.runtime.world_model_runtime import (
+    WorldModelBackgroundRunner,
+    compose_pattern_shadow_workflow,
+    compose_world_resource_guard,
+)
 
 
 UTC = timezone.utc
@@ -91,12 +95,24 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         )
         assert enricher is not None
         assert predictors
+        pattern_workflow = compose_pattern_shadow_workflow(
+            enabled=True,
+            store=store,
+            macro_root=tmp_path / "world_macro",
+        )
+        assert pattern_workflow is not None
+        pattern_result = pattern_workflow.run(BOOT)
+        assert pattern_result.status == "completed"
+        assert pattern_result.discovered_count == 0
+        assert pattern_result.selected_hypothesis_ids == ()
         runner = WorldModelBackgroundRunner(
             runtime=object(),  # type: ignore[arg-type]
             resource_guard=guard,
             graph_enricher=enricher,
+            pattern_workflow=pattern_workflow,
         )
         assert runner.resource_guard is guard
+        assert runner.pattern_workflow is pattern_workflow
         signature = inspect.signature(WorldModelBackgroundRunner.__init__)
         for name in signature.parameters:
             lowered = name.lower()
@@ -128,6 +144,8 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         assert world_boot.index("ensure_published") < world_boot.index("activate_world_shadow_pilot(")
         assert "graph_enabled=_world_model_graph" in boot
         assert "compose_world_resource_guard(" in world_boot
+        assert "compose_pattern_shadow_workflow(" in world_boot
+        assert "pattern_workflow=" in world_boot
         assert "resource_guard=" in world_boot
         assert "trader_callback" not in world_boot
         assert "mapping reconcile cannot block market/Trader" in boot

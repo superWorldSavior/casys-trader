@@ -16,6 +16,36 @@ _DAEMON_MAIN_AGENT_EXEC_ENV_KEYS = (
     "TRADER_REASONING_EFFORT",
 )
 
+# Knobs de routage/modèle/preset que load_dotenv() et daemon.main() peuvent
+# injecter dans os.environ. Snapshot/restore process-level : une mutation
+# volontaire (monkeypatch) reste visible pendant le test, mais ne fuit pas.
+_LLM_ROUTING_ROLE_PREFIXES = (
+    "",
+    "CONSOLIDATOR_",
+    "UNIVERSE_",
+    "COMPANY_MICRO_",
+    "NEWS_MACRO_",
+)
+_LLM_ROUTING_FIELDS = (
+    "ACPX_AGENT",
+    "MODEL",
+    "ACPX_BIN",
+    "ACPX_SESSION_LABEL",
+    "CODEX_HOME",
+    "GROK_HOME",
+    "REASONING_EFFORT",
+    "FALLBACK_ACPX_AGENT",
+    "FALLBACK_MODEL",
+)
+_LLM_ROUTING_ENV_KEYS = tuple(
+    f"TRADER_{prefix}{field}" for prefix in _LLM_ROUTING_ROLE_PREFIXES for field in _LLM_ROUTING_FIELDS
+) + (
+    "TRADER_SPARK_FALLBACK_MODEL",
+    "CODEX_HOME",
+    "GROK_HOME",
+    "KIMI_CODE_HOME",
+)
+
 # Les builders d'analystes appellent load_dotenv() : sans neutralisation, un test
 # qui en instancie un injecte le .env de la machine dans os.environ, et un test
 # ultérieur lisant un timeout hérite de la valeur locale au lieu du défaut code.
@@ -25,6 +55,18 @@ _ANALYST_TIMEOUT_ENV_KEYS = (
     "TRADER_NEWS_MACRO_TIMEOUT_S",
     "TRADER_COMPANY_MICRO_TIMEOUT_S",
 )
+
+
+def _snapshot_environ(keys: tuple[str, ...]) -> dict[str, str | None]:
+    return {key: os.environ.get(key) for key in keys}
+
+
+def _restore_environ(snapshot: dict[str, str | None]) -> None:
+    for key, value in snapshot.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 @pytest.fixture(autouse=True)
@@ -62,13 +104,23 @@ def _restore_daemon_main_agent_exec_env():
     Couvre CASYS_AGENT_EXEC, CASYS_AGENT_EXEC_CWD et CODEX_HOME afin qu'un test
     appelant daemon.main() ne pollue pas l'environnement des tests suivants.
     """
-    snapshot = {key: os.environ.get(key) for key in _DAEMON_MAIN_AGENT_EXEC_ENV_KEYS}
+    snapshot = _snapshot_environ(_DAEMON_MAIN_AGENT_EXEC_ENV_KEYS)
     yield
-    for key, value in snapshot.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+    _restore_environ(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _restore_llm_routing_env():
+    """Restaure les knobs LLM après chaque test, sans les vider au départ.
+
+    daemon.main() et les builders analystes appellent load_dotenv() sur le .env
+    du dépôt. Sans restore, TRADER_ACPX_AGENT/TRADER_MODEL/fallback/rôle fuient
+    vers les builders « défaut » suivants. monkeypatch du test reste prioritaire
+    pendant le test ; le teardown rétablit le baseline process.
+    """
+    snapshot = _snapshot_environ(_LLM_ROUTING_ENV_KEYS)
+    yield
+    _restore_environ(snapshot)
 
 
 @pytest.fixture(autouse=True)
@@ -130,11 +182,7 @@ def evaluate_batch_test_decisions(kwargs: dict, decisions: dict) -> dict:
             evaluator = provider(str(symbol))
             candidate = candidate_from_decision(
                 value,
-                position_quantity=(
-                    None
-                    if evaluator is None
-                    else getattr(evaluator, "position_quantity", None)
-                ),
+                position_quantity=(None if evaluator is None else getattr(evaluator, "position_quantity", None)),
             )
             if candidate is not None and evaluator is not None:
                 evaluation = evaluator.evaluate(candidate)
@@ -224,9 +272,7 @@ def write_runtime_config(
     (root / "config").mkdir(exist_ok=True)
     (root / "mandate").mkdir(exist_ok=True)
     symbols_yaml = "".join(f"  - {s}\n" for s in symbols)
-    (root / "config" / "universe.yaml").write_text(
-        f"starting_cash: {starting_cash}\nsymbols:\n{symbols_yaml}"
-    )
+    (root / "config" / "universe.yaml").write_text(f"starting_cash: {starting_cash}\nsymbols:\n{symbols_yaml}")
     risk_lines = [
         f"max_position_value: {max_position_value}",
         f"max_gross_exposure: {max_gross_exposure}",

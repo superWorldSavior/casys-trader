@@ -72,10 +72,16 @@ __all__ = [
     "WORLD_MODEL_REQUIRED_TABLES",
     "WORLD_MODEL_SCHEMA_VERSION",
     "WORLD_MODEL_STORE_ID",
+    "WORLD_PATTERN_LIFECYCLE_EVENTS_DDL",
+    "WORLD_PREDICTION_IDENTITY_INDEX_DDL",
+    "WORLD_PREDICTION_RECORDED_AT_INDEX_DDL",
     "WorldModelConflictError",
     "WorldModelSchemaMismatchError",
     "WorldModelStore",
     "apply_current_world_model_schema",
+    "ensure_world_prediction_identity_index",
+    "ensure_world_prediction_recorded_at_index",
+    "ensure_world_pattern_lifecycle_events_schema",
 ]
 
 
@@ -120,6 +126,9 @@ def _assert_current_world_model_schema(db: StateDb) -> None:
 
 def apply_current_world_model_schema(db: StateDb) -> None:
     db.apply_migrations(WORLD_MODEL_MIGRATIONS)
+    ensure_world_pattern_lifecycle_events_schema(db)
+    ensure_world_prediction_identity_index(db)
+    ensure_world_prediction_recorded_at_index(db)
     _assert_current_world_model_schema(db)
 
 
@@ -151,12 +160,99 @@ WORLD_MODEL_REQUIRED_TABLES = frozenset(
         "world_ontology_revisions",
         "world_outcome_events",
         "world_pattern_hypothesis_events",
+        "world_pattern_lifecycle_events",
         "world_pattern_occurrence_events",
         "world_pattern_outcome_links",
         "world_relation_events",
         "world_shadow_predictions",
     }
 )
+
+WORLD_PATTERN_LIFECYCLE_EVENTS_DDL = (
+    """
+CREATE TABLE IF NOT EXISTS world_pattern_lifecycle_events (
+                event_id                         TEXT PRIMARY KEY,
+                event_type                       TEXT NOT NULL,
+                evaluation_cohort_id             TEXT NOT NULL,
+                started_event_id                 TEXT NOT NULL,
+                manifest_sha256                  TEXT NOT NULL,
+                formation_cutoff                 TEXT NOT NULL,
+                evaluation_start_not_before      TEXT NOT NULL,
+                formation_dataset_fingerprint    TEXT NOT NULL,
+                evaluation_dataset_fingerprint   TEXT NOT NULL,
+                selected_count                   INTEGER NOT NULL,
+                payload_json                     TEXT NOT NULL,
+                payload_sha256                   TEXT NOT NULL,
+                recorded_at                      TEXT NOT NULL,
+                UNIQUE(evaluation_cohort_id, started_event_id)
+            )
+            """,
+    """
+CREATE INDEX IF NOT EXISTS idx_world_pattern_lifecycle_events_cohort_start
+            ON world_pattern_lifecycle_events(evaluation_cohort_id, started_event_id, event_id)
+            """,
+    """
+CREATE INDEX IF NOT EXISTS idx_world_pattern_lifecycle_events_evaluation_ready
+            ON world_pattern_lifecycle_events(evaluation_start_not_before, evaluation_cohort_id, event_id)
+            """,
+    """
+CREATE TRIGGER IF NOT EXISTS world_pattern_lifecycle_events_no_delete
+            BEFORE DELETE ON world_pattern_lifecycle_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_lifecycle_events are append-only');
+            END
+            """,
+    """
+CREATE TRIGGER IF NOT EXISTS world_pattern_lifecycle_events_no_update
+            BEFORE UPDATE ON world_pattern_lifecycle_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_lifecycle_events are append-only');
+            END
+            """,
+)
+
+
+def ensure_world_pattern_lifecycle_events_schema(db: StateDb) -> None:
+    """Idempotently add the lifecycle ledger to an already-applied v1 file."""
+
+    with db.transaction() as cur:
+        for statement in WORLD_PATTERN_LIFECYCLE_EVENTS_DDL:
+            cur.execute(statement)
+
+
+WORLD_PREDICTION_IDENTITY_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_world_predictions_identity
+            ON world_shadow_predictions(episode_id, horizon_code, model_kind, model_version)
+            """
+
+
+def ensure_world_prediction_identity_index(db: StateDb) -> None:
+    """Add the covering startup identity index to already-applied v1 ledgers."""
+
+    table = db.query_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_shadow_predictions'")
+    if table is None:
+        # Preserve the schema validator's precise mismatch error for foreign or
+        # incomplete ledgers instead of leaking an SQLite "no such table" error.
+        return
+    with db.transaction() as cur:
+        cur.execute(WORLD_PREDICTION_IDENTITY_INDEX_DDL)
+
+
+WORLD_PREDICTION_RECORDED_AT_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_world_predictions_recorded_at
+            ON world_shadow_predictions(recorded_at, prediction_id)
+            """
+
+
+def ensure_world_prediction_recorded_at_index(db: StateDb) -> None:
+    """Add the bounded recorded_at archive index to already-applied v1 ledgers."""
+
+    table = db.query_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_shadow_predictions'")
+    if table is None:
+        return
+    with db.transaction() as cur:
+        cur.execute(WORLD_PREDICTION_RECORDED_AT_INDEX_DDL)
+
 
 # This migration namespace belongs only to ``world_model.db``.  It must never
 # be added to the central ``trader.infrastructure.state_db.migrations`` list.
@@ -545,6 +641,8 @@ CREATE INDEX IF NOT EXISTS idx_world_predictions_feature_fps
 CREATE INDEX IF NOT EXISTS idx_world_predictions_manifest
             ON world_shadow_predictions(manifest_sha256, prediction_id)
             """,
+            WORLD_PREDICTION_IDENTITY_INDEX_DDL,
+            WORLD_PREDICTION_RECORDED_AT_INDEX_DDL,
             """
 CREATE INDEX IF NOT EXISTS idx_world_predictions_run_episode
             ON world_shadow_predictions(run_id, horizon_code, episode_id, prediction_id)
@@ -884,6 +982,7 @@ CREATE INDEX IF NOT EXISTS idx_world_episodes_market_slot_candidates
             )
             WHERE feature_contract_version = 'world_feature.market.v1'
             """,
+            *WORLD_PATTERN_LIFECYCLE_EVENTS_DDL,
         ],
     ),
 ]
@@ -1045,6 +1144,22 @@ def _stored_sha256(value: Any) -> str | None:
     if rendered is None:
         return None
     return rendered if rendered.startswith("sha256:") else f"sha256:{rendered}"
+
+
+def _canonical_digest(value: Any, *, field: str) -> str | None:
+    """Accept a live sha256 hex digest, with or without a ``sha256:`` prefix."""
+
+    rendered = _text(value)
+    if rendered is None:
+        return None
+    hex_part = rendered[7:] if rendered.lower().startswith("sha256:") else rendered
+    if len(hex_part) != 64:
+        raise ValueError(f"{field} must be a sha256 digest")
+    try:
+        int(hex_part, 16)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be a sha256 digest") from exc
+    return f"sha256:{hex_part.lower()}"
 
 
 def _nested(mapping: Mapping[str, Any], *path: str) -> Any:
@@ -1574,7 +1689,30 @@ class WorldModelStore:
         model_input = _mapping_or_empty(
             _first(payload, ("input",), ("model_input",), ("features",)), name="prediction.input"
         )
-        supplied_input_hash = _stored_sha256(payload.get("input_sha256"))
+        if live and not isinstance(prediction, WorldPrediction):
+            supplied_input_hash = _canonical_digest(payload.get("input_sha256"), field="input_sha256")
+            supplied_feature_hash = _canonical_digest(
+                _first(payload, ("feature_hash",), ("prediction", "feature_hash")),
+                field="feature_hash",
+            )
+        else:
+            supplied_input_hash = _stored_sha256(payload.get("input_sha256"))
+            supplied_feature_hash = _stored_sha256(_first(payload, ("feature_hash",), ("prediction", "feature_hash")))
+        if (
+            live
+            and not isinstance(prediction, WorldPrediction)
+            and (supplied_input_hash or supplied_feature_hash)
+            and model_input
+        ):
+            raise ValueError("live compact prediction cannot include input")
+        if (
+            live
+            and not isinstance(prediction, WorldPrediction)
+            and supplied_input_hash is None
+            and supplied_feature_hash is None
+            and not model_input
+        ):
+            raise ValueError("live prediction requires input_sha256, feature_hash, or input")
         values = {
             "prediction_id": _required_text(_first(payload, ("prediction_id",), ("id",)), field="prediction_id"),
             "run_id": _required_text(_first(payload, ("run_id",), ("model_run_id",), ("model_id",)), field="run_id"),
@@ -1592,9 +1730,7 @@ class WorldModelStore:
             "model_kind": _text(_first(payload, ("model_kind",), ("kind",), ("model_id",))),
             "model_version": _text(_first(payload, ("model_version",), ("version",))),
             "predicted_at": _text(_first(payload, ("predicted_at",), ("available_at",), ("created_at",))),
-            "input_sha256": supplied_input_hash
-            or _stored_sha256(payload.get("feature_hash"))
-            or _canonical_sha256(model_input),
+            "input_sha256": supplied_input_hash or supplied_feature_hash or _canonical_sha256(model_input),
             "prediction_json": _canonical_json(predicted),
             "prediction_sha256": _canonical_sha256(predicted),
             "payload_json": _canonical_json(payload),
@@ -1921,6 +2057,24 @@ class WorldModelStore:
         )
         rows = self._db.query_all(*self._with_limit(sql, tuple(params), limit))
         return [self._prediction_row(row) for row in rows]
+
+    def list_prediction_identities(self) -> list[dict[str, Any]]:
+        """Return only the stable deduplication key required at service startup."""
+
+        rows = self._db.query_all(
+            "SELECT DISTINCT episode_id, horizon_code, model_kind, model_version "
+            "FROM world_shadow_predictions "
+            "ORDER BY episode_id, horizon_code, model_kind, model_version"
+        )
+        return [
+            {
+                "episode_id": row[0],
+                "horizon_code": row[1],
+                "model_kind": row[2],
+                "model_version": row[3],
+            }
+            for row in rows
+        ]
 
     def counts(self) -> dict[str, int]:
         return {

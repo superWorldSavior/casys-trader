@@ -34,6 +34,7 @@ from trader.domain.world_feature_contract import (
 )
 from trader.domain.world_pattern import (
     PATTERN_EVALUATION_HORIZON_IDS,
+    PatternDiscoveryCompleted,
     PatternHypothesis,
     PatternOccurrence,
 )
@@ -124,6 +125,7 @@ def project_world_pattern_status(
         "status": str(ledger.get("status") or "unavailable"),
         "exists": bool(ledger.get("exists")),
         "hypotheses": [],
+        "lifecycle": _empty_lifecycle(),
         **_CLAIM_FIELDS,
     }
     if "missing_tables" in ledger:
@@ -180,6 +182,15 @@ def project_world_pattern_status(
             "hypotheses": rows,
             "hypothesis_count": len(rows),
             "occurrence_count": sum(item["occurrence_count"] for item in rows),
+            "lifecycle": {
+                "replay_authority": "world_pattern_lifecycle_events",
+                "markers": _lifecycle_markers(
+                    ledger.get("lifecycle_events") or (),
+                    cohort_id=cohort_id if isinstance(cohort_id, str) else None,
+                    excluded=excluded,
+                ),
+                "causal_claim": False,
+            },
             "exclusions": dict(sorted(excluded.items())),
         }
     )
@@ -212,13 +223,20 @@ def project_world_pattern_report(
     hypotheses = _reconstruct_hypotheses(ledger.get("hypothesis_events") or (), excluded=excluded)
     occurrences = _reconstruct_occurrences(ledger.get("occurrence_events") or (), excluded=excluded)
     outcome_by_event = _index_outcomes(ledger.get("outcomes") or ())
+    episode_by_id = _index_episodes(ledger.get("episodes") or ())
     predictions = [item for item in ledger.get("predictions") or () if isinstance(item, Mapping)]
     for prediction in predictions:
         if contains_forbidden_trader_feature(prediction):
             integrity_failures.append("trader_feature_key")
-    context_by_slot = _index_control_predictions(predictions, mask=None, contract=CONTEXT_FEATURE_CONTRACT_ID)
+    context_by_slot = _index_control_predictions(
+        predictions,
+        episodes=episode_by_id,
+        mask=None,
+        contract=CONTEXT_FEATURE_CONTRACT_ID,
+    )
     topology_by_slot = _index_control_predictions(
         predictions,
+        episodes=episode_by_id,
         mask=TOPOLOGY_STATUS_ONLY_MASK_ID,
         contract=GRAPH_FEATURE_CONTRACT_ID,
     )
@@ -268,6 +286,7 @@ def project_world_pattern_report(
         scored=scored,
         canonical_by_hypothesis=canonical_by_hypothesis,
         predictions=predictions,
+        episodes=episode_by_id,
         protocol=protocol,
         integrity_ok=integrity_ok,
         excluded=excluded,
@@ -297,6 +316,56 @@ def project_world_pattern_report(
         }
     )
     return report
+
+
+def _empty_lifecycle() -> dict[str, Any]:
+    return {
+        "replay_authority": "world_pattern_lifecycle_events",
+        "markers": [],
+        "causal_claim": False,
+    }
+
+
+def _lifecycle_markers(
+    events: Sequence[object],
+    *,
+    cohort_id: str | None,
+    excluded: defaultdict[str, int],
+) -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            excluded["invalid_lifecycle_event"] += 1
+            continue
+        try:
+            marker = PatternDiscoveryCompleted.from_mapping(event)
+        except (TypeError, ValueError):
+            excluded["invalid_lifecycle_event"] += 1
+            continue
+        if cohort_id and marker.evaluation_cohort_id != cohort_id:
+            continue
+        markers.append(
+            {
+                "event_id": marker.event_id,
+                "event_type": marker.event_type,
+                "evaluation_cohort_id": marker.evaluation_cohort_id,
+                "started_event_id": marker.started_event_id,
+                "manifest_sha256": marker.manifest_sha256,
+                "formation_cutoff": marker.formation_cutoff.isoformat(),
+                "evaluation_start_not_before": marker.evaluation_start_not_before.isoformat(),
+                "formation_dataset_fingerprint": marker.formation_dataset_fingerprint,
+                "evaluation_dataset_fingerprint": marker.evaluation_dataset_fingerprint,
+                "selected_hypothesis_ids": list(marker.selected_hypothesis_ids),
+                "selected_count": marker.selected_count,
+                "shadow_only": True,
+                "decision_effect": "none",
+                "learning_authority": "shadow_only",
+                "replay_authority": "world_pattern_lifecycle_events",
+                "causal_claim": False,
+            }
+        )
+    markers.sort(key=lambda item: (str(item["evaluation_cohort_id"]), str(item["event_id"])))
+    return markers
 
 
 def _bounded_base(*, path: str | None, cohort_id: str, protocol: Mapping[str, Any]) -> dict[str, Any]:
@@ -425,21 +494,34 @@ def _index_outcomes(rows: Sequence[object]) -> dict[str, Mapping[str, Any]]:
     return indexed
 
 
+def _index_episodes(rows: Sequence[object]) -> dict[str, Mapping[str, Any]]:
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        episode_id = _text(row.get("episode_id"))
+        if episode_id is not None:
+            indexed[episode_id] = row
+    return indexed
+
+
 def _index_control_predictions(
     predictions: Sequence[Mapping[str, Any]],
     *,
+    episodes: Mapping[str, Mapping[str, Any]],
     mask: str | None,
     contract: str,
 ) -> dict[tuple[str, str, datetime, str], list[Mapping[str, Any]]]:
     indexed: dict[tuple[str, str, datetime, str], list[Mapping[str, Any]]] = defaultdict(list)
     for prediction in predictions:
-        actual_contract = _text(prediction.get("feature_contract_id") or prediction.get("feature_contract_version"))
+        episode = episodes.get(_text(prediction.get("episode_id")) or "")
+        actual_contract = _prediction_contract(prediction, episode)
         actual_mask = _text(prediction.get("feature_mask_id"))
         if actual_contract != contract:
             continue
         if mask is not None and actual_mask != mask:
             continue
-        slot = _prediction_slot(prediction)
+        slot = _prediction_slot(prediction, episode)
         if slot is None:
             continue
         indexed[slot].append(prediction)
@@ -590,6 +672,7 @@ def _assess_hypotheses(
     scored: Sequence[_ScoredPair],
     canonical_by_hypothesis: Mapping[str, Sequence[Mapping[str, Any]]],
     predictions: Sequence[Mapping[str, Any]],
+    episodes: Mapping[str, Mapping[str, Any]],
     protocol: Mapping[str, Any],
     integrity_ok: bool,
     excluded: Mapping[str, int],
@@ -609,7 +692,7 @@ def _assess_hypotheses(
         time_shift = _block_time_shift(pairs)
         topology = _topology_control(pairs)
         truncated = _truncated_chain_control(hypothesis, pairs)
-        without_event = _population_without_event(pairs, predictions)
+        without_event = _population_without_event(pairs, predictions, episodes=episodes)
         raw_p = 1.0 if len({_anchor_key(item) for item in pairs}) < _MIN_UNIQUE_SUPPORT else permutation["p_value"]
         if status != "invalidated":
             family_p.append((hypothesis_id, raw_p))
@@ -932,15 +1015,18 @@ def _truncated_chain_control(
 def _population_without_event(
     pairs: Sequence[_ScoredPair],
     predictions: Sequence[Mapping[str, Any]],
+    *,
+    episodes: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     matched = {_anchor_key(item) for item in pairs}
     sessions = {_venue_session(item) for item in pairs}
     without = 0
     for prediction in predictions:
-        contract = _text(prediction.get("feature_contract_id") or prediction.get("feature_contract_version"))
+        episode = episodes.get(_text(prediction.get("episode_id")) or "")
+        contract = _prediction_contract(prediction, episode)
         if contract != CONTEXT_FEATURE_CONTRACT_ID:
             continue
-        slot = _prediction_slot(prediction)
+        slot = _prediction_slot(prediction, episode)
         if slot is None:
             continue
         venue, symbol, as_of, horizon_id = slot
@@ -1068,19 +1154,46 @@ def _ece(pairs: Sequence[_ScoredPair]) -> float:
     )
 
 
-def _prediction_slot(prediction: Mapping[str, Any]) -> tuple[str, str, datetime, str] | None:
-    venue = _text(prediction.get("venue"))
-    symbol = _text(prediction.get("symbol"))
-    as_of = _timestamp(prediction, "as_of_bar_ts")
+def _prediction_slot(
+    prediction: Mapping[str, Any],
+    episode: Mapping[str, Any] | None = None,
+) -> tuple[str, str, datetime, str] | None:
+    source = episode or {}
+    episode_observation = source.get("observation")
+    if not isinstance(episode_observation, Mapping):
+        episode_observation = source
+    venue = _text(source.get("venue")) or _text(episode_observation.get("venue")) or _text(prediction.get("venue"))
+    symbol = _text(source.get("symbol")) or _text(episode_observation.get("symbol")) or _text(prediction.get("symbol"))
+    as_of = (
+        _timestamp(source, "as_of_bar_ts")
+        or _timestamp(episode_observation, "as_of_bar_ts")
+        or _timestamp(prediction, "as_of_bar_ts")
+    )
     horizon_id = _text(prediction.get("horizon_id") or prediction.get("horizon_code"))
-    observation = prediction.get("input")
-    if isinstance(observation, Mapping):
-        venue = venue or _text(observation.get("venue"))
-        symbol = symbol or _text(observation.get("symbol"))
-        as_of = as_of or _timestamp(observation, "as_of_bar_ts")
+    legacy_observation = prediction.get("input")
+    if isinstance(legacy_observation, Mapping):
+        venue = venue or _text(legacy_observation.get("venue"))
+        symbol = symbol or _text(legacy_observation.get("symbol"))
+        as_of = as_of or _timestamp(legacy_observation, "as_of_bar_ts")
     if venue is None or symbol is None or as_of is None or horizon_id is None:
         return None
     return (venue, symbol, as_of, horizon_id)
+
+
+def _prediction_contract(
+    prediction: Mapping[str, Any],
+    episode: Mapping[str, Any] | None,
+) -> str | None:
+    contract = _text(prediction.get("feature_contract_id") or prediction.get("feature_contract_version"))
+    if contract is not None or episode is None:
+        return contract
+    contract = _text(episode.get("feature_contract_id") or episode.get("feature_contract_version"))
+    if contract is not None:
+        return contract
+    observation = episode.get("observation")
+    if not isinstance(observation, Mapping):
+        return None
+    return _text(observation.get("feature_contract_id") or observation.get("feature_contract_version"))
 
 
 def _instrument_slot(entity_id: str) -> tuple[str, str] | None:

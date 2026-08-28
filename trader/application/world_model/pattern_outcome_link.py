@@ -45,6 +45,10 @@ def _unique_ids(value: Sequence[str] | None, field_name: str) -> tuple[str, ...]
     return items
 
 
+class PatternQueryUnavailable(RuntimeError):
+    """Operational ledger read failed. Distinct from a semantic empty result."""
+
+
 class PatternOutcomeLeafQuery(Protocol):
     """Read-only active observed WorldOutcome leaves. Never used during matching."""
 
@@ -120,9 +124,7 @@ class PatternOutcomeLinkResult:
             "available_count": self.available_count,
             "pending_count": self.pending_count,
             "request": self.request.to_dict(),
-            "source_evidence_fingerprint": canonical_sha256(
-                sorted(item.occurrence_id for item in self.statuses)
-            ),
+            "source_evidence_fingerprint": canonical_sha256(sorted(item.occurrence_id for item in self.statuses)),
         }
 
 
@@ -139,10 +141,7 @@ def _index_leaves(leaves: Sequence[WorldOutcome]) -> dict[tuple[str, str], World
 
 
 def _same_active_leaf(link: PatternOutcomeLink, outcome: WorldOutcome) -> bool:
-    return (
-        link.world_outcome_event_id == outcome.event_id
-        and link.world_outcome_content_sha256 == outcome.payload_hash
-    )
+    return link.world_outcome_event_id == outcome.event_id and link.world_outcome_content_sha256 == outcome.payload_hash
 
 
 def _status_for(
@@ -224,9 +223,7 @@ class PatternOutcomeLinkService:
                 existing = current.active_outcome_link(horizon_id)
                 if existing is not None and _same_active_leaf(existing, outcome):
                     continue
-                envelope = patterns.link(
-                    LinkPatternOutcome(occurrence_id=current.occurrence_id, outcome=outcome)
-                )
+                envelope = patterns.link(LinkPatternOutcome(occurrence_id=current.occurrence_id, outcome=outcome))
                 current = patterns.occurrences.load(PatternOccurrenceId(envelope.event.occurrence_id))
             updated.append(current)
         return _result_for(updated, {}, request)
@@ -261,4 +258,5 @@ __all__ = (
     "PatternOutcomeLinkRequest",
     "PatternOutcomeLinkResult",
     "PatternOutcomeLinkService",
+    "PatternQueryUnavailable",
 )

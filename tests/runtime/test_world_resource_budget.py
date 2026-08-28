@@ -18,7 +18,7 @@ from trader.runtime.world_model_runtime import WorldModelBackgroundRunner
 
 UTC = timezone.utc
 NOW = datetime(2026, 8, 24, 4, 0, tzinfo=UTC)
-GiB = 1024 ** 3
+GiB = 1024**3
 
 
 class RecordingLog:
@@ -55,6 +55,15 @@ class RecordingEnricher:
     def enrich(self, episodes):
         self.calls += 1
         return tuple(episodes)
+
+
+class RecordingPatternWorkflow:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, _as_of: datetime) -> dict[str, object]:
+        self.calls += 1
+        return {"status": "completed"}
 
 
 class FakeProbe:
@@ -126,11 +135,13 @@ def test_db_limit_skips_capture_and_training_for_the_cycle() -> None:
     probe = FakeProbe(_usage(logical_bytes=DEFAULT_MAX_DB_BYTES, on_disk_bytes=DEFAULT_MAX_DB_BYTES))
     runtime = RecordingRuntime()
     enricher = RecordingEnricher()
+    patterns = RecordingPatternWorkflow()
     runner = WorldModelBackgroundRunner(
         runtime=runtime,
         resource_guard=_guard(probe),
         context_enricher=enricher,
         graph_enricher=enricher,
+        pattern_workflow=patterns,
     )
     triggered = runner.trigger(episodes=[_episode("e-skip")], now=NOW)
     assert triggered["triggered"] is True
@@ -139,6 +150,7 @@ def test_db_limit_skips_capture_and_training_for_the_cycle() -> None:
     assert runtime.mature_calls == []
     assert runtime.capture_calls == []
     assert enricher.calls == 0
+    assert patterns.calls == 0
     status = runner.status()
     assert status["status"] == "skipped"
     assert status["reason"] == REASON_DB_SIZE_EXCEEDED
@@ -221,7 +233,7 @@ def test_compose_guard_does_not_create_missing_store(tmp_path) -> None:
     guard = compose_world_resource_guard(db_path=db_path, config_dir=REPO_ROOT / "config")
     evaluation = guard.evaluate(now=NOW)
     assert db_path.exists() is False
-    assert evaluation.decision.budget.max_db_bytes == DEFAULT_MAX_DB_BYTES
+    assert evaluation.decision.budget.max_db_bytes == 3 * GiB
 
 
 def test_daemon_wires_typed_resource_guard_without_magic_env_reads() -> None:

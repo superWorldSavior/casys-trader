@@ -1,6 +1,6 @@
 # casys-trader — raccourcis. Lance `make` (ou `make help`) pour la liste.
 .DEFAULT_GOAL := help
-.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro universe models model-preset storage-report storage-archive storage-schedule storage-unschedule desktop desktop-browser desktop-build
+.PHONY: help watch live once test logs live-logs dash dash-portfolio dash-decisions dash-list macro universe models model-preset storage-report storage-archive world-storage-report world-storage-export storage-schedule storage-unschedule desktop desktop-browser desktop-build
 
 help:  ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -71,13 +71,20 @@ models:  ## Jeu de modèles LLM actif (les 5 rôles) et preset courant
 model-preset:  ## Bascule de preset modèles — dry-run ; PRESET=<nom> [WRITE=1]. Redémarrer le daemon après.
 	uv run python scripts/model_preset.py apply $(PRESET) $(if $(WRITE),--write,)
 
-storage-report:  ## Stockage agents : ce qui serait archivé/purgé (simulation, n'écrit rien)
-	uv run python -m scripts.archive_agent_storage --older-than $(or $(DAYS),7)
+storage-report:  ## Stockage agents Ops/ACPX : plan dry-run. DAYS=7, AGENT_HOMES="grok-home ...", ONLY=sessions.
+	uv run python -m scripts.archive_agent_storage --older-than $(or $(DAYS),7) $(foreach agent_home,$(AGENT_HOMES),--home $(agent_home)) $(if $(ONLY),--only $(ONLY),)
 
-storage-archive:  ## Archive les sessions agents en tar.zst (~50x) et purge les logs codex. DAYS=7 par défaut.
-	uv run python -m scripts.archive_agent_storage --older-than $(or $(DAYS),7) --apply
+storage-archive:  ## Applique la rétention déclarée sans toucher aux configs/identités. Même filtres que storage-report.
+	uv run python -m scripts.archive_agent_storage --older-than $(or $(DAYS),7) $(foreach agent_home,$(AGENT_HOMES),--home $(agent_home)) $(if $(ONLY),--only $(ONLY),) --apply
 
-storage-schedule:  ## Installe la rétention hebdo (LaunchAgent, dimanche 04:00)
+world-storage-report:  ## World Model : planifie le miroir Parquet des jours UTC clos. BEFORE=YYYY-MM-DD optionnel.
+	uv run python -m scripts.archive_world_predictions --state-dir state $(if $(BEFORE),--before $(BEFORE),)
+
+world-storage-export:  ## World Model : publie et vérifie le miroir Parquet, sans retirer le SQLite canonique.
+	uv run python -m scripts.archive_world_predictions --state-dir state $(if $(BEFORE),--before $(BEFORE),) --apply
+
+storage-schedule:  ## Installe la rétention hebdo agents (LaunchAgent). N'exporte pas le Parquet World.
+	uv run python -m scripts.render_storage_archive_launchd
 	plutil -lint ops/launchd/ai.casys.trader.storage-archive.plist
 	cp ops/launchd/ai.casys.trader.storage-archive.plist ~/Library/LaunchAgents/
 	-launchctl unload ~/Library/LaunchAgents/ai.casys.trader.storage-archive.plist 2>/dev/null

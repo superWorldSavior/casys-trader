@@ -120,6 +120,7 @@ def evaluate_shadow(
     predictions: Iterable[object],
     outcomes: Iterable[object],
     *,
+    episodes: Iterable[object] = (),
     baseline_model_id: str = BASELINE_MODEL_ID,
     gru_model_id: str = GRU_MODEL_ID,
     minimum_paired_support: int = DEFAULT_MINIMUM_PAIRED_SUPPORT,
@@ -158,6 +159,9 @@ def evaluate_shadow(
 
     prediction_rows = list(predictions)
     outcome_rows = list(outcomes)
+    episode_by_id = {
+        episode_id: episode for episode in episodes if (episode_id := _text(_field(episode, "episode_id"))) is not None
+    }
     selected_outcomes, ambiguous_outcomes = _select_outcomes(outcome_rows)
     grouped_scores: dict[tuple[str, str, str], list[_ScoredPrediction]] = defaultdict(list)
     excluded: defaultdict[str, int] = defaultdict(int)
@@ -207,9 +211,9 @@ def evaluate_shadow(
                 predicted_at=predicted_at,
                 ready_at=ready_at,
                 simple_return=_simple_return(outcome),
-                market_anchor=_market_anchor(prediction),
-                context_status=_context_status(prediction),
-                feature_contract_version=_feature_contract_version(prediction),
+                market_anchor=_market_anchor(prediction, episode_by_id.get(episode_id)),
+                context_status=_context_status(prediction, episode_by_id.get(episode_id)),
+                feature_contract_version=_feature_contract_version(prediction, episode_by_id.get(episode_id)),
                 label_evidence=_label_evidence(outcome, horizon_id),
                 comparison_batch_id=_comparison_batch_id(prediction),
                 comparison_cohort_fingerprint=_comparison_cohort_fingerprint(prediction),
@@ -263,6 +267,7 @@ def evaluate_context_ablation(
     predictions: Iterable[object],
     outcomes: Iterable[object],
     *,
+    episodes: Iterable[object] = (),
     minimum_paired_support: int = DEFAULT_MINIMUM_PAIRED_SUPPORT,
     baseline_model_id: str = BASELINE_MODEL_ID,
     gru_model_id: str = GRU_MODEL_ID,
@@ -272,6 +277,7 @@ def evaluate_context_ablation(
     result = evaluate_shadow(
         predictions,
         outcomes,
+        episodes=episodes,
         baseline_model_id=baseline_model_id,
         gru_model_id=gru_model_id,
         minimum_paired_support=minimum_paired_support,
@@ -495,41 +501,66 @@ def _observation_payload(prediction: object) -> Mapping[str, Any] | None:
     return None
 
 
-def _market_anchor(prediction: object) -> tuple[str, str, str, str] | None:
-    observation = _observation_payload(prediction)
-    venue = _text(_field(observation, "venue") if observation is not None else None) or _text(
-        _field(prediction, "venue")
-    )
-    symbol = _text(_field(observation, "symbol") if observation is not None else None) or _text(
-        _field(prediction, "symbol")
+def _canonical_observation(episode: object | None) -> object | None:
+    if episode is None:
+        return None
+    observation = _field(episode, "observation")
+    return episode if observation is None else observation
+
+
+def _market_anchor(
+    prediction: object,
+    episode: object | None = None,
+) -> tuple[str, str, str, str] | None:
+    canonical = _canonical_observation(episode)
+    legacy = _observation_payload(prediction)
+    venue = _text(_field(canonical, "venue")) or _text(_field(legacy, "venue")) or _text(_field(prediction, "venue"))
+    symbol = (
+        _text(_field(canonical, "symbol")) or _text(_field(legacy, "symbol")) or _text(_field(prediction, "symbol"))
     )
     interval = (
-        _text(_field(observation, "bar_interval") if observation is not None else None)
-        or _text(_field(observation, "interval") if observation is not None else None)
+        _text(_field(canonical, "bar_interval"))
+        or _text(_field(canonical, "interval"))
+        or _text(_field(legacy, "bar_interval"))
+        or _text(_field(legacy, "interval"))
         or _text(_field(prediction, "bar_interval"))
     )
-    as_of = _text(_field(observation, "as_of_bar_ts") if observation is not None else None) or _text(
-        _field(prediction, "as_of_bar_ts")
+    as_of = (
+        _text(_field(canonical, "as_of_bar_ts"))
+        or _text(_field(legacy, "as_of_bar_ts"))
+        or _text(_field(prediction, "as_of_bar_ts"))
     )
     if venue is None or symbol is None or interval is None or as_of is None:
         return None
     return (venue, symbol, interval, as_of)
 
 
-def _context_status(prediction: object) -> str | None:
-    observation = _observation_payload(prediction)
-    if observation is None:
-        return _text(_field(prediction, "context_status"))
-    context = observation.get("context")
-    if isinstance(context, Mapping):
-        return _text(context.get("status"))
+def _context_status(prediction: object, episode: object | None = None) -> str | None:
+    canonical = _canonical_observation(episode)
+    canonical_status = _text(_field(canonical, "context_status"))
+    canonical_context = _field(canonical, "context")
+    if isinstance(canonical_context, Mapping):
+        canonical_status = _text(canonical_context.get("status")) or canonical_status
+    if canonical_status is not None:
+        return canonical_status
+    legacy = _observation_payload(prediction)
+    if legacy is not None:
+        context = legacy.get("context")
+        if isinstance(context, Mapping):
+            status = _text(context.get("status"))
+            if status is not None:
+                return status
     return _text(_field(prediction, "context_status"))
 
 
-def _feature_contract_version(prediction: object) -> str | None:
-    observation = _observation_payload(prediction)
-    if observation is not None:
-        version = _text(observation.get("feature_contract_version"))
+def _feature_contract_version(prediction: object, episode: object | None = None) -> str | None:
+    canonical = _canonical_observation(episode)
+    version = _text(_field(canonical, "feature_contract_version"))
+    if version is not None:
+        return version
+    legacy = _observation_payload(prediction)
+    if legacy is not None:
+        version = _text(legacy.get("feature_contract_version"))
         if version is not None:
             return version
     return _text(_field(prediction, "feature_contract_version"))

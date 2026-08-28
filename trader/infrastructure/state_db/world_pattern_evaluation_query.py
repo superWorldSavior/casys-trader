@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from trader.application.world_model.pattern_evaluation_ports import (
 from trader.application.world_model.pattern_evaluation_request import PatternEvaluationScanRequest
 from trader.domain.world_cohort import WorldCohortSlot
 from trader.domain.world_episode import GRAPH_FEATURE_CONTRACT_ID, WorldEpisode
+from trader.infrastructure.state_db.sqlite_in import sqlite_in_chunks, sqlite_placeholders
 from trader.infrastructure.state_db.world_pattern_formation_query import (
     _Ledger,
     _admitted_snapshot,
@@ -31,7 +34,6 @@ from trader.infrastructure.state_db.world_pattern_formation_query import (
     _load_macro_observation_corpus,
     _max_clock,
     _parse_clock,
-    _placeholders,
     _readonly_connection,
     _table_names,
 )
@@ -83,9 +85,7 @@ class SqlitePatternEvaluationSource:
 
 
 def _preload_evaluation_ledger(connection: sqlite3.Connection, *, macro_root: Path | None) -> _Ledger:
-    snapshots = {
-        str(row["snapshot_id"]): row for row in connection.execute("SELECT * FROM world_graph_snapshots")
-    }
+    snapshots = {str(row["snapshot_id"]): row for row in connection.execute("SELECT * FROM world_graph_snapshots")}
     receipts: dict[tuple[str, str, str], sqlite3.Row] = {}
     for row in connection.execute(
         """
@@ -143,30 +143,12 @@ def _load_batch(
             rejection_counts={key: rejections[key] for key in sorted(rejections) if rejections[key]},
             source_evidence_ids=tuple(sorted(evidence)),
         )
-    episode_rows = connection.execute(
-        f"""
-        SELECT *
-        FROM world_episodes
-        WHERE episode_id IN ({_placeholders(len(admitted_ids))})
-          AND feature_contract_version = ?
-          AND training_eligible = 1
-          AND available_at IS NOT NULL
-          AND available_at <= ?
-          AND recorded_at <= ?
-          AND as_of_bar_ts IS NOT NULL
-          AND as_of_bar_ts <= ?
-          AND as_of_bar_ts > ?
-        ORDER BY as_of_bar_ts ASC, episode_id ASC
-        """,
-        (
-            *admitted_ids,
-            GRAPH_FEATURE_CONTRACT_ID,
-            as_of.isoformat(),
-            as_of.isoformat(),
-            as_of.isoformat(),
-            not_before.isoformat(),
-        ),
-    ).fetchall()
+    episode_rows = _fetch_admitted_episode_rows(
+        connection,
+        admitted_ids,
+        as_of=as_of,
+        not_before=not_before,
+    )
     found_ids = {str(row["episode_id"]) for row in episode_rows}
     for episode_id in admitted_ids:
         if episode_id not in found_ids:
@@ -194,6 +176,47 @@ def _load_batch(
         rejection_counts={key: rejections[key] for key in sorted(rejections) if rejections[key]},
         source_evidence_ids=tuple(sorted(evidence)),
     )
+
+
+def _fetch_admitted_episode_rows(
+    connection: sqlite3.Connection,
+    admitted_ids: Sequence[str],
+    *,
+    as_of: datetime,
+    not_before: datetime,
+) -> list[sqlite3.Row]:
+    """Load admitted graph companions without binding an unbounded IN list."""
+
+    if not admitted_ids:
+        return []
+    extra = (
+        GRAPH_FEATURE_CONTRACT_ID,
+        as_of.isoformat(),
+        as_of.isoformat(),
+        as_of.isoformat(),
+        not_before.isoformat(),
+    )
+    merged: dict[str, sqlite3.Row] = {}
+    for chunk in sqlite_in_chunks(admitted_ids, extra_binds=len(extra)):
+        sql = (
+            "SELECT * FROM world_episodes "
+            f"WHERE episode_id IN ({sqlite_placeholders(len(chunk))}) "
+            "AND feature_contract_version = ? "
+            "AND training_eligible = 1 "
+            "AND available_at IS NOT NULL "
+            "AND available_at <= ? "
+            "AND recorded_at <= ? "
+            "AND as_of_bar_ts IS NOT NULL "
+            "AND as_of_bar_ts <= ? "
+            "AND as_of_bar_ts > ?"
+        )
+        for row in connection.execute(sql, (*chunk, *extra)):
+            episode_id = str(row["episode_id"])
+            if episode_id not in merged:
+                merged[episode_id] = row
+    rows = list(merged.values())
+    rows.sort(key=lambda row: (str(row["as_of_bar_ts"] or ""), str(row["episode_id"] or "")))
+    return rows
 
 
 def _admitted_graph_episode_ids(

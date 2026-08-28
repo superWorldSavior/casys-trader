@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from trader.agent.client import build_batch_prompt
+from trader.domain.llm import LlmExecutionCapability
 from trader.application.decide.context_projection import (
     MAX_FOCUS_ROWS,
     MAX_RADAR_ROWS,
@@ -15,11 +16,41 @@ from trader.application.decide.context_projection import (
 
 def _cockpit(symbol_count: int = 48) -> dict:
     cols = [
-        "s", "f", "p", "r", "vol", "z", "er", "ac", "rs", "sz",
-        "r_d", "vol_d", "z_d", "er_d", "ac_d", "rs_d", "sz_d",
-        "reg", "vs", "st", "cndle", "htf", "aligned", "sig",
-        "sl24", "sh24", "sl48", "sh48", "be_ref_bps", "fee", "fee_ccy",
-        "ccy", "fx_usd", "risk_budget_native", "max_order_native",
+        "s",
+        "f",
+        "p",
+        "r",
+        "vol",
+        "z",
+        "er",
+        "ac",
+        "rs",
+        "sz",
+        "r_d",
+        "vol_d",
+        "z_d",
+        "er_d",
+        "ac_d",
+        "rs_d",
+        "sz_d",
+        "reg",
+        "vs",
+        "st",
+        "cndle",
+        "htf",
+        "aligned",
+        "sig",
+        "sl24",
+        "sh24",
+        "sl48",
+        "sh48",
+        "be_ref_bps",
+        "fee",
+        "fee_ccy",
+        "ccy",
+        "fx_usd",
+        "risk_budget_native",
+        "max_order_native",
     ]
     rows = []
     for index in range(symbol_count):
@@ -27,13 +58,41 @@ def _cockpit(symbol_count: int = 48) -> dict:
         family = "focus" if index < 14 else f"family-{index % 6}"
         rows.append(
             [
-                symbol, family, 100.0 + index, index / 100, 0.1, index / 4,
-                0.2, 0.3, index / 200, index / 5, index / 150, 0.2,
-                index / 6, 0.2, 0.3, index / 250, index / 7,
-                "trend", "normal", False, None, "1d", index % 2 == 0,
+                symbol,
+                family,
+                100.0 + index,
+                index / 100,
+                0.1,
+                index / 4,
+                0.2,
+                0.3,
+                index / 200,
+                index / 5,
+                index / 150,
+                0.2,
+                index / 6,
+                0.2,
+                0.3,
+                index / 250,
+                index / 7,
+                "trend",
+                "normal",
+                False,
+                None,
+                "1d",
+                index % 2 == 0,
                 ["breakout"] if index % 5 == 0 else None,
-                0.02, 0.03, 0.04, 0.05, 12.0, 1.5, "USD", "USD", 1.0,
-                500.0, 10_000.0,
+                0.02,
+                0.03,
+                0.04,
+                0.05,
+                12.0,
+                1.5,
+                "USD",
+                "USD",
+                1.0,
+                500.0,
+                10_000.0,
             ]
         )
     return {
@@ -77,8 +136,7 @@ def _shared_context() -> dict:
             },
         },
         "active_plans_summary": [
-            {"symbol": symbol, "id": f"plan-{symbol}", "kind": "armed", "intent": "long"}
-            for symbol in symbols[:30]
+            {"symbol": symbol, "id": f"plan-{symbol}", "kind": "armed", "intent": "long"} for symbol in symbols[:30]
         ],
         "stale_market_data": {
             symbol: {"stale_reason": "too_old", "data_age_minutes": 400 + index}
@@ -99,16 +157,13 @@ def _shared_context() -> dict:
             "by_confidence": [{"bucket": "0.7-0.8", "n": 10}],
             "by_exit_reason": [{"reason": "stop", "n": 8}],
             "recent_trips": [
-                {"symbol": symbol, "pnl": index, "trace": "a" * 180}
-                for index, symbol in enumerate(symbols[:25])
+                {"symbol": symbol, "pnl": index, "trace": "a" * 180} for index, symbol in enumerate(symbols[:25])
             ],
         },
         "kpis": {
             "equity": 100_000.0,
             "positions": [{"symbol": symbol, "trace": "p" * 120} for symbol in symbols[:20]],
-            "model_performance": [
-                {"model": "gpt", "fills": 10, "symbols": symbols, "trace": "m" * 120}
-            ],
+            "model_performance": [{"model": "gpt", "fills": 10, "symbols": symbols, "trace": "m" * 120}],
         },
         "learnings": {
             "global": [{"note": "global"}],
@@ -138,9 +193,7 @@ def test_projection_focalise_le_push_sans_muter_le_snapshot() -> None:
     assert projected["attribution"]["mechanism_grain"] == "exit_leg"
     assert projected["attribution"]["n_closed_position_cycles"] == 40
     assert projected["attribution"]["n_exit_legs"] == 57
-    assert projected["attribution"]["commission_quality"]["status"] == (
-        "unavailable"
-    )
+    assert projected["attribution"]["commission_quality"]["status"] == ("unavailable")
     assert "by_confidence" not in projected["attribution"]
     assert "by_exit_reason" not in projected["attribution"]
     assert set(projected["stale_market_data"]) == {"TARGET"}
@@ -196,13 +249,10 @@ def test_projection_du_mandat_univers_ne_garde_que_la_famille_cible() -> None:
     projected = project_symbol_facts_for_prompt(facts, symbol="TARGET")
 
     assert facts == before
-    assert projected["universe_mandate"]["family_postures"] == {
-        "focus": {"posture": "constructive"}
-    }
+    assert projected["universe_mandate"]["family_postures"] == {"focus": {"posture": "constructive"}}
 
 
-def test_prompt_focalise_reste_sous_un_budget_de_60k(monkeypatch) -> None:
-    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+def test_prompt_focalise_reste_sous_un_budget_de_60k() -> None:
     root = Path(__file__).resolve().parents[2]
     shared = _shared_context()
     shared["cockpit"] = _cockpit(symbol_count=100)
@@ -223,6 +273,7 @@ def test_prompt_focalise_reste_sous_un_budget_de_60k(monkeypatch) -> None:
         use_symbol_calls_contract=True,
         max_tool_calls_per_symbol=8,
         max_rounds=None,
+        execution_capability=LlmExecutionCapability(caged_native_python=True),
     )
 
     assert len(prompt) < 60_000

@@ -115,6 +115,53 @@ def test_context_ablation_pairs_by_market_anchor_not_episode_id() -> None:
     assert ablation["coverage"]["complete"] >= 1
 
 
+def test_context_ablation_joins_compact_predictions_to_canonical_episode_views() -> None:
+    market = _prediction(prediction_id="compact-market")
+    context = _prediction(
+        prediction_id="compact-context",
+        episode_id="episode-context",
+        model_version="context.v1",
+        probabilities={"DOWN": 0.05, "FLAT": 0.05, "UP": 0.9},
+    )
+    market.pop("input")
+    context.pop("input")
+    episodes = [
+        {
+            "episode_id": "episode-market",
+            "venue": "XTAI",
+            "symbol": "AAA",
+            "bar_interval": "1h",
+            "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
+            "feature_contract_version": "world_feature.market.v1",
+        },
+        {
+            "episode_id": "episode-context",
+            "venue": "XTAI",
+            "symbol": "AAA",
+            "bar_interval": "1h",
+            "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
+            "feature_contract_version": "world_feature.context.v1",
+            "context_status": "complete",
+        },
+    ]
+
+    result = evaluate_shadow(
+        [market, context],
+        [
+            _outcome(),
+            _outcome(event_id="outcome-context", episode_id="episode-context"),
+        ],
+        episodes=episodes,
+        minimum_paired_support=1,
+    )
+
+    ablation = result["context_ablation"]
+    assert ablation["status"] == "ready"
+    assert ablation["coverage"] == {"complete": 1}
+    assert ablation["families"][0]["matched_pairs"] == 1
+    assert ablation["families"][0]["status"] == "ready"
+
+
 def test_ablation_rejects_label_mismatch_and_withholds_below_support() -> None:
     market = _prediction(prediction_id="v1")
     context = _prediction(

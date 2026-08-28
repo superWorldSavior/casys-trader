@@ -19,6 +19,7 @@ TOUR D'OUTILS (spec queue tool-round, issue #2) :
   désactivé (Q4 : le tool round moderne EST la voie de recherche de contexte).
   Sans tool_services (None) : mode dégradé historique Lot A, un appel, aucun outil.
 """
+
 from __future__ import annotations
 
 import logging
@@ -115,11 +116,7 @@ def _tool_context_from_facts(
         market_context_by_symbol={symbol: market_ctx} if market_ctx else {},
         active_watches_by_symbol={symbol: list(facts.get("active_watches") or [])},
         attribution=attribution if attribution is not None else shared_context.get("attribution"),
-        confidence_calibration=(
-            attribution.get("confidence_calibration")
-            if isinstance(attribution, dict)
-            else None
-        ),
+        confidence_calibration=(attribution.get("confidence_calibration") if isinstance(attribution, dict) else None),
         # recent_decisions poussé dans les facts ; get_position_risk retiré (issue #4).
         indicator_resolver=indicator_resolver,
         learnings_recall_provider=learnings_recall_provider,
@@ -328,8 +325,10 @@ def decide_one(
             )
             tool_limits = tool_services.tool_limits()
             action_validator = _action_validator_for_cycle(tool_services, cycle_id)
+
             def _resolve(session):
                 session_calls = 0
+                session_capability = llm.execution_capability_of(session)
                 if heartbeat is not None:
                     heartbeat()
 
@@ -348,12 +347,11 @@ def decide_one(
                         allow_tool_calls=allow_tool_calls,
                         use_symbol_calls_contract=True,
                         timeout_s=decision_timeout_s,
-                        complete_fn=llm.session_complete_fn(
-                            session, call_ctx={"task_id": task_id, "symbol": symbol}
-                        ),
+                        complete_fn=llm.session_complete_fn(session, call_ctx={"task_id": task_id, "symbol": symbol}),
                         session_followup=session_followup,
                         max_tool_calls_per_symbol=tool_limits.max_calls_per_symbol,
                         max_rounds=None,
+                        execution_capability=session_capability,
                     )
 
                 return resolve_symbol_decision(
@@ -367,9 +365,7 @@ def decide_one(
                     heartbeat=heartbeat,
                     action_validator=action_validator,
                     watch_validator=_watch_validator(now_fn),
-                    entry_validator=_entry_validator(
-                        trade_plan_evaluator
-                    ),
+                    entry_validator=_entry_validator(trade_plan_evaluator),
                 )
 
             decision = llm.run_with_session_fallback(
@@ -417,7 +413,9 @@ def decide_one(
         is_overload = decision.llm_error in _OVERLOAD_CODES
         log.warning(
             "[decide_one] llm_error=%s symbol=%s is_overload=%s → RetryableError",
-            decision.llm_error, symbol, is_overload,
+            decision.llm_error,
+            symbol,
+            is_overload,
         )
         raise RetryableError(
             f"llm_error:{decision.llm_error}",

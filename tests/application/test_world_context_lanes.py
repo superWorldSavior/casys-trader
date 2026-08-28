@@ -65,6 +65,9 @@ class MemoryStore:
     def list_predictions(self):
         return list(self.predictions)
 
+    def list_prediction_identities(self):
+        return list(self.predictions)
+
     def list_observed_outcomes(self, **_kwargs):
         return []
 

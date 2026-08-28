@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from trader.application.world_model.pattern_lifecycle_ports import PatternLifecycleLedger
 from trader.application.world_model.pattern_ports import (
     OccurrenceEventEnvelope,
     PatternHypothesisEventEnvelope,
@@ -28,6 +29,7 @@ from trader.domain.world_feature_contract import WorldFeatureContract, WorldFeat
 from trader.domain.world_graph import WorldEntityRef
 from trader.domain.world_pattern import (
     PATTERN_ASSOCIATION_METRIC,
+    PatternDiscoveryCompleted,
     PatternEvaluationStarted,
     PatternFormationStats,
     PatternHypothesis,
@@ -71,9 +73,12 @@ COHORT_ID = "world_cohort:v1:" + "c" * 64
 
 _PATTERN_TABLES = (
     "world_pattern_hypothesis_events",
+    "world_pattern_lifecycle_events",
     "world_pattern_occurrence_events",
     "world_pattern_outcome_links",
 )
+DISCOVERY_STARTED = f"world_cohort_event:v1:{canonical_sha256({'started': 'discovery'})}"
+DISCOVERY_MANIFEST = canonical_sha256({"manifest": "pattern-discovery"})
 
 
 def _contract() -> WorldFeatureContract:
@@ -267,6 +272,14 @@ def test_ports_surface_has_no_caller_ready_at_or_expected_sequence() -> None:
     assert list(evidence_for.parameters) == ["self", "event"]
     assert "ready_at" not in evidence_for.parameters
     assert not hasattr(WorldPatternStore, "set_status")
+    append_discovery = inspect.signature(WorldPatternStore.append_discovery_completed)
+    get_discovery = inspect.signature(WorldPatternStore.get_discovery_completed)
+    assert list(append_discovery.parameters) == ["self", "event"]
+    assert list(get_discovery.parameters) == ["self", "evaluation_cohort_id", "started_event_id"]
+    assert "ready_at" not in append_discovery.parameters
+    assert "clock" not in append_discovery.parameters
+    assert PatternLifecycleLedger.__module__ == "trader.application.world_model.pattern_lifecycle_ports"
+    assert not hasattr(PatternLifecycleLedger, "evidence_for")
 
 
 def test_append_hypothesis_assigns_store_ready_at_after_subject_commit(tmp_path: Path) -> None:
@@ -618,6 +631,7 @@ def test_anti_update_delete_triggers_cover_pattern_tables(tmp_path: Path) -> Non
     store.append_event(recorded)
     occurrence = store.load(PatternOccurrenceId(recorded.occurrence_id))
     store.append_event(occurrence.link_outcome(_outcome()).events[-1])
+    store.append_discovery_completed(_discovery_completed())
     mutations = (
         "UPDATE world_pattern_hypothesis_events SET event_type='tampered'",
         "DELETE FROM world_pattern_hypothesis_events",
@@ -625,6 +639,8 @@ def test_anti_update_delete_triggers_cover_pattern_tables(tmp_path: Path) -> Non
         "DELETE FROM world_pattern_occurrence_events",
         "UPDATE world_pattern_outcome_links SET horizon_id='tampered'",
         "DELETE FROM world_pattern_outcome_links",
+        "UPDATE world_pattern_lifecycle_events SET event_type='tampered'",
+        "DELETE FROM world_pattern_lifecycle_events",
         "UPDATE world_availability_receipts SET scope='tampered'",
         "DELETE FROM world_availability_receipts",
     )
@@ -684,9 +700,12 @@ def test_migration_creates_append_only_pattern_schema_and_reuses_receipts(tmp_pa
     assert "CREATE TABLE IF NOT EXISTS world_availability_receipts" in current_sql
     assert "idx_world_pattern_occurrence_events_cohort_cutoff" in current_sql
     assert "idx_world_pattern_outcome_links_horizon" in current_sql
+    assert "idx_world_pattern_lifecycle_events_cohort_start" in current_sql
+    assert "idx_world_pattern_lifecycle_events_evaluation_ready" in current_sql
     compact = current_sql.replace(" ", "").replace("\n", "")
     assert "UNIQUE(hypothesis_id,sequence)" in compact
     assert "UNIQUE(occurrence_id,sequence)" in compact
+    assert "UNIQUE(evaluation_cohort_id,started_event_id)" in compact
     store.append_event(_registered())
     for table in ("world_pattern_hypothesis_events",):
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
@@ -777,9 +796,170 @@ def test_evaluating_hypothesis_is_listed_with_zero_occurrences(tmp_path: Path) -
     from trader.infrastructure.state_db.world_pattern_catalog_query import SqlitePatternCatalogQuery
 
     catalog = SqlitePatternCatalogQuery(store.path)
-    assert [item.hypothesis_id for item in catalog.list_evaluating_hypotheses(
+    assert [
+        item.hypothesis_id
+        for item in catalog.list_evaluating_hypotheses(
+            evaluation_cohort_id=COHORT_ID,
+            evaluation_dataset_fingerprint=EVAL_FP,
+        )
+    ] == [hypothesis.hypothesis_id]
+    assert catalog.list_recorded_occurrences(evaluation_cohort_id=COHORT_ID) == ()
+    other = _evaluating(_registered(formation_dataset_fingerprint=canonical_sha256({"dataset": "other-formation"})))
+    store.append_event(other.registered)
+    store.append_event(next(event for event in other.events if isinstance(event, PatternEvaluationStarted)))
+    statements: list[str] = []
+    original = store._db.query_all
+
+    def traced(sql: str, params: tuple = ()) -> list:
+        statements.append(sql)
+        return original(sql, params)
+
+    store._db.query_all = traced  # type: ignore[method-assign]
+    selected = store.list_evaluating_hypotheses(
         evaluation_cohort_id=COHORT_ID,
         evaluation_dataset_fingerprint=EVAL_FP,
-    )] == [hypothesis.hypothesis_id]
-    assert catalog.list_recorded_occurrences(evaluation_cohort_id=COHORT_ID) == ()
+        hypothesis_ids=(hypothesis.hypothesis_id,),
+    )
+    assert [item.hypothesis_id for item in selected] == [hypothesis.hypothesis_id]
+    compact = [" ".join(sql.split()) for sql in statements]
+    assert any("hypothesis_id IN" in sql for sql in compact)
+    assert not any(sql.startswith("SELECT DISTINCT hypothesis_id") for sql in compact)
     store.close()
+
+
+def _discovery_completed(**overrides: object) -> PatternDiscoveryCompleted:
+    values: dict[str, object] = {
+        "evaluation_cohort_id": COHORT_ID,
+        "manifest_sha256": DISCOVERY_MANIFEST,
+        "formation_dataset_fingerprint": FORMATION_FP,
+        "evaluation_dataset_fingerprint": EVAL_FP,
+        "started_event_id": DISCOVERY_STARTED,
+        "formation_cutoff": FORMATION,
+        "evaluation_start_not_before": EVAL_NOT_BEFORE,
+        "selected_hypothesis_ids": (),
+        "selected_count": 0,
+    }
+    values.update(overrides)
+    return PatternDiscoveryCompleted(**values)  # type: ignore[arg-type]
+
+
+def test_discovery_completed_zero_candidate_append_get_and_exact_replay(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    event = _discovery_completed()
+    assert event.selected_count == 0
+    assert event.selected_hypothesis_ids == ()
+    assert store.append_discovery_completed(event) is True
+    loaded = store.get_discovery_completed(event.evaluation_cohort_id, event.started_event_id)
+    assert loaded == event
+    assert loaded is not None
+    assert loaded.selected_count == 0
+    assert store.append_discovery_completed(event) is False
+    assert store.append_discovery_completed(PatternDiscoveryCompleted.from_mapping(event.to_dict())) is False
+    assert store._db.query_one("SELECT COUNT(*) FROM world_pattern_lifecycle_events")[0] == 1
+    assert store._db.query_one("SELECT COUNT(*) FROM world_availability_receipts")[0] == 0
+    assert store.get_discovery_completed("world_cohort:v1:" + "d" * 64, DISCOVERY_STARTED) is None
+
+
+def test_discovery_completed_same_cohort_start_different_payload_conflicts(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    first = _discovery_completed()
+    assert store.append_discovery_completed(first) is True
+    other = _discovery_completed(manifest_sha256=canonical_sha256({"manifest": "other"}))
+    assert other.evaluation_cohort_id == first.evaluation_cohort_id
+    assert other.started_event_id == first.started_event_id
+    assert other.event_id != first.event_id
+    with pytest.raises(PatternPayloadConflict, match="different canonical content|different payload"):
+        store.append_discovery_completed(other)
+    assert store.get_discovery_completed(first.evaluation_cohort_id, first.started_event_id) == first
+    assert store._db.query_one("SELECT COUNT(*) FROM world_pattern_lifecycle_events")[0] == 1
+    assert store._db.query_one("SELECT COUNT(*) FROM world_availability_receipts")[0] == 0
+
+
+def test_discovery_completed_same_event_id_different_payload_conflicts(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    event = _discovery_completed()
+    store.append_discovery_completed(event)
+    with store._db.transaction() as cur:
+        cur.execute("DROP TRIGGER world_pattern_lifecycle_events_no_update")
+        cur.execute(
+            "UPDATE world_pattern_lifecycle_events SET payload_json=?, payload_sha256=? WHERE event_id=?",
+            ('{"event_type":"tampered"}', "0" * 64, event.event_id),
+        )
+        cur.execute(
+            """
+            CREATE TRIGGER world_pattern_lifecycle_events_no_update
+            BEFORE UPDATE ON world_pattern_lifecycle_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_lifecycle_events are append-only');
+            END
+            """
+        )
+    with pytest.raises(PatternPayloadConflict, match="different canonical content|different payload"):
+        store.append_discovery_completed(event)
+
+
+def test_discovery_completed_direct_sql_update_and_delete_are_blocked(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.append_discovery_completed(_discovery_completed())
+    for sql in (
+        "UPDATE world_pattern_lifecycle_events SET selected_count=1",
+        "DELETE FROM world_pattern_lifecycle_events",
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            with store._db.transaction() as cur:
+                cur.execute(sql)
+
+
+def test_discovery_completed_get_detects_payload_hash_and_index_tamper(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    event = _discovery_completed()
+    store.append_discovery_completed(event)
+
+    def _restore_trigger(cur: sqlite3.Cursor) -> None:
+        cur.execute(
+            """
+            CREATE TRIGGER world_pattern_lifecycle_events_no_update
+            BEFORE UPDATE ON world_pattern_lifecycle_events
+            BEGIN
+                SELECT RAISE(ABORT, 'world_pattern_lifecycle_events are append-only');
+            END
+            """
+        )
+
+    with store._db.transaction() as cur:
+        cur.execute("DROP TRIGGER world_pattern_lifecycle_events_no_update")
+        cur.execute(
+            "UPDATE world_pattern_lifecycle_events SET payload_sha256=? WHERE event_id=?",
+            ("0" * 64, event.event_id),
+        )
+        _restore_trigger(cur)
+    with pytest.raises(ValueError, match="tamper"):
+        store.get_discovery_completed(event.evaluation_cohort_id, event.started_event_id)
+
+    with store._db.transaction() as cur:
+        cur.execute("DROP TRIGGER world_pattern_lifecycle_events_no_update")
+        cur.execute(
+            "UPDATE world_pattern_lifecycle_events SET payload_sha256=?, selected_count=? WHERE event_id=?",
+            (canonical_sha256(event.to_dict()), 99, event.event_id),
+        )
+        _restore_trigger(cur)
+    with pytest.raises(ValueError, match="tamper"):
+        store.get_discovery_completed(event.evaluation_cohort_id, event.started_event_id)
+
+
+def test_discovery_completed_survives_close_and_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "world_model.db"
+    writer = WorldPatternStore(path, clock=lambda: READY)
+    event = _discovery_completed()
+    assert writer.append_discovery_completed(event) is True
+    writer.close()
+
+    restarted = WorldPatternStore(path, clock=lambda: BOOT)
+    loaded = restarted.get_discovery_completed(event.evaluation_cohort_id, event.started_event_id)
+    assert loaded == event
+    assert restarted.append_discovery_completed(event) is False
+    assert restarted._db.query_one("SELECT COUNT(*) FROM world_availability_receipts")[0] == 0
+    indexes = {row["name"] for row in restarted._db.query_all("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_world_pattern_lifecycle_events_cohort_start" in indexes
+    assert "idx_world_pattern_lifecycle_events_evaluation_ready" in indexes
+    restarted.close()

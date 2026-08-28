@@ -1,7 +1,7 @@
 schema_version: world_shadow_pilot.v1
-content_sha256: "d17969c958492575829ad5afdf2e6438546298fa2c83e02ba3ecd330a2523906"
+content_sha256: "96f97bd3a69727dc8c0c17913406f3806a79d1f037305801945ad65a04e2e9c6"
 pilot_id: world_shadow_pilot.v1
-lifecycle_generation: 2
+lifecycle_generation: 3
 authority: shadow_only
 decision_effect: none
 recommendation: NO_GO
@@ -17,7 +17,7 @@ window:
 
 bar_interval: "15m"
 venues: [EU, TW, US]
-horizons: [elapsed_4h.v1, elapsed_1d.v1]
+horizons: [elapsed_4h.v1, elapsed_1d.v1, elapsed_3d.v1]
 primary_horizon: elapsed_1d.v1
 label_contract: simple_return_band_50bp.v1
 sampling_policy_version: active_tradable_completed_bar.v1

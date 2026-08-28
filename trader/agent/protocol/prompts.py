@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 
+from trader.domain.llm import LlmExecutionCapability
 from trader.market.features import DEFAULT_INDICATORS
 from trader.planning import trade_plan
 from trader.planning.indicator_watch import WATCH_VALID_OPERATORS
@@ -22,11 +22,7 @@ _WATCH_OPERATOR_ENUM = "|".join(WATCH_VALID_OPERATORS)
 _REASON_CODE_ENUM = decision_reason.reason_code_enum_text()
 _TIMEFRAME_ENUM = "|".join(TIMEFRAMES)
 _LOOKBACK_ENUM = "|".join(
-    dict.fromkeys(
-        lookback
-        for timeframe in TIMEFRAMES.values()
-        for lookback in timeframe.get("lookbacks", ())
-    )
+    dict.fromkeys(lookback for timeframe in TIMEFRAMES.values() for lookback in timeframe.get("lookbacks", ()))
 )
 
 
@@ -95,7 +91,7 @@ _OUTPUT_CONTRACT = (
     "n'existe réellement aucune thèse directionnelle. Ce champ sert uniquement à "
     "l'audit ex-post et ne déclenche aucune exécution.\n"
     'Chaque `<tool_call>` a exactement la forme {"tool":"<nom>","args":{...}}.\n'
-    "Optionnel : `applied_learning_ids:[\"<rule_id>\",...]` cite au plus trois "
+    'Optionnel : `applied_learning_ids:["<rule_id>",...]` cite au plus trois '
     "règles de `context.learnings.global` qui ont réellement pesé sur cette décision.\n"
     "Grammaire Pine-like JSON officielle: `strategy_entry`, `strategy_exit`, "
     "`strategy_close`, `set_next_wake`, `propose_indicator_watch`, "
@@ -103,7 +99,7 @@ _OUTPUT_CONTRACT = (
     "inspiré de Pine Script : utilise ton intuition "
     "strategy.entry/strategy.exit/strategy.close, mais rends uniquement les appels "
     "JSON, jamais du code Pine Script.\n"
-    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?, evaluation_id} "
+    '- strategy_entry{id?, direction:"long|short", qty?, risk_pct?, exit?, thesis?, evaluation_id} '
     "= changer l'exposition ; même sens = renforcement, sens opposé = retournement.\n"
     "- strategy_exit{id?, limit?, stop?, qty_percent?, trail?, trail_offset?, protect?, "
     "exit_watch?, max_hold_minutes?} = patcher la règle de sortie d'une position ouverte.\n"
@@ -113,9 +109,9 @@ _OUTPUT_CONTRACT = (
     "- propose_indicator_watch{id?, conditions:[{symbol?, "
     f'indicator:"{_WATCH_INDICATOR_ENUM}", op:"{_WATCH_OPERATOR_ENUM}", value:<num>, '
     f'interval?:"{_TIMEFRAME_ENUM}", window?:<int>, as_of?:"latest"}} '
-    "| {type:\"close\", symbol?, op:\"<|<=|>|>=|==|!=\", value:<prix>, "
+    '| {type:"close", symbol?, op:"<|<=|>|>=|==|!=", value:<prix>, '
     f'interval?:"{_TIMEFRAME_ENUM}"}}], logic?:"all|any", '
-    "ttl_minutes?:<int>, on_trigger?:\"WAKE|WAKE_WITH_ORDER_INTENT|EXECUTE_ORDER\", "
+    'ttl_minutes?:<int>, on_trigger?:"WAKE|WAKE_WITH_ORDER_INTENT|EXECUTE_ORDER", '
     "order?:{direction,qty,confidence,exit,rationale?}} "
     "= veille ou plan armé. `conditions` est une LISTE, même pour une seule condition : "
     "un `condition` au singulier, ou un prédicat étalé au premier niveau du call, "
@@ -125,8 +121,7 @@ _OUTPUT_CONTRACT = (
 )
 
 _COMPACT_OUTPUT_CONTRACT = (
-    _OUTPUT_CONTRACT
-    + "Option B, seulement si un indicateur précis manque pour décider, demande un "
+    _OUTPUT_CONTRACT + "Option B, seulement si un indicateur précis manque pour décider, demande un "
     "complément borné:\n"
     '{"symbol": "<SYM>", "action": "REQUEST_CONTEXT", "rationale": "<pourquoi>", '
     f'"requests": [{{"symbol": "<SYM>", "indicators": ["{_WATCH_INDICATOR_ENUM}"], '
@@ -211,7 +206,7 @@ _DECISION_GUIDANCE = (
     "exploitables même si des commissions historiques manquent. Traite "
     "`realized_pnl`, `total_commissions`, `win_rate` et `avg_pnl` comme nets "
     "après commissions broker seulement lorsque "
-    "`commission_quality.status == \"available\"`; sinon ils valent `null` : "
+    '`commission_quality.status == "available"`; sinon ils valent `null` : '
     "lis les `counts`/`reasons` et n'infère jamais zéro ni un résultat net. "
     "Même complets, ces chiffres broker-only ne sont pas all-in. "
     "Pour `confidence_calibration`, `quality.status=partial` signifie que les "
@@ -298,14 +293,13 @@ def _decision_guidance(*, allow_context_request: bool, allow_tool_calls: bool) -
     )
 
 
-def _exec_guidance() -> str:
-    """Consigne d'exec — présente UNIQUEMENT si l'exec en cage est activé.
+def _exec_guidance(capability: LlmExecutionCapability | None = None) -> str:
+    """Consigne d'exec — présente UNIQUEMENT si le backend/session peut l'exécuter.
 
-    Gaté sur le même flag que le transport (``CASYS_AGENT_EXEC``) : sans lui,
-    l'outil python n'existe pas côté agent, donc l'annoncer le pousserait à
-    appeler un outil absent et à casser le contrat de sortie JSON.
+    La capacité vient du contrat backend, pas du flag process ``CASYS_AGENT_EXEC``.
+    Annoncer un python absent pousserait l'agent à casser le contrat JSON.
     """
-    if os.getenv("CASYS_AGENT_EXEC", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    if capability is None or not capability.caged_native_python:
         return ""
     return (
         "# Calcul déterministe\n"
@@ -320,7 +314,14 @@ def _exec_guidance() -> str:
     )
 
 
-def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_request: bool = False) -> str:
+def build_prompt(
+    *,
+    mandate: str,
+    memory: str,
+    context: dict,
+    allow_context_request: bool = False,
+    execution_capability: LlmExecutionCapability | None = None,
+) -> str:
     """Assemble le prompt. Le COMPORTEMENT vit dans `mandate`/`memory` (boucle 1),
     pas en dur ici."""
     output_contract = _COMPACT_OUTPUT_CONTRACT if allow_context_request else _OUTPUT_CONTRACT
@@ -332,7 +333,7 @@ def build_prompt(*, mandate: str, memory: str, context: dict, allow_context_requ
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_decision_guidance(allow_context_request=allow_context_request, allow_tool_calls=False)}"
-        f"{_exec_guidance()}"
+        f"{_exec_guidance(execution_capability)}"
         f"{_indicator_watch_vocabulary()}"
         f"{_USER_FACING_TEXT_GUIDANCE}"
         f"# Contexte marché et portefeuille (JSON)\n{_prompt_json(context)}\n\n"
@@ -375,7 +376,7 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "jamais du code Pine Script. Mapping: strategy_entry = position intent; "
     "strategy_exit = exit rule; strategy_close = sortie marché immédiate; "
     "set_next_wake = review wake; propose_indicator_watch = veille ou plan armé.\n"
-    "- strategy_entry{id?, direction:\"long|short\", qty?, risk_pct?, exit?, thesis?, evaluation_id} : "
+    '- strategy_entry{id?, direction:"long|short", qty?, risk_pct?, exit?, thesis?, evaluation_id} : '
     "long→BUY, short→SELL; même sens = renforcement, sens opposé = retournement. "
     "Le daemon exécute et applique RiskGate. `risk_pct` sans `qty` dérive la taille "
     "depuis equity, distance_stop et fx_rate; réservé à une nouvelle entrée flat "
@@ -383,7 +384,7 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "Pour une nouvelle entrée avec bracket/protection, mets les règles dans strategy_entry.exit ; "
     "ne combine pas strategy_entry et strategy_exit sur le même symbole. "
     '`thesis` est OPTIONNEL : {setup:"<setup court>", horizon:"intraday|swing|position", '
-    "invalidation:\"<condition>\"}.\n"
+    'invalidation:"<condition>"}.\n'
     "- strategy_exit{id?, from_entry?, limit?, stop?, qty_percent?, trail?, trail_offset?, protect?, exit_watch?, max_hold_minutes?} : "
     "strategy.exit Pine; patche le plan ouvert. "
     "limit+stop dans strategy_exit = bracket de sortie (TP + stop), pas un stop-limit. "
@@ -409,8 +410,8 @@ _SYMBOL_CALLS_FINAL_CONTRACT = (
     "reconsultation. Vocabulaire ci-dessus.\n"
     "- cancel_watch{id|ids|watch_ids}: annule une veille/plan; record_learning{note}: mémoire courte.\n"
     "strategy.exit Pine: limit = take-profit absolu; stop = stop absolu ou "
-    "{struct:\"swing_low|swing_high|vwap\",window,buffer_pct?}; "
-    "trail = {type:\"price|percent|volatility_multiple\",value} ou trail_offset; "
+    '{struct:"swing_low|swing_high|vwap",window,buffer_pct?}; '
+    'trail = {type:"price|percent|volatility_multiple",value} ou trail_offset; '
     "protect = {arm_r,giveback,close_fraction?,lock_r?,min_hold_minutes?}; "
     "from_entry cible le plan courant; exit_watch/max_hold_minutes sont optionnels; "
     "protect.lock_r verrouille le stop à +N R (0 = breakeven)."
@@ -496,7 +497,7 @@ def _symbol_calls_exit_details() -> str:
         'Raccourci accepté: {struct:"swing_low|swing_high|vwap", window, buffer_pct?}.\n'
         "`limit`: take-profit absolu. `tp`: liste d'objets "
         "{r:<risk multiple>, fraction?} ou {price:<prix>, fraction?, name?}. "
-        '`take_profits`: liste d\'OBJETS {price:<requis, >0>, fraction:<optionnel, >0>} '
+        "`take_profits`: liste d'OBJETS {price:<requis, >0>, fraction:<optionnel, >0>} "
         'OU {type:"risk_multiple", r:<requis, >0>, fraction?}. '
         "Les TP en R sont résolus depuis la distance du stop.\n"
         f'`trail`: null OU {{type:"{trail_type_enum}", value:<requis, >0>}}; '
@@ -610,7 +611,7 @@ def _indicator_watch_vocabulary() -> str:
         f"`indicator` canonique:\n{indicators}\n"
         f"`op` doit être l'un de: {operators}\n"
         f"Abréviation cockpit -> nom watch: {aliases}.\n"
-        "Condition de cours de clôture: `{type:\"close\",op,value,interval,...}`; "
+        'Condition de cours de clôture: `{type:"close",op,value,interval,...}`; '
         "`indicator` doit alors être absent. Elle compare le close de la dernière "
         "bougie réellement terminée avec les mêmes opérateurs.\n"
         "`value` doit être un nombre fini. Un label string connu est toléré et "
@@ -619,7 +620,7 @@ def _indicator_watch_vocabulary() -> str:
         f"{label_mapping}\n"
         "Watch indicateur minimale: `conditions:[{symbol,indicator,op,value,"
         f'interval:"{_TIMEFRAME_ENUM}",window,as_of:"latest"}}]`; '
-        "watch close minimale: `conditions:[{type:\"close\",op,value,"
+        'watch close minimale: `conditions:[{type:"close",op,value,'
         f'interval:"{_TIMEFRAME_ENUM}"}}]`; '
         "`ttl_minutes` est optionnel (défaut 240 minutes (4 h)) mais "
         "conseillé pour rendre l'horizon explicite. Une thèse overnight doit "
@@ -673,7 +674,7 @@ _TOOL_CATALOG = (
     "Si le cockpit suffit après ce contrôle, rends directement le contrat final. Sinon demande\n"
     "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final. "
     "Cette enveloppe top-level ne contient jamais d'actions et ne se mélange jamais "
-    'avec `decisions` :\n'
+    "avec `decisions` :\n"
     '{"tool_calls":[{"id":"c1","tool":"get_indicator_context","args":'
     '{"symbol":"2330.TW","indicators":["atr_pct"],"timeframe":"1h",'
     '"lookback":"1mo","window":48,"as_of":"latest"}},'
@@ -688,7 +689,7 @@ _TOOL_CATALOG = (
     "cube indicateurs ; tous les indicateurs gouvernés demandés sont rendus par défaut, "
     "inutile de les répartir entre plusieurs appels\n"
     "- recall_learnings{symbol?|family?|query?, limit?} : mémoire vérifiée — notes passées pondérées par leurs résultats réels\n"
-    "- evaluate_trade_plan{symbol,direction:\"long|short\",confidence,qty|risk_pct,exit,thesis?} : "
+    '- evaluate_trade_plan{symbol,direction:"long|short",confidence,qty|risk_pct,exit,thesis?} : '
     "évaluation déterministe obligatoire avant strategy_entry ou ordre armé ; renvoie "
     "evaluation_id, sizing, frais, perte/gain, R:R, p_break_even et EV advisory\n"
     "Si tool_results contient evaluate_trade_plan avec ok:false, la référence "
@@ -718,32 +719,40 @@ def _tool_catalog(
         f"Bornes : {max_tool_calls_per_symbol} appels max par symbole, 24 par lot.",
     )
     if max_rounds is None:
-        catalog = catalog.replace(
-            "# Outils domaine (OPTIONNELS — une seule tournée)",
-            "# Outils domaine (OPTIONNELS — autant de tournées d'outils que nécessaire)",
-        ).replace(
-            "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final :",
-            "autant de tournées d'outils lecture-seule que nécessaire avant de rendre le contrat final :",
-        ).replace(
-            "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
-            "(toute nouvelle tournée sera bloquée en HOLD).\n",
-            "Après chaque tournée tu recevras `tool_results` par symbole. "
-            "Décide (`decisions`) dès que tu as assez de contexte. "
-            "Au tour final, plus aucune tournée n'est acceptée.\n",
+        catalog = (
+            catalog.replace(
+                "# Outils domaine (OPTIONNELS — une seule tournée)",
+                "# Outils domaine (OPTIONNELS — autant de tournées d'outils que nécessaire)",
+            )
+            .replace(
+                "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final :",
+                "autant de tournées d'outils lecture-seule que nécessaire avant de rendre le contrat final :",
+            )
+            .replace(
+                "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
+                "(toute nouvelle tournée sera bloquée en HOLD).\n",
+                "Après chaque tournée tu recevras `tool_results` par symbole. "
+                "Décide (`decisions`) dès que tu as assez de contexte. "
+                "Au tour final, plus aucune tournée n'est acceptée.\n",
+            )
         )
     else:
         rounds = max(int(max_rounds), 1)
     if max_rounds is not None and rounds > 1:
-        catalog = catalog.replace(
-            "# Outils domaine (OPTIONNELS — une seule tournée)",
-            f"# Outils domaine (OPTIONNELS — {_round_label(rounds)})",
-        ).replace(
-            "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final :",
-            f"{_round_label(rounds)} d'outils lecture-seule avant de rendre le contrat final :",
-        ).replace(
-            "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
-            "(toute nouvelle tournée sera bloquée en HOLD).\n",
-            "Après chaque tournée tu recevras `tool_results` par symbole. Au tour final, plus aucune tournée n'est acceptée.\n",
+        catalog = (
+            catalog.replace(
+                "# Outils domaine (OPTIONNELS — une seule tournée)",
+                f"# Outils domaine (OPTIONNELS — {_round_label(rounds)})",
+            )
+            .replace(
+                "UNE tournée d'outils lecture-seule en répondant À LA PLACE du contrat final :",
+                f"{_round_label(rounds)} d'outils lecture-seule avant de rendre le contrat final :",
+            )
+            .replace(
+                "Après la tournée tu recevras `tool_results` par symbole et tu DEVRAS rendre le contrat final\n"
+                "(toute nouvelle tournée sera bloquée en HOLD).\n",
+                "Après chaque tournée tu recevras `tool_results` par symbole. Au tour final, plus aucune tournée n'est acceptée.\n",
+            )
         )
     return catalog
 
@@ -759,6 +768,7 @@ def build_batch_prompt(
     use_symbol_calls_contract: bool = False,
     max_tool_calls_per_symbol: int = 3,
     max_rounds: int | None = 1,
+    execution_capability: LlmExecutionCapability | None = None,
 ) -> str:
     """Prompt batch : contexte PARTAGÉ (cockpit/portefeuille/KPI/attribution/learnings)
     envoyé UNE fois, puis la liste des symboles à décider -> un seul appel modèle."""
@@ -781,7 +791,7 @@ def build_batch_prompt(
         f"# Mandat\n{mandate}\n\n"
         f"# Mémoire / stratégie\n{memory}\n\n"
         f"{_decision_guidance(allow_context_request=allow_context_request, allow_tool_calls=allow_tool_calls)}"
-        f"{_exec_guidance()}"
+        f"{_exec_guidance(execution_capability)}"
         f"{_indicator_watch_vocabulary()}"
         f"{_tool_catalog(max_tool_calls_per_symbol=max_tool_calls_per_symbol, max_rounds=max_rounds) if allow_tool_calls else ''}"
         f"{_USER_FACING_TEXT_GUIDANCE}"

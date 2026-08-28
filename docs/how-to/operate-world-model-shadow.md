@@ -54,8 +54,12 @@ batch d'écriture shadow serait sauté, pas que le Trader s'est arrêté.
 ### Cohortes (status + rapport)
 
 Le CLI n'a pas de `list`. Les `cohort_id` stables sont dérivés du YAML
-(`pilot_id` + `schema_version` + `cohort_key` + `activation_policy`) et
-apparaissent dans le log `[world_shadow_pilot]` au boot. Deux clés :
+(`pilot_id` + `schema_version` + `cohort_key` + `activation_policy` +
+`lifecycle_generation` + `content_sha256`) et apparaissent dans le log
+`[world_shadow_pilot]` au boot. Le YAML committe `lifecycle_generation: 3` :
+cela **frappe de nouveaux** `cohort_id` ; les IDs de génération 2 ne sont pas
+réutilisés. Le lot actif déclare `elapsed_4h.v1`, `elapsed_1d.v1` (primaire)
+et `elapsed_3d.v1`. Deux clés :
 
 | Clé YAML | `study_kind` | Lanes |
 |---|---|---|
@@ -73,13 +77,54 @@ lecture seule. `interpretation_limit=coverage_plumbing_preliminary_trends_only`
 tant que l'empan de collecte est inférieur à 8 jours. `causal_claim` et
 `pnl_claim` restent `false` même après.
 
+### Cycle automatique des patterns graphe
+
+Quand la voie graphe est effectivement composée, chaque batch shadow autorisé
+par le garde-fou exécute, dans son thread de fond :
+
+```text
+mature labels → capture/predict → discover/replay → evaluate → link outcomes
+```
+
+Il n'existe pas de second flag patterns : couper la voie graphe empêche sa
+composition. Le premier batch éligible sélectionne l'unique cohorte graphe
+`collecting`, prend comme `formation_cutoff` la disponibilité prouvée de son
+`WorldCohortStarted`, puis fixe `evaluation_start_not_before` à la prochaine
+frontière de barre. `PatternDiscoveryCompleted` est écrit même avec zéro
+candidat ; le restart rejoue ce marqueur et ne redécouvre pas avec des données
+arrivées après le cutoff. C'est la séparation prospective, pas une panne.
+
+Les batches suivants matchent uniquement après cette frontière, persistent les
+prédictions/occurrences shadow, puis lient en dernier les feuilles réellement
+disponibles `elapsed_4h.v1`, `elapsed_1d.v1` et `elapsed_3d.v1`. Une panne à
+n'importe quelle étape est `partial`/fail-open et ne touche jamais Trader. Un
+batch refusé par `resource_budget` ne lance aucune étape patterns.
+
+Les commandes manuelles restent utiles pour l'inspection et le diagnostic ;
+elles ne sont plus nécessaires à l'entretien normal du lifecycle :
+
+```bash
+uv run casys-trader world pattern status --json
+uv run casys-trader world pattern report COHORT_ID --json
+```
+
+`world pattern status` affiche le marqueur durable
+(`formation_cutoff`, `evaluation_start_not_before`, ids/compte sélectionnés,
+empreintes, autorité de replay). Un restart rejoue ce marqueur ; il ne
+redécouvre pas. Le pilote ne ferme pas et n'archive pas les hypothèses :
+la fin de lifecycle (`PatternEvaluationClosed`) reste hors périmètre.
+
+Un pattern n'est déclaré que s'il existe une `PatternHypothesis` persistée et
+des occurrences prospectives liées à leurs outcomes. Une régularité Markov/GRU
+ou un chemin NetworkX seul n'est toujours pas un pattern.
+
 ## Distinguer boot, cycle dû, cycle idle
 
 Trois états distincts. Ne pas les fusionner :
 
 | Observation | Ce que ça prouve | Ce que ça ne prouve pas |
 |---|---|---|
-| Log `[world_model_shadow] enabled` / `[world_shadow_pilot] status=started` | câblage au boot, cohortes `register`/`arm`/`start` | qu'un épisode a été écrit |
+| Log `[world_model_shadow] enabled` / `[world_shadow_pilot] status=started` | câblage au boot, cohortes `register`/`arm`/`start` ; `patterns=1` si le lifecycle est composé | qu'un épisode ou un pattern a été écrit |
 | `world graph status` avec overlay câblé | le worker graphe est instancié | une projection persistée ou un `CAUSES` |
 | `episodes_appended=0` au boot | l'activation **ne backfill pas** | un échec de plomberie |
 | Cycle daemon `idle_waiting_for_wake` / replay de la même barre | le daemon vit | un nouveau `WorldEpisode` |
@@ -214,8 +259,11 @@ Tous les flags sont lus **uniquement au boot**. Défauts runtime :
 | `CASYS_WORLD_SHADOW_PILOT_ACTIVATION` | `1` | honore le YAML d'autorisation |
 
 Le YAML `config/world_shadow_pilot.yaml` est l'**autorisation opérateur**, pas
-un défaut RFC. Si `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1` **et**
-`enabled: true`, le boot fait un **OU** avec `workers.*` :
+un défaut RFC. Le lot committe actif porte `horizons:
+[elapsed_4h.v1, elapsed_1d.v1, elapsed_3d.v1]`, `primary_horizon:
+elapsed_1d.v1`, et `lifecycle_generation: 3` (nouveaux `cohort_id`). Si
+`CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1` **et** `enabled: true`, le boot
+fait un **OU** avec `workers.*` :
 
 - `workers.market` — marché déjà porté par `CASYS_WORLD_MODEL_SHADOW_ENABLED` ;
 - `workers.context` → OR du flag contexte ;
@@ -242,19 +290,21 @@ Fichier versionné : `config/world_shadow_resource_budget.yaml`
 Pas de lecture magique d'environnement pour les seuils. YAML absent ou
 invalide → les défauts conservateurs restent actifs.
 
-Défauts du pilote d'une semaine (machine ~7 GiB libres, capture polluée
-~2 MiB/min) :
+Le fallback conservateur sans YAML reste à 2 GiB. Le profil versionné actif a
+été recalibré à 3 GiB après l'export Parquet vérifié des journées closes et la
+suppression de la recopie de l'observation complète dans chaque nouvelle
+prédiction. La réserve filesystem reste indépendante et inchangée :
 
 | Seuil | Défaut | Effet |
 |---|---|---|
-| `max_db_bytes` | 2147483648 (2 GiB) | saute le batch si la taille logique **ou** on-disk (`world_model.db` + WAL/SHM) atteint le plafond |
+| `max_db_bytes` | 3221225472 (3 GiB ; fallback 2 GiB) | saute le batch si la taille logique **ou** on-disk (`world_model.db` + WAL/SHM) atteint le plafond |
 | `min_free_bytes` | 3221225472 (3 GiB) | saute le batch si le filesystem a moins que cette réserve |
 | `warn_interval_seconds` | 300 | warning structuré `[world_model_shadow]` au plus une fois par intervalle |
 
 Avant **chaque** batch d'écriture (un `stat` par cycle, pas par épisode) :
 si le plafond DB ou la réserve libre est franchi, le worker **saute seulement**
-capture + entraînement World Model de ce cycle. Le daemon continue. Le chemin
-de décision Trader n'est pas appelé par ce garde-fou.
+capture + entraînement World Model + lifecycle patterns de ce cycle. Le daemon
+continue. Le chemin de décision Trader n'est pas appelé par ce garde-fou.
 
 Le garde-fou **ne fait jamais** : `DELETE` / `TRUNCATE` / `VACUUM`, arrêt du
 daemon, mutation de l'historique append-only. Relire `world status` ne crée
@@ -323,7 +373,7 @@ attribuer de PnL Trader au World Model.
 
 | Store | Contenu | Autorité |
 |---|---|---|
-| `state/world_model.db` | épisodes, outcomes, prédictions, événements de cohorte | journal append-only du shadow |
+| `state/world_model.db` | épisodes, outcomes, prédictions, cohortes, hypothèses/occurrences/lifecycle patterns | journal append-only du shadow |
 | `state/world_macro/` | faits / observations / runs source-only + reçus | producteur macro, pas Univers |
 | `state/gdelt/` et `state/news_briefs/` | GDELT et `NewsMacroBrief` **Univers** | **exclus** comme source World Context |
 | `casys.db` | broker, décisions Trader | jamais fusionné |

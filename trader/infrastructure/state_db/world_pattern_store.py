@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ from trader.domain.world_availability import (
 )
 from trader.domain.world_episode import canonical_json, canonical_sha256
 from trader.domain.world_pattern import (
+    PatternDiscoveryCompleted,
     PatternEvaluationClosed,
     PatternEvaluationStarted,
     PatternHypothesis,
@@ -52,6 +54,12 @@ from trader.infrastructure.state_db.availability_receipt import (
     default_utc_clock,
 )
 from trader.infrastructure.state_db.connection import StateDb
+from trader.infrastructure.state_db.sqlite_in import (
+    ordered_unique_ids,
+    sqlite_in_chunk_size,
+    sqlite_in_chunks,
+    sqlite_placeholders,
+)
 from trader.infrastructure.state_db.world_model_store import (
     WORLD_MODEL_STORE_ID,
     WorldModelConflictError,
@@ -63,6 +71,7 @@ from trader.infrastructure.state_db.world_model_store import (
 
 WORLD_PATTERN_TABLES = (
     "world_pattern_hypothesis_events",
+    "world_pattern_lifecycle_events",
     "world_pattern_occurrence_events",
     "world_pattern_outcome_links",
 )
@@ -70,6 +79,7 @@ WORLD_PATTERN_TABLES = (
 _HYPOTHESIS_TABLE = "world_pattern_hypothesis_events"
 _OCCURRENCE_TABLE = "world_pattern_occurrence_events"
 _LINK_TABLE = "world_pattern_outcome_links"
+_LIFECYCLE_TABLE = "world_pattern_lifecycle_events"
 _HYPOTHESIS_SUBJECT_KIND = "pattern_hypothesis_event"
 _OCCURRENCE_SUBJECT_KIND = "pattern_occurrence_event"
 _PATTERN_SUBJECT_KINDS = frozenset({_HYPOTHESIS_SUBJECT_KIND, _OCCURRENCE_SUBJECT_KIND})
@@ -89,6 +99,9 @@ _OCCURRENCE_EVENTS = (
 __all__ = [
     "WORLD_PATTERN_TABLES",
     "WorldPatternStore",
+    "reconstruct_pattern_hypotheses",
+    "reconstruct_pattern_occurrences",
+    "rehydrate_pattern_discovery_completed",
     "rehydrate_pattern_hypothesis_event",
     "rehydrate_pattern_occurrence_event",
 ]
@@ -106,6 +119,37 @@ def _payload_conflict(event_id: str) -> PatternPayloadConflict:
     return PatternPayloadConflict(f"event_id {event_id!r} already exists with different canonical content")
 
 
+_LIFECYCLE_INDEX_COLUMNS = (
+    "event_id",
+    "event_type",
+    "evaluation_cohort_id",
+    "started_event_id",
+    "manifest_sha256",
+    "formation_cutoff",
+    "evaluation_start_not_before",
+    "formation_dataset_fingerprint",
+    "evaluation_dataset_fingerprint",
+    "selected_count",
+)
+
+
+def rehydrate_pattern_discovery_completed(row: Mapping[str, Any]) -> PatternDiscoveryCompleted:
+    try:
+        payload = _json_load(row["payload_json"])
+        event = PatternDiscoveryCompleted.from_mapping(payload)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("tamper: existing event cannot be rehydrated") from exc
+    if canonical_sha256(event.to_dict()) != row["payload_sha256"]:
+        raise ValueError("tamper: pattern discovery completed payload hash mismatch")
+    stored = event.to_dict()
+    for column in _LIFECYCLE_INDEX_COLUMNS:
+        expected = stored[column] if column != "selected_count" else event.selected_count
+        actual = row[column] if column != "selected_count" else int(row[column])
+        if expected != actual:
+            raise ValueError("tamper: pattern discovery completed indexed column mismatch")
+    return event
+
+
 def rehydrate_pattern_hypothesis_event(row: Mapping[str, Any]) -> PatternHypothesisEvent:
     try:
         payload = _json_load(row["payload_json"])
@@ -117,6 +161,42 @@ def rehydrate_pattern_hypothesis_event(row: Mapping[str, Any]) -> PatternHypothe
     if event.event_id != row["event_id"]:
         raise ValueError("tamper: pattern hypothesis event id mismatch")
     return event
+
+
+def reconstruct_pattern_hypotheses(rows: Sequence[Mapping[str, Any] | sqlite3.Row]) -> tuple[PatternHypothesis, ...]:
+    grouped: dict[str, list[Mapping[str, Any] | sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        hypothesis_id = str(row["hypothesis_id"])
+        if hypothesis_id:
+            grouped[hypothesis_id].append(row)
+    reconstructed: list[PatternHypothesis] = []
+    for hypothesis_id in sorted(grouped):
+        ordered = sorted(
+            grouped[hypothesis_id],
+            key=lambda item: (int(item["sequence"] or 0), str(item["event_id"] or "")),
+        )
+        reconstructed.append(
+            PatternHypothesis.from_events(tuple(rehydrate_pattern_hypothesis_event(item) for item in ordered))
+        )
+    return tuple(reconstructed)
+
+
+def reconstruct_pattern_occurrences(rows: Sequence[Mapping[str, Any] | sqlite3.Row]) -> tuple[PatternOccurrence, ...]:
+    grouped: dict[str, list[Mapping[str, Any] | sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        occurrence_id = str(row["occurrence_id"])
+        if occurrence_id:
+            grouped[occurrence_id].append(row)
+    reconstructed: list[PatternOccurrence] = []
+    for occurrence_id in sorted(grouped):
+        ordered = sorted(
+            grouped[occurrence_id],
+            key=lambda item: (int(item["sequence"] or 0), str(item["event_id"] or "")),
+        )
+        reconstructed.append(
+            PatternOccurrence.from_events(tuple(rehydrate_pattern_occurrence_event(item) for item in ordered))
+        )
+    return tuple(reconstructed)
 
 
 def rehydrate_pattern_occurrence_event(row: Mapping[str, Any]) -> PatternOccurrenceEvent:
@@ -133,7 +213,7 @@ def rehydrate_pattern_occurrence_event(row: Mapping[str, Any]) -> PatternOccurre
 
 
 class WorldPatternStore:
-    """SQLite adapter for hypothesis/occurrence ledgers and pattern availability."""
+    """SQLite adapter for hypothesis, occurrence, and discovery-lifecycle ledgers."""
 
     def __init__(self, db_or_path: StateDb | str | Path, *, clock: UtcClock | None = None) -> None:
         if isinstance(db_or_path, StateDb):
@@ -217,7 +297,16 @@ class WorldPatternStore:
         return tuple(str(row["hypothesis_id"]) for row in rows)
 
     def list_hypotheses(self) -> tuple[PatternHypothesis, ...]:
-        return tuple(self.load(PatternHypothesisId(item)) for item in self.list_hypothesis_ids())
+        """Inspection path: reconstruct every hypothesis from the full event stream.
+
+        Live evaluation must pass selected ``hypothesis_ids`` so SQL filters
+        before reconstruction.
+        """
+
+        rows = self._db.query_all(
+            f"SELECT * FROM {_HYPOTHESIS_TABLE} ORDER BY hypothesis_id ASC, sequence ASC, event_id ASC"  # noqa: S608
+        )
+        return reconstruct_pattern_hypotheses(rows)
 
     def list_evaluating_hypotheses(
         self,
@@ -226,19 +315,30 @@ class WorldPatternStore:
         evaluation_dataset_fingerprint: str,
         hypothesis_ids: Sequence[str] | None = None,
     ) -> tuple[PatternHypothesis, ...]:
-        requested = None if hypothesis_ids is None else frozenset(hypothesis_ids)
-        evaluating: list[PatternHypothesis] = []
-        for hypothesis in self.list_hypotheses():
-            if hypothesis.status != "evaluating":
-                continue
-            if hypothesis.evaluation_cohort_id != evaluation_cohort_id:
-                continue
-            if hypothesis.evaluation_dataset_fingerprint != evaluation_dataset_fingerprint:
-                continue
-            if requested is not None and hypothesis.hypothesis_id not in requested:
-                continue
-            evaluating.append(hypothesis)
-        return tuple(evaluating)
+        if hypothesis_ids is None:
+            hypotheses = self.list_hypotheses()
+        else:
+            requested = ordered_unique_ids(hypothesis_ids)
+            if not requested:
+                return ()
+            rows: list[sqlite3.Row] = []
+            for chunk in sqlite_in_chunks(requested):
+                rows.extend(
+                    self._db.query_all(
+                        f"SELECT * FROM {_HYPOTHESIS_TABLE} "  # noqa: S608
+                        f"WHERE hypothesis_id IN ({sqlite_placeholders(len(chunk))}) "
+                        "ORDER BY hypothesis_id ASC, sequence ASC, event_id ASC",
+                        chunk,
+                    )
+                )
+            hypotheses = reconstruct_pattern_hypotheses(rows)
+        return tuple(
+            hypothesis
+            for hypothesis in hypotheses
+            if hypothesis.status == "evaluating"
+            and hypothesis.evaluation_cohort_id == evaluation_cohort_id
+            and hypothesis.evaluation_dataset_fingerprint == evaluation_dataset_fingerprint
+        )
 
     def list_occurrence_ids(
         self,
@@ -247,29 +347,46 @@ class WorldPatternStore:
         hypothesis_ids: Sequence[str] | None = None,
         occurrence_ids: Sequence[str] | None = None,
     ) -> tuple[str, ...]:
-        clauses = ["event_type = 'pattern_occurrence_recorded'"]
-        params: list[str] = []
-        if evaluation_cohort_id is not None:
-            clauses.append("cohort_id = ?")
-            params.append(evaluation_cohort_id)
-        if hypothesis_ids is not None:
-            if not hypothesis_ids:
+        unbounded = sum(1 for item in (hypothesis_ids, occurrence_ids) if item is not None)
+        extra = 1 if evaluation_cohort_id is not None else 0
+        size = sqlite_in_chunk_size(unbounded_in_count=max(1, unbounded), extra_binds=extra)
+        if hypothesis_ids is None:
+            h_chunks: tuple[tuple[str, ...] | None, ...] = (None,)
+        else:
+            h_chunks = sqlite_in_chunks(hypothesis_ids, size=size)
+            if not h_chunks:
                 return ()
-            placeholders = ",".join("?" for _ in hypothesis_ids)
-            clauses.append(f"hypothesis_id IN ({placeholders})")
-            params.extend(hypothesis_ids)
-        if occurrence_ids is not None:
-            if not occurrence_ids:
+        if occurrence_ids is None:
+            o_chunks: tuple[tuple[str, ...] | None, ...] = (None,)
+        else:
+            o_chunks = sqlite_in_chunks(occurrence_ids, size=size)
+            if not o_chunks:
                 return ()
-            placeholders = ",".join("?" for _ in occurrence_ids)
-            clauses.append(f"occurrence_id IN ({placeholders})")
-            params.extend(occurrence_ids)
-        sql = (
-            f"SELECT DISTINCT occurrence_id FROM {_OCCURRENCE_TABLE} "  # noqa: S608
-            f"WHERE {' AND '.join(clauses)} ORDER BY occurrence_id ASC"
-        )
-        rows = self._db.query_all(sql, tuple(params))
-        return tuple(str(row["occurrence_id"]) for row in rows)
+        found: list[str] = []
+        seen: set[str] = set()
+        for h_chunk in h_chunks:
+            for o_chunk in o_chunks:
+                clauses = ["event_type = 'pattern_occurrence_recorded'"]
+                params: list[object] = []
+                if evaluation_cohort_id is not None:
+                    clauses.append("cohort_id = ?")
+                    params.append(evaluation_cohort_id)
+                if h_chunk is not None:
+                    clauses.append(f"hypothesis_id IN ({sqlite_placeholders(len(h_chunk))})")
+                    params.extend(h_chunk)
+                if o_chunk is not None:
+                    clauses.append(f"occurrence_id IN ({sqlite_placeholders(len(o_chunk))})")
+                    params.extend(o_chunk)
+                sql = (
+                    f"SELECT DISTINCT occurrence_id FROM {_OCCURRENCE_TABLE} "  # noqa: S608
+                    f"WHERE {' AND '.join(clauses)} ORDER BY occurrence_id ASC"
+                )
+                for row in self._db.query_all(sql, tuple(params)):
+                    occurrence_id = str(row["occurrence_id"])
+                    if occurrence_id not in seen:
+                        seen.add(occurrence_id)
+                        found.append(occurrence_id)
+        return tuple(sorted(found))
 
     def list_recorded_occurrences(
         self,
@@ -278,14 +395,91 @@ class WorldPatternStore:
         hypothesis_ids: Sequence[str] | None = None,
         occurrence_ids: Sequence[str] | None = None,
     ) -> tuple[PatternOccurrence, ...]:
-        return tuple(
-            self.load(PatternOccurrenceId(item))
-            for item in self.list_occurrence_ids(
-                evaluation_cohort_id=evaluation_cohort_id,
-                hypothesis_ids=hypothesis_ids,
-                occurrence_ids=occurrence_ids,
-            )
+        ids = self.list_occurrence_ids(
+            evaluation_cohort_id=evaluation_cohort_id,
+            hypothesis_ids=hypothesis_ids,
+            occurrence_ids=occurrence_ids,
         )
+        if not ids:
+            return ()
+        rows: list[sqlite3.Row] = []
+        for chunk in sqlite_in_chunks(ids):
+            rows.extend(
+                self._db.query_all(
+                    f"SELECT * FROM {_OCCURRENCE_TABLE} "  # noqa: S608
+                    f"WHERE occurrence_id IN ({sqlite_placeholders(len(chunk))}) "
+                    "ORDER BY occurrence_id ASC, sequence ASC, event_id ASC",
+                    chunk,
+                )
+            )
+        return reconstruct_pattern_occurrences(rows)
+
+    def append_discovery_completed(self, event: PatternDiscoveryCompleted) -> bool:
+        parsed = PatternDiscoveryCompleted.from_mapping(event)
+        payload = parsed.to_dict()
+        payload_json = canonical_json(payload)
+        payload_sha256 = canonical_sha256(payload)
+        recorded_at = _utc_now()
+        try:
+            with self._db.transaction() as cur:
+                existing = cur.execute(
+                    f"SELECT * FROM {_LIFECYCLE_TABLE} WHERE event_id=?",  # noqa: S608
+                    (parsed.event_id,),
+                ).fetchone()
+                if existing is not None:
+                    return self._replay_or_conflict_lifecycle(existing, parsed, payload_sha256)
+                keyed = cur.execute(
+                    f"""
+                    SELECT * FROM {_LIFECYCLE_TABLE}
+                    WHERE evaluation_cohort_id=? AND started_event_id=?
+                    """,  # noqa: S608
+                    (parsed.evaluation_cohort_id, parsed.started_event_id),
+                ).fetchone()
+                if keyed is not None:
+                    return self._replay_or_conflict_lifecycle(keyed, parsed, payload_sha256)
+                cur.execute(
+                    f"""
+                    INSERT INTO {_LIFECYCLE_TABLE}(
+                        event_id, event_type, evaluation_cohort_id, started_event_id,
+                        manifest_sha256, formation_cutoff, evaluation_start_not_before,
+                        formation_dataset_fingerprint, evaluation_dataset_fingerprint,
+                        selected_count, payload_json, payload_sha256, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,  # noqa: S608
+                    (
+                        parsed.event_id,
+                        parsed.event_type,
+                        parsed.evaluation_cohort_id,
+                        parsed.started_event_id,
+                        parsed.manifest_sha256,
+                        payload["formation_cutoff"],
+                        payload["evaluation_start_not_before"],
+                        parsed.formation_dataset_fingerprint,
+                        parsed.evaluation_dataset_fingerprint,
+                        parsed.selected_count,
+                        payload_json,
+                        payload_sha256,
+                        recorded_at,
+                    ),
+                )
+                return True
+        except sqlite3.IntegrityError:
+            recovered = self._lifecycle_row_by_event_id(parsed.event_id)
+            if recovered is None:
+                recovered = self._lifecycle_row_by_cohort_start(parsed.evaluation_cohort_id, parsed.started_event_id)
+            if recovered is None:
+                raise
+            return self._replay_or_conflict_lifecycle(recovered, parsed, payload_sha256)
+
+    def get_discovery_completed(
+        self,
+        evaluation_cohort_id: str,
+        started_event_id: str,
+    ) -> PatternDiscoveryCompleted | None:
+        row = self._lifecycle_row_by_cohort_start(evaluation_cohort_id, started_event_id)
+        if row is None:
+            return None
+        return rehydrate_pattern_discovery_completed(row)
 
     def evidence_for(
         self,
@@ -595,6 +789,36 @@ class WorldPatternStore:
             first_seen = self._remember_receipt(receipt)
             evidence = AvailabilityEvidence(receipt=receipt, first_seen_at=first_seen)
         return OccurrenceEventEnvelope(event=event, evidence=evidence)
+
+    def _replay_or_conflict_lifecycle(
+        self,
+        row: Mapping[str, Any],
+        event: PatternDiscoveryCompleted,
+        payload_sha256: str,
+    ) -> bool:
+        if row["payload_sha256"] != payload_sha256 or row["event_id"] != event.event_id:
+            raise _payload_conflict(event.event_id)
+        rehydrate_pattern_discovery_completed(row)
+        return False
+
+    def _lifecycle_row_by_event_id(self, event_id: str) -> Any:
+        return self._db.query_one(
+            f"SELECT * FROM {_LIFECYCLE_TABLE} WHERE event_id=?",  # noqa: S608
+            (event_id,),
+        )
+
+    def _lifecycle_row_by_cohort_start(
+        self,
+        evaluation_cohort_id: str,
+        started_event_id: str,
+    ) -> Any:
+        return self._db.query_one(
+            f"""
+            SELECT * FROM {_LIFECYCLE_TABLE}
+            WHERE evaluation_cohort_id=? AND started_event_id=?
+            """,  # noqa: S608
+            (evaluation_cohort_id, started_event_id),
+        )
 
     def _event_row(self, table: str, event_id: str) -> Any:
         return self._db.query_one(

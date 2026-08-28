@@ -83,7 +83,11 @@ python scripts/llm_usage.py cost --price-per-mtok grok=3
 ```
 
 Le job hebdo (`scripts.archive_agent_storage`) lance l'extraction **avant**
-d'archiver les sessions acpx et de purger `ops/codex-home/logs_*.sqlite`.
+d'archiver les sessions ACPX fermées et les sessions Grok inactives, puis de
+purger les seuls caches/logs explicitement régénérables. Les configurations,
+identités et sessions actives ne sont jamais candidates. Les rollouts Codex et
+les sessions Kimi restent protégés tant que leur cycle de vie propre n'est pas
+prouvé. Voir [Gérer le stockage des agents et du World Model](manage-storage.md).
 
 ## Voir aussi
 - [Lancer le daemon](run-the-daemon.md) ·

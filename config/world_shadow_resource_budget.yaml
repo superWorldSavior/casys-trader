@@ -1,10 +1,10 @@
 schema_version: world_shadow_resource_budget.v1
-content_sha256: "97b1326d9925257cc9e5e90f05240310f52d6bef621d7c48957e3c81442f5909"
+content_sha256: "6b0c3206867c65450425c036fcf69a06785ddf962bccd29843e58d4f6f70db3a"
 authority: shadow_only
 decision_effect: none
 recommendation: NO_GO
 causal_claim: false
 pnl_claim: false
-max_db_bytes: 2147483648
+max_db_bytes: 3221225472
 min_free_bytes: 3221225472
 warn_interval_seconds: 300

@@ -52,6 +52,7 @@ class WorldModelBackgroundRunner:
         thread_name: str = "world-model-shadow",
         context_enricher: WorldContextEpisodeEnricher | None = None,
         graph_enricher: WorldGraphEpisodeEnricher | None = None,
+        pattern_workflow: object | None = None,
         resource_guard: object | None = None,
     ) -> None:
         self.runtime = runtime
@@ -59,6 +60,7 @@ class WorldModelBackgroundRunner:
         self.thread_name = str(thread_name).strip() or "world-model-shadow"
         self.context_enricher = context_enricher
         self.graph_enricher = graph_enricher
+        self.pattern_workflow = pattern_workflow
         self.resource_guard = resource_guard
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -182,6 +184,18 @@ class WorldModelBackgroundRunner:
                     report["capture"] = self._capture_and_predict(capture_snapshot)
                 except Exception as exc:  # noqa: BLE001 - still attempt capture after a maturity failure
                     self._background_error(report, stage="capture", error=exc)
+                if self.pattern_workflow is not None:
+                    try:
+                        lifecycle = self.pattern_workflow.run(current.now)
+                        to_dict = getattr(lifecycle, "to_dict", None)
+                        report["pattern_lifecycle"] = to_dict() if callable(to_dict) else lifecycle
+                        lifecycle_status = getattr(lifecycle, "status", None)
+                        if lifecycle_status is None and isinstance(report["pattern_lifecycle"], Mapping):
+                            lifecycle_status = report["pattern_lifecycle"].get("status")
+                        if lifecycle_status == "partial":
+                            report["status"] = "partial"
+                    except Exception as exc:  # noqa: BLE001 - pattern shadow cannot affect Trader
+                        self._background_error(report, stage="pattern_lifecycle", error=exc)
                 if report["errors"]:
                     report["status"] = "partial"
             try:
@@ -558,6 +572,62 @@ def compose_world_resource_guard(
     return WorldResourceBudgetGuard(**kwargs)  # type: ignore[arg-type]
 
 
+def compose_pattern_shadow_workflow(
+    *,
+    enabled: bool,
+    store: object | None,
+    macro_root: str | Path,
+) -> object | None:
+    """Compose the automatic graph-pattern lifecycle on the world-model ledger.
+
+    The application workflow owns orchestration and invariants. This runtime
+    composition root only binds its SQLite read adapters and append-only
+    writers. The supplied ``WorldModelStore`` remains the sole owner of the
+    shared daemon connection.
+    """
+
+    if not enabled or store is None:
+        return None
+    db = getattr(store, "_db", None)
+    db_path = getattr(store, "path", None)
+    if db is None or db_path is None:
+        raise TypeError("pattern shadow requires a daemon-owned WorldModelStore")
+
+    from trader.application.world_model.pattern_discovery import PatternDiscoveryService
+    from trader.application.world_model.pattern_evaluation import PatternEvaluationService
+    from trader.application.world_model.pattern_outcome_link import PatternOutcomeLinkService
+    from trader.application.world_model.pattern_service import WorldPatternService
+    from trader.application.world_model.pattern_shadow_workflow import PatternShadowWorkflow
+    from trader.infrastructure.state_db.world_pattern_catalog_query import SqlitePatternCatalogQuery
+    from trader.infrastructure.state_db.world_pattern_evaluation_query import SqlitePatternEvaluationSource
+    from trader.infrastructure.state_db.world_pattern_formation_query import SqlitePatternFormationSource
+    from trader.infrastructure.state_db.world_pattern_outcome_query import SqlitePatternOutcomeLeafQuery
+    from trader.infrastructure.state_db.world_pattern_store import WorldPatternStore
+
+    pattern_store = WorldPatternStore(db)
+    patterns = WorldPatternService(
+        hypotheses=pattern_store,
+        occurrences=pattern_store,
+        availability=pattern_store,
+    )
+    catalog = SqlitePatternCatalogQuery(db_path)
+    return PatternShadowWorkflow(
+        cohorts=store,  # type: ignore[arg-type]
+        lifecycle=pattern_store,
+        discovery=PatternDiscoveryService(SqlitePatternFormationSource(db_path, macro_root=macro_root)),
+        patterns=patterns,
+        evaluation=PatternEvaluationService(
+            catalog=catalog,
+            source=SqlitePatternEvaluationSource(db_path, macro_root=macro_root),
+        ),
+        predictions=store,  # type: ignore[arg-type]
+        outcomes=PatternOutcomeLinkService(
+            catalog=catalog,
+            outcomes=SqlitePatternOutcomeLeafQuery(db_path),
+        ),
+    )
+
+
 def compose_local_graph_lanes(
     *,
     enabled: bool | None = None,
@@ -819,6 +889,7 @@ __all__ = [
     "WorldTemporalTraversalAdapter",
     "build_universe_written_scope_observer",
     "compose_local_graph_lanes",
+    "compose_pattern_shadow_workflow",
     "compose_world_ontology_attestation",
     "compose_world_resource_guard",
     "compose_world_scope_mapping_reconcile",

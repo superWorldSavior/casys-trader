@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import signal
 import shutil
 import subprocess
 import tempfile
@@ -15,8 +14,9 @@ from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from trader.domain.llm import LlmCompletion, LlmFailure
+from trader.domain.llm import LlmCompletion, LlmExecutionCapability, LlmFailure
 from trader.infrastructure.llm._errors import _failure_code_from_text, _looks_retryable_provider_error
+from trader.infrastructure.llm._subprocess import per_call_timeout_cap_s, terminate_process_group
 from trader.support.system.process_env import sanitized_runtime_env
 
 log = logging.getLogger(__name__)
@@ -47,7 +47,6 @@ _ALLOWED_ACPX_GROK_EFFORTS = ("low", "medium", "high", "xhigh")
 # Un appel LLM normal fait 30-90s ; un tour figé (provider muet après
 # task_started, cf incident AMCR 2026-07-06) resterait pendu jusqu'au budget
 # total. Ce cap coupe l'appel individuel bien avant, sans toucher au lease.
-_DEFAULT_PER_CALL_TIMEOUT_CAP_S = 150
 
 _DISABLED_RUNTIME_CODEX_FEATURES = (
     "apps",
@@ -114,9 +113,7 @@ def _runtime_skill_files(codex_home: Path) -> list[Path]:
     global_system = Path.home() / ".codex" / "skills" / ".system"
     if global_system.is_dir():
         for source in global_system.glob("*/SKILL.md"):
-            discovered.add(
-                (codex_home / "skills" / ".system" / source.parent.name / "SKILL.md").resolve()
-            )
+            discovered.add((codex_home / "skills" / ".system" / source.parent.name / "SKILL.md").resolve())
     return sorted(discovered, key=str)
 
 
@@ -150,12 +147,7 @@ def _isolated_codex_config(codex_home: Path) -> str:
     # priority, and disable project-doc discovery for this process.
     payload["developer_instructions"] = _RUNTIME_AGENT_INSTRUCTIONS
     payload["project_doc_max_bytes"] = 0
-    payload["skills"] = {
-        "config": [
-            {"path": str(path), "enabled": False}
-            for path in _runtime_skill_files(codex_home)
-        ]
-    }
+    payload["skills"] = {"config": [{"path": str(path), "enabled": False} for path in _runtime_skill_files(codex_home)]}
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
@@ -243,18 +235,10 @@ def _validated_acpx_grok_home(grok_home: str | None = None) -> Path:
 
 def _per_call_timeout_cap_s() -> int:
     """Cap par-appel subprocess acpx (secondes), env ``CASYS_ACPX_CALL_TIMEOUT_S``."""
-    raw = os.getenv("CASYS_ACPX_CALL_TIMEOUT_S")
-    if raw is None:
-        return _DEFAULT_PER_CALL_TIMEOUT_CAP_S
-    try:
-        return max(int(raw), 1)
-    except ValueError:
-        return _DEFAULT_PER_CALL_TIMEOUT_CAP_S
+    return per_call_timeout_cap_s()
 
 
-def _log_acpx_call(
-    *, session, symbol, pid, provider, timeout_s: int, dur_s: float, outcome: str
-) -> None:
+def _log_acpx_call(*, session, symbol, pid, provider, timeout_s: int, dur_s: float, outcome: str) -> None:
     """Journal de vie d'un appel acpx : 1 ligne structurée par subprocess.
 
     Champs : session (=task_id:attempt) · symbol · pid · timeout appliqué ·
@@ -363,10 +347,16 @@ def agent_exec_scratch_dir(codex_home: str | None = None) -> str:
 
 
 def _acpx_global_flags(
-    acpx_bin: str, *, model: str, timeout_s: int, codex_home: str | None = None
+    acpx_bin: str,
+    *,
+    model: str,
+    timeout_s: int,
+    agent: str | None = None,
+    codex_home: str | None = None,
+    allow_native_exec: bool | None = None,
 ) -> list[str]:
     flags = [acpx_bin, "--format", "quiet"]
-    if agent_exec_enabled():
+    if agent_exec_enabled() and allow_native_exec is not False:
         # Outils natifs activés (exec/python), cage = seatbelt workspace-write du
         # CODEX_HOME. Le cwd scratch fixe la seule racine inscriptible hors repo.
         # --approve-all : la frontière de sécurité est le sandbox OS, pas l'ACP
@@ -376,7 +366,12 @@ def _acpx_global_flags(
         # Défaut : zéro outil natif → contrat de sortie JSON pur-texte préservé
         # (ordre des flags byte-identique à l'historique, aucune régression).
         flags += ["--allowed-tools", "", "--no-terminal", "--non-interactive-permissions", "deny"]
-    flags += ["--model", model, "--timeout", str(timeout_s)]
+        if allow_native_exec is False:
+            # The tool allowlist does not suppress ACP filesystem capabilities.
+            # A forced text-only backend advertises neither capability.
+            flags.insert(5, "--no-fs")
+    flags += ["--model", model]
+    flags += ["--timeout", str(timeout_s)]
     return flags
 
 
@@ -385,12 +380,12 @@ def _acpx_agent_part(agent: str | None) -> list[str]:
 
 
 def _acpx_session_admin_flags(
-    acpx_bin: str, *, codex_home: str | None = None
+    acpx_bin: str, *, codex_home: str | None = None, allow_native_exec: bool | None = None
 ) -> list[str]:
     """Flags for commands which must resolve an existing cwd-scoped session."""
 
     flags = [acpx_bin, "--format", "quiet"]
-    if agent_exec_enabled():
+    if agent_exec_enabled() and allow_native_exec is not False:
         flags += ["--cwd", agent_exec_scratch_dir(codex_home)]
     flags += ["--no-terminal", "--non-interactive-permissions", "deny"]
     return flags
@@ -404,9 +399,17 @@ def build_acpx_session_new_command(
     timeout_s: int,
     agent: str | None = None,
     codex_home: str | None = None,
+    allow_native_exec: bool | None = None,
 ) -> list[str]:
     return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s, codex_home=codex_home),
+        *_acpx_global_flags(
+            acpx_bin,
+            model=model,
+            timeout_s=timeout_s,
+            agent=agent,
+            codex_home=codex_home,
+            allow_native_exec=allow_native_exec,
+        ),
         *_acpx_agent_part(agent),
         "sessions",
         "new",
@@ -424,9 +427,17 @@ def build_acpx_session_prompt_command(
     timeout_s: int,
     agent: str | None = None,
     codex_home: str | None = None,
+    allow_native_exec: bool | None = None,
 ) -> list[str]:
     return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s, codex_home=codex_home),
+        *_acpx_global_flags(
+            acpx_bin,
+            model=model,
+            timeout_s=timeout_s,
+            agent=agent,
+            codex_home=codex_home,
+            allow_native_exec=allow_native_exec,
+        ),
         *_acpx_agent_part(agent),
         "prompt",
         "-s",
@@ -441,9 +452,14 @@ def build_acpx_session_close_command(
     acpx_bin: str,
     agent: str | None = None,
     codex_home: str | None = None,
+    allow_native_exec: bool | None = None,
 ) -> list[str]:
     return [
-        *_acpx_session_admin_flags(acpx_bin, codex_home=codex_home),
+        *_acpx_session_admin_flags(
+            acpx_bin,
+            codex_home=codex_home,
+            allow_native_exec=allow_native_exec,
+        ),
         *_acpx_agent_part(agent),
         "sessions",
         "close",
@@ -459,10 +475,15 @@ def build_acpx_session_config_command(
     acpx_bin: str,
     agent: str | None = None,
     codex_home: str | None = None,
+    allow_native_exec: bool | None = None,
 ) -> list[str]:
     """Set one advertised ACP config option on an already-open session."""
     return [
-        *_acpx_session_admin_flags(acpx_bin, codex_home=codex_home),
+        *_acpx_session_admin_flags(
+            acpx_bin,
+            codex_home=codex_home,
+            allow_native_exec=allow_native_exec,
+        ),
         *_acpx_agent_part(agent),
         "set",
         key,
@@ -481,10 +502,18 @@ def build_acpx_command(
     agent: str | None = None,
     session_label: str | None = None,
     codex_home: str | None = None,
+    allow_native_exec: bool | None = None,
 ) -> list[str]:
     labeled_prompt = _label_prompt(prompt, session_label=session_label)
     return [
-        *_acpx_global_flags(acpx_bin, model=model, timeout_s=timeout_s, codex_home=codex_home),
+        *_acpx_global_flags(
+            acpx_bin,
+            model=model,
+            timeout_s=timeout_s,
+            agent=agent,
+            codex_home=codex_home,
+            allow_native_exec=allow_native_exec,
+        ),
         *_acpx_agent_part(agent),
         "exec",
         labeled_prompt,
@@ -517,25 +546,7 @@ def _looks_retryable_acpx_error(*, provider: str, text: str) -> bool:
 
 
 def _terminate_process_group(pgid: int, *, grace_s: float = 2.0) -> None:
-    if os.name != "posix":
-        return
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        return
-
-    deadline = time.monotonic() + grace_s
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, PermissionError):
-            return
-        time.sleep(0.05)
-
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        return
+    terminate_process_group(pgid, grace_s=grace_s)
 
 
 def _run_one_shot_command(
@@ -548,6 +559,10 @@ def _run_one_shot_command(
     agent: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     child_env = dict(os.environ)
+    child_env.pop("CURSOR_CONFIG_DIR", None)
+    child_env.pop("CURSOR_DATA_DIR", None)
+    if str(agent or "").strip().lower() == "cursor":
+        raise RuntimeError("Cursor exige le transport natif CursorAgentBackend, pas ACPX")
     resolved_codex_home = _validated_acpx_codex_home(codex_home)
     child_env["CODEX_HOME"] = str(resolved_codex_home)
     # Un CODEX_HOME vide ne suffit plus à isoler les prompts : Codex installe
@@ -563,19 +578,21 @@ def _run_one_shot_command(
         child_env["KIMI_CODE_HOME"] = str(_validated_acpx_kimi_home())
     if _is_grok_agent(agent):
         child_env["GROK_HOME"] = str(_validated_acpx_grok_home(grok_home))
-    proc = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=os.name == "posix",
-        env=sanitized_runtime_env(child_env),
-    )
-    if on_pid is not None:
-        on_pid(proc.pid)
+    proc: subprocess.Popen[str] | None = None
     try:
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=os.name == "posix",
+            env=sanitized_runtime_env(child_env),
+        )
+        if on_pid is not None:
+            on_pid(proc.pid)
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
+        assert proc is not None
         _terminate_process_group(proc.pid)
         try:
             proc.kill()
@@ -587,11 +604,11 @@ def _run_one_shot_command(
             pass
         raise
     finally:
-        _terminate_process_group(proc.pid)
-
+        if proc is not None:
+            _terminate_process_group(proc.pid)
     return subprocess.CompletedProcess(
         args=command,
-        returncode=proc.returncode,
+        returncode=proc.returncode if proc is not None else 1,
         stdout=stdout,
         stderr=stderr,
     )
@@ -637,14 +654,14 @@ def _run_and_parse(
     pid_holder: dict[str, int | None] = {"pid": None}
     started = time.monotonic()
     try:
-        proc = _run_one_shot_command(
-            command,
-            timeout_s=budget_s + 15,
-            on_pid=lambda p: pid_holder.__setitem__("pid", p),
-            codex_home=codex_home,
-            grok_home=grok_home,
-            agent=agent,
-        )
+        subprocess_kwargs = {
+            "timeout_s": budget_s + 15,
+            "on_pid": lambda p: pid_holder.__setitem__("pid", p),
+            "codex_home": codex_home,
+            "grok_home": grok_home,
+            "agent": agent,
+        }
+        proc = _run_one_shot_command(command, **subprocess_kwargs)
     except subprocess.TimeoutExpired:
         _log_acpx_call(
             session=session,
@@ -725,10 +742,12 @@ class AcpxSession:
     agent: str | None = None
     codex_home: str | None = None
     grok_home: str | None = None
+    allow_native_exec: bool | None = None
 
-    def send(
-        self, prompt: str, *, timeout_s: int, call_ctx: dict | None = None
-    ) -> LlmCompletion | LlmFailure:
+    def execution_capability(self) -> LlmExecutionCapability:
+        return LlmExecutionCapability(caged_native_python=agent_exec_enabled() and self.allow_native_exec is not False)
+
+    def send(self, prompt: str, *, timeout_s: int, call_ctx: dict | None = None) -> LlmCompletion | LlmFailure:
         return _run_and_parse(
             build_acpx_session_prompt_command(
                 self.name,
@@ -738,6 +757,7 @@ class AcpxSession:
                 timeout_s=timeout_s,
                 agent=self.agent,
                 codex_home=self.codex_home,
+                allow_native_exec=self.allow_native_exec,
             ),
             provider=self.provider,
             model=self.model,
@@ -751,21 +771,24 @@ class AcpxSession:
 
     def close(self) -> None:
         try:
+            subprocess_kwargs = {
+                "timeout_s": 15,
+                "codex_home": self.codex_home,
+                "grok_home": self.grok_home,
+                "agent": self.agent,
+            }
             _run_one_shot_command(
                 build_acpx_session_close_command(
                     self.name,
                     acpx_bin=self.acpx_bin,
                     agent=self.agent,
                     codex_home=self.codex_home,
+                    allow_native_exec=self.allow_native_exec,
                 ),
-                timeout_s=15,
-                codex_home=self.codex_home,
-                grok_home=self.grok_home,
-                agent=self.agent,
+                **subprocess_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - fermeture best-effort, jamais bloquante
             log.warning("[acpx_session] close failed name=%s: %s", self.name, exc)
-            return
 
 
 class SessionProviderDown(Exception):
@@ -842,6 +865,12 @@ class AcpxBackend:
     # CODEX_HOME, elle est propre à la session et permet Luna medium + Sol low
     # avec un seul profil de l'app. Inopérant sous Grok (ACP -32601).
     reasoning_effort: str | None = None
+    # None preserves the process-wide policy. False prevents a secondary
+    # provider from inheriting the primary's native calculation tools/writes.
+    allow_native_exec: bool | None = None
+
+    def execution_capability(self) -> LlmExecutionCapability:
+        return LlmExecutionCapability(caged_native_python=agent_exec_enabled() and self.allow_native_exec is not False)
 
     def open_session(self, name: str, *, timeout_s: int) -> AcpxSession | LlmFailure:
         res = _run_and_parse(
@@ -852,6 +881,7 @@ class AcpxBackend:
                 timeout_s=timeout_s,
                 agent=self.agent,
                 codex_home=self.codex_home,
+                allow_native_exec=self.allow_native_exec,
             ),
             provider=self.provider,
             model=self.model,
@@ -873,6 +903,7 @@ class AcpxBackend:
             agent=self.agent,
             codex_home=self.codex_home,
             grok_home=self.grok_home,
+            allow_native_exec=self.allow_native_exec,
         )
         effort = str(self.reasoning_effort or "").strip().lower()
         if effort:
@@ -884,6 +915,7 @@ class AcpxBackend:
                     acpx_bin=self.acpx_bin,
                     agent=self.agent,
                     codex_home=self.codex_home,
+                    allow_native_exec=self.allow_native_exec,
                 ),
                 provider=self.provider,
                 model=self.model,
@@ -920,6 +952,7 @@ class AcpxBackend:
                 agent=self.agent,
                 session_label=self.session_label,
                 codex_home=self.codex_home,
+                allow_native_exec=self.allow_native_exec,
             ),
             provider=self.provider,
             model=self.model,

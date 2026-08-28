@@ -64,6 +64,7 @@ from trader.domain.world_macro import (
     is_admitted_macro_producer,
 )
 from trader.infrastructure.state_db._jsonl_store import read_jsonl_objects
+from trader.infrastructure.state_db.sqlite_in import sqlite_placeholders as _placeholders
 from trader.infrastructure.state_db.availability_receipt import load_receipts, parse_world_availability_receipt
 from trader.infrastructure.state_db.world_macro_store import WORLD_MACRO_STORE_ID
 from trader.infrastructure.state_db.world_model_store import WORLD_MODEL_STORE_ID
@@ -156,10 +157,6 @@ def _embedded_snapshot_id(observation: Any) -> str:
     raise ValueError("graph episode must embed snapshot_id on observation.graph_features.snapshot")
 
 
-def _placeholders(count: int) -> str:
-    return ",".join("?" for _ in range(count))
-
-
 class _Ledger:
     """Indexed point-in-time rows loaded by a constant SELECT budget."""
 
@@ -214,9 +211,7 @@ def _preload_ledger(
     cutoff: datetime,
     macro_root: Path | None,
 ) -> _Ledger:
-    snapshots = {
-        str(row["snapshot_id"]): row for row in connection.execute("SELECT * FROM world_graph_snapshots")
-    }
+    snapshots = {str(row["snapshot_id"]): row for row in connection.execute("SELECT * FROM world_graph_snapshots")}
     receipts: dict[_ReceiptKey, sqlite3.Row] = {}
     for row in connection.execute(
         """
@@ -962,7 +957,9 @@ def _parse_authoritative_outcome(
         or outcome.training_eligible is not True
         or int(row["training_eligible"]) != 1
         or move_class not in _PREDICTION_CLASS_SET
-        or not _clocks_not_after(cutoff, label_available, computed, _parse_clock(row["recorded_at"], "outcome.recorded_at"))
+        or not _clocks_not_after(
+            cutoff, label_available, computed, _parse_clock(row["recorded_at"], "outcome.recorded_at")
+        )
     ):
         rejections["outcome_not_active_observed"] += 1
         return None

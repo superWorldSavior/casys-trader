@@ -116,11 +116,14 @@ haut.
 ### Exec natif optionnel
 
 `CASYS_AGENT_EXEC=1` autorise les outils natifs Codex (shell/Python) pour les
-calculs ad hoc. Le runtime impose alors comme cwd
-`ops/codex-home/calc-scratch/` et refuse de s'ouvrir si `CODEX_HOME` n'est pas
-absolu ou si le scratch en sort. Avec `sandbox_mode = "workspace-write"`, le
-réseau reste coupé et les écritures sont confinées à ce scratch gitignoré. Sans
-le flag, le contrat historique sans outil natif reste inchangé.
+calculs ad hoc **sur un backend ACPX qui n'a pas interdit l'exec**. Le runtime
+impose alors comme cwd `ops/codex-home/calc-scratch/` et refuse de s'ouvrir si
+`CODEX_HOME` n'est pas absolu ou si le scratch en sort. Avec
+`sandbox_mode = "workspace-write"`, le réseau reste coupé et les écritures sont
+confinées à ce scratch gitignoré. Sans le flag, le contrat historique sans
+outil natif reste inchangé. Cursor CLI (`ask` + sandbox) n'exécute jamais cet
+outil, même si le flag process est levé ; le prompt suit la capacité réelle du
+session, pas le flag.
 
 Cette capacité sert au raisonnement numérique, pas à exécuter directement un
 ordre : la sortie finale reste du JSON pur, puis le daemon valide et exécute via

@@ -43,6 +43,7 @@ from trader.domain.world_episode import (
     WorldOutcome,
     WorldPrediction,
     canonical_prediction_class,
+    canonical_sha256,
     completed_bar_cutoff,
 )
 
@@ -249,6 +250,48 @@ def _observation_payload(episode: object) -> dict[str, object]:
     return _mapping_copy(observation)
 
 
+def _prediction_input_fingerprint(payload: Mapping[str, object], episode: object) -> tuple[str, str]:
+    """Return the compact, stable lineage for a persisted prediction input.
+
+    The episode ledger already owns the full immutable observation.  Prediction
+    events therefore reference that episode and retain only the predictor's
+    feature-view hash plus an explicit input digest.  Duck-typed legacy
+    predictors that do not expose a feature hash fall back to the canonical
+    observation digest, which is exactly the digest the store historically
+    derived from the now-removed ``input`` payload.
+    """
+
+    observation = _field(episode, "observation")
+    observation_payload = _observation_payload(episode)
+    observed_feature_hash = _field(observation, "feature_hash") if observation is not None else None
+    feature_hash = _canonical_digest_hex(payload.get("feature_hash"), field="feature_hash") or _canonical_digest_hex(
+        observed_feature_hash, field="feature_hash"
+    )
+    if not feature_hash:
+        feature_hash = canonical_sha256(observation_payload)
+    input_sha256 = _canonical_digest_hex(payload.get("input_sha256"), field="input_sha256") or feature_hash
+    return feature_hash, input_sha256
+
+
+def _canonical_digest_hex(value: object, *, field: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    tagged = text.lower().startswith("sha256:")
+    hex_part = text[7:] if tagged else text
+    if not tagged and len(hex_part) != 64:
+        # Duck-typed predictors may stamp a non-digest feature view token.
+        # Persistence evidence then falls back to the canonical observation digest.
+        return None
+    if len(hex_part) != 64:
+        raise ValueError(f"{field} must be a sha256 digest")
+    try:
+        int(hex_part, 16)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be a sha256 digest") from exc
+    return hex_part.lower()
+
+
 def _stable_id(prefix: str, payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
     return f"{prefix}:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
@@ -408,6 +451,7 @@ class WorldModelService:
         self._running: str | None = None
         self._last_report: dict[str, object] = {}
         self._prediction_keys: set[tuple[str, str, str, str]] = set()
+        self._prediction_keys_hydrated = False
         self._baseline_hydrated = False
         self._active_outcome_fingerprint: str | None = None
         self._eligible_episode_fingerprint: str | None = None
@@ -836,6 +880,7 @@ class WorldModelService:
         lineage = _predictor_cohort_lineage(predictor)
         if lineage:
             payload.update(lineage)
+        feature_hash, input_sha256 = _prediction_input_fingerprint(payload, episode)
         prediction_id = str(payload.get("prediction_id") or "").strip()
         if not prediction_id:
             prediction_id = _stable_id(
@@ -858,7 +903,8 @@ class WorldModelService:
             "model_kind": model_id,
             "model_version": model_version,
             "predicted_at": payload.get("predicted_at") or payload.get("created_at") or predicted_at,
-            "input": _observation_payload(episode),
+            "feature_hash": feature_hash,
+            "input_sha256": input_sha256,
             "prediction": payload,
         }
         if lineage:
@@ -866,8 +912,12 @@ class WorldModelService:
         return event
 
     def _hydrate_prediction_keys(self, report: dict[str, object]) -> None:
+        if self._prediction_keys_hydrated:
+            return
         try:
-            rows = self.store.list_predictions()
+            # Startup deduplication needs four indexed identity columns, never
+            # the historical JSON payloads (the dominant bytes in this table).
+            rows = self.store.list_prediction_identities()
             for row in list(rows or []):
                 identifier = _episode_id(row)
                 horizon = _horizon_id(row)
@@ -883,8 +933,9 @@ class WorldModelService:
                 if len(candidates) == 1:
                     identity = candidates[0]
                     self._prediction_keys.add((identifier, horizon, identity[0], identity[1]))
+            self._prediction_keys_hydrated = True
         except Exception as exc:  # noqa: BLE001
-            self._error(report, stage="list_predictions", error=exc)
+            self._error(report, stage="list_prediction_identities", error=exc)
 
     def _observe_predictors(
         self,

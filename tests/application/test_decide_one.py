@@ -13,6 +13,7 @@ Cas couverts :
   - exception client     → RetryableError(is_overload=False)
   - grain-1 vérifié      → symbols=[symbol] dans l'appel client
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -24,6 +25,7 @@ import pytest
 from trader.agent import llm
 from trader.agent.protocol.types import Decision
 from trader.application.decide.one import SESSION_ROUND_BACKSTOP, decide_one
+from trader.domain.llm import LlmExecutionCapability
 from trader.queue.worker import RetryableError
 
 SYMBOL = "AAPL"
@@ -218,9 +220,7 @@ def test_appel_client_projette_les_postures_univers_hors_cible():
     )
 
     sent = client.calls[0]["per_symbol"][SYMBOL]
-    assert sent["universe_mandate"]["family_postures"] == {
-        "tech": {"posture": "constructive"}
-    }
+    assert sent["universe_mandate"]["family_postures"] == {"tech": {"posture": "constructive"}}
     assert set(facts["universe_mandate"]["family_postures"]) == {"tech", "energy"}
 
 
@@ -248,6 +248,7 @@ class _ParsePassthroughClient:
 
     def decide_batch(self, *, symbols, allow_context_request=False, **kwargs):
         from trader.agent.protocol.parsing import parse_batch
+
         return parse_batch(
             self._llm_text,
             list(symbols),
@@ -291,8 +292,7 @@ def test_parse_error_tool_loop_leve_retryable():
 def test_parse_error_element_corrompu_leve_retryable():
     """Élément decisions malformé (action invalide) → parse_error:corrupt_element → RetryableError."""
     llm_text = (
-        '{"decisions": [{"symbol": "AAPL", "action": "INVALID", "quantity": 0,'
-        ' "confidence": 0, "rationale": "bad"}]}'
+        '{"decisions": [{"symbol": "AAPL", "action": "INVALID", "quantity": 0, "confidence": 0, "rationale": "bad"}]}'
     )
     client = _ParsePassthroughClient(llm_text)
     with pytest.raises(RetryableError) as exc_info:
@@ -423,9 +423,7 @@ def _cycle_services(tmp_path, handle: WorkerCycleContextHandle) -> ToolRoundServ
 
 
 def _tool_request() -> BatchToolCallRequest:
-    return BatchToolCallRequest(
-        calls=[{"id": "c1", "tool": "get_active_plans", "args": {"symbol": SYMBOL}}]
-    )
+    return BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {"symbol": SYMBOL}}])
 
 
 def test_tool_round_puis_decision_au_tour_2_sort_tot():
@@ -447,13 +445,13 @@ def test_tool_round_puis_decision_au_tour_2_sort_tot():
 
     assert decision.action == "BUY"
     assert calls == 2
-    assert client.calls[0]["allow_tool_calls"] is True     # round : outils autorisés
-    assert client.calls[1]["allow_tool_calls"] is True     # l'agent décide librement au tour 2
+    assert client.calls[0]["allow_tool_calls"] is True  # round : outils autorisés
+    assert client.calls[1]["allow_tool_calls"] is True  # l'agent décide librement au tour 2
     assert all(c["allow_context_request"] is False for c in client.calls)  # Q4 : pas de legacy
     assert all(c["max_tool_calls_per_symbol"] == 8 for c in client.calls)
     assert [c["session_followup"] for c in client.calls] == [False, True]
     assert client.calls[1]["per_symbol"][SYMBOL]["tool_results"]  # résultats réinjectés
-    assert decision.domain_tools["tool_rounds"] == 1       # traces mergées (persistance)
+    assert decision.domain_tools["tool_rounds"] == 1  # traces mergées (persistance)
 
 
 def test_missing_entry_evaluation_is_corrected_in_same_session():
@@ -486,9 +484,7 @@ def test_missing_entry_evaluation_is_corrected_in_same_session():
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
         codex_client=client,
-        tool_services=_services(
-            trade_plan_evaluator_factory=lambda _cycle, _symbol: Evaluator()
-        ),
+        tool_services=_services(trade_plan_evaluator_factory=lambda _cycle, _symbol: Evaluator()),
         session_backends=_session_backends(),
         task_id="evaluation-correction",
     )
@@ -543,7 +539,12 @@ def test_fallback_session_recommence_par_un_prompt_complet():
 
 
 def test_tool_context_recoit_open_plans_du_worker_cycle_context():
-    client = _SeqClient([BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {}}]), {SYMBOL: _ok_decision("HOLD")}])
+    client = _SeqClient(
+        [
+            BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {}}]),
+            {SYMBOL: _ok_decision("HOLD")},
+        ]
+    )
     handle = _published_cycle_context(
         cycle_id="cycle-1",
         rows=(
@@ -569,12 +570,12 @@ def test_tool_context_recoit_open_plans_du_worker_cycle_context():
 
 
 def test_tool_context_recoit_attribution_complete_hors_prompt() -> None:
-    client = _SeqClient([
-        BatchToolCallRequest(
-            calls=[{"id": "c1", "tool": "get_attribution", "args": {"scope": "summary"}}]
-        ),
-        {SYMBOL: _ok_decision("HOLD")},
-    ])
+    client = _SeqClient(
+        [
+            BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_attribution", "args": {"scope": "summary"}}]),
+            {SYMBOL: _ok_decision("HOLD")},
+        ]
+    )
     handle = _published_cycle_context(
         cycle_id="cycle-1",
         attribution={"n_closed_trades": 9, "realized_pnl": 123.0},
@@ -596,18 +597,16 @@ def test_tool_context_recoit_attribution_complete_hors_prompt() -> None:
     tool_result = client.calls[1]["per_symbol"][SYMBOL]["tool_results"][0]
     assert decision.action == "HOLD"
     assert calls == 2
-    assert tool_result["result"] == {
-        "summary": {"n_closed_trades": 9, "realized_pnl": 123.0}
-    }
+    assert tool_result["result"] == {"summary": {"n_closed_trades": 9, "realized_pnl": 123.0}}
 
 
 def test_attribution_cycle_mismatch_retombe_sur_le_resume_du_payload() -> None:
-    client = _SeqClient([
-        BatchToolCallRequest(
-            calls=[{"id": "c1", "tool": "get_attribution", "args": {"scope": "summary"}}]
-        ),
-        {SYMBOL: _ok_decision("HOLD")},
-    ])
+    client = _SeqClient(
+        [
+            BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_attribution", "args": {"scope": "summary"}}]),
+            {SYMBOL: _ok_decision("HOLD")},
+        ]
+    )
     handle = _published_cycle_context(
         cycle_id="cycle-2",
         attribution={"n_closed_trades": 99},
@@ -636,10 +635,12 @@ def test_get_active_plans_cycle_mismatch_devient_tool_error_sans_lire_le_cycle_c
         cycle_id="cycle-2",
         rows=({"id": "plan-msft", "symbol": "MSFT"},),
     )
-    client = _SeqClient([
-        BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {}}]),
-        {SYMBOL: _ok_decision("HOLD")},
-    ])
+    client = _SeqClient(
+        [
+            BatchToolCallRequest(calls=[{"id": "c1", "tool": "get_active_plans", "args": {}}]),
+            {SYMBOL: _ok_decision("HOLD")},
+        ]
+    )
 
     decision, calls = decide_one(
         **{**_BASE_KWARGS, "agent_tools_enabled": True},
@@ -812,9 +813,7 @@ def test_sans_tool_services_mode_degrade_un_appel():
     """tool_services=None → mode dégradé historique : 1 appel, aucun outil au prompt."""
     client = _FakeClient({SYMBOL: _ok_decision("BUY")})
 
-    decision, calls = decide_one(
-        **{**_BASE_KWARGS, "agent_tools_enabled": True}, codex_client=client
-    )
+    decision, calls = decide_one(**{**_BASE_KWARGS, "agent_tools_enabled": True}, codex_client=client)
 
     assert decision.action == "BUY"
     assert calls == 1
@@ -850,11 +849,13 @@ def test_univers_transmis_au_resolver_via_cross_asset():
         return []
 
     request = BatchToolCallRequest(
-        calls=[{
-            "id": "c1",
-            "tool": "get_indicator_context",
-            "args": {"symbol": "SPY", "indicators": ["relative_strength"], "timeframe": "1h"},
-        }]
+        calls=[
+            {
+                "id": "c1",
+                "tool": "get_indicator_context",
+                "args": {"symbol": "SPY", "indicators": ["relative_strength"], "timeframe": "1h"},
+            }
+        ]
     )
     client = _SeqClient([request, {"SPY": replace(_ok_decision("HOLD"), symbol="SPY")}])
     kwargs = {**_BASE_KWARGS, "symbol": "SPY", "agent_tools_enabled": True}
@@ -868,8 +869,8 @@ def test_univers_transmis_au_resolver_via_cross_asset():
         task_id="t",
     )
 
-    assert "SPY" in fetched           # le symbole est fetché
-    assert "QQQ" in fetched           # la paire de famille (univers) aussi
+    assert "SPY" in fetched  # le symbole est fetché
+    assert "QQQ" in fetched  # la paire de famille (univers) aussi
 
 
 def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
@@ -943,6 +944,53 @@ def test_session_mode_utilise_runner_delta_et_complete_fn(monkeypatch):
     assert client.calls[0]["allow_tool_calls"] is True
     assert client.calls[0]["max_rounds"] is None
     assert client.calls[0]["timeout_s"] == 60
+
+
+def test_session_mode_propage_la_capacite_dexec_de_la_session(monkeypatch):
+    class ExecSession:
+        def send(self, prompt, *, timeout_s, call_ctx=None):
+            return llm.LlmCompletion(provider="acpx", model="gpt-5.5", text="{}")
+
+        def execution_capability(self):
+            return LlmExecutionCapability(caged_native_python=True)
+
+        def close(self):
+            return None
+
+    def fake_run_with_session_fallback(backends, *, task_id, resolve, open_timeout_s):
+        del backends, task_id, open_timeout_s
+        return resolve(ExecSession())
+
+    def fake_resolve_symbol_decision(**kwargs):
+        return kwargs["call_model"]({SYMBOL: {"round": 1}}, allow_tool_calls=True)[SYMBOL]
+
+    class SessionAwareClient:
+        def __init__(self):
+            self.calls = []
+
+        def decide_batch(self, *, symbols, **kwargs):
+            self.calls.append({"symbols": list(symbols), **kwargs})
+            return {SYMBOL: _ok_decision("BUY")}
+
+    monkeypatch.setattr(
+        "trader.application.decide.one.llm.run_with_session_fallback",
+        fake_run_with_session_fallback,
+    )
+    monkeypatch.setattr(
+        "trader.application.decide.one.resolve_symbol_decision",
+        fake_resolve_symbol_decision,
+    )
+
+    client = SessionAwareClient()
+    decide_one(
+        **{**_BASE_KWARGS, "agent_tools_enabled": True},
+        codex_client=client,
+        tool_services=_services(),
+        session_backends=[object()],
+        task_id="decide:AAPL",
+    )
+
+    assert client.calls[0]["execution_capability"] == LlmExecutionCapability(caged_native_python=True)
 
 
 def test_max_rounds_1_avec_session_backends_utilise_session_mode(monkeypatch):

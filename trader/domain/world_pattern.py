@@ -41,6 +41,8 @@ PATTERN_OCCURRENCE_SCHEMA = "pattern_occurrence.v1"
 PATTERN_OUTCOME_LINK_SCHEMA = "pattern_outcome_link.v1"
 PATTERN_HYPOTHESIS_EVENT_SCHEMA = "pattern_hypothesis_event.v1"
 PATTERN_OCCURRENCE_EVENT_SCHEMA = "pattern_occurrence_event.v1"
+PATTERN_DISCOVERY_COMPLETED_SCHEMA = "pattern_discovery_completed.v1"
+PATTERN_DISCOVERY_COMPLETED_EVENT_TYPE = "pattern_discovery_completed"
 
 PATTERN_HYPOTHESIS_STATUSES = frozenset({"registered", "evaluating", "evaluation_closed", "invalidated"})
 PATTERN_OCCURRENCE_STATUSES = frozenset({"recorded", "invalidated"})
@@ -76,6 +78,9 @@ _OCCURRENCE_ID_PREFIX = "pattern_occurrence:v1"
 _LINK_ID_PREFIX = "pattern_outcome_link:v1"
 _HYPOTHESIS_EVENT_PREFIX = "pattern_hypothesis_event:v1"
 _OCCURRENCE_EVENT_PREFIX = "pattern_occurrence_event:v1"
+_DISCOVERY_COMPLETED_PREFIX = "pattern_discovery_completed:v1"
+_WORLD_COHORT_ID_PREFIX = "world_cohort:v1"
+_WORLD_COHORT_EVENT_PREFIX = "world_cohort_event:v1"
 _OUTCOME_EVENT_PREFIX = "world-outcome:v1"
 _PREDICTION_ID_PREFIX = "world-prediction:v1"
 
@@ -146,6 +151,19 @@ def _unique_text_tuple(value: Sequence[str] | None, field_name: str) -> tuple[st
     return items
 
 
+def _selected_hypothesis_ids(value: Sequence[Any] | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise TypeError("selected_hypothesis_ids must be a sequence of PatternHypothesisId")
+    items = tuple(
+        item.value if isinstance(item, PatternHypothesisId) else PatternHypothesisId(item).value for item in value
+    )
+    if len(items) != len(set(items)):
+        raise ValueError("selected_hypothesis_ids must not contain duplicates")
+    return items
+
+
 def _entity_kind(value: Any, field_name: str) -> str:
     kind = _required_text(value, field_name).lower()
     if kind not in WORLD_ENTITY_KINDS:
@@ -203,9 +221,7 @@ def _class_counts(value: Any, field_name: str, *, expected_total: int) -> Mappin
 def laplace_smoothed_distribution(counts: Mapping[str, int], *, alpha: float) -> Mapping[str, float]:
     total = sum(int(counts[label]) for label in PREDICTION_CLASSES)
     denominator = total + (alpha * len(PREDICTION_CLASSES))
-    return MappingProxyType(
-        {label: (float(counts[label]) + alpha) / denominator for label in PREDICTION_CLASSES}
-    )
+    return MappingProxyType({label: (float(counts[label]) + alpha) / denominator for label in PREDICTION_CLASSES})
 
 
 def total_variation_distance(
@@ -394,7 +410,9 @@ def _pattern_hop_identity(
 
 def _pattern_hop_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
     if "predicate" in value or "lag_window" in value or "subject_kind" in value or "object_kind" in value:
-        raise ValueError("pattern hops are an ID-free WorldTemporalPathStep projection; predicate and lag_window are gone")
+        raise ValueError(
+            "pattern hops are an ID-free WorldTemporalPathStep projection; predicate and lag_window are gone"
+        )
     if driver_state_required_for_relation(value.get("relation_kind")) and "driver_state" not in value:
         raise ValueError("overlay hop mapping is missing driver_state")
     return {
@@ -562,7 +580,9 @@ class PatternFormationStats:
         if self.pattern_distribution is not None:
             provided_pattern = _move_distribution(self.pattern_distribution)
             if any(
-                not math.isclose(provided_pattern[label], pattern_distribution[label], rel_tol=0.0, abs_tol=_DISTRIBUTION_ABS_TOL)
+                not math.isclose(
+                    provided_pattern[label], pattern_distribution[label], rel_tol=0.0, abs_tol=_DISTRIBUTION_ABS_TOL
+                )
                 for label in PREDICTION_CLASSES
             ):
                 raise ValueError("pattern_distribution must equal the Laplace-smoothed class_counts")
@@ -593,16 +613,12 @@ class PatternFormationStats:
             "support": self.support,
             "population_support": self.population_support,
             "class_counts": {label: self.class_counts[label] for label in PREDICTION_CLASSES},
-            "population_class_counts": {
-                label: self.population_class_counts[label] for label in PREDICTION_CLASSES
-            },
+            "population_class_counts": {label: self.population_class_counts[label] for label in PREDICTION_CLASSES},
             "smoothing_alpha": self.smoothing_alpha,
             "association_metric": self.association_metric,
             "association_score": self.association_score,
             "pattern_distribution": {label: self.pattern_distribution[label] for label in PREDICTION_CLASSES},
-            "population_distribution": {
-                label: self.population_distribution[label] for label in PREDICTION_CLASSES
-            },
+            "population_distribution": {label: self.population_distribution[label] for label in PREDICTION_CLASSES},
         }
 
     @classmethod
@@ -650,13 +666,19 @@ class PatternHypothesisSpec:
         schema_version = _required_text(self.schema_version, "schema_version")
         if schema_version != PATTERN_HYPOTHESIS_SCHEMA:
             raise ValueError(f"schema_version must be {PATTERN_HYPOTHESIS_SCHEMA}")
-        evaluation_start_not_before = parse_utc_timestamp(self.evaluation_start_not_before, "evaluation_start_not_before")
+        evaluation_start_not_before = parse_utc_timestamp(
+            self.evaluation_start_not_before, "evaluation_start_not_before"
+        )
         formation_cutoff = parse_utc_timestamp(self.formation_cutoff, "formation_cutoff")
         if not (formation_cutoff < evaluation_start_not_before):
             raise ValueError("formation cutoff must precede evaluation")
         target = self.target if isinstance(self.target, PatternTarget) else PatternTarget.from_mapping(self.target)
         steps = _steps_tuple(self.steps)
-        stats = self.stats if isinstance(self.stats, PatternFormationStats) else PatternFormationStats.from_mapping(self.stats)
+        stats = (
+            self.stats
+            if isinstance(self.stats, PatternFormationStats)
+            else PatternFormationStats.from_mapping(self.stats)
+        )
         if any(
             not math.isclose(
                 float(target.move_distribution[label]),
@@ -693,7 +715,12 @@ class PatternHypothesisSpec:
             raise ValueError("hypothesis_id does not match the canonical pattern hypothesis")
         PatternHypothesisRef(hypothesis_id=hypothesis_id)
         source_refs = _unique_text_tuple(self.source_refs, "source_refs")
-        content_payload = {**identity, "hypothesis_id": hypothesis_id, "source_refs": list(source_refs), "causal_claim": False}
+        content_payload = {
+            **identity,
+            "hypothesis_id": hypothesis_id,
+            "source_refs": list(source_refs),
+            "causal_claim": False,
+        }
         digest = canonical_sha256(content_payload)
         if self.content_sha256 is not None and _required_text(self.content_sha256, "content_sha256") != digest:
             raise ValueError("content_sha256 does not match the canonical pattern hypothesis")
@@ -772,7 +799,9 @@ class PatternHypothesisRegistered:
     event_type: str = "pattern_hypothesis_registered"
 
     def __post_init__(self) -> None:
-        spec = self.spec if isinstance(self.spec, PatternHypothesisSpec) else PatternHypothesisSpec.from_mapping(self.spec)
+        spec = (
+            self.spec if isinstance(self.spec, PatternHypothesisSpec) else PatternHypothesisSpec.from_mapping(self.spec)
+        )
         registered_at = parse_utc_timestamp(self.registered_at, "registered_at")
         object.__setattr__(self, "spec", spec)
         object.__setattr__(self, "registered_at", registered_at)
@@ -1251,7 +1280,9 @@ def _path_tuple(value: Sequence[Any] | None) -> tuple[PatternMatchedHop, ...]:
         return ()
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise TypeError("exact_path must be a sequence of PatternMatchedHop")
-    hops = tuple(item if isinstance(item, PatternMatchedHop) else PatternMatchedHop.from_mapping(item) for item in value)
+    hops = tuple(
+        item if isinstance(item, PatternMatchedHop) else PatternMatchedHop.from_mapping(item) for item in value
+    )
     for index, hop in enumerate(hops):
         if hop.ordinal != index:
             raise ValueError("exact_path must be ordered with consecutive ordinals starting at 0")
@@ -1366,7 +1397,9 @@ class PatternOccurrenceSpec:
             self.evaluation_start_not_before, "evaluation_start_not_before"
         )
         exact_path = _path_tuple(self.exact_path)
-        forecast = self.forecast if isinstance(self.forecast, PatternForecast) else PatternForecast.from_mapping(self.forecast)
+        forecast = (
+            self.forecast if isinstance(self.forecast, PatternForecast) else PatternForecast.from_mapping(self.forecast)
+        )
         expected = _unique_text_tuple(self.expected_horizon_ids, "expected_horizon_ids")
         if not expected:
             raise ValueError("expected_horizon_ids must not be empty")
@@ -1506,13 +1539,9 @@ class PatternOutcomeLink:
         world_outcome_event_id = _validate_prefixed_id(
             self.world_outcome_event_id, _OUTCOME_EVENT_PREFIX, "world_outcome_event_id"
         )
-        world_outcome_content_sha256 = _sha256_hex(
-            self.world_outcome_content_sha256, "world_outcome_content_sha256"
-        )
+        world_outcome_content_sha256 = _sha256_hex(self.world_outcome_content_sha256, "world_outcome_content_sha256")
         supersedes_link_id = (
-            None
-            if self.supersedes_link_id is None
-            else PatternOutcomeLinkId(self.supersedes_link_id).value
+            None if self.supersedes_link_id is None else PatternOutcomeLinkId(self.supersedes_link_id).value
         )
         identity = {
             "schema_version": schema_version,
@@ -1570,7 +1599,9 @@ class PatternOutcomeLink:
         )
 
 
-def _link_from_outcome(occurrence_id: str, outcome: WorldOutcome, *, supersedes_link_id: str | None) -> PatternOutcomeLink:
+def _link_from_outcome(
+    occurrence_id: str, outcome: WorldOutcome, *, supersedes_link_id: str | None
+) -> PatternOutcomeLink:
     if not isinstance(outcome, WorldOutcome):
         raise TypeError("outcome link requires a canonical WorldOutcome")
     return PatternOutcomeLink(
@@ -1697,7 +1728,9 @@ class PatternOutcomeLinkSuperseded:
     def __post_init__(self) -> None:
         predecessor_link_id = PatternOutcomeLinkId(self.predecessor_link_id).value
         successor = (
-            self.successor if isinstance(self.successor, PatternOutcomeLink) else PatternOutcomeLink.from_mapping(self.successor)
+            self.successor
+            if isinstance(self.successor, PatternOutcomeLink)
+            else PatternOutcomeLink.from_mapping(self.successor)
         )
         if successor.supersedes_link_id != predecessor_link_id:
             raise ValueError("successor outcome link must explicitly supersede the predecessor")
@@ -1974,7 +2007,10 @@ class PatternOccurrence:
             evaluation_fp = _sha256_hex(evaluation_dataset_fingerprint, "evaluation_dataset_fingerprint")
         if evaluation_fp == spec.formation_dataset_fingerprint:
             raise ValueError("in-sample confirmation is forbidden: evaluation dataset must differ from formation")
-        if hypothesis.evaluation_dataset_fingerprint is not None and evaluation_fp != hypothesis.evaluation_dataset_fingerprint:
+        if (
+            hypothesis.evaluation_dataset_fingerprint is not None
+            and evaluation_fp != hypothesis.evaluation_dataset_fingerprint
+        ):
             raise ValueError("evaluation dataset must match the started prospective confirmation dataset")
         resolved_forecast = _forecast_from_input(forecast, model_identity=spec.model_identity)
         resolved_path = _path_tuple(exact_path)
@@ -1995,7 +2031,9 @@ class PatternOccurrence:
             exact_path=resolved_path,
             forecast=resolved_forecast,
             expected_horizon_ids=expected_ids,
-            feature_contract_id=_assert_copied_text(feature_contract_id, spec.feature_contract_id, "feature_contract_id"),
+            feature_contract_id=_assert_copied_text(
+                feature_contract_id, spec.feature_contract_id, "feature_contract_id"
+            ),
             feature_contract_fingerprint=_assert_copied_fingerprint(
                 feature_contract_fingerprint, spec.feature_contract_fingerprint, "feature_contract_fingerprint"
             ),
@@ -2137,7 +2175,131 @@ def reconcile_pattern_occurrence(existing: PatternOccurrence, incoming: PatternO
     return existing
 
 
+@dataclass(frozen=True)
+class PatternDiscoveryCompleted:
+    evaluation_cohort_id: str
+    manifest_sha256: str
+    formation_dataset_fingerprint: str
+    evaluation_dataset_fingerprint: str
+    started_event_id: str
+    formation_cutoff: datetime | str
+    evaluation_start_not_before: datetime | str
+    selected_hypothesis_ids: Sequence[str | PatternHypothesisId] = ()
+    selected_count: int = 0
+    shadow_only: bool = True
+    decision_effect: str = "none"
+    learning_authority: str = "shadow_only"
+    event_id: str | None = None
+    schema_version: str = PATTERN_DISCOVERY_COMPLETED_SCHEMA
+    event_type: str = PATTERN_DISCOVERY_COMPLETED_EVENT_TYPE
+
+    def __post_init__(self) -> None:
+        evaluation_cohort_id = _validate_prefixed_id(
+            self.evaluation_cohort_id, _WORLD_COHORT_ID_PREFIX, "evaluation_cohort_id"
+        )
+        started_event_id = _validate_prefixed_id(self.started_event_id, _WORLD_COHORT_EVENT_PREFIX, "started_event_id")
+        manifest_sha256 = _sha256_hex(self.manifest_sha256, "manifest_sha256")
+        formation_fp = _sha256_hex(self.formation_dataset_fingerprint, "formation_dataset_fingerprint")
+        evaluation_fp = _sha256_hex(self.evaluation_dataset_fingerprint, "evaluation_dataset_fingerprint")
+        formation_cutoff = parse_utc_timestamp(self.formation_cutoff, "formation_cutoff")
+        evaluation_start_not_before = parse_utc_timestamp(
+            self.evaluation_start_not_before, "evaluation_start_not_before"
+        )
+        if not (formation_cutoff < evaluation_start_not_before):
+            raise ValueError("evaluation_start_not_before must be strictly later than formation_cutoff")
+        selected_hypothesis_ids = _selected_hypothesis_ids(self.selected_hypothesis_ids)
+        selected_count = _non_negative_int(self.selected_count, "selected_count")
+        if selected_count != len(selected_hypothesis_ids):
+            raise ValueError("selected_count must equal the number of selected hypothesis ids")
+        if self.shadow_only is not True:
+            raise ValueError("shadow_only must remain true")
+        if _required_text(self.decision_effect, "decision_effect") != "none":
+            raise ValueError("decision_effect must be none")
+        if _required_text(self.learning_authority, "learning_authority") != "shadow_only":
+            raise ValueError("learning_authority must be shadow_only")
+        object.__setattr__(self, "evaluation_cohort_id", evaluation_cohort_id)
+        object.__setattr__(self, "manifest_sha256", manifest_sha256)
+        object.__setattr__(self, "formation_dataset_fingerprint", formation_fp)
+        object.__setattr__(self, "evaluation_dataset_fingerprint", evaluation_fp)
+        object.__setattr__(self, "started_event_id", started_event_id)
+        object.__setattr__(self, "formation_cutoff", formation_cutoff)
+        object.__setattr__(self, "evaluation_start_not_before", evaluation_start_not_before)
+        object.__setattr__(self, "selected_hypothesis_ids", selected_hypothesis_ids)
+        object.__setattr__(self, "selected_count", selected_count)
+        object.__setattr__(self, "shadow_only", True)
+        object.__setattr__(self, "decision_effect", "none")
+        object.__setattr__(self, "learning_authority", "shadow_only")
+        object.__setattr__(self, "event_type", PATTERN_DISCOVERY_COMPLETED_EVENT_TYPE)
+        _set_event_id(
+            self,
+            _DISCOVERY_COMPLETED_PREFIX,
+            {
+                "event_type": PATTERN_DISCOVERY_COMPLETED_EVENT_TYPE,
+                "schema_version": PATTERN_DISCOVERY_COMPLETED_SCHEMA,
+                "evaluation_cohort_id": evaluation_cohort_id,
+                "manifest_sha256": manifest_sha256,
+                "formation_dataset_fingerprint": formation_fp,
+                "evaluation_dataset_fingerprint": evaluation_fp,
+                "started_event_id": started_event_id,
+                "formation_cutoff": _iso(formation_cutoff),
+                "evaluation_start_not_before": _iso(evaluation_start_not_before),
+                "selected_hypothesis_ids": list(selected_hypothesis_ids),
+                "selected_count": selected_count,
+                "shadow_only": True,
+                "decision_effect": "none",
+                "learning_authority": "shadow_only",
+            },
+            schema_version=PATTERN_DISCOVERY_COMPLETED_SCHEMA,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "event_type": self.event_type,
+            "event_id": self.event_id,
+            "evaluation_cohort_id": self.evaluation_cohort_id,
+            "manifest_sha256": self.manifest_sha256,
+            "formation_dataset_fingerprint": self.formation_dataset_fingerprint,
+            "evaluation_dataset_fingerprint": self.evaluation_dataset_fingerprint,
+            "started_event_id": self.started_event_id,
+            "formation_cutoff": _iso(self.formation_cutoff),
+            "evaluation_start_not_before": _iso(self.evaluation_start_not_before),
+            "selected_hypothesis_ids": list(self.selected_hypothesis_ids),
+            "selected_count": self.selected_count,
+            "shadow_only": self.shadow_only,
+            "decision_effect": self.decision_effect,
+            "learning_authority": self.learning_authority,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | PatternDiscoveryCompleted) -> PatternDiscoveryCompleted:
+        if isinstance(value, PatternDiscoveryCompleted):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("discovery completed event must be a mapping")
+        return cls(
+            evaluation_cohort_id=value.get("evaluation_cohort_id"),
+            manifest_sha256=value.get("manifest_sha256"),
+            formation_dataset_fingerprint=value.get("formation_dataset_fingerprint"),
+            evaluation_dataset_fingerprint=value.get("evaluation_dataset_fingerprint"),
+            started_event_id=value.get("started_event_id"),
+            formation_cutoff=value.get("formation_cutoff"),
+            evaluation_start_not_before=value.get("evaluation_start_not_before"),
+            selected_hypothesis_ids=value.get("selected_hypothesis_ids") or (),
+            selected_count=0 if value.get("selected_count") is None else value.get("selected_count"),
+            shadow_only=True if value.get("shadow_only") is None else value.get("shadow_only"),
+            decision_effect="none" if value.get("decision_effect") is None else value.get("decision_effect"),
+            learning_authority="shadow_only"
+            if value.get("learning_authority") is None
+            else value.get("learning_authority"),
+            event_id=value.get("event_id"),
+            schema_version=value.get("schema_version", PATTERN_DISCOVERY_COMPLETED_SCHEMA),
+        )
+
+
 __all__ = [
+    "PATTERN_DISCOVERY_COMPLETED_EVENT_TYPE",
+    "PATTERN_DISCOVERY_COMPLETED_SCHEMA",
     "PATTERN_HYPOTHESIS_EVENT_SCHEMA",
     "PATTERN_HYPOTHESIS_EVENT_TYPES",
     "PATTERN_HYPOTHESIS_SCHEMA",
@@ -2154,6 +2316,7 @@ __all__ = [
     "PATTERN_PATH_DIRECTIONS",
     "EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY",
     "PATTERN_EVALUATION_HORIZON_IDS",
+    "PatternDiscoveryCompleted",
     "PatternEvaluationClosed",
     "PatternEvaluationStarted",
     "PatternForecast",

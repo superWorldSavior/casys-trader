@@ -2,7 +2,7 @@
 
 > **Type** : Reference (Diátaxis).
 > **Code** : `scripts/model_preset.py` · presets `ops/model-presets/*.env` · résolution `trader/agent/llm.py::build_default_router_from_env`.
-> **Statut** : ✅ actif depuis le 2026-07-29. Preset courant : `codex-luna-medium`.
+> **Statut** : ✅ actif depuis le 2026-07-29. Preset courant : `cursor-grok`.
 > **Rôle** : basculer d'une famille de modèles à l'autre en une commande, sans perdre les réglages de la famille qu'on quitte.
 
 ## Le problème
@@ -50,6 +50,7 @@ l'écriture, afin que les profils isolés restent versionnables.
 | `codex-luna-medium` | `gpt-5.6-luna` **medium** | `gpt-5.6-sol` **low** |
 | `kimi` | `kimi-code/kimi-for-coding` **high** | `kimi-code/k3-256k` **high** (micro : `kimi-for-coding`) |
 | `grok` | `grok-4.6` **low** (`ops/grok-home`) | `grok-4.6` **medium** (`ops/grok-home-medium`) |
+| `cursor-grok` | Cursor CLI / `cursor-grok-4.6-xhigh` **xhigh non-fast**, read-only | Cursor CLI / `cursor-grok-4.6-xhigh` **xhigh non-fast**, read-only |
 | `grok-4.6-low` | `grok-4.6` **low** | `grok-4.6` **low** (benches / debug) |
 
 Le preset Codex utilise un seul `ops/codex-home` low. Pour le brain seulement,
@@ -87,6 +88,48 @@ pas d'équivalent prix Luna. On garde **4.6** (meilleur, même prix que 4.5) et
 on baisse l'effort à `low` — le cran xAI pour un agent rapide, un peu de
 raisonnement, plus proche de Luna medium en usage. Via acpx le compteur est
 le quota SuperGrok, pas la facture API.
+
+Le repli se configure par la paire `TRADER_FALLBACK_ACPX_AGENT` /
+`TRADER_FALLBACK_MODEL` ; une valeur de modèle vide retire ce second tier.
+`TRADER_SPARK_FALLBACK_MODEL` reste un alias de modèle transitoire si la
+nouvelle variable modèle est absente.
+
+La politique de repli est typée par le primaire, pas par un hack d'environnement :
+
+- primaire **Cursor** (les cinq rôles du preset `cursor-grok`) : la paire xAI
+  configurée (`grok-build` / `grok-4.6`) ou aucun repli. Claude/Sonnet n'est
+  jamais auto-ajouté.
+- primaire **non-Cursor** : contrat historique — Brain lit la paire (défaut
+  Sonnet) ; univers / micro gardent Sonnet ; consolidateur / news-macro n'ont
+  pas de second tier.
+
+`provider` est l'identité de **transport** : un `CursorAgentBackend` rapporte
+toujours `cursor-agent`, qu'il soit Brain primaire ou analyste. Le rôle logique
+vit dans `session_label` (`casys-trader:runtime-brain`,
+`casys-trader:universe-agent`, etc.), pas dans `provider`. Un appel ACPX Brain
+reste `acpx` ; un repli Grok configuré reste `acpx-custom-fallback`.
+
+Le preset `grok` route le repli **Brain** vers le CLI natif Cursor avec le
+sélecteur exact `cursor-grok-4.6-xhigh`. Le flux `stream-json` doit annoncer
+`Cursor Grok 4.6 Extra High` au démarrage, sinon l'appel échoue avant toute
+décision. Chaque session reçoit des dossiers temporaires pour sa configuration,
+ses données et son workspace, tous effacés à la fermeture. Son `PATH` est
+limité aux outils du système : les plugins et MCP personnels (`browser-use`,
+Chrome, etc.) ne peuvent pas démarrer dans le daemon. Ces dossiers n'isolent
+pas le login Cursor : l'auth reste liée au `HOME` de l'opérateur (Keychain et
+chemins `~/.cursor` que `CURSOR_CONFIG_DIR` / `CURSOR_DATA_DIR` ne couvrent
+pas). Un `HOME` temporaire désauthentifie le CLI, donc le daemon ne le
+substitue pas. Le profil interactif n'est pas recopié dans le dépôt ; l'identité
+de session reste celle de l'opérateur.
+
+Le preset `cursor-grok` inverse la route : les cinq rôles sont en Cursor CLI
+xhigh non-fast, read-only, et le repli de chaque rôle est `grok-build` /
+`grok-4.6` low. Il versionne aussi `CASYS_ACPX_CALL_TIMEOUT_S=600` : sans
+cette clé, le défaut code (150 s) coupe xhigh et bascule vers Grok low. Cursor
+force `--mode ask` et le sandbox, y compris si `CASYS_AGENT_EXEC=1` : pas de
+force, d'approbation MCP, d'outil natif ni d'écriture. La consigne Python du
+prompt de décision n'est émise que si le backend/session **receveur** peut
+exécuter l'outil natif en cage ; Cursor et le repli Grok ne l'annoncent pas.
 
 ## Pièges
 
@@ -127,6 +170,12 @@ le quota SuperGrok, pas la facture API.
   et `ops/grok-home-medium` ne sont pas versionnés en entier : recréer le
   symlink `auth.json` → `~/.grok/auth.json` dans **les deux** homes sur une
   machine neuve.
+- **Cursor CLI n'a pas de HOME jetable.** `CURSOR_CONFIG_DIR` et
+  `CURSOR_DATA_DIR` isolent `cli-config.json` et les données projet, pas le
+  login. Mesuré : `cursor-agent status` reste authentifié avec ces dossiers
+  temporaires et le `HOME` opérateur ; le même appel sous un `HOME` temporaire
+  (même avec `CURSOR_*_DIR`) revient `unauthenticated`. Ne pas copier de
+  secrets pour « isoler » le CLI.
 
 ## Voir aussi
 

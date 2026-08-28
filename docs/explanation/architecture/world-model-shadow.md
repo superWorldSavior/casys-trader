@@ -20,8 +20,9 @@ L'évaluation préquentielle et l'impact Trader sont des read models
 (`reporting/read_models/world_evaluation.py`, `world_impact.py`,
 `world_status.py`, `world_cohort.py`, `world_macro_status.py`,
 `world_patterns.py`). Le runtime n'ajoute que les adapters background
-fail-open (marché, macro, graphe) et une façade de composition. Le CLI est
-un adaptateur mince : pas de SQL.
+fail-open (marché, macro, graphe), la composition du lifecycle prospectif
+`discover → evaluate → link` et une façade de composition. Le CLI est un
+adaptateur mince : pas de SQL.
 
 ## Question à laquelle il répond
 

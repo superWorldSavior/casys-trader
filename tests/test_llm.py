@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -6,6 +7,11 @@ from pathlib import Path
 import pytest
 
 import trader.agent.llm as llm
+import trader.infrastructure.llm.cursor_backend as cursor_backend
+from trader.agent.learnings.consolidator import build_consolidator_router_from_env
+from trader.agent.company_micro.analyzer import build_company_micro_router_from_env
+from trader.agent.news_macro.analyzer import build_news_macro_router_from_env
+from trader.agent.universe.agent import build_universe_router_from_env
 from trader.agent.llm import (
     AcpxBackend,
     LlmCompletion,
@@ -17,9 +23,25 @@ from trader.agent.llm import (
     _looks_retryable_provider_error,
     _run_one_shot_command,
 )
+from trader.domain.llm import LlmExecutionCapability, execution_capability_of
 from trader.infrastructure.llm.acpx_backend import _validated_acpx_codex_home
 from trader.infrastructure.llm.acpx_backend import _validated_acpx_grok_home
 from trader.infrastructure.llm.acpx_backend import _validated_acpx_kimi_home
+from trader.infrastructure.llm.cursor_backend import (
+    CURSOR_GROK_XHIGH_NONFAST_DISPLAY_NAME,
+    DEFAULT_CURSOR_WORKSPACE,
+    CursorAgentBackend,
+    build_cursor_agent_command,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_host_injected_codex_home(monkeypatch) -> None:
+    """Host CODEX_HOME (effort=ultra on Codex desktop) must not leak into this suite."""
+
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("NPM_CONFIG_CACHE", raising=False)
+    monkeypatch.delenv("npm_config_cache", raising=False)
 
 
 class StubBackend:
@@ -206,9 +228,7 @@ def test_acpx_call_journalise_session_pid_outcome(monkeypatch, caplog) -> None:
 
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", OkPopen)
 
-    session = llm.AcpxSession(
-        provider="acpx", model="gpt-5.5", acpx_bin="acpx", name="304:0"
-    )
+    session = llm.AcpxSession(provider="acpx", model="gpt-5.5", acpx_bin="acpx", name="304:0")
     with caplog.at_level("INFO", logger="trader.infrastructure.llm.acpx_backend"):
         session.send("prompt", timeout_s=240, call_ctx={"symbol": "AMCR"})
 
@@ -956,7 +976,9 @@ def test_acpx_backend_isole_et_nettoie_le_process_group(monkeypatch) -> None:
             return "OK", ""
 
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda pid: cleaned_pids.append(pid))
+    monkeypatch.setattr(
+        "trader.infrastructure.llm.acpx_backend._terminate_process_group", lambda pid: cleaned_pids.append(pid)
+    )
 
     result = AcpxBackend().complete("prompt", timeout_s=12)
 
@@ -973,7 +995,10 @@ def test_run_one_shot_nettoie_l_environnement_runtime_pollue(monkeypatch) -> Non
     monkeypatch.setenv("MallocStackLogging", "0")
     monkeypatch.setenv("MallocStackLoggingNoCompact", "1")
     monkeypatch.setenv("TRADER_OLLAMA_MODEL", "nemotron-3-ultra:cloud")
-    monkeypatch.setenv("PATH", "/tmp/codex-path:/opt/homebrew/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/usr/bin")
+    monkeypatch.setenv(
+        "PATH",
+        "/tmp/codex-path:/opt/homebrew/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/usr/bin",
+    )
     captured = {}
 
     class FakePopen:
@@ -1063,9 +1088,7 @@ def test_codex_home_du_backend_prime_sur_l_env(monkeypatch, tmp_path) -> None:
 
     low_home = tmp_path / "codex-home-low"
     low_home.mkdir()
-    (low_home / "config.toml").write_text(
-        'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "low"\n', encoding="utf-8"
-    )
+    (low_home / "config.toml").write_text('model = "gpt-5.6-sol"\nmodel_reasoning_effort = "low"\n', encoding="utf-8")
     global_home = tmp_path / "codex-home"
     global_home.mkdir()
     (global_home / "config.toml").write_text(
@@ -1110,9 +1133,7 @@ def _fake_popen_capturant(monkeypatch, captured: dict):
 def _profil_codex_valide(tmp_path, monkeypatch):
     home = tmp_path / "codex-home"
     home.mkdir()
-    (home / "config.toml").write_text(
-        'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "low"\n', encoding="utf-8"
-    )
+    (home / "config.toml").write_text('model = "gpt-5.6-sol"\nmodel_reasoning_effort = "low"\n', encoding="utf-8")
     monkeypatch.setenv("CODEX_HOME", str(home))
     return home
 
@@ -1150,9 +1171,7 @@ def test_kimi_effort_faible_est_refuse(monkeypatch, tmp_path, effort) -> None:
 def test_kimi_accepte_les_deux_crans_hauts(monkeypatch, tmp_path, effort) -> None:
     kimi_home = tmp_path / "kimi-home"
     kimi_home.mkdir()
-    (kimi_home / "config.toml").write_text(
-        f'[thinking]\neffort = "{effort}"\n', encoding="utf-8"
-    )
+    (kimi_home / "config.toml").write_text(f'[thinking]\neffort = "{effort}"\n', encoding="utf-8")
     monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
 
     assert _validated_acpx_kimi_home() == kimi_home
@@ -1220,7 +1239,7 @@ def test_grok_home_absent_retombe_sur_le_profil_de_l_app(monkeypatch) -> None:
 def test_grok_effort_absent_est_refuse(monkeypatch, tmp_path) -> None:
     grok_home = tmp_path / "grok-home"
     grok_home.mkdir()
-    (grok_home / "config.toml").write_text("[models]\ndefault = \"grok-4.6\"\n", encoding="utf-8")
+    (grok_home / "config.toml").write_text('[models]\ndefault = "grok-4.6"\n', encoding="utf-8")
     monkeypatch.setenv("GROK_HOME", str(grok_home))
 
     with pytest.raises(RuntimeError, match="appel ACPX refusé"):
@@ -1232,7 +1251,7 @@ def test_grok_accepte_les_efforts_annonces(monkeypatch, tmp_path, effort) -> Non
     grok_home = tmp_path / "grok-home"
     grok_home.mkdir()
     (grok_home / "config.toml").write_text(
-        f"[models]\ndefault_reasoning_effort = \"{effort}\"\n",
+        f'[models]\ndefault_reasoning_effort = "{effort}"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("GROK_HOME", str(grok_home))
@@ -1246,14 +1265,10 @@ def test_grok_home_du_backend_prime_sur_l_env(monkeypatch, tmp_path) -> None:
     _profil_codex_valide(tmp_path, monkeypatch)
     role_home = tmp_path / "grok-home-medium"
     role_home.mkdir()
-    (role_home / "config.toml").write_text(
-        "[models]\ndefault_reasoning_effort = \"medium\"\n", encoding="utf-8"
-    )
+    (role_home / "config.toml").write_text('[models]\ndefault_reasoning_effort = "medium"\n', encoding="utf-8")
     global_home = tmp_path / "grok-home"
     global_home.mkdir()
-    (global_home / "config.toml").write_text(
-        "[models]\ndefault_reasoning_effort = \"low\"\n", encoding="utf-8"
-    )
+    (global_home / "config.toml").write_text('[models]\ndefault_reasoning_effort = "low"\n', encoding="utf-8")
     monkeypatch.setenv("GROK_HOME", str(global_home))
     captured: dict = {}
     _fake_popen_capturant(monkeypatch, captured)
@@ -1272,16 +1287,12 @@ def test_agent_grok_pose_son_profil_dans_le_subprocess(monkeypatch, tmp_path) ->
     _profil_codex_valide(tmp_path, monkeypatch)
     grok_home = tmp_path / "grok-home"
     grok_home.mkdir()
-    (grok_home / "config.toml").write_text(
-        "[models]\ndefault_reasoning_effort = \"medium\"\n", encoding="utf-8"
-    )
+    (grok_home / "config.toml").write_text('[models]\ndefault_reasoning_effort = "medium"\n', encoding="utf-8")
     monkeypatch.setenv("GROK_HOME", str(grok_home))
     captured: dict = {}
     _fake_popen_capturant(monkeypatch, captured)
 
-    _run_one_shot_command(
-        ["acpx", "grok-build", "exec", "prompt"], timeout_s=12, agent="grok-build"
-    )
+    _run_one_shot_command(["acpx", "grok-build", "exec", "prompt"], timeout_s=12, agent="grok-build")
 
     assert Path(captured["env"]["GROK_HOME"]) == grok_home
 
@@ -1296,8 +1307,279 @@ def test_agent_grok_avec_profil_invalide_refuse_avant_le_subprocess(monkeypatch,
     monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", jamais_lance)
 
     with pytest.raises(RuntimeError, match="profil ACPX grok illisible"):
+        _run_one_shot_command(["acpx", "grok-build", "exec", "prompt"], timeout_s=12, agent="grok-build")
+
+
+def test_cursor_cli_force_modele_xhigh_non_fast_et_lecture_seule() -> None:
+    command = build_cursor_agent_command("décide", cursor_bin="cursor-agent", workspace="/tmp/casys-scratch")
+
+    assert command == [
+        "cursor-agent",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--stream-partial-output",
+        "--mode",
+        "ask",
+        "--sandbox",
+        "enabled",
+        "--trust",
+        "--model",
+        "cursor-grok-4.6-xhigh",
+        "--workspace",
+        "/tmp/casys-scratch",
+        "décide",
+    ]
+    assert not {"--force", "--yolo", "--approve-mcps"}.intersection(command)
+
+
+def test_session_cursor_cli_garde_config_temporaire_et_resume(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "trader.infrastructure.llm.cursor_backend.shutil.which", lambda _bin: "/usr/local/bin/cursor-agent"
+    )
+    monkeypatch.setattr("trader.infrastructure.llm.cursor_backend.terminate_process_group", lambda _pid: None)
+    calls: list[tuple[list[str], dict]] = []
+    session_id = "d9bc22d8-1811-4942-9014-9b9c1315d5ca"
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+        def communicate(self, timeout=None):
+            return "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "system",
+                            "subtype": "init",
+                            "session_id": session_id,
+                            "model": "Cursor Grok 4.6 Extra High",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "is_error": False,
+                            "session_id": session_id,
+                            "result": '{"decision":"HOLD"}',
+                        }
+                    ),
+                ]
+            ), ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.cursor_backend.subprocess.Popen", FakePopen)
+    backend = CursorAgentBackend(provider="cursor-agent", workspace=str(tmp_path / "scratch"))
+    session = backend.open_session("queue", timeout_s=12)
+
+    assert isinstance(session, llm.CursorAgentSession)
+    assert session.send("premier", timeout_s=12).text == '{"decision":"HOLD"}'
+    assert session.send("second", timeout_s=12).text == '{"decision":"HOLD"}'
+    runtime_dir = Path(calls[0][1]["env"]["CURSOR_CONFIG_DIR"])
+    assert calls[0][1]["env"]["CURSOR_DATA_DIR"] == str(runtime_dir)
+    assert calls[0][1]["env"]["PATH"] == os.defpath
+    assert calls[0][0][0] == "/usr/local/bin/cursor-agent"
+    assert calls[1][0][calls[1][0].index("--resume") + 1] == session_id
+    session.close()
+    assert not runtime_dir.exists()
+
+
+def test_session_cursor_par_defaut_isole_aussi_le_workspace(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "trader.infrastructure.llm.cursor_backend.shutil.which", lambda _bin: "/usr/local/bin/cursor-agent"
+    )
+    monkeypatch.setattr("trader.infrastructure.llm.cursor_backend.terminate_process_group", lambda _pid: None)
+    captured: dict = {}
+    session_id = "0cf57747-38e7-42ff-bbbe-f4bd57cc2871"
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+
+        def communicate(self, timeout=None):
+            del timeout
+            return "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "system",
+                            "subtype": "init",
+                            "session_id": session_id,
+                            "model": "Cursor Grok 4.6 Extra High",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "is_error": False,
+                            "session_id": session_id,
+                            "result": "OK",
+                        }
+                    ),
+                ]
+            ), ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.cursor_backend.subprocess.Popen", FakePopen)
+    session = CursorAgentBackend(provider="cursor-agent").open_session("queue", timeout_s=12)
+
+    assert isinstance(session, llm.CursorAgentSession)
+    workspace = Path(session.workspace)
+    assert workspace.is_dir()
+    assert workspace != Path(DEFAULT_CURSOR_WORKSPACE)
+    assert session.send("test", timeout_s=12).text == "OK"
+    assert captured["command"][captured["command"].index("--workspace") + 1] == str(workspace)
+    session.close()
+    assert not workspace.exists()
+
+
+def test_cursor_nettoie_tous_les_groupes_actifs_a_la_sortie(monkeypatch) -> None:
+    terminated: list[int] = []
+    monkeypatch.setattr(cursor_backend, "terminate_process_group", terminated.append)
+    cursor_backend._ACTIVE_CURSOR_PROCESS_GROUPS.clear()
+    cursor_backend._ACTIVE_CURSOR_PROCESS_GROUPS.update({101, 202})
+
+    cursor_backend._terminate_active_cursor_process_groups()
+
+    assert sorted(terminated) == [101, 202]
+    assert cursor_backend._ACTIVE_CURSOR_PROCESS_GROUPS == set()
+
+
+def test_cursor_timeout_termine_le_groupe_et_libere_le_registre(monkeypatch, tmp_path) -> None:
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        "trader.infrastructure.llm.cursor_backend.shutil.which", lambda _bin: "/usr/local/bin/cursor-agent"
+    )
+    monkeypatch.setattr(cursor_backend, "terminate_process_group", terminated.append)
+    cursor_backend._ACTIVE_CURSOR_PROCESS_GROUPS.clear()
+    monkeypatch.delenv("CASYS_ACPX_CALL_TIMEOUT_S", raising=False)
+
+    class TimeoutPopen:
+        pid = 777
+        returncode = None
+
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="cursor-agent", timeout=timeout)
+
+        def kill(self) -> None:
+            return None
+
+    monkeypatch.setattr("trader.infrastructure.llm.cursor_backend.subprocess.Popen", TimeoutPopen)
+
+    result = CursorAgentBackend(provider="cursor-agent", workspace=str(tmp_path / "scratch")).complete(
+        "prompt", timeout_s=12
+    )
+
+    assert isinstance(result, LlmFailure)
+    assert result.code == "timeout"
+    assert result.retryable is True
+    assert 777 in terminated
+    assert cursor_backend._ACTIVE_CURSOR_PROCESS_GROUPS == set()
+
+
+def test_cursor_init_fast_est_refuse_fail_closed_et_le_display_exact_passe(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "trader.infrastructure.llm.cursor_backend.shutil.which", lambda _bin: "/usr/local/bin/cursor-agent"
+    )
+    monkeypatch.setattr("trader.infrastructure.llm.cursor_backend.terminate_process_group", lambda _pid: None)
+    announced_model = {"value": "Cursor Grok 4.6 Extra High Fast"}
+    session_id = "9b1c0c4e-4a1b-4f2e-9c1a-2f6d8e0a1111"
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+
+        def communicate(self, timeout=None):
+            del timeout
+            return "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "system",
+                            "subtype": "init",
+                            "session_id": session_id,
+                            "model": announced_model["value"],
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "is_error": False,
+                            "session_id": session_id,
+                            "result": '{"decision":"HOLD"}',
+                        }
+                    ),
+                ]
+            ), ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.cursor_backend.subprocess.Popen", FakePopen)
+    backend = CursorAgentBackend(provider="cursor-agent", workspace=str(tmp_path / "scratch"))
+
+    fast = backend.complete("décide", timeout_s=12)
+
+    assert isinstance(fast, LlmFailure)
+    assert fast.retryable is False
+    assert fast.code == "cursor_model_mismatch"
+    assert "Cursor Grok 4.6 Extra High Fast" in fast.message
+
+    announced_model["value"] = CURSOR_GROK_XHIGH_NONFAST_DISPLAY_NAME
+    accepted = backend.complete("décide", timeout_s=12)
+
+    assert isinstance(accepted, LlmCompletion)
+    assert accepted.text == '{"decision":"HOLD"}'
+
+
+def test_cursor_child_env_ne_substitue_pas_home(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", "/Users/operator")
+    runtime_dir = str(tmp_path / "runtime")
+
+    env = cursor_backend._cursor_child_env(runtime_dir)
+
+    assert env["HOME"] == "/Users/operator"
+    assert env["CURSOR_CONFIG_DIR"] == runtime_dir
+    assert env["CURSOR_DATA_DIR"] == runtime_dir
+
+
+def test_agent_non_cursor_ne_recoit_pas_cursor_config_dir(monkeypatch, tmp_path) -> None:
+    _profil_codex_valide(tmp_path, monkeypatch)
+    monkeypatch.setenv("CURSOR_CONFIG_DIR", str(Path.home() / ".cursor"))
+    monkeypatch.setenv("CURSOR_DATA_DIR", str(Path.home() / ".cursor"))
+    captured: dict = {}
+    _fake_popen_capturant(monkeypatch, captured)
+
+    _run_one_shot_command(["acpx", "codex", "exec", "prompt"], timeout_s=12, agent="codex")
+
+    assert "CURSOR_CONFIG_DIR" not in captured["env"]
+    assert "CURSOR_DATA_DIR" not in captured["env"]
+
+
+def test_acpx_refuse_cursor_pour_interdire_un_repli_fast(monkeypatch, tmp_path) -> None:
+    _profil_codex_valide(tmp_path, monkeypatch)
+
+    def jamais_lance(*_args, **_kwargs):
+        raise AssertionError("le subprocess ne doit pas démarrer sur un profil Cursor fast")
+
+    monkeypatch.setattr("trader.infrastructure.llm.acpx_backend.subprocess.Popen", jamais_lance)
+
+    with pytest.raises(RuntimeError, match="Cursor exige le transport natif"):
         _run_one_shot_command(
-            ["acpx", "grok-build", "exec", "prompt"], timeout_s=12, agent="grok-build"
+            ["acpx", "cursor", "exec", "prompt"],
+            timeout_s=12,
+            agent="cursor",
         )
 
 
@@ -1673,9 +1955,7 @@ def test_build_default_router_from_env_knobs_trader_ne_fuitent_pas_vers_universe
     monkeypatch.setenv("TRADER_ACPX_AGENT", "kimi")
     monkeypatch.setenv("TRADER_MODEL", "kimi-code/kimi-for-coding")
 
-    router = build_default_router_from_env(
-        env_path=None, acpx_provider="universe", spark_model="gpt-5.6-sol"
-    )
+    router = build_default_router_from_env(env_path=None, acpx_provider="universe", spark_model="gpt-5.6-sol")
 
     backend = router.backends[0]
     assert backend.provider == "universe"
@@ -1711,9 +1991,9 @@ def test_build_default_router_from_env_separe_les_profils_grok(monkeypatch) -> N
     monkeypatch.setenv("TRADER_COMPANY_MICRO_GROK_HOME", "/profiles/grok-medium")
 
     brain = build_default_router_from_env(env_path=None).backends[0]
-    universe = build_default_router_from_env(
-        env_path=None, acpx_provider="universe", spark_model="grok-4.6"
-    ).backends[0]
+    universe = build_default_router_from_env(env_path=None, acpx_provider="universe", spark_model="grok-4.6").backends[
+        0
+    ]
     consolidator = build_default_router_from_env(
         env_path=None, acpx_provider="consolidator", spark_model="grok-4.6"
     ).backends[0]
@@ -1819,6 +2099,153 @@ def test_trade_router_3_tiers_dans_lordre(monkeypatch) -> None:
     assert router.backends[1].model == "sonnet"
     assert router.backends[1].agent == "claude"
     assert router.backends[2].provider == "ollama-cloud"
+
+
+def test_runtime_brain_cursor_fallback_est_configurable_et_naffecte_pas_les_analystes(monkeypatch) -> None:
+    """Le couple fallback ne s'applique qu'au routeur décisionnel du brain."""
+
+    monkeypatch.setenv("TRADER_ACPX_AGENT", "grok-build")
+    monkeypatch.setenv("TRADER_MODEL", "grok-4.6")
+    monkeypatch.setenv("TRADER_FALLBACK_ACPX_AGENT", "cursor")
+    monkeypatch.setenv("TRADER_FALLBACK_MODEL", "cursor-grok-4.6-xhigh")
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+
+    brain = build_default_router_from_env(env_path=None)
+
+    assert [backend.provider for backend in brain.backends] == ["acpx", "cursor-agent"]
+    assert brain.backends[0].agent == "grok-build"
+    assert brain.backends[0].model == "grok-4.6"
+    assert brain.backends[0].allow_native_exec is None
+    assert brain.backends[1].agent == "cursor"
+    assert brain.backends[1].model == "cursor-grok-4.6-xhigh"
+    assert brain.backends[1].allow_native_exec is False
+
+    analyst = build_default_router_from_env(
+        env_path=None,
+        acpx_provider="universe",
+        acpx_agent="grok-build",
+        spark_model="grok-4.6",
+    )
+
+    assert [backend.provider for backend in analyst.backends] == ["universe", "acpx-claude-sonnet"]
+    assert analyst.backends[0].agent == "grok-build"
+    assert analyst.backends[1].agent == "claude"
+
+
+def test_cursor_primary_et_analyste_utilisent_le_backend_natif(monkeypatch) -> None:
+    monkeypatch.setenv("TRADER_ACPX_AGENT", "cursor")
+    monkeypatch.setenv("TRADER_MODEL", "cursor-grok-4.6-xhigh")
+    monkeypatch.setenv("TRADER_FALLBACK_ACPX_AGENT", "grok-build")
+    monkeypatch.setenv("TRADER_FALLBACK_MODEL", "grok-4.6")
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+
+    brain = build_default_router_from_env(env_path=None)
+    analyst = build_default_router_from_env(
+        env_path=None,
+        acpx_provider="universe",
+        acpx_agent="cursor",
+        spark_model="cursor-grok-4.6-xhigh",
+    )
+
+    assert brain.backends[0].agent == "cursor"
+    assert brain.backends[0].allow_native_exec is False
+    assert brain.backends[1].agent == "grok-build"
+    assert analyst.backends[0].agent == "cursor"
+    assert analyst.backends[0].allow_native_exec is False
+    assert brain.backends[0].provider == "cursor-agent"
+    assert analyst.backends[0].provider == "cursor-agent"
+
+
+def _cursor_grok_process_env(monkeypatch) -> None:
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("TRADER_CONSOLIDATOR_OLLAMA_API_KEY", raising=False)
+    monkeypatch.delenv("TRADER_SPARK_FALLBACK_MODEL", raising=False)
+    monkeypatch.setenv("TRADER_ACPX_AGENT", "cursor")
+    monkeypatch.setenv("TRADER_MODEL", "cursor-grok-4.6-xhigh")
+    monkeypatch.setenv("TRADER_FALLBACK_ACPX_AGENT", "grok-build")
+    monkeypatch.setenv("TRADER_FALLBACK_MODEL", "grok-4.6")
+    for role in ("CONSOLIDATOR", "UNIVERSE", "COMPANY_MICRO", "NEWS_MACRO"):
+        monkeypatch.setenv(f"TRADER_{role}_ACPX_AGENT", "cursor")
+        monkeypatch.setenv(f"TRADER_{role}_MODEL", "cursor-grok-4.6-xhigh")
+
+
+def _assert_cursor_xai_route(router: LlmRouter, *, session_label: str) -> None:
+    primary = router.backends[0]
+    assert isinstance(primary, CursorAgentBackend)
+    assert primary.provider == "cursor-agent"
+    assert primary.model == "cursor-grok-4.6-xhigh"
+    assert primary.session_label == session_label
+    assert primary.allow_native_exec is False
+    assert all(backend.provider != "acpx-claude-sonnet" for backend in router.backends)
+    assert all(getattr(backend, "agent", None) != "claude" for backend in router.backends)
+    fallbacks = [backend for backend in router.backends[1:] if getattr(backend, "agent", None)]
+    assert fallbacks, "Cursor primary must keep the configured xAI fallback"
+    assert fallbacks[0].agent == "grok-build"
+    assert fallbacks[0].model == "grok-4.6"
+    assert fallbacks[0].provider != "cursor-agent"
+    assert getattr(fallbacks[0], "allow_native_exec", None) is False
+
+
+def test_cursor_grok_cinq_roles_xai_sans_sonnet(monkeypatch) -> None:
+    _cursor_grok_process_env(monkeypatch)
+
+    _assert_cursor_xai_route(
+        build_default_router_from_env(env_path=None),
+        session_label="casys-trader:runtime-brain",
+    )
+    _assert_cursor_xai_route(
+        build_consolidator_router_from_env(env_path=None),
+        session_label="casys-trader:learning-consolidator",
+    )
+    _assert_cursor_xai_route(
+        build_universe_router_from_env(env_path=None),
+        session_label="casys-trader:universe-agent",
+    )
+    _assert_cursor_xai_route(
+        build_company_micro_router_from_env(env_path=None),
+        session_label="casys-trader:company-micro-analyst",
+    )
+    _assert_cursor_xai_route(
+        build_news_macro_router_from_env(env_path=None),
+        session_label="casys-trader:macro-news-analyst",
+    )
+
+
+def test_cursor_primary_et_grok_fallback_sans_python_meme_si_exec_env(monkeypatch) -> None:
+    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+    _cursor_grok_process_env(monkeypatch)
+
+    brain = build_default_router_from_env(env_path=None)
+    cursor = brain.backends[0]
+    grok = brain.backends[1]
+    sole_acpx = AcpxBackend(provider="acpx", model="gpt-5.6-terra")
+
+    assert execution_capability_of(cursor) == LlmExecutionCapability(caged_native_python=False)
+    session = cursor.open_session("s", timeout_s=1)
+    try:
+        assert execution_capability_of(session) == LlmExecutionCapability(caged_native_python=False)
+    finally:
+        session.close()
+    assert execution_capability_of(grok) == LlmExecutionCapability(caged_native_python=False)
+    assert brain.execution_capability() == LlmExecutionCapability(caged_native_python=False)
+    assert execution_capability_of(sole_acpx) == LlmExecutionCapability(caged_native_python=True)
+    assert LlmRouter([sole_acpx]).execution_capability() == LlmExecutionCapability(caged_native_python=True)
+
+
+def test_runtime_brain_fallback_nouveau_modele_prime_sur_alias_spark(monkeypatch) -> None:
+    monkeypatch.setenv("TRADER_FALLBACK_ACPX_AGENT", "cursor")
+    monkeypatch.setenv("TRADER_FALLBACK_MODEL", "cursor-grok-4.6-xhigh")
+    monkeypatch.setenv("TRADER_SPARK_FALLBACK_MODEL", "sonnet")
+    monkeypatch.delenv("TRADER_OLLAMA_API_KEY", raising=False)
+
+    router = build_default_router_from_env(env_path=None)
+
+    fallback = router.backends[1]
+    assert fallback.provider == "cursor-agent"
+    assert fallback.agent == "cursor"
+    assert fallback.model == "cursor-grok-4.6-xhigh"
 
 
 def test_consolidator_router_sans_spark_fallback(monkeypatch) -> None:
@@ -1938,6 +2365,26 @@ def test_acpx_exec_on_active_les_outils_et_cage_le_cwd_sur_un_scratch(monkeypatc
     assert "Do not inspect filesystem content" in runtime_instructions
     assert "deterministic numerical calculations" in runtime_instructions
     assert "pure JSON object" in runtime_instructions
+
+
+def test_cursor_backend_force_le_contrat_texte_quand_exec_est_actif(monkeypatch, tmp_path) -> None:
+    """Le fallback/primary Cursor ne peut pas hériter du --approve-all Grok."""
+
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CASYS_AGENT_EXEC", "1")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    command = build_cursor_agent_command("decide", workspace=str(codex_home / "calc-scratch"))
+
+    assert command[command.index("--mode") + 1] == "ask"
+    assert command[command.index("--sandbox") + 1] == "enabled"
+    assert command[command.index("--model") + 1] == "cursor-grok-4.6-xhigh"
+    assert "--approve-all" not in command
+    assert "--force" not in command
+    assert "--yolo" not in command
+    assert "--approve-mcps" not in command
+    assert command[command.index("--workspace") + 1] == str(codex_home / "calc-scratch")
 
 
 def test_acpx_exec_on_sans_codex_home_fail_close(monkeypatch) -> None:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -316,3 +317,153 @@ def test_slot_recorded_after_as_of_does_not_admit_its_graph_companion(
     assert batch.records == ()
     assert batch.rejection_counts["slot_not_visible_as_of"] == 1
     assert episode.episode_id not in batch.source_evidence_ids
+
+
+def _dummy_episode_id(index: int) -> str:
+    return "world-episode:v1:" + f"{index:064x}"
+
+
+def _episode_in_placeholder_counts(statements: list[str]) -> list[int]:
+    widths: list[int] = []
+    for sql in statements:
+        compact = " ".join(sql.split())
+        if "FROM world_episodes" not in compact or "episode_id IN" not in compact:
+            continue
+        match = re.search(r"episode_id IN \(([^)]*)\)", compact)
+        assert match is not None
+        body = match.group(1).strip()
+        if not body:
+            widths.append(0)
+            continue
+        widths.append(body.count(",") + 1)
+    return widths
+
+
+def _insert_dummy_episode_row(
+    connection: sqlite3.Connection,
+    *,
+    episode_id: str,
+    as_of: datetime,
+    recorded_at: datetime,
+) -> None:
+    stamp = as_of.isoformat()
+    connection.execute(
+        """
+        INSERT INTO world_episodes (
+            episode_id, symbol, observed_at, available_at, as_of_bar_ts,
+            feature_contract_version, training_eligible, payload_json, payload_sha256,
+            source_evidence_json, source_evidence_sha256, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        """,
+        (
+            episode_id,
+            "2330",
+            stamp,
+            stamp,
+            stamp,
+            GRAPH_FEATURE_CONTRACT_ID,
+            "{}",
+            "0" * 64,
+            "[]",
+            "1" * 64,
+            recorded_at.isoformat(),
+        ),
+    )
+
+
+def test_admitted_episode_in_list_is_chunked_beyond_sqlite_variable_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_labeled(tmp_path, monkeypatch, as_of=POST, persist_outcome=False, close=False, symbol="2330")
+    later = POST + timedelta(days=1)
+    second = _add_graph_companion(seeded, symbol="2301", as_of=later)
+    member: WorldEpisode = seeded["episode"]  # type: ignore[assignment]
+    db_path: Path = seeded["db_path"]  # type: ignore[assignment]
+    seeded["world"].close()  # type: ignore[union-attr]
+    seeded["graph"].close()  # type: ignore[union-attr]
+
+    dummy_count = 1099
+    dummy_ids = [_dummy_episode_id(index) for index in range(1, dummy_count + 1)]
+    dummy_as_of = [datetime(2026, 9, 5, tzinfo=UTC) + timedelta(seconds=index) for index in range(dummy_count)]
+    with sqlite3.connect(db_path) as connection:
+        for episode_id, as_of in zip(dummy_ids, dummy_as_of, strict=True):
+            _insert_dummy_episode_row(connection, episode_id=episode_id, as_of=as_of, recorded_at=as_of)
+        connection.commit()
+
+    _insert_evaluation_slot(db_path, cohort_id=COHORT_ID, episode_id=member.episode_id, as_of=POST, symbol="2330")
+    _insert_evaluation_slot(db_path, cohort_id=COHORT_ID, episode_id=second.episode_id, as_of=later, symbol="2301")
+    with sqlite3.connect(db_path) as connection:
+        for index, (episode_id, as_of) in enumerate(zip(dummy_ids, dummy_as_of, strict=True)):
+            slot = WorldCohortSlot(
+                cohort_id=COHORT_ID,
+                manifest_sha256="a" * 64,
+                venue="TW",
+                symbol=f"D{index:04d}",
+                bar_interval="1h",
+                as_of_bar_ts=as_of,
+                anchor_end_at=as_of,
+                comparison_batch_id="batch:v1:eval",
+                episode_refs_by_contract={GRAPH_FEATURE_CONTRACT_ID: episode_id},
+                expected_lane_ids=("graph.pilot",),
+                feature_contract_fingerprints={"graph.pilot": "b" * 64},
+                feature_mask_fingerprints={"graph.pilot": "c" * 64},
+                started_event_id="world_cohort_event:v1:" + "e" * 64,
+            )
+            payload = slot.to_dict()
+            connection.execute(
+                """
+                INSERT INTO world_cohort_slots (
+                    slot_id, cohort_id, event_id, manifest_sha256, venue, symbol, bar_interval,
+                    as_of_bar_ts, anchor_end_at, comparison_batch_id, started_event_id,
+                    payload_json, payload_sha256, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    slot.slot_id,
+                    slot.cohort_id,
+                    slot.started_event_id,
+                    slot.manifest_sha256,
+                    slot.venue,
+                    slot.symbol,
+                    slot.bar_interval,
+                    payload["as_of_bar_ts"],
+                    payload["anchor_end_at"],
+                    slot.comparison_batch_id,
+                    slot.started_event_id,
+                    json.dumps(payload),
+                    canonical_sha256(payload),
+                    as_of.isoformat(),
+                ),
+            )
+        connection.commit()
+
+    admitted_count = dummy_count + 2
+    assert admitted_count > 999
+    assert admitted_count > 500
+
+    statements: list[str] = []
+
+    def traced(path: Path):
+        uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        connection.set_trace_callback(lambda sql: statements.append(sql))
+        return connection
+
+    monkeypatch.setattr(evaluation_query, "_readonly_connection", traced)
+    batch = SqlitePatternEvaluationSource(db_path).load_evaluation_batch(_scan())
+
+    assert "unavailable" not in batch.rejection_counts
+    assert batch.rejection_counts.get("episode_malformed") == dummy_count
+    admitted = [item.episode.episode_id for item in batch.records]
+    assert admitted == [member.episode_id, second.episode_id]
+    assert len(admitted) == len(set(admitted))
+    in_widths = _episode_in_placeholder_counts(statements)
+    assert in_widths
+    assert all(width <= 500 for width in in_widths)
+    assert max(in_widths) == 500
+    assert sum(in_widths) == admitted_count
+    assert len(in_widths) >= 3

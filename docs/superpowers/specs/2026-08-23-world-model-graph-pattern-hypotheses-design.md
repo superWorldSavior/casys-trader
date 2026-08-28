@@ -773,8 +773,9 @@ n'est jamais appelé. Les `evidence_refs` restent hors de
 
 Il est interdit de découvrir et confirmer sur les mêmes outcomes. Le matching
 ne `SELECT` jamais `world_outcome_events`. La découverte n'émet aucun claim
-causal et n'emprunte pas le vocabulaire d'autorité runtime. Aucun câblage
-daemon dans ce lot : le World Model reste `shadow_only` / `NO_GO`.
+causal et n'emprunte pas le vocabulaire d'autorité runtime. Le câblage daemon
+livré ensuite par GRAPH-12 ne change pas ce contrat : le World Model reste
+`shadow_only` / `NO_GO`.
 
 ### 12.3 Contrôles négatifs
 
@@ -813,6 +814,7 @@ décision séparée parce qu'il créerait un nouveau lien avec le chemin Trader.
 | Application ML | `graph_features.py`, `pattern_service.py`, `pattern_ports.py`, `pattern_path.py`, `pattern_discovery.py`, `pattern_evaluation.py`, `pattern_outcome_link.py` | profiles, features, découverte unlabeled, matching prospectif, liaison d'outcomes |
 | Infrastructure graph | `trader/infrastructure/graph/world_temporal_networkx.py` | projection fraîche graphe uniquement |
 | Infrastructure état | `world_graph_store.py`, `world_pattern_store.py` | ledgers append-only séparés |
+| Runtime | `world_model_runtime.py` | composition et exécution background fail-open du lifecycle patterns |
 | Reporting | `trader/reporting/read_models/world_patterns.py` | assessments et explications |
 | Interface | `trader/interfaces/cli/world_model.py` | façade mince |
 
@@ -826,6 +828,7 @@ world_ontology_revisions
 world_graph_snapshots
 world_graph_snapshot_members
 world_macro_graph_bridge_events
+world_pattern_lifecycle_events
 world_pattern_hypothesis_events
 world_pattern_occurrence_events
 world_pattern_outcome_links
@@ -1279,11 +1282,20 @@ aucune valeur ; champ/hash manquant =
 
 ### Lot GRAPH-12 — runtime shadow et CLI
 
-Hors de ce lot de lifecycle prospectif. Le matching / link / status CLI
-existent déjà sous `world pattern` sans câbler le daemon, sans flag runtime
-et sans lane de trading. GRAPH-12 reste le lot futur pour
-`world_model_runtime.py` / `daemon.py` si une activation shadow locale est
-décidée ; le défaut reste off, `shadow_only`, `NO_GO`.
+**Livré le 2026-08-27.** `PatternShadowWorkflow` orchestre
+`discover/replay → evaluate/persist → link-outcomes` après la capture de chaque
+batch background autorisé par `resource_budget`. Le marker append-only
+`PatternDiscoveryCompleted` ferme la formation sur le start prouvé de l'unique
+cohorte graphe `collecting`, zéro candidat inclus. Le daemon ne dépend pas des
+services concrets : ils sont liés dans la composition root runtime avec les
+query adapters SQLite `mode=ro` et les stores append-only partagés.
+
+Il n'y a ni flag patterns séparé ni lane de trading : le workflow est composé
+seulement quand la voie graphe l'est. Panne, ambiguïté de cohorte, start non
+prouvé ou budget dépassé restent fail-open pour Trader. Les commandes
+`world pattern` demeurent disponibles pour inspection/diagnostic. Autorité
+inchangée : `shadow_only`, `decision_effect=none`, `NO_GO`, aucun claim causal
+ou PnL.
 
 ## 19. Contrat d'exécution pour Grok
 
@@ -1304,6 +1316,13 @@ uniquement si l'orchestrateur l'autorise avec pathspecs explicites.
 Après livraison, consolider référence World Model, explication ontologie et
 how-to opérateur. Les voies live sont `market`, `context`, `macro_source` et
 `graph`. Pas de contrat tombstone héritage.
+
+La fermeture ou l'archivage automatique des hypothèses n'est **pas** dans ce
+pilote. `PatternDiscoveryCompleted` gèle la formation ; les hypothèses
+sélectionnées restent `evaluating`. `PatternEvaluationClosed` et tout
+end-of-life opérateur restent hors périmètre jusqu'à un lot dédié. Les
+read models exposent le marqueur durable (fenêtre, ids, empreintes, autorité
+de replay) sans étiquette ni claim causale.
 
 La gate `GRAPH-CONFIG` fige avant GRAPH-5 taxonomie région/pays, sources de
 mappings instrument/issuer, fenêtres/decay, profondeur/path budget et

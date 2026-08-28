@@ -112,7 +112,12 @@ class EvaluatingHypothesisCatalog(Protocol):
         evaluation_dataset_fingerprint: str,
         hypothesis_ids: Sequence[str] | None = None,
     ) -> tuple[PatternHypothesis, ...]:
-        """Return evaluating hypotheses that match the cohort and dataset fences."""
+        """Return evaluating hypotheses that match the cohort and dataset fences.
+
+        When ``hypothesis_ids`` is supplied, adapters filter those IDs in the
+        query before reconstructing aggregates (hot path). Omitting IDs is the
+        inspection path: reconstruct the full hypothesis event stream.
+        """
 
 
 class PatternEvaluationSource(Protocol):

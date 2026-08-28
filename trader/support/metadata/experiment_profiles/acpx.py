@@ -99,7 +99,8 @@ def _acpx_initial_cwd(backend: object) -> Path | None:
     """Mirror the cwd ACPX uses to select its project config."""
 
     exec_flag = (_clean(os.getenv("CASYS_AGENT_EXEC")) or "").lower()
-    if exec_flag not in _AGENT_EXEC_TRUE:
+    native_exec_forbidden = getattr(backend, "allow_native_exec", None) is False
+    if exec_flag not in _AGENT_EXEC_TRUE or native_exec_forbidden:
         try:
             return Path.cwd().resolve(strict=True)
         except OSError:
@@ -349,6 +350,8 @@ def _profile_config_identity(backend: object, *, repo_root: Path, agent: str) ->
         payload = config_path.read_bytes()
         config = tomllib.loads(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None, None
+    if not isinstance(config, Mapping):
         return None, None
     if agent == "kimi":
         thinking = config.get("thinking")

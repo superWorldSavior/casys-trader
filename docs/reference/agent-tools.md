@@ -43,8 +43,13 @@ barre, nombre de barres, swings exacts 24/48, `atr_pct_14` et
 
 ### Calcul natif en cage (`exec`)
 
-Quand `CASYS_AGENT_EXEC=1`, le transport Codex expose aussi shell/Python dans le
-scratch du `CODEX_HOME` isolé : réseau coupé et écritures confinées hors du repo.
+Quand le backend ACPX receveur a réellement l'exec en cage (`CASYS_AGENT_EXEC=1`
+**et** un transport qui active les outils natifs), Codex expose aussi
+shell/Python dans le scratch du `CODEX_HOME` isolé : réseau coupé et écritures
+confinées hors du repo. Le prompt de décision n'annonce ce python que pour ce
+backend/session-là. `CASYS_AGENT_EXEC=1` seul ne suffit pas : Cursor (`ask` +
+sandbox) et un repli Grok configuré n'ont pas cet outil, donc n'en reçoivent
+pas la consigne.
 Ce n'est pas un domain tool et cela ne contourne ni le `RiskGate`, ni le contrat
 de décision : l'agent peut s'en servir pour un calcul déterministe ad hoc
 (corrélation, distance à un niveau, retracements de Fibonacci à partir d'ancres

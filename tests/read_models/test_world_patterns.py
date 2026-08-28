@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from tests.domain.test_world_pattern import (
@@ -394,6 +396,43 @@ def test_report_schema_keeps_shadow_only_claims_and_closed_conclusions() -> None
         assert "move_class" not in assessment.get("outcome_links", [{}])[0] if assessment.get("outcome_links") else True
 
 
+def test_report_rejoins_compact_predictions_to_their_canonical_episodes() -> None:
+    expanded = _matched_family()
+    compact = dict(expanded)
+    episodes: list[dict[str, Any]] = []
+    predictions: list[dict[str, Any]] = []
+    for source in expanded["predictions"]:
+        observation = {
+            "venue": source["venue"],
+            "symbol": source["symbol"],
+            "bar_interval": source["bar_interval"],
+            "as_of_bar_ts": source["as_of_bar_ts"],
+            "feature_contract_version": source["feature_contract_version"],
+        }
+        episodes.append({"episode_id": source["episode_id"], "observation": observation})
+        prediction = dict(source)
+        for field in (
+            "input",
+            "venue",
+            "symbol",
+            "bar_interval",
+            "as_of_bar_ts",
+            "feature_contract_id",
+            "feature_contract_version",
+        ):
+            prediction.pop(field, None)
+        predictions.append(prediction)
+    compact["episodes"] = episodes
+    compact["predictions"] = predictions
+
+    expected = project_world_pattern_report(expanded)
+    actual = project_world_pattern_report(compact)
+
+    assert actual["matched_sets"] == expected["matched_sets"]
+    assert actual["assessments"] == expected["assessments"]
+    _assert_bounded_claims(actual)
+
+
 def test_matched_context_graph_sets_pair_same_anchor_and_horizon() -> None:
     report = project_world_pattern_report(_matched_family())
     assert report["matched_sets"]
@@ -679,3 +718,112 @@ def test_cohort_query_adapter_is_unchanged_for_missing_db(tmp_path: Path) -> Non
     assert ledger["status"] == "not_started"
     assert ledger["exists"] is False
     assert not (tmp_path / "world_model.db").exists()
+
+
+def test_status_surfaces_durable_lifecycle_marker_without_labels_or_causality(tmp_path: Path) -> None:
+    from tests.state_db.test_world_pattern_store import (
+        COHORT_ID as PATTERN_COHORT,
+        EVAL_FP,
+        EVAL_NOT_BEFORE,
+        FORMATION,
+        FORMATION_FP,
+        _discovery_completed,
+        _evaluating,
+        _store,
+    )
+
+    store = _store(tmp_path)
+    hypothesis = _evaluating()
+    store.append_event(hypothesis.registered)
+    store.append_event(next(event for event in hypothesis.events if event.event_type == "pattern_evaluation_started"))
+    assert hypothesis.status == "evaluating"
+    marker = _discovery_completed(
+        selected_hypothesis_ids=(hypothesis.hypothesis_id,),
+        selected_count=1,
+    )
+    assert store.append_discovery_completed(marker) is True
+    store.close()
+
+    status = read_world_pattern_status(tmp_path, PATTERN_COHORT)
+    ledger = read_world_pattern_ledger(tmp_path / "world_model.db", PATTERN_COHORT)
+    assert ledger["status"] == "loaded"
+    assert ledger["lifecycle_events"]
+    assert status["lifecycle"]["replay_authority"] == "world_pattern_lifecycle_events"
+    assert status["lifecycle"]["causal_claim"] is False
+    row = status["lifecycle"]["markers"][0]
+    assert row["formation_cutoff"] == FORMATION.isoformat()
+    assert row["evaluation_start_not_before"] == EVAL_NOT_BEFORE.isoformat()
+    assert row["evaluation_dataset_fingerprint"] == EVAL_FP
+    assert row["formation_dataset_fingerprint"] == FORMATION_FP
+    assert row["selected_hypothesis_ids"] == [hypothesis.hypothesis_id]
+    assert row["selected_count"] == 1
+    assert row["event_id"] == marker.event_id
+    assert row["started_event_id"] == marker.started_event_id
+    assert row["replay_authority"] == "world_pattern_lifecycle_events"
+    assert row["shadow_only"] is True
+    assert row["decision_effect"] == "none"
+    assert row["causal_claim"] is False
+    serialized = json.dumps(row, sort_keys=True)
+    assert "move_class" not in serialized
+    assert "label_class" not in serialized
+    _assert_bounded_claims(status)
+
+
+def test_pattern_ledger_in_lists_are_chunked_beyond_sqlite_variable_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.state_db.test_world_pattern_store import COHORT_ID as PATTERN_COHORT, _store
+    from trader.infrastructure.state_db import world_model_query as query_mod
+    from urllib.parse import quote
+
+    store = _store(tmp_path)
+    db_path = store.path
+    store.close()
+    dummy_count = 1100
+    with sqlite3.connect(db_path) as connection:
+        for index in range(dummy_count):
+            hypothesis_id = f"pattern_hypothesis:v1:{index:064x}"
+            payload = json.dumps({"evaluation_cohort_id": PATTERN_COHORT})
+            connection.execute(
+                """
+                INSERT INTO world_pattern_hypothesis_events (
+                    event_id, hypothesis_id, event_type, sequence, payload_json, payload_sha256, recorded_at
+                ) VALUES (?, ?, 'pattern_evaluation_started', 1, ?, ?, ?)
+                """,
+                (
+                    f"pattern_hypothesis_event:v1:{index:064x}",
+                    hypothesis_id,
+                    payload,
+                    "a" * 64,
+                    "2026-09-02T00:00:00+00:00",
+                ),
+            )
+        connection.commit()
+
+    statements: list[str] = []
+
+    def traced(path: Path):
+        uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        connection.set_trace_callback(lambda sql: statements.append(sql))
+        return connection
+
+    monkeypatch.setattr(query_mod, "_readonly_connection", traced)
+    ledger = read_world_pattern_ledger(db_path, PATTERN_COHORT)
+    assert ledger["status"] == "loaded"
+    widths: list[int] = []
+    for sql in statements:
+        compact = " ".join(sql.split())
+        if "hypothesis_id IN" not in compact:
+            continue
+        match = re.search(r"hypothesis_id IN \(([^)]*)\)", compact)
+        assert match is not None
+        body = match.group(1).strip()
+        widths.append(0 if not body else body.count(",") + 1)
+    assert widths
+    assert all(width <= 500 for width in widths)
+    assert max(widths) == 500
+    assert sum(widths) == dummy_count
