@@ -1710,9 +1710,8 @@ def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(monkeypatch, tmp_pa
     assert "AIR.PA" in sched.due_symbols(["AIR.PA"], now=datetime(2026, 7, 2, 13, 1, tzinfo=timezone.utc))
 
 
-def test_hold_sans_veille_ni_wake_reste_sur_le_defaut(tmp_path) -> None:
-    """Sans veille armée ni next_wake, le comportement historique tient :
-    le timer symbole est effacé (→ cadence par défaut)."""
+def test_hold_sans_veille_ni_wake_suit_la_cadence_calme(tmp_path) -> None:
+    """Sans veille ni wake agent, une revue calme reste garantie sous 4 h."""
     from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
@@ -1727,7 +1726,7 @@ def test_hold_sans_veille_ni_wake_reste_sur_le_defaut(tmp_path) -> None:
         pending_indicator_watch=None,
         entry={},
     )
-    assert sched.next_wake("SPY") is None  # effacé → retombe sur le défaut global
+    assert sched.next_wake("SPY") == now + timedelta(hours=4)
 
 
 # ---------------------------------------------------------------------------

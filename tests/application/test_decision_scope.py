@@ -79,6 +79,32 @@ def test_prepare_decision_scope_keeps_fresh_and_plannable_stale_symbols() -> Non
     assert result.analysis_symbols == ["FRESH", "STALE"]
 
 
+def test_prepare_decision_scope_keeps_plannable_daily_symbol_without_runtime_price() -> None:
+    request = _request(
+        symbols_to_decide=["NO_PRICE"],
+        prices={},
+        stale_market_data={"NO_PRICE": {"stale_reason": "no_price"}},
+        execution_eligibility={
+            "NO_PRICE": {
+                "planning": {"enabled": True},
+                "execution": {
+                    "enabled": False,
+                    "reason": "no_price",
+                    "session_open": True,
+                },
+            }
+        },
+        tradable_bars_by_symbol={},
+        daily_bars_by_symbol={"NO_PRICE": ["daily"]},
+    )
+
+    result = prepare_decision_scope(request)
+
+    assert result.decidable == ["NO_PRICE"]
+    assert result.analysis_bars_by_symbol == {"NO_PRICE": ["daily"]}
+    assert result.analysis_timeframe_by_symbol == {"NO_PRICE": "1d"}
+
+
 def test_prepare_decision_scope_composes_armed_and_quiet_gates_before_bar_scope() -> None:
     armed_resolution = ArmedPlanResolution(
         decisions={"ARMED": Decision.hold("ARMED", "armed")},

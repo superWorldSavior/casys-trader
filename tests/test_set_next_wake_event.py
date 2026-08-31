@@ -11,7 +11,7 @@ Couvre :
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -220,7 +220,7 @@ def test_apply_decision_schedule_next_wake_iso_sets_absolute_wake(tmp_path) -> N
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()
-    target_iso = "2026-07-04T09:30:00+00:00"
+    target_iso = "2026-07-03T12:30:00+00:00"
 
     cycle_scheduling.apply_decision_schedule(
         sched=sched,
@@ -270,14 +270,14 @@ def test_apply_decision_schedule_iso_takes_precedence_over_minutes(tmp_path) -> 
 
     sched = Scheduler(tmp_path / "scheduler.json")
     now = _now()
-    target_iso = "2026-07-04T09:30:00+00:00"
+    target_iso = "2026-07-03T12:00:00+00:00"
 
     cycle_scheduling.apply_decision_schedule(
         sched=sched,
         sym="AAPL",
         now=now,
-        next_wake_in_minutes=60.0,  # 11:00 UTC
-        next_wake_iso=target_iso,  # 09:30 UTC le lendemain
+        next_wake_in_minutes=60.0,  # 11:00 UTC, ignoré car l'ISO prime
+        next_wake_iso=target_iso,  # 12:00 UTC, sous la borne calme de 4 h
         cancel_watch_ids=[],
         pending_indicator_watch=None,
         entry={},
@@ -285,6 +285,30 @@ def test_apply_decision_schedule_iso_takes_precedence_over_minutes(tmp_path) -> 
 
     recorded = sched.next_wake("AAPL")
     assert recorded == datetime.fromisoformat(target_iso)
+
+
+def test_apply_decision_schedule_late_iso_is_clamped_to_calm_review(tmp_path) -> None:
+    """Un wake événementiel lointain ne repousse pas la revue calme au-delà de 4 h."""
+    from trader.runtime import cycle_scheduling
+    from trader.planning.scheduler import Scheduler
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = _now()
+    entry: dict = {}
+
+    cycle_scheduling.apply_decision_schedule(
+        sched=sched,
+        sym="AAPL",
+        now=now,
+        next_wake_in_minutes=None,
+        next_wake_iso="2026-07-04T09:30:00+00:00",
+        cancel_watch_ids=[],
+        pending_indicator_watch=None,
+        entry=entry,
+    )
+
+    assert sched.next_wake("AAPL") == now + timedelta(hours=4)
+    assert entry["schedule_wake_source"] == "calm_review"
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Callable
 
 from trader.domain.market.features import build_indicator_snapshot, compute_indicator_values
+from trader.domain.semantic.catalog import family_for_symbol
 
 _OPS: dict[str, Callable[[float, float], bool]] = {
     ">": operator.gt,
@@ -48,6 +49,16 @@ def _compare(actual: float | None, op: str, threshold: float) -> bool:
     if op in _ABS_OPS:
         return _ABS_OPS[op](abs(actual), threshold)
     return _OPS[op](actual, threshold)
+
+
+def _latest_bar_ts(bars: list[object]) -> str | None:
+    try:
+        latest = bars[-1]
+        raw = latest.get("ts") if isinstance(latest, dict) else getattr(latest, "ts")
+    except (AttributeError, IndexError):
+        return None
+    text = str(raw or "").strip()
+    return text or None
 
 
 def _evaluate_condition(
@@ -103,6 +114,24 @@ def _evaluate_condition(
         threshold = None
         op = str(condition.get("op") or "")
         matched = False
+    interval = str(condition.get("interval") or "1h")
+    dependencies: set[str] = set()
+    condition_symbol = str(condition.get("symbol") or "")
+    if condition_type == "indicator" and indicator in _CROSS_ASSET_INDICATORS:
+        family = family_for_symbol(condition_symbol)
+        dependency_rows = (
+            (symbol, symbol_bars)
+            for (symbol, key_interval), symbol_bars in bars_by_key.items()
+            if key_interval == interval
+            and symbol_bars
+            and family_for_symbol(symbol) == family
+        )
+    else:
+        dependency_rows = ((condition_symbol, bars),)
+    for symbol, dependency_bars in dependency_rows:
+        if latest_ts := _latest_bar_ts(dependency_bars):
+            dependencies.add(f"{symbol}:{interval}:{latest_ts}")
+
     result = {
         "symbol": condition["symbol"],
         "op": op,
@@ -111,6 +140,8 @@ def _evaluate_condition(
         "interval": condition.get("interval"),
         "window": condition.get("window"),
         "matched": matched,
+        "closed_bar_ts": _latest_bar_ts(bars),
+        "_closed_bar_dependencies": sorted(dependencies),
     }
     if condition_type == "close":
         result["type"] = "close"
@@ -145,13 +176,35 @@ def evaluate_indicator_watches(
         )
         if not is_triggered:
             continue
+        closed_bar_parts = sorted(
+            {
+                dependency
+                for item in evaluations
+                for dependency in item.get("_closed_bar_dependencies", [])
+            }
+        )
+        closed_bar_key = "|".join(closed_bar_parts) if closed_bar_parts else None
+        if (
+            closed_bar_key is not None
+            and str(watch.get("last_triggered_bar_key") or "") == closed_bar_key
+        ):
+            continue
         event = {
             "watch_id": watch["id"],
             "symbol": watch["symbol"],
             "logic": logic,
             "on_trigger": _normalize_on_trigger(watch.get("on_trigger")),
-            "matched": evaluations,
+            "matched": [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "_closed_bar_dependencies"
+                }
+                for item in evaluations
+            ],
         }
+        if closed_bar_key is not None:
+            event["closed_bar_key"] = closed_bar_key
         if "order" in watch:
             event["order"] = watch["order"]
         if watch.get("rationale"):

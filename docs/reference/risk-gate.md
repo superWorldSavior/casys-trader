@@ -25,9 +25,13 @@ fusibles durs :
 - le `RiskGate.check()` final reste **toujours actif** avant le broker.
 
 Avec le `config/risk.yaml` courant, les fusibles actifs sont : **50 000 USD par
-ordre**, **50 000 USD par position**, **100 000 USD d'exposition brute** et
-**50 000 USD d'equity minimale**. L'évaluation préalable ne préautorise jamais
-l'ordre : ces contrôles sont rejoués sur les données d'exécution.
+ordre**, **25 000 USD par position**, **100 000 USD d'exposition brute** et
+**50 000 USD d'equity minimale**. Une position déjà au-dessus du cap n'est pas
+liquidée ; toute augmentation est refusée, toute réduction (y compris partielle
+restant au-dessus du cap) reste possible via l'exemption risk-reducing.
+`max_order_value` n'est pas aligné sur le cap position : c'est un fusible
+d'ordre indépendant. L'évaluation préalable ne préautorise jamais l'ordre :
+ces contrôles sont rejoués sur les données d'exécution.
 
 ## Contrat
 
@@ -47,7 +51,7 @@ if verdict.approved:
 | # | Code de rejet | Condition | Borne (`risk.yaml`) |
 |---|---|---|---|
 | 1 | `non_finite_order` | `order_value` NaN/inf | — (garde-fou : `NaN > x == False` contournerait tout) |
-| 2 | `equity_floor_breached` | `equity < min_equity` | `min_equity` → **plus aucun ordre** sous ce plancher |
+| 2 | `equity_floor_breached` | `equity < min_equity` | `min_equity` → aucune hausse d'exposition sous ce plancher |
 | 3 | `order_value_exceeded` | `order_value > max` (sauf risk-reducing) | `max_order_value` |
 | 4 | `position_value_exceeded` | position projetée `> max` | `max_position_value` |
 | 5 | `gross_exposure_exceeded` | brut projeté `> max` | `max_gross_exposure` |
@@ -58,10 +62,12 @@ USD quel que soit la devise native — cf. chantier FX / incident Realtek).
 ### Exemption « risk-reducing »
 
 Un ordre qui **réduit** une position opposée existante (sans la dépasser) est
-**exempté de `order_value_exceeded`** quand `allow_risk_reduction=True`. Invariant :
-on doit toujours pouvoir **couper** une position, même si sa valeur dépasse la
-borne d'ouverture. Le contrôle nécessite : position opposée, taille ≤ position
-actuelle, et position projetée < position actuelle.
+**exempté des plafonds d'ordre, de position, d'exposition brute et du plancher
+d'equity** quand
+`allow_risk_reduction=True`. Invariant : on doit toujours pouvoir **couper** ou
+réduire une position, même si sa valeur dépasse déjà la borne d'ouverture. Le
+contrôle nécessite : position opposée, taille ≤ position actuelle, et position
+projetée < position actuelle. Les ordres à valeur non finie restent toujours refusés.
 
 ## Gate de confiance — `check_confidence()` (séparé et actuellement désactivé)
 
@@ -96,7 +102,7 @@ Autrement dit : plus tu risques, plus tu dois être confiant.
 | `max_position_value` | $ max par position (abs) | — (requis) |
 | `max_gross_exposure` | $ max exposition brute (Σ\|positions\|) | — (requis) |
 | `max_order_value` | $ max par ordre unique | — (requis) |
-| `min_equity` | plancher equity : sous ce seuil, zéro ordre | — (requis) |
+| `min_equity` | plancher equity : sous ce seuil, seules les réductions strictes restent admises | — (requis) |
 | `max_risk_per_trade_pct` | % equity risqué si le hard_stop saute | `0.01` |
 | `confidence_gate_enabled` | active le rejet déterministe de confiance basse | `false` dans le profil PAPER |
 | `require_hard_stop` | exige un hard stop pour augmenter l'exposition | `false` dans le profil PAPER |

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,7 +22,12 @@ BuildRadarScoreAuditObserverFn = Callable[[Path], object]
 RotationTickFn = Callable[..., object]
 PositionsFn = Callable[[], dict]
 PlansFn = Callable[[], list]
+WatchesFn = Callable[[], list]
+PendingReplaySymbolsFn = Callable[[], set[str]]
+PendingTriggerSymbolsFn = Callable[[], set[str]]
 StickyFn = Callable[[], set[str]]
+
+STALE_REPLAY_STICKY_MAX_HOURS = 36.0
 
 
 def _default_logger() -> logging.Logger:
@@ -97,15 +102,213 @@ def build_plans_fn(state_dir: str | Path) -> PlansFn:
     return _plans
 
 
-def build_sticky_fn(state_dir: str | Path) -> StickyFn:
+def build_watches_fn(
+    state_dir: str | Path,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
+) -> WatchesFn:
+    """Return a non-destructive snapshot of active indicator watches.
+
+    ``active_indicator_watches`` is deliberately avoided because both scheduler
+    backends purge expired records as a side effect. Rotation only needs a
+    read-only lease snapshot; lifecycle expiry remains owned by the cycle.
+    """
+    state_dir = Path(state_dir)
+    clock = now_fn or (lambda: datetime.now(timezone.utc))
+
+    def _watches() -> list:
+        try:
+            db_path = state_dir / "casys.db"
+            if db_path.exists():
+                from trader.infrastructure.state_db.connection import open_state_db
+                from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+                raw_watches = SqliteScheduler(open_state_db(db_path)).watches().values()
+            else:
+                scheduler_path = state_dir / "scheduler.json"
+                if not scheduler_path.exists():
+                    return []
+                raw = json.loads(scheduler_path.read_text(encoding="utf-8"))
+                watches = raw.get("indicator_watches", {})
+                if not isinstance(watches, dict):
+                    return []
+                raw_watches = watches.values()
+
+            now = clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            else:
+                now = now.astimezone(timezone.utc)
+            active: list[dict] = []
+            for watch in raw_watches:
+                if not isinstance(watch, dict):
+                    continue
+                expires_at = _parse_datetime(watch.get("expires_at"))
+                if expires_at is not None and expires_at <= now:
+                    continue
+                active.append(dict(watch))
+            return active
+        except Exception:  # noqa: BLE001 - sticky state is advisory/fail-safe
+            return []
+
+    return _watches
+
+
+def build_pending_replay_symbols_fn(
+    state_dir: str | Path,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
+) -> PendingReplaySymbolsFn:
+    """Return recent stale→fresh leases without retaining orphaned symbols forever."""
+    state_dir = Path(state_dir)
+    clock = now_fn or (lambda: datetime.now(timezone.utc))
+
+    def _pending_symbols() -> set[str]:
+        try:
+            db_path = state_dir / "casys.db"
+            if not db_path.exists():
+                return set()
+            from trader.domain.planning import relevance_gate
+            from trader.infrastructure.state_db.connection import open_state_db
+            from trader.infrastructure.state_db.llm_gate_store import LlmGateStore
+            from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+            db = open_state_db(db_path)
+            snapshot = LlmGateStore(db).load_state()
+            scheduler = SqliteScheduler(db)
+            now = clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            else:
+                now = now.astimezone(timezone.utc)
+            cutoff = now - timedelta(hours=STALE_REPLAY_STICKY_MAX_HOURS)
+            expected_state_dir = state_dir.resolve()
+            pending: set[str] = set()
+            for key, fingerprints in snapshot.last_wake_fingerprints.items():
+                persisted_state_dir, symbol = key
+                try:
+                    same_state_dir = Path(persisted_state_dir).resolve() == expected_state_dir
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    same_state_dir = persisted_state_dir == str(state_dir)
+                if not same_state_dir or not relevance_gate.is_pending_stale_review(
+                    fingerprints
+                ):
+                    continue
+                last_review_at = snapshot.last_llm_at.get(key)
+                scheduled_wake = (
+                    scheduler.next_wake(symbol)
+                    if scheduler.has_symbol_wake(symbol)
+                    else None
+                )
+                probe_marker = _parse_datetime(
+                    fingerprints.get(
+                        relevance_gate.FRESH_PROBE_WAKE_FINGERPRINT_KEY
+                    )
+                )
+                owned_probe_deadline = None
+                if probe_marker is not None:
+                    owned_probe_deadline = probe_marker + timedelta(
+                        hours=STALE_REPLAY_STICKY_MAX_HOURS
+                    )
+                    try:
+                        from trader.domain.market import sessions as market_sessions
+
+                        next_open_after_marker = market_sessions.next_regular_session_open(
+                            probe_marker,
+                            symbol=symbol,
+                        )
+                        owned_probe_deadline = max(
+                            owned_probe_deadline,
+                            next_open_after_marker
+                            + timedelta(hours=STALE_REPLAY_STICKY_MAX_HOURS),
+                        )
+                    except Exception:  # noqa: BLE001 - bounded fallback above
+                        pass
+                owned_probe_wake = (
+                    probe_marker is not None
+                    and owned_probe_deadline is not None
+                    and scheduled_wake == probe_marker
+                    and now <= owned_probe_deadline
+                )
+                legacy_wake_lease = (
+                    probe_marker is None
+                    and scheduled_wake is not None
+                    and now - timedelta(hours=STALE_REPLAY_STICKY_MAX_HOURS)
+                    <= scheduled_wake
+                    <= now + timedelta(days=7)
+                )
+                if owned_probe_wake or legacy_wake_lease or (
+                    last_review_at is not None and last_review_at >= cutoff
+                ):
+                    pending.add(symbol)
+            return pending
+        except Exception:  # noqa: BLE001 - sticky state is advisory/fail-safe
+            return set()
+
+    return _pending_symbols
+
+
+def build_pending_trigger_symbols_fn(
+    state_dir: str | Path,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
+) -> PendingTriggerSymbolsFn:
+    """Return symbols protected by an unacknowledged trigger delivery."""
+    state_dir = Path(state_dir)
+    clock = now_fn or (lambda: datetime.now(timezone.utc))
+
+    def _pending_symbols() -> set[str]:
+        try:
+            db_path = state_dir / "casys.db"
+            if db_path.exists():
+                from trader.infrastructure.state_db.connection import open_state_db
+                from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+                scheduler = SqliteScheduler(open_state_db(db_path))
+            else:
+                scheduler_path = state_dir / "scheduler.json"
+                if not scheduler_path.exists():
+                    return set()
+                from trader.infrastructure.state_db.scheduler_json import Scheduler
+
+                scheduler = Scheduler(scheduler_path)  # type: ignore[assignment]
+            return scheduler.pending_indicator_trigger_symbols(now=clock())
+        except Exception:  # noqa: BLE001 - sticky state is advisory/fail-safe
+            return set()
+
+    return _pending_symbols
+
+
+def build_sticky_fn(
+    state_dir: str | Path,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
+) -> StickyFn:
     """Compose the market rotation sticky collector from runtime state readers."""
     from trader.market.rotation.collectors import sticky_collector
 
     positions_fn = build_positions_fn(state_dir)
     plans_fn = build_plans_fn(state_dir)
+    watches_fn = build_watches_fn(state_dir, now_fn=now_fn)
+    pending_replay_symbols_fn = build_pending_replay_symbols_fn(
+        state_dir,
+        now_fn=now_fn,
+    )
+    pending_trigger_symbols_fn = build_pending_trigger_symbols_fn(
+        state_dir,
+        now_fn=now_fn,
+    )
+
+    def _pending_symbols() -> set[str]:
+        return pending_replay_symbols_fn() | pending_trigger_symbols_fn()
 
     def _sticky() -> set[str]:
-        return sticky_collector(positions_fn=positions_fn, plans_fn=plans_fn)
+        return sticky_collector(
+            positions_fn=positions_fn,
+            plans_fn=plans_fn,
+            watches_fn=watches_fn,
+            pending_symbols_fn=_pending_symbols,
+        )
 
     return _sticky
 
@@ -324,7 +527,10 @@ def tick_market_rotation(
             candidate_scope_observer=candidate_scope_observer,
             universe_activation_observer=universe_activation_observer,
             radar_score_audit_observer=radar_score_audit_observer,
-            sticky_fn=build_sticky_fn(state_dir),
+            sticky_fn=build_sticky_fn(
+                state_dir,
+                now_fn=lambda: loop_now,
+            ),
             market_context=market_context,
             news_challenger_fn=news_challenger_fn,
             universe_written_observer=universe_written_observer,
@@ -360,7 +566,12 @@ def run_cli(
     )
 
 
-def load_effective_universe(universe_path, state_dir) -> list:
+def load_effective_universe(
+    universe_path,
+    state_dir,
+    *,
+    now: datetime | None = None,
+) -> list:
     """``symbols:`` de universe.yaml avec pin/ban cockpit appliqués à la lecture.
 
     Adaptateur pour le daemon (qui ne doit pas importer trader.market.rotation
@@ -371,7 +582,10 @@ def load_effective_universe(universe_path, state_dir) -> list:
     from trader.infrastructure.files.universe_config import effective_universe_symbols
 
     try:
-        sticky = build_sticky_fn(state_dir)()
+        sticky = build_sticky_fn(
+            state_dir,
+            now_fn=(None if now is None else lambda: now),
+        )()
     except Exception:  # noqa: BLE001 — collector fail-safe
         sticky = set()
     return effective_universe_symbols(universe_path, positions=sticky)

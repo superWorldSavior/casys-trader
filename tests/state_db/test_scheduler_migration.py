@@ -57,6 +57,16 @@ def _rich_scheduler_data() -> dict:
                 "expires_at": "2026-07-03T15:00:00+00:00",
             },
         },
+        "indicator_trigger_outbox": {
+            "AAPL:watch001": {
+                "trigger_outbox_id": "AAPL:watch001",
+                "watch_id": "AAPL:watch001",
+                "symbol": "AAPL",
+                "on_trigger": "EXECUTE_ORDER",
+                "claimed_at": "2026-07-03T10:00:00+00:00",
+                "order": {"intent": "OPEN_LONG", "qty": 50.0},
+            }
+        },
     }
 
 
@@ -174,6 +184,19 @@ class TestImportSchedulerFromJson:
         assert watch["id"] == "AAPL:watch001"
         assert watch["on_trigger"] == "EXECUTE_ORDER"
         assert isinstance(watch["order"], dict)
+
+    def test_import_preserves_pending_trigger_outbox(
+        self,
+        db: StateDb,
+        scheduler_json: Path,
+    ) -> None:
+        from trader.state_db.scheduler_store import SqliteScheduler
+
+        import_scheduler_from_json(db, scheduler_json)
+
+        pending = SqliteScheduler(db).pending_indicator_triggers()
+        assert [item["watch_id"] for item in pending] == ["AAPL:watch001"]
+        assert pending[0]["order"] == {"intent": "OPEN_LONG", "qty": 50.0}
 
     def test_import_seq_preserves_insertion_order(
         self, db: StateDb, scheduler_json: Path

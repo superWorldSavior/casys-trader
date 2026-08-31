@@ -365,13 +365,24 @@ class TestSetIndicatorWatch:
         """Deux WAKE sur le même symbole : le 2e remplace le 1er."""
         w1 = _wake_watch("SPY:old", "SPY", _future(60))
         w2 = _wake_watch("SPY:new", "SPY", _future(120))
-        sqlite_sched.set_symbol_indicator_watch("SPY", w1)
-        sqlite_sched.set_symbol_indicator_watch("SPY", w2)
+        assert sqlite_sched.set_symbol_indicator_watch("SPY", w1) == []
+        assert sqlite_sched.set_symbol_indicator_watch("SPY", w2) == ["SPY:old"]
 
         active = sqlite_sched.active_indicator_watches(now=_NOW)
         ids = {w["id"] for w in active}
         assert "SPY:old" not in ids
         assert "SPY:new" in ids
+
+    def test_same_id_update_is_not_reported_as_supersession(
+        self, sqlite_sched: SqliteScheduler
+    ) -> None:
+        watch = _wake_watch("SPY:same", "SPY", _future(60))
+        updated = {**watch, "expires_at": _future(120)}
+
+        assert sqlite_sched.set_symbol_indicator_watch("SPY", watch) == []
+        assert sqlite_sched.set_symbol_indicator_watch("SPY", updated) == []
+
+        assert sqlite_sched.active_indicator_watches(now=_NOW) == [updated]
 
     def test_wake_with_order_intent_replaces_previous_non_armed(
         self, sqlite_sched: SqliteScheduler
@@ -504,6 +515,107 @@ class TestSetIndicatorWatch:
         assert ids == ["SPY:X", "QQQ:Y"], f"ordre attendu [X, Y], obtenu {ids}"
         # Vérifier que la valeur a bien été mise à jour (watch_json reflète le nouveau dict)
         assert active[0]["expires_at"] == w_x_modified["expires_at"]
+
+    def test_trigger_claim_survives_restart_with_dedupe_and_due_wake(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        db_path = tmp_path / "claim-restart.db"
+        first_db = StateDb(db_path)
+        import_scheduler_from_json(first_db, tmp_path / "absent.json")
+        first = SqliteScheduler(first_db)
+        first.set_symbol_indicator_watch(
+            "SPY",
+            _armed_watch("SPY:armed", "SPY", _future(240)),
+        )
+        bar_key = "SPY:15m:2026-07-03T09:45:00+00:00"
+
+        assert first.claim_indicator_watch_trigger(
+            "SPY:armed",
+            symbol="SPY",
+            closed_bar_key=bar_key,
+            when_iso=_ISO_NOW,
+            trigger_payload={
+                "watch_id": "SPY:armed",
+                "symbol": "SPY",
+                "on_trigger": "EXECUTE_ORDER",
+                "matched": [{"actual": 101.0}],
+            },
+        )
+        first_db.close()
+
+        restarted_db = StateDb(db_path)
+        restarted = SqliteScheduler(restarted_db)
+        try:
+            watches = restarted.active_indicator_watches(now=_NOW)
+            assert watches[0]["last_triggered_bar_key"] == bar_key
+            assert restarted.has_symbol_wake("SPY") is True
+            assert restarted.due_symbols(["SPY"], now=_NOW) == ["SPY"]
+            pending = restarted.pending_indicator_triggers(now=_NOW)
+            assert len(pending) == 1
+            assert pending[0]["trigger_outbox_id"] == "SPY:armed"
+            assert pending[0]["watch_id"] == "SPY:armed"
+            assert not restarted.claim_indicator_watch_trigger(
+                "SPY:armed",
+                symbol="SPY",
+                closed_bar_key="SPY:15m:2026-07-03T10:00:00+00:00",
+                when_iso="2026-07-03T10:15:00+00:00",
+                trigger_payload={"watch_id": "SPY:armed", "symbol": "SPY"},
+            )
+            assert restarted.pending_indicator_triggers(now=_NOW) == pending
+
+            restarted.ack_indicator_triggers(["SPY:armed"])
+            restarted.ack_indicator_triggers(["SPY:armed"])
+            assert restarted.pending_indicator_triggers(now=_NOW) == []
+        finally:
+            restarted_db.close()
+
+    def test_expired_trigger_outbox_is_purged_and_never_routed(
+        self,
+        json_sched: Scheduler,
+        sqlite_sched: SqliteScheduler,
+    ) -> None:
+        claimed_at = datetime(2026, 7, 3, 12, 15, tzinfo=timezone.utc)
+        expires_at = datetime(2026, 7, 3, 12, 16, tzinfo=timezone.utc)
+        restarted_at = datetime(2026, 7, 3, 13, 0, tzinfo=timezone.utc)
+
+        for sched in (json_sched, sqlite_sched):
+            watch = _armed_watch(
+                "SPY:ttl",
+                "SPY",
+                expires_at.isoformat(),
+            )
+            sched.set_symbol_indicator_watch("SPY", watch)
+            assert sched.claim_indicator_watch_trigger(
+                "SPY:ttl",
+                symbol="SPY",
+                closed_bar_key="SPY:15m:2026-07-03T12:00:00+00:00",
+                when_iso=claimed_at.isoformat(),
+                trigger_payload={
+                    "watch_id": "SPY:ttl",
+                    "symbol": "SPY",
+                    "on_trigger": "EXECUTE_ORDER",
+                    "order": watch["order"],
+                },
+            )
+            live = sched.pending_indicator_triggers(now=claimed_at)
+            assert live[0]["expires_at"] == expires_at.isoformat()
+
+            # Le cycle d'expiration garde sa preuve métier via la watch.
+            expired_watches = sched.pop_expired_indicator_watches(now=restarted_at)
+            assert [item["id"] for item in expired_watches] == ["SPY:ttl"]
+
+            # Le payload D7B expiré est acquitté atomiquement et ne route rien.
+            pending = sched.pending_indicator_triggers(now=restarted_at)
+            assert pending == []
+            assert sched.pending_indicator_triggers(now=restarted_at) == []
+
+            routed_orders = [
+                trigger["order"]
+                for trigger in pending
+                if trigger.get("on_trigger") == "EXECUTE_ORDER"
+            ]
+            assert routed_orders == []
 
 
 # ---------------------------------------------------------------------------

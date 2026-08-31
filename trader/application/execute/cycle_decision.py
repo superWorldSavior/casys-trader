@@ -28,6 +28,7 @@ from trader.domain.market import sessions as market
 from trader.domain.market import volatility as reference_volatility_service
 from trader.domain.market.execution_eligibility import execution_blocked_reason
 from trader.domain.planning.exit_plan_spec import InvalidExitPlanError, validate_exit_plan
+from trader.domain.planning import relevance_gate
 from trader.domain.planning.trade_plan import apply_exit_update, resolve_exit_plan
 from trader.domain.decisions import Decision
 from trader.domain.planning.protocols import SchedulerLike
@@ -455,6 +456,25 @@ def execute_one_cycle_decision(
             decision_experiment
         )
 
+    def has_live_position() -> bool:
+        try:
+            position = ctx.broker.positions().get(sym)
+        except Exception:  # noqa: BLE001 - scheduling comfort must not block execution
+            return sym in ctx.held_symbols
+        if position is None:
+            return False
+        try:
+            return abs(float(position.quantity)) > 0.0
+        except (AttributeError, TypeError, ValueError):
+            return True
+
+    execution_state_for_symbol = (
+        (ctx.execution_eligibility.get(sym) or {}).get("execution") or {}
+    )
+    intraday_session_open = relevance_gate.session_is_open(
+        execution_state_for_symbol
+    )
+
     def apply_decision_schedule() -> None:
         cycle_schedule.apply_decision_schedule(
             sched=ctx.sched,
@@ -465,18 +485,25 @@ def execute_one_cycle_decision(
             cancel_watch_ids=decision.cancel_watch_ids,
             pending_indicator_watch=pending_indicator_watch,
             entry=entry,
+            has_position=has_live_position(),
+            session_open=intraday_session_open,
             append_event=ctx.append_event,
             logger=ctx.logger,
         )
 
     def apply_default_schedule_after_blocked() -> None:
-        if ctx.sched is not None:
-            ctx.sched.clear_symbol_next_wake(sym)
-        entry["schedule_effect"] = cycle_schedule.read_schedule_effect(
-            ctx.sched,
+        cycle_schedule.apply_decision_schedule(
+            sched=ctx.sched,
             sym=sym,
             now=ctx.now,
-            expected_next_wake=None,
+            next_wake_in_minutes=None,
+            cancel_watch_ids=[],
+            pending_indicator_watch=None,
+            entry=entry,
+            has_position=has_live_position(),
+            session_open=intraday_session_open,
+            append_event=ctx.append_event,
+            logger=ctx.logger,
         )
 
     if decision.action in {"BUY", "SELL"} and effective_quantity == 0 and decision.risk_pct_target is None:
@@ -813,7 +840,13 @@ def execute_one_cycle_decision(
             plan_to_upsert=_exec_plan_payload.plan_to_upsert,
             symbol_to_close=_exec_plan_payload.symbol_to_close,
             symbol_to_sync_quantity=_exec_plan_payload.symbol_to_sync_quantity,
-            cycle_id=ctx.now.isoformat(),
+            # A durable armed trigger may be replayed after a crash before its
+            # cycle report/ack. Keep queue idempotency stable across restarts.
+            cycle_id=(
+                f"armed-trigger:{armed_watch_id}"
+                if armed_watch_id
+                else ctx.now.isoformat()
+            ),
             intent=decision.intent,
             budget_s=_EXECUTE_POLL_BUDGET_S,
             process_instance_id=process_identity.get("process_instance_id"),

@@ -480,11 +480,15 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
     raw.setdefault("symbols", {})
     raw.setdefault("stale_streaks", {})
     raw.setdefault("indicator_watches", {})
+    raw.setdefault("indicator_trigger_outbox", {})
 
     default_next_wake = _canon(raw["default_next_wake"])
     symbols: dict = raw["symbols"]
     stale_streaks: dict = raw["stale_streaks"]
     indicator_watches: dict = raw["indicator_watches"]
+    indicator_trigger_outbox: dict = raw["indicator_trigger_outbox"]
+    if not isinstance(indicator_trigger_outbox, dict):
+        raise ValueError("indicator_trigger_outbox must be a mapping")
 
     # 2. Import atomique dans la base (sentinel inclus dans la même transaction)
     with db.transaction() as cur:
@@ -492,6 +496,20 @@ def import_scheduler_from_json(db: StateDb, json_path: Path) -> None:
             cur.execute(
                 "INSERT INTO scheduler_meta(key, value) VALUES ('default_next_wake', ?)",
                 (default_next_wake,),
+            )
+        if indicator_trigger_outbox:
+            from trader.domain.planning.trigger_outbox import (  # noqa: PLC0415
+                INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+                normalize_trigger_outbox,
+            )
+
+            normalized_outbox = normalize_trigger_outbox(indicator_trigger_outbox)
+            cur.execute(
+                "INSERT INTO scheduler_meta(key, value) VALUES (?, ?)",
+                (
+                    INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+                    json.dumps(normalized_outbox, separators=(",", ":")),
+                ),
             )
 
         for symbol, when_iso in symbols.items():

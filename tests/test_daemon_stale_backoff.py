@@ -1,6 +1,6 @@
 """Tests chantier 1 : backoff stale et déduplication décisions."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 from trader.agent.client import Decision
@@ -454,12 +454,10 @@ def test_indicator_watch_trigger_reset_streak(monkeypatch, tmp_path, patch_batch
     )
 
 
-def test_run_cycle_nappelle_pas_le_llm_sur_un_stale_sans_prix(
+def test_run_cycle_analyse_un_daily_valide_sans_prix_et_arme_le_replay(
     monkeypatch, tmp_path, patch_batch
 ) -> None:
-    """§13.4 — un symbole daily-valide MAIS sans aucune barre runtime (donc sans prix)
-    ne doit PAS coûter un appel LLM perdu : il n'entre pas dans decidable, il retombe
-    sur le HOLD stale. Pas de décision fantôme (anti gap silencieux)."""
+    """Une thèse daily sans prix runtime est durable puis rejouée après fraîcheur."""
     from trader.agent.client import Decision
     from trader.market.market_data import Bar
 
@@ -484,17 +482,35 @@ def test_run_cycle_nappelle_pas_le_llm_sur_un_stale_sans_prix(
 
     def decide(**kwargs):
         calls.append(kwargs["symbol"])
-        return Decision.hold(kwargs["symbol"], "ne doit pas être appelé")
+        return Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.5,
+            rationale="thèse daily en attente de prix frais",
+            intent="HOLD",
+            llm_provider="acpx",
+            llm_model="gpt-5.5/medium",
+        )
 
     patch_batch(decide)
 
+    process_state = daemon.CycleProcessState()
     report = daemon.run_cycle(
         dry_run=True, now=now, symbols_filter=["SPY"],
         sched=sched, data_source=NoRuntimeFreshDaily(),
+        process_state=process_state,
     )
 
-    assert "SPY" not in calls  # pas d'appel LLM perdu (le symbole n'entre pas dans le batch)
-    assert report["model_calls_used"] == 0
+    assert calls == ["SPY"]
+    assert report["model_calls_used"] == 1
+    llm_rows = [
+        row for row in report["decisions"] if row.get("decision_source") == "llm"
+    ]
+    assert len(llm_rows) == 1
+    key = (str(state_dir), "SPY")
+    assert process_state.last_wake_fingerprints[key]["stale_review"] == "pending"
+    assert sched.next_wake("SPY") == now + timedelta(minutes=15)
 
 
 def test_run_cycle_appelle_le_llm_sur_stale_avec_daily_valide(

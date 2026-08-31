@@ -110,10 +110,58 @@ def test_scan_indicator_watches_emits_runtime_events_and_progress(tmp_path) -> N
     assert events == [
         (
             "indicator_watch_triggered",
-            {"symbol": "SPY", "watch_id": "SPY:watch", "on_trigger": "WAKE"},
+            {
+                "symbol": "SPY",
+                "watch_id": "SPY:watch",
+                "on_trigger": "WAKE",
+                "trigger_outbox_id": "SPY:watch",
+            },
         )
     ]
     assert progress == [("[indicator_watch] triggered=%d symbols=%s", (1, ["SPY"]))]
+
+
+def test_recovered_outbox_emits_missing_causal_trigger_event(tmp_path) -> None:
+    """Crash après claim mais avant append_event: restart restitue l'événement."""
+    from trader.application.cycle.watch_scanner import scan_indicator_watches
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc)
+    _arm_return_watch(sched)
+    scan_indicator_watches(
+        ["SPY"],
+        sched=sched,
+        now=now,
+        data_source=_DataSource(
+            [
+                Bar(ts="2026-06-05T11:15:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
+                Bar(ts="2026-06-05T11:30:00+00:00", open=103, high=104, low=102, close=103, volume=1000),
+                Bar(ts="2026-06-05T11:45:00+00:00", open=110, high=111, low=109, close=110, volume=1000),
+            ]
+        ),
+    )
+
+    restarted = Scheduler(tmp_path / "scheduler.json")
+    pending = restarted.pending_indicator_triggers(now=now)
+    events: list[tuple[str, dict]] = []
+    emitted = cycle_scheduling.emit_recovered_indicator_trigger_events(
+        pending,
+        append_event=lambda event, **payload: events.append((event, payload)),
+    )
+
+    assert emitted == ["SPY:watch"]
+    assert events == [
+        (
+            "indicator_watch_triggered",
+            {
+                "symbol": "SPY",
+                "watch_id": "SPY:watch",
+                "on_trigger": "WAKE",
+                "trigger_outbox_id": "SPY:watch",
+                "recovered_from_outbox": True,
+            },
+        )
+    ]
 
 
 def test_scan_exit_watches_emits_runtime_events_and_progress() -> None:

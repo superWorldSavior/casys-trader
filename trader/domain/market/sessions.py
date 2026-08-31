@@ -782,6 +782,7 @@ def classify_symbol_context(
         "execution": {
             "enabled": execution_enabled,
             "reason": execution_reason,
+            "session_open": bool(session_open),
             "runtime_interval": runtime_interval,
             "last_runtime_bar_ts": last_runtime_bar_ts,
             "data_age_minutes": data_age_minutes,

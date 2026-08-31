@@ -15,6 +15,14 @@ class FakeWriter:
         self.history_reports.append(report)
 
 
+class FakeTriggerScheduler:
+    def __init__(self) -> None:
+        self.acks: list[list[str]] = []
+
+    def ack_indicator_triggers(self, outbox_ids: list[str]) -> None:
+        self.acks.append(list(outbox_ids))
+
+
 def _report(**overrides: object) -> dict:
     report = {
         "ts": "2026-07-05T10:00:00+00:00",
@@ -63,3 +71,45 @@ def test_persist_cycle_report_considers_planned_exits_and_exit_watches_active() 
         assert persisted is True
         assert writer.last_reports == [report]
         assert writer.history_reports == [report]
+
+
+def test_trigger_outbox_ack_happens_only_after_full_report_persistence() -> None:
+    scheduler = FakeTriggerScheduler()
+    report = _report(
+        indicator_triggers=[
+            {"watch_id": "SPY:w1", "trigger_outbox_id": "SPY:w1"},
+        ]
+    )
+
+    cycle_reporting.persist_cycle_report(
+        report,
+        writer=FakeWriter(),
+        trigger_scheduler=scheduler,
+    )
+
+    assert scheduler.acks == [["SPY:w1"]]
+
+
+def test_trigger_outbox_is_not_acked_when_history_persistence_fails() -> None:
+    class FailingHistoryWriter(FakeWriter):
+        def append_cycle_history(self, report: dict) -> None:
+            del report
+            raise OSError("history unavailable")
+
+    scheduler = FakeTriggerScheduler()
+    report = _report(
+        indicator_triggers=[
+            {"watch_id": "SPY:w1", "trigger_outbox_id": "SPY:w1"},
+        ]
+    )
+
+    import pytest
+
+    with pytest.raises(OSError, match="history unavailable"):
+        cycle_reporting.persist_cycle_report(
+            report,
+            writer=FailingHistoryWriter(),
+            trigger_scheduler=scheduler,
+        )
+
+    assert scheduler.acks == []

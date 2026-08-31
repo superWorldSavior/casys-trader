@@ -248,6 +248,7 @@ def test_pure_planning_calculations_are_nested_under_domain_with_facades() -> No
         "relevance_gate.py",
         "scheduling.py",
         "trade_plan.py",
+        "trigger_outbox.py",
         "watch_evaluator.py",
         "watches.py",
     }
@@ -512,4 +513,3 @@ def test_market_and_planning_use_domain_primitives_instead_of_tools() -> None:
                             violations.append(f"{rel_path}: import {alias.name}")
 
     assert violations == []
-

@@ -80,11 +80,15 @@ def test_schedulerlike_protocol_is_satisfied_by_json_and_sqlite_schedulers() -> 
     }
 
     assert protocol_methods == {
+        "ack_indicator_triggers",
         "active_indicator_watches",
+        "claim_indicator_watch_trigger",
         "clear_symbol_next_wake",
         "due_symbols",
         "get_stale_streak",
         "next_wake",
+        "pending_indicator_trigger_symbols",
+        "pending_indicator_triggers",
         "pop_expired_indicator_watches",
         "reconcile_universe",
         "remove_indicator_watch",
@@ -546,4 +550,3 @@ def test_runtime_protocols_are_canonical_and_not_redeclared() -> None:
                 violations.append(f"{rel_path}: class {node.name}")
 
     assert violations == []
-

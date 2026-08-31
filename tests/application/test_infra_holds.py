@@ -85,7 +85,7 @@ def test_quiet_gate_decisions_gates_recent_routine_position_review() -> None:
         symbols=["SPY"],
         now=NOW,
         state_key="/tmp/state",
-        last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(minutes=90)},
+        last_llm_at={("/tmp/state", "SPY"): NOW - timedelta(minutes=30)},
         cockpit={},
         regime_families={},
         active_families={},

@@ -10,7 +10,7 @@ def _needs(**kwargs) -> tuple[bool, str]:
         stretched=False,
         aligned=None,
         sig=None,
-        hours_since_last_llm=1.0,
+        hours_since_last_llm=0.5,
         last_wake_reasons=None,
     )
     base.update(kwargs)
@@ -31,18 +31,18 @@ def test_evenements_passent_le_gate() -> None:
     assert _needs(sig=["1h:breakout_up"]) == (True, "signal")
 
 
-def test_position_ouverte_routiniere_est_debouncee_sous_deux_heures() -> None:
-    assert relevance_gate.POSITION_REVIEW_DEBOUNCE_HOURS == 2.0
+def test_position_ouverte_routiniere_est_debouncee_sous_une_heure() -> None:
+    assert relevance_gate.POSITION_REVIEW_DEBOUNCE_HOURS == 1.0
     assert _needs(
         has_position=True,
-        hours_since_last_llm=1.99,
+        hours_since_last_llm=0.99,
     ) == (False, "position_debounce")
 
 
-def test_position_ouverte_est_revue_a_deux_heures_ou_si_jamais_vue() -> None:
+def test_position_ouverte_est_revue_a_une_heure_ou_si_jamais_vue() -> None:
     assert _needs(
         has_position=True,
-        hours_since_last_llm=2.0,
+        hours_since_last_llm=1.0,
     ) == (True, "position")
     assert _needs(
         has_position=True,
@@ -156,7 +156,7 @@ def test_regime_debounced_sous_deux_heures() -> None:
         family_regime_fingerprint="regime:us:up",
         last_wake_reasons=("regime",),
         last_wake_fingerprints={"regime": "regime:us:up"},
-        hours_since_last_llm=1.0,
+        hours_since_last_llm=1.99,
     ) == (False, "quiet")
     assert _needs(
         family_regime_strong=True,
@@ -414,7 +414,7 @@ def test_run_cycle_gate_le_polling_calme_sans_appel_llm(
     assert report["decisions"][0]["executed"] is False
 
 
-def test_run_cycle_debounce_position_routiniere_puis_appelle_a_deux_heures(
+def test_run_cycle_debounce_position_routiniere_puis_appelle_a_une_heure(
     monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:
     from datetime import datetime, timedelta, timezone
@@ -433,7 +433,7 @@ def test_run_cycle_debounce_position_routiniere_puis_appelle_a_deux_heures(
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     process_state = daemon.CycleProcessState()
-    process_state.last_llm_at[(str(state_dir), "SPY")] = now - timedelta(hours=1)
+    process_state.last_llm_at[(str(state_dir), "SPY")] = now - timedelta(minutes=30)
     data_source = make_data_source(_flat_bars_factory(now.isoformat()))
     calls: list[str] = []
 
@@ -547,9 +547,8 @@ def test_run_cycle_inversion_htf_reveille_position_et_met_a_jour_empreinte(
 
     assert calls == ["SPY"]
     assert report["decisions"][0]["model_called"] is True
-    assert process_state.last_wake_fingerprints[key] == {
-        "signal": "signal:1h:breakout_down"
-    }
+    assert process_state.last_wake_fingerprints[key].get("signal") == "signal:1h:breakout_down"
+    assert "stale_review" not in process_state.last_wake_fingerprints[key]
 
 
 def test_run_cycle_disparition_persiste_absence_puis_reapparition_reveille(
@@ -620,7 +619,9 @@ def test_run_cycle_disparition_persiste_absence_puis_reapparition_reveille(
     assert calls == ["SPY"]
     assert disappeared["decisions"][0]["model_called"] is True
     assert process_state.last_wake_reasons[key] == ()
-    assert process_state.last_wake_fingerprints[key] == {}
+    assert process_state.last_wake_fingerprints[key].get("signal") is None
+    assert process_state.last_wake_fingerprints[key].get("regime") is None
+    assert "stale_review" not in process_state.last_wake_fingerprints[key]
 
     still_absent_at = disappeared_at + timedelta(minutes=15)
     still_absent = daemon.run_cycle(
@@ -649,9 +650,8 @@ def test_run_cycle_disparition_persiste_absence_puis_reapparition_reveille(
 
     assert calls == ["SPY", "SPY"]
     assert reappeared["decisions"][0]["model_called"] is True
-    assert process_state.last_wake_fingerprints[key] == {
-        "signal": "signal:1h:breakout_up"
-    }
+    assert process_state.last_wake_fingerprints[key].get("signal") == "signal:1h:breakout_up"
+    assert "stale_review" not in process_state.last_wake_fingerprints[key]
 
 
 def test_run_cycle_revue_post_entry_15m_bypasse_le_debounce_position(

@@ -128,6 +128,7 @@ def scan_indicator_watches(
             symbol=event["symbol"],
             watch_id=event["watch_id"],
             on_trigger=event.get("on_trigger"),
+            trigger_outbox_id=event.get("trigger_outbox_id"),
         )
     if triggered:
         progress_logger(
@@ -136,6 +137,36 @@ def scan_indicator_watches(
             [item["symbol"] for item in triggered],
         )
     return triggered
+
+
+def emit_recovered_indicator_trigger_events(
+    triggers: list[dict],
+    *,
+    already_emitted_outbox_ids: set[str] | frozenset[str] = frozenset(),
+    append_event: EventAppender | None = None,
+) -> list[str]:
+    """Emit causal events for outbox deliveries recovered after a crash.
+
+    A crash after the JSONL append but before cycle acknowledgement can produce
+    an at-least-once duplicate on restart. The stable watch/outbox identity lets
+    causal readers deduplicate it without risking a missing trigger event.
+    """
+    event_appender = append_event or _noop_event
+    emitted: list[str] = []
+    for trigger in triggers:
+        outbox_id = str(trigger.get("trigger_outbox_id") or "")
+        if not outbox_id or outbox_id in already_emitted_outbox_ids:
+            continue
+        event_appender(
+            "indicator_watch_triggered",
+            symbol=trigger.get("symbol"),
+            watch_id=trigger.get("watch_id"),
+            on_trigger=trigger.get("on_trigger"),
+            trigger_outbox_id=outbox_id,
+            recovered_from_outbox=True,
+        )
+        emitted.append(outbox_id)
+    return emitted
 
 
 def earliest_active_watch_expiry_iso(sched: SchedulerLike, sym: str, *, now: datetime) -> str | None:
@@ -162,6 +193,8 @@ def apply_decision_schedule(
     cancel_watch_ids: list[str],
     pending_indicator_watch: dict | None,
     entry: dict,
+    has_position: bool = False,
+    session_open: bool = False,
     append_event: EventAppender | None = None,
     logger: logging.Logger | None = None,
 ) -> None:
@@ -174,6 +207,8 @@ def apply_decision_schedule(
         cancel_watch_ids=cancel_watch_ids,
         pending_indicator_watch=pending_indicator_watch,
         entry=entry,
+        has_position=has_position,
+        session_open=session_open,
         append_event=append_event,
         logger=logger,
     )

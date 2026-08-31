@@ -209,11 +209,28 @@ def scan_indicator_watches(
     )
 
     triggered = evaluate_indicator_watches(watches, bars_by_key, now=now)
+    claimed: list[dict] = []
     for event in triggered:
-        if str(event.get("on_trigger")) != "EXECUTE_ORDER":
-            sched.remove_indicator_watch(str(event["watch_id"]))
-        sched.set_symbol_next_wake(str(event["symbol"]), now.isoformat())
-    return triggered
+        watch_id = str(event["watch_id"])
+        if sched.claim_indicator_watch_trigger(
+            watch_id,
+            symbol=str(event["symbol"]),
+            closed_bar_key=(
+                str(event["closed_bar_key"])
+                if event.get("closed_bar_key")
+                else None
+            ),
+            when_iso=now.isoformat(),
+            trigger_payload=event,
+        ):
+            claimed.append(
+                {
+                    **event,
+                    "trigger_outbox_id": watch_id,
+                    "claimed_at": now.astimezone(timezone.utc).isoformat(),
+                }
+            )
+    return claimed
 
 
 def scan_exit_watches(
@@ -273,5 +290,7 @@ def scan_exit_watches(
         if not dry_run:
             watch = dict(plan.exit_watch or {})
             watch["last_triggered_at"] = now.astimezone(timezone.utc).isoformat()
+            if event.get("closed_bar_key"):
+                watch["last_triggered_bar_key"] = event["closed_bar_key"]
             plan_store.upsert(plan.model_copy(update={"exit_watch": watch}))
     return enriched

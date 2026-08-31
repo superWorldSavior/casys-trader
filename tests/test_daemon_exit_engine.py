@@ -2001,7 +2001,7 @@ def test_run_cycle_ne_replanifie_pas_un_ordre_bloque(monkeypatch, tmp_path, patc
             confidence=0.8,
             rationale="setup invalide",
             intent="OPEN_LONG",
-            next_wake_in_minutes=240.0,
+            next_wake_in_minutes=120.0,
             indicator_watch={
                 "ttl_minutes": 90,
                 "conditions": [
@@ -2025,7 +2025,10 @@ def test_run_cycle_ne_replanifie_pas_un_ordre_bloque(monkeypatch, tmp_path, patc
         "trade_evaluation_invalid:"
     )
     assert report["decisions"][0]["indicator_watch_created"] is False
-    assert sched.next_wake("SPY") == now + timedelta(minutes=30)
+    # Le wake 2 h demandé par l'ordre invalide n'est pas appliqué ; seule la
+    # cadence système calme est conservée.
+    assert sched.next_wake("SPY") == now + timedelta(hours=4)
+    assert report["decisions"][0]["schedule_wake_source"] == "calm_review"
     assert sched.active_indicator_watches(now=now) == []
 
 

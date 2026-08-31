@@ -162,7 +162,7 @@ class RiskGate:
             and projected_position < current_abs_position
         )
 
-        if equity < self.limits.min_equity:
+        if equity < self.limits.min_equity and not risk_reducing:
             return Verdict(
                 False,
                 "equity_floor_breached",
@@ -176,7 +176,7 @@ class RiskGate:
                 f"{order_value:.2f} > {self.limits.max_order_value}",
             )
 
-        if projected_position > self.limits.max_position_value:
+        if projected_position > self.limits.max_position_value and not risk_reducing:
             return Verdict(
                 False,
                 "position_value_exceeded",
@@ -186,7 +186,7 @@ class RiskGate:
         projected_gross = (
             gross_exposure - current_abs_position + projected_position
         )
-        if projected_gross > self.limits.max_gross_exposure:
+        if projected_gross > self.limits.max_gross_exposure and not risk_reducing:
             return Verdict(
                 False,
                 "gross_exposure_exceeded",

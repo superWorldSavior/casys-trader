@@ -155,6 +155,87 @@ def test_plan_arme_execute_sans_appel_llm(monkeypatch, tmp_path, patch_batch, ma
     assert plans[0].hard_stop_price == 95.0
 
 
+def test_plan_arme_outbox_survit_restart_et_ack_apres_report(
+    monkeypatch,
+    tmp_path,
+    patch_batch,
+    make_data_source,
+    write_runtime_config,
+) -> None:
+    from trader.runtime import cycle_reporting
+
+    write_runtime_config(tmp_path)
+    state_dir = tmp_path / "state"
+    now = datetime(2026, 6, 5, 14, 30, tzinfo=timezone.utc)
+    trigger = _armed_trigger(stop_price=95.0)
+    first = Scheduler(state_dir / "scheduler.json")
+    first.set_symbol_indicator_watch(
+        "SPY",
+        {
+            "id": trigger["watch_id"],
+            "symbol": "SPY",
+            "on_trigger": "EXECUTE_ORDER",
+            "order": trigger["order"],
+            "conditions": [],
+            "expires_at": "2026-06-05T18:00:00+00:00",
+        },
+    )
+    assert first.claim_indicator_watch_trigger(
+        trigger["watch_id"],
+        symbol="SPY",
+        closed_bar_key="SPY:15m:2026-06-05T14:15:00+00:00",
+        when_iso=now.isoformat(),
+        trigger_payload=trigger,
+    )
+
+    # Simule le crash juste après le claim atomique.
+    restarted = Scheduler(state_dir / "scheduler.json")
+    pending = restarted.pending_indicator_triggers(now=now)
+    assert len(pending) == 1
+    assert pending[0]["order"] == trigger["order"]
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    llm_calls: list[str] = []
+
+    def decide(**kwargs):
+        llm_calls.append(kwargs["symbol"])
+        return Decision.hold(kwargs["symbol"], "ne doit pas être appelé")
+
+    patch_batch(decide)
+    report = daemon.run_cycle(
+        dry_run=False,
+        now=now,
+        symbols_filter=["SPY"],
+        sched=restarted,
+        data_source=make_data_source(_bars_at(now.isoformat())),
+        indicator_triggers=pending,
+    )
+
+    assert llm_calls == []
+    assert report["decisions"][0]["executed"] is True
+    still_pending = restarted.pending_indicator_triggers(now=now)
+    assert [item["trigger_outbox_id"] for item in still_pending] == [
+        "SPY:abc123"
+    ]
+
+    class _Writer:
+        def write_last_report(self, _report):
+            return None
+
+        def append_cycle_history(self, _report):
+            return None
+
+    cycle_reporting.persist_cycle_report(
+        report,
+        writer=_Writer(),
+        trigger_scheduler=restarted,
+    )
+
+    assert restarted.pending_indicator_triggers(now=now) == []
+    assert _broker_positions(state_dir)["SPY"].quantity == 10.0
+
+
 def test_plan_arme_resout_hard_stop_volatilite_au_tir(
     monkeypatch, tmp_path, patch_batch, make_data_source, write_runtime_config
 ) -> None:

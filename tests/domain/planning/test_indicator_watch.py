@@ -530,6 +530,51 @@ def test_evaluate_indicator_watches_declenche_relative_strength_avec_pairs() -> 
     assert triggered[0]["matched"][0]["actual"] > 0.04
 
 
+def test_cross_asset_closed_bar_key_includes_peer_bar_progress() -> None:
+    watch = normalize_indicator_watch(
+        {
+            "ttl_minutes": 90,
+            "conditions": [
+                {
+                    "indicator": "relative_strength",
+                    "op": ">",
+                    "value": 0.04,
+                    "interval": "1h",
+                    "window": 5,
+                }
+            ],
+        },
+        owner_symbol="SPY",
+        now=datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc),
+    )
+    assert watch is not None
+    primary = [
+        _bar(f"2026-06-05T{hour:02d}:00:00+00:00", close)
+        for hour, close in enumerate((100.0, 100.0, 100.0, 100.0, 110.0), start=7)
+    ]
+    peer = [
+        _bar(f"2026-06-05T{hour:02d}:00:00+00:00", 200.0)
+        for hour in range(7, 12)
+    ]
+
+    first = evaluate_indicator_watches(
+        [watch],
+        {("SPY", "1h"): primary, ("QQQ", "1h"): peer},
+        now=datetime(2026, 6, 5, 12, 10, tzinfo=timezone.utc),
+    )[0]
+    replay_watch = {**watch, "last_triggered_bar_key": first["closed_bar_key"]}
+    advanced_peer = [*peer[:-1], _bar("2026-06-05T12:00:00+00:00", 200.0)]
+
+    second = evaluate_indicator_watches(
+        [replay_watch],
+        {("SPY", "1h"): primary, ("QQQ", "1h"): advanced_peer},
+        now=datetime(2026, 6, 5, 13, 10, tzinfo=timezone.utc),
+    )[0]
+
+    assert second["closed_bar_key"] != first["closed_bar_key"]
+    assert "QQQ:1h:2026-06-05T12:00:00+00:00" in second["closed_bar_key"]
+
+
 def test_evaluate_indicator_watches_ignore_les_watches_expirees() -> None:
     watch = normalize_indicator_watch(
         {

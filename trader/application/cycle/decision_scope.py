@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Mapping, Protocol, Sequence
 
 from trader.application.cycle import infra_holds
 from trader.application.exit import armed_plans
+from trader.domain.market import sessions as market
 
 
 class ArmedPlanResolver(Protocol):
@@ -42,6 +44,9 @@ class QuietGate(Protocol):
         runtime_data_source_by_sym: Mapping[str, object],
         last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None,
         last_wake_fingerprints: Mapping[tuple[str, str], Mapping[str, str]] | None = None,
+        execution_eligibility: Mapping[str, Mapping[str, object]] | None = None,
+        hot_setup_symbols: set[str] | frozenset[str] | None = None,
+        runtime_bar_ts_by_symbol: Mapping[str, str] | None = None,
     ) -> infra_holds.QuietGateResult: ...
 
 
@@ -71,6 +76,7 @@ class DecisionScopeRequest:
     last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None
     last_wake_fingerprints: Mapping[tuple[str, str], Mapping[str, str]] | None = None
     trade_plan_evaluator_provider: Callable[[str], object | None] | None = None
+    hot_setup_symbols: set[str] | frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,38 @@ class DecisionScope:
     analysis_bars_by_symbol: dict[str, list]
     analysis_timeframe_by_symbol: dict[str, str]
     analysis_symbols: list[str]
+
+
+def _last_closed_runtime_bar_ts(
+    bars: object,
+    *,
+    now: datetime,
+    interval: str,
+) -> str | None:
+    if not bars:
+        return None
+    try:
+        usable = market.completed_intraday_bars(
+            list(bars),  # type: ignore[arg-type]
+            now=now,
+            target_interval=interval,
+            source_interval=interval,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not usable:
+        return None
+    try:
+        last = usable[-1]
+    except (TypeError, KeyError, IndexError):
+        return None
+    ts = getattr(last, "ts", None)
+    if ts is None and isinstance(last, MappingABC):
+        ts = last.get("ts")
+    if ts is None:
+        return None
+    text = str(ts).strip()
+    return text or None
 
 
 def prepare_decision_scope(
@@ -100,7 +138,7 @@ def prepare_decision_scope(
     initially_decidable = [
         symbol
         for symbol in request.symbols_to_decide
-        if symbol in request.prices
+        if (symbol in request.prices or analysis_eligible(symbol))
         and (
             symbol not in request.stale_market_data
             or analysis_eligible(symbol)
@@ -129,6 +167,17 @@ def prepare_decision_scope(
         for symbol in initially_decidable
         if symbol not in armed_resolution.decisions
     ]
+    runtime_bar_ts_by_symbol = {
+        symbol: bar_ts
+        for symbol, bars in request.tradable_bars_by_symbol.items()
+        if (
+            bar_ts := _last_closed_runtime_bar_ts(
+                bars,
+                now=request.now,
+                interval=request.runtime_interval,
+            )
+        )
+    }
     quiet_gate_result = quiet_gate(
         symbols=llm_candidates,
         now=request.now,
@@ -143,6 +192,9 @@ def prepare_decision_scope(
         triggers_by_symbol=request.triggers_by_symbol,
         held_symbols=request.held_symbols,
         runtime_data_source_by_sym=request.runtime_data_source_by_sym,
+        execution_eligibility=request.execution_eligibility,
+        hot_setup_symbols=request.hot_setup_symbols,
+        runtime_bar_ts_by_symbol=runtime_bar_ts_by_symbol,
     )
     decidable = quiet_gate_result.kept_symbols
 

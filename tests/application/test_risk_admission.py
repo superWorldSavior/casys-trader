@@ -317,6 +317,105 @@ def test_assess_final_risk_gate_allows_reduce_through_order_value_cap() -> None:
     assert result.order.quantity == pytest.approx(10.0)
 
 
+def test_assess_final_risk_gate_allows_reduce_when_position_already_above_cap() -> None:
+    gate = RiskGate(
+        RiskLimits(
+            max_position_value=25_000.0,
+            max_gross_exposure=100_000.0,
+            max_order_value=50_000.0,
+            min_equity=10_000.0,
+        )
+    )
+    reduce_result = assess_final_risk_gate(
+        FinalRiskGateRequest(
+            symbol="SPY",
+            action="SELL",
+            quantity=50.0,
+            rationale="reduce oversized",
+            intent="REDUCE",
+            price=100.0,
+            position_quantity=400.0,
+            gross_exposure=40_000.0,
+            equity=100_000.0,
+            fx_rate=1.0,
+        ),
+        gate=gate,
+    )
+    assert reduce_result.approved is True
+
+    increase_result = assess_final_risk_gate(
+        FinalRiskGateRequest(
+            symbol="SPY",
+            action="BUY",
+            quantity=10.0,
+            rationale="add to oversized",
+            intent="SCALE_IN",
+            price=100.0,
+            position_quantity=400.0,
+            gross_exposure=40_000.0,
+            equity=100_000.0,
+            fx_rate=1.0,
+        ),
+        gate=gate,
+    )
+    assert increase_result.approved is False
+    assert increase_result.code == "position_value_exceeded"
+
+
+def test_assess_final_risk_gate_allows_strict_reduce_above_gross_cap() -> None:
+    result = assess_final_risk_gate(
+        FinalRiskGateRequest(
+            symbol="SPY",
+            action="SELL",
+            quantity=50.0,
+            rationale="reduce gross exposure",
+            intent="REDUCE",
+            price=100.0,
+            position_quantity=400.0,
+            gross_exposure=120_000.0,
+            equity=100_000.0,
+            fx_rate=1.0,
+        ),
+        gate=RiskGate(
+            RiskLimits(
+                max_position_value=25_000.0,
+                max_gross_exposure=100_000.0,
+                max_order_value=50_000.0,
+                min_equity=10_000.0,
+            )
+        ),
+    )
+
+    assert result.approved is True
+
+
+def test_assess_final_risk_gate_allows_strict_reduce_below_equity_floor() -> None:
+    result = assess_final_risk_gate(
+        FinalRiskGateRequest(
+            symbol="SPY",
+            action="SELL",
+            quantity=50.0,
+            rationale="reduce while below floor",
+            intent="REDUCE",
+            price=100.0,
+            position_quantity=400.0,
+            gross_exposure=40_000.0,
+            equity=5_000.0,
+            fx_rate=1.0,
+        ),
+        gate=RiskGate(
+            RiskLimits(
+                max_position_value=25_000.0,
+                max_gross_exposure=100_000.0,
+                max_order_value=50_000.0,
+                min_equity=10_000.0,
+            )
+        ),
+    )
+
+    assert result.approved is True
+
+
 def test_assess_final_risk_gate_uses_fx_for_existing_position_value() -> None:
     result = assess_final_risk_gate(
         FinalRiskGateRequest(

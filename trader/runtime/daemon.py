@@ -20,9 +20,9 @@ import os
 import signal
 import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -87,6 +87,7 @@ from trader.infrastructure.market_sources.data_source import (
 from trader.infrastructure.market_sources.ib_source import IBDataSource, connect_ib
 from trader.market import news_feed
 from trader.domain.planning.protocols import SchedulerLike, TradePlanStoreLike
+from trader.domain.planning import relevance_gate
 from trader.domain import decision_identity
 from trader.domain.process_trace import new_runtime_run_id
 from trader.infrastructure.files import decision_ledger
@@ -373,6 +374,357 @@ def _hydrate_llm_gate_state(process_state: CycleProcessState) -> None:
 def _hydrate_last_llm_at(process_state: CycleProcessState) -> None:
     """Compatibility alias for the former timestamp-only hydrator."""
     _hydrate_llm_gate_state(process_state)
+
+
+def _hot_setup_symbols(sched, *, now) -> set[str]:
+    """Symbols with an active watch or armed plan — hot setups for the 1h cadence."""
+    if sched is None or not hasattr(sched, "active_indicator_watches"):
+        return set()
+    try:
+        watches = sched.active_indicator_watches(now=now)
+    except TypeError:
+        watches = sched.active_indicator_watches()
+    except Exception:
+        return set()
+    symbols: set[str] = set()
+    for watch in watches or []:
+        if not isinstance(watch, dict):
+            continue
+        symbol = watch.get("symbol")
+        if symbol:
+            symbols.add(str(symbol))
+    return symbols
+
+
+def _fresh_probe_candidate(*, symbol: str, now: datetime) -> datetime:
+    """Return the next bounded stale-data probe without mutating state."""
+    now_utc = (
+        now.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None
+        else now.astimezone(timezone.utc)
+    )
+    if market.session_snapshot(symbol, now=now_utc).get("open") is True:
+        return now_utc + timedelta(
+            minutes=relevance_gate.FRESH_PROBE_INTERVAL_MINUTES
+        )
+    return market.next_regular_session_open(now_utc, symbol=symbol)
+
+
+def _arm_fresh_probe(
+    sched: SchedulerLike | None,
+    *,
+    symbol: str,
+    now: datetime,
+    existing_probe_wake: str | None = None,
+) -> str | None:
+    """Schedule a bounded data-only stale→fresh probe.
+
+    During a regular session the probe follows the 15-minute runtime cadence.
+    Outside the session it sleeps until the next regular open instead of
+    polling stale bars throughout the night.
+    """
+    if sched is None:
+        return None
+    now_utc = (
+        now.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None
+        else now.astimezone(timezone.utc)
+    )
+    candidate = _fresh_probe_candidate(symbol=symbol, now=now_utc)
+    has_symbol_wake = getattr(sched, "has_symbol_wake", None)
+    current = None
+    if callable(has_symbol_wake) and has_symbol_wake(symbol):
+        current = sched.next_wake(symbol)
+    if current is not None:
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        current = current.astimezone(timezone.utc)
+        if current > now_utc and current <= candidate:
+            if existing_probe_wake:
+                try:
+                    expected = datetime.fromisoformat(
+                        existing_probe_wake.replace("Z", "+00:00")
+                    )
+                    if expected.tzinfo is None:
+                        expected = expected.replace(tzinfo=timezone.utc)
+                    if expected.astimezone(timezone.utc) == current:
+                        return current.isoformat()
+                except ValueError:
+                    pass
+            return None
+    wake_at = candidate.isoformat()
+    sched.set_symbol_next_wake(symbol, wake_at)
+    return wake_at
+
+
+def _arm_and_persist_fresh_probe(
+    sched: SchedulerLike | None,
+    *,
+    llm_gate_store: object | None,
+    state_key: str,
+    symbol: str,
+    now: datetime,
+    last_review_at: datetime | None,
+    wake_reasons: Sequence[str],
+    wake_fingerprints: Mapping[str, str],
+) -> tuple[str | None, dict[str, str], bool]:
+    """Arm one replay lease, atomically with its marker on SQLite.
+
+    The boolean reports whether the gate row was persisted here, so callers do
+    not issue a second commit. Non-SQLite schedulers retain their compatibility
+    path; the canonical SQLite scheduler never exposes wake XOR marker.
+    """
+    fingerprints = dict(wake_fingerprints)
+    existing_probe_wake = fingerprints.get(
+        relevance_gate.FRESH_PROBE_WAKE_FINGERPRINT_KEY
+    )
+    if llm_gate_store is not None and last_review_at is not None:
+        from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+
+        if isinstance(sched, SqliteScheduler):
+            probe_wake, fingerprints = (
+                llm_gate_store.record_with_fresh_probe_wake(  # type: ignore[attr-defined]
+                    state_key,
+                    symbol,
+                    last_review_at,
+                    now=now,
+                    candidate_wake=_fresh_probe_candidate(
+                        symbol=symbol,
+                        now=now,
+                    ),
+                    wake_reasons=wake_reasons,
+                    wake_fingerprints=fingerprints,
+                )
+            )
+            return probe_wake, fingerprints, True
+
+    probe_wake = _arm_fresh_probe(
+        sched,
+        symbol=symbol,
+        now=now,
+        existing_probe_wake=existing_probe_wake,
+    )
+    if probe_wake is None:
+        fingerprints.pop(
+            relevance_gate.FRESH_PROBE_WAKE_FINGERPRINT_KEY,
+            None,
+        )
+    else:
+        fingerprints[
+            relevance_gate.FRESH_PROBE_WAKE_FINGERPRINT_KEY
+        ] = probe_wake
+    if llm_gate_store is not None and last_review_at is not None:
+        llm_gate_store.record(  # type: ignore[attr-defined]
+            state_key,
+            symbol,
+            last_review_at,
+            wake_reasons=wake_reasons,
+            wake_fingerprints=fingerprints,
+        )
+        return probe_wake, fingerprints, True
+    return probe_wake, fingerprints, False
+
+
+def _reconcile_hot_review_wake(
+    sched: SchedulerLike | None,
+    *,
+    symbol: str,
+    now: datetime,
+    last_review_at: datetime | None,
+    max_hours: float = relevance_gate.HOT_REVIEW_MAX_HOURS,
+) -> str | None:
+    """Bring one symbol onto its review deadline anchored at the last LLM call.
+
+    Existing watches may still carry only a distant expiry wake from before the
+    hybrid cadence was enabled. Preserve any nearer explicit override and
+    otherwise schedule the deadline relative to the last real LLM review.
+    """
+    if sched is None or last_review_at is None:
+        return None
+    now_utc = (
+        now.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None
+        else now.astimezone(timezone.utc)
+    )
+    reviewed_utc = (
+        last_review_at.replace(tzinfo=timezone.utc)
+        if last_review_at.tzinfo is None
+        else last_review_at.astimezone(timezone.utc)
+    )
+    deadline = reviewed_utc + timedelta(hours=max_hours)
+    if deadline <= now_utc:
+        return None
+    has_symbol_wake = getattr(sched, "has_symbol_wake", None)
+    if callable(has_symbol_wake) and has_symbol_wake(symbol):
+        current = sched.next_wake(symbol)
+        if current is not None:
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            current = current.astimezone(timezone.utc)
+            if now_utc < current <= deadline:
+                return None
+    wake_at = deadline.isoformat()
+    sched.set_symbol_next_wake(symbol, wake_at)
+    return wake_at
+
+
+def _scheduler_wake_matches_marker(
+    sched: SchedulerLike | None,
+    *,
+    symbol: str,
+    marker: str | None,
+) -> bool:
+    """Check ownership of an internal scheduler override by exact timestamp."""
+    if sched is None or not marker:
+        return False
+    has_symbol_wake = getattr(sched, "has_symbol_wake", None)
+    if not callable(has_symbol_wake) or not has_symbol_wake(symbol):
+        return False
+    current = sched.next_wake(symbol)
+    if current is None:
+        return False
+    try:
+        expected = datetime.fromisoformat(marker.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc) == expected.astimezone(timezone.utc)
+
+
+def _reconcile_hot_wakes_before_due(
+    sched: SchedulerLike | None,
+    *,
+    symbols: list[str],
+    now: datetime,
+    process_state: CycleProcessState,
+    state_key: str,
+    held_symbols: set[str],
+    hot_setup_symbols: set[str],
+    llm_gate_store: object | None = None,
+) -> dict[str, str]:
+    """Clamp legacy overrides to the 1h-hot / 4h-calm review deadlines."""
+    if sched is None:
+        return {}
+    now_utc = (
+        now.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None
+        else now.astimezone(timezone.utc)
+    )
+    reconciled: dict[str, str] = {}
+    hot_symbols = held_symbols | hot_setup_symbols
+    for symbol in sorted(set(symbols)):
+        key = (state_key, symbol)
+        if relevance_gate.is_pending_stale_review(
+            process_state.last_wake_fingerprints.get(key)
+        ):
+            # The fresh-probe lease owns this symbol until a fresh/open review.
+            continue
+        last_review_at = process_state.last_llm_at.get(key)
+        # Without a durable LLM review anchor, an existing wake may be an
+        # intentional stale-data backoff or another scheduler lease.  Do not
+        # replace it with an immediate cadence wake; unplanned symbols are
+        # already due through the scheduler's normal semantics.
+        if last_review_at is None:
+            continue
+        session_open = market.session_snapshot(symbol, now=now_utc).get("open") is True
+        max_hours = (
+            relevance_gate.HOT_REVIEW_MAX_HOURS
+            if symbol in hot_symbols and session_open
+            else relevance_gate.CALM_REVIEW_MAX_HOURS
+        )
+        reviewed_utc = (
+            last_review_at.replace(tzinfo=timezone.utc)
+            if last_review_at.tzinfo is None
+            else last_review_at.astimezone(timezone.utc)
+        )
+        candidate = max(now_utc, reviewed_utc + timedelta(hours=max_hours))
+
+        has_symbol_wake = getattr(sched, "has_symbol_wake", None)
+        if callable(has_symbol_wake) and has_symbol_wake(symbol):
+            current = sched.next_wake(symbol)
+            if current is not None:
+                if current.tzinfo is None:
+                    current = current.replace(tzinfo=timezone.utc)
+                current = current.astimezone(timezone.utc)
+                if current <= now_utc or current <= candidate:
+                    continue
+
+        wake_at = candidate.isoformat()
+        sched.set_symbol_next_wake(symbol, wake_at)
+        reconciled[symbol] = wake_at
+        wake_fingerprints = dict(
+            process_state.last_wake_fingerprints.get(key, {})
+        )
+        wake_fingerprints[
+            relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY
+        ] = wake_at
+        process_state.last_wake_fingerprints[key] = wake_fingerprints
+        if llm_gate_store is not None:
+            llm_gate_store.record(
+                state_key,
+                symbol,
+                last_review_at,
+                wake_reasons=process_state.last_wake_reasons.get(key, ()),
+                wake_fingerprints=wake_fingerprints,
+            )
+    return reconciled
+
+
+def _persist_hot_schedule_markers(
+    *,
+    report: Mapping[str, object],
+    sched: SchedulerLike | None,
+    process_state: CycleProcessState,
+    state_key: str,
+    llm_gate_store: object | None,
+) -> None:
+    """Type hot scheduler effects, including mechanical D7B decisions."""
+    decisions = report.get("decisions")
+    if not isinstance(decisions, list):
+        return
+    for entry in decisions:
+        if not isinstance(entry, dict) or entry.get("schedule_wake_source") not in {
+            "hot_review",
+            "calm_review",
+        }:
+            continue
+        symbol = str(entry.get("symbol") or "")
+        schedule_effect = entry.get("schedule_effect")
+        hot_wake = (
+            schedule_effect.get("next_wake")
+            if isinstance(schedule_effect, dict)
+            else None
+        )
+        if not symbol or not isinstance(hot_wake, str):
+            continue
+        if not _scheduler_wake_matches_marker(
+            sched,
+            symbol=symbol,
+            marker=hot_wake,
+        ):
+            continue
+        key = (state_key, symbol)
+        last_review_at = process_state.last_llm_at.get(key)
+        if last_review_at is None:
+            continue
+        wake_fingerprints = dict(
+            process_state.last_wake_fingerprints.get(key, {})
+        )
+        wake_fingerprints[
+            relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY
+        ] = hot_wake
+        process_state.last_wake_fingerprints[key] = wake_fingerprints
+        if llm_gate_store is not None:
+            llm_gate_store.record(
+                state_key,
+                symbol,
+                last_review_at,
+                wake_reasons=process_state.last_wake_reasons.get(key, ()),
+                wake_fingerprints=wake_fingerprints,
+            )
 
 
 def _load_meta_performance_payload() -> dict:
@@ -936,7 +1288,11 @@ def run_cycle(
     # universe.yaml. Une position ouverte bannie reste gérée.
     universe_cfg = {
         **(universe_cfg or {}),
-        "symbols": market_rotation_runtime.load_effective_universe(ROOT / "config" / "universe.yaml", ROOT / "state"),
+        "symbols": market_rotation_runtime.load_effective_universe(
+            ROOT / "config" / "universe.yaml",
+            ROOT / "state",
+            now=now,
+        ),
     }
     regime_path = ROOT / "config" / "regime.yaml"
     regime_cfg = _load_yaml(regime_path) if regime_path.exists() else {}
@@ -1477,6 +1833,7 @@ def run_cycle(
         str(trigger.get("on_trigger")) == "EXECUTE_ORDER" and isinstance(trigger.get("order"), dict)
         for trigger in indicator_triggers
     )
+    hot_setup_symbols = _hot_setup_symbols(sched, now=now)
     prepared_scope = decision_scope.prepare_decision_scope(
         decision_scope.DecisionScopeRequest(
             symbols_to_decide=symbols_to_decide,
@@ -1503,6 +1860,7 @@ def run_cycle(
             daily_interval=COCKPIT_DAILY_INTERVAL,
             reference_volatility_for_symbol=cycle_reference_volatility,
             trade_plan_evaluator_provider=trade_plan_evaluator_for_symbol,
+            hot_setup_symbols=hot_setup_symbols,
         )
     )
     armed_resolution = prepared_scope.armed_resolution
@@ -1520,17 +1878,105 @@ def run_cycle(
     stale_armed_plans = armed_resolution.stale_plans
     armed_reference_volatilities = armed_resolution.reference_volatilities
 
+    llm_gate_store = _llm_gate_store()
     quiet_gate = prepared_scope.quiet_gate
     gated_symbols = quiet_gate.gated_symbols
     if gated_symbols:
         _log_cycle_progress("[gate] quiet symbols=%s (pas d'appel LLM)", gated_symbols)
         for entry in quiet_gate.entries:
-            entry["schedule_effect"] = cycle_schedule.read_schedule_effect(
-                sched,
-                sym=str(entry["symbol"]),
-                now=now,
-                expected_next_wake=None,
+            symbol = str(entry["symbol"])
+            key = (str(STATE_DIR), symbol)
+            wake_fingerprints = dict(
+                process_state.last_wake_fingerprints.get(key, {})
             )
+            execution = (
+                (execution_eligibility.get(symbol) or {}).get("execution") or {}
+            )
+            session_open = relevance_gate.session_is_open(execution)
+            hot_symbol = symbol in held_symbols or symbol in hot_setup_symbols
+            expected_next_wake = None
+            schedule_expectation_known = True
+            persist_fingerprints = False
+            gate_state_persisted = False
+            if (
+                entry.get("relevance_gate_reason")
+                == relevance_gate.STALE_REPLAY_WAIT_REASON
+            ):
+                probe_wake, wake_fingerprints, gate_state_persisted = (
+                    _arm_and_persist_fresh_probe(
+                        sched,
+                        llm_gate_store=llm_gate_store,
+                        state_key=str(STATE_DIR),
+                        symbol=symbol,
+                        now=now,
+                        last_review_at=process_state.last_llm_at.get(key),
+                        wake_reasons=process_state.last_wake_reasons.get(key, ()),
+                        wake_fingerprints=wake_fingerprints,
+                    )
+                )
+                if probe_wake is not None:
+                    expected_next_wake = probe_wake
+                else:
+                    schedule_expectation_known = False
+                persist_fingerprints = True
+                _append_event(
+                    "fresh_replay_waiting",
+                    symbol=symbol,
+                    next_probe_at=probe_wake,
+                )
+            else:
+                max_hours = (
+                    relevance_gate.HOT_REVIEW_MAX_HOURS
+                    if hot_symbol and session_open
+                    else relevance_gate.CALM_REVIEW_MAX_HOURS
+                )
+                expected_next_wake = _reconcile_hot_review_wake(
+                    sched,
+                    symbol=symbol,
+                    now=now,
+                    last_review_at=process_state.last_llm_at.get(key),
+                    max_hours=max_hours,
+                )
+                if expected_next_wake is None:
+                    schedule_expectation_known = False
+                else:
+                    wake_fingerprints[
+                        relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY
+                    ] = expected_next_wake
+                    persist_fingerprints = True
+                    entry["schedule_wake_source"] = (
+                        "hot_review_reconcile"
+                        if max_hours == relevance_gate.HOT_REVIEW_MAX_HOURS
+                        else "calm_review_reconcile"
+                    )
+            if persist_fingerprints:
+                last_review_at = process_state.last_llm_at.get(key)
+                if (
+                    not gate_state_persisted
+                    and last_review_at is not None
+                    and llm_gate_store is not None
+                ):
+                    llm_gate_store.record(
+                        str(STATE_DIR),
+                        symbol,
+                        last_review_at,
+                        wake_reasons=process_state.last_wake_reasons.get(key, ()),
+                        wake_fingerprints=wake_fingerprints,
+                    )
+                process_state.last_wake_fingerprints[key] = wake_fingerprints
+            if schedule_expectation_known:
+                entry["schedule_effect"] = cycle_schedule.read_schedule_effect(
+                    sched,
+                    sym=symbol,
+                    now=now,
+                    expected_next_wake=expected_next_wake,
+                )
+            else:
+                entry["schedule_effect"] = cycle_schedule.read_schedule_effect(
+                    sched,
+                    sym=symbol,
+                    now=now,
+                )
             record_decision(entry)
 
     decidable = prepared_scope.decidable
@@ -1756,7 +2202,7 @@ def run_cycle(
                     )
                     settled_process_symbols.add(sym)
             continue
-        if sym not in prices:
+        if sym not in prices and sym not in decidable:
             _log_cycle_progress("[decision %d/%d] %s skipped no_price", index, len(symbols_to_decide), sym)
             if process_pilot is not None:
                 process_pilot.defer(sym, outcome_code="no_price")
@@ -1781,6 +2227,30 @@ def run_cycle(
                 sym,
             )
             _append_event("queue_decide_deferred", symbol=sym, cycle_id=cycle_id)
+            key = (str(STATE_DIR), sym)
+            wake_fingerprints = dict(
+                process_state.last_wake_fingerprints.get(key, {})
+            )
+            if relevance_gate.is_pending_stale_review(wake_fingerprints):
+                probe_wake, wake_fingerprints, _gate_state_persisted = (
+                    _arm_and_persist_fresh_probe(
+                        sched,
+                        llm_gate_store=llm_gate_store,
+                        state_key=str(STATE_DIR),
+                        symbol=sym,
+                        now=now,
+                        last_review_at=process_state.last_llm_at.get(key),
+                        wake_reasons=process_state.last_wake_reasons.get(key, ()),
+                        wake_fingerprints=wake_fingerprints,
+                    )
+                )
+                process_state.last_wake_fingerprints[key] = wake_fingerprints
+                if probe_wake is not None:
+                    _append_event(
+                        "fresh_replay_deferred",
+                        symbol=sym,
+                        next_probe_at=probe_wake,
+                    )
             if process_pilot is not None:
                 process_pilot.defer(sym, outcome_code="queue_decide_deferred")
                 settled_process_symbols.add(sym)
@@ -1800,11 +2270,17 @@ def run_cycle(
 
     mark_end(stage_clock, "risk_execute_ms")
     mark_start(stage_clock, "record_ms")
+    _persist_hot_schedule_markers(
+        report=report,
+        sched=sched,
+        process_state=process_state,
+        state_key=str(STATE_DIR),
+        llm_gate_store=llm_gate_store,
+    )
     # Revue effective seulement si le modèle a réellement statué ET si la
     # décision n'a pas été reportée par le stop de batch d'ouvertures. Les
     # ouvertures différées doivent rester périodic_review au cycle suivant, pas
     # quiet_gate pendant 4h.
-    llm_gate_store = _llm_gate_store()
     for sym in decidable:
         if sym in execution_state.deferred_opening_symbols:
             continue
@@ -1813,7 +2289,54 @@ def run_cycle(
             key = (str(STATE_DIR), sym)
             wake_reasons = quiet_gate.persistent_reasons.get(sym, ())
             wake_fingerprints = dict(quiet_gate.persistent_fingerprints.get(sym, {}))
-            if llm_gate_store is not None:
+            gate_state_persisted = False
+            if relevance_gate.is_pending_stale_review(wake_fingerprints):
+                probe_wake, wake_fingerprints, gate_state_persisted = (
+                    _arm_and_persist_fresh_probe(
+                        sched,
+                        llm_gate_store=llm_gate_store,
+                        state_key=str(STATE_DIR),
+                        symbol=sym,
+                        now=now,
+                        last_review_at=now,
+                        wake_reasons=wake_reasons,
+                        wake_fingerprints=wake_fingerprints,
+                    )
+                )
+                _append_event(
+                    "fresh_replay_armed",
+                    symbol=sym,
+                    next_probe_at=probe_wake,
+                )
+            else:
+                recorded_entry = next(
+                    (
+                        row
+                        for row in reversed(report["decisions"])
+                        if str(row.get("symbol") or "") == sym
+                    ),
+                    None,
+                )
+                if (
+                    isinstance(recorded_entry, dict)
+                    and recorded_entry.get("schedule_wake_source")
+                    in {"hot_review", "calm_review"}
+                ):
+                    schedule_effect = recorded_entry.get("schedule_effect")
+                    hot_wake = (
+                        schedule_effect.get("next_wake")
+                        if isinstance(schedule_effect, dict)
+                        else None
+                    )
+                    if isinstance(hot_wake, str) and _scheduler_wake_matches_marker(
+                        sched,
+                        symbol=sym,
+                        marker=hot_wake,
+                    ):
+                        wake_fingerprints[
+                            relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY
+                        ] = hot_wake
+            if llm_gate_store is not None and not gate_state_persisted:
                 llm_gate_store.record(
                     str(STATE_DIR),
                     sym,
@@ -2105,6 +2628,8 @@ def main(
     bootstrap = args.bootstrap_all
     process_state = _DEFAULT_CYCLE_PROCESS_STATE
     _hydrate_llm_gate_state(process_state)
+    _positions_reader = market_rotation_runtime.build_positions_fn(STATE_DIR)
+    _loop_llm_gate_store = _llm_gate_store()
     cycle_run = run_cycle
     experiment_runtime_identity = _capture_experiment_runtime_identity()
     _world_model_runner: object | None = None
@@ -2550,8 +3075,12 @@ def main(
                 )
                 # Pin/ban cockpit appliqués à la lecture (parité run_cycle) :
                 # un ban retire les réveils du scheduler dès la prochaine boucle.
-                symbols = market_rotation_runtime.load_effective_universe(ROOT / "config" / "universe.yaml", STATE_DIR)
-                sched.reconcile_universe(symbols)
+                symbols = market_rotation_runtime.load_effective_universe(
+                    ROOT / "config" / "universe.yaml",
+                    STATE_DIR,
+                    now=loop_now,
+                )
+                sched.reconcile_universe(symbols, now=loop_now)
                 expired_watches = cycle_scheduling.expire_indicator_watches(
                     sched,
                     now=loop_now,
@@ -2559,10 +3088,9 @@ def main(
                     log_info=log.info,
                 )
                 wake_reasons = cycle_scheduling.wake_reasons_from_expired_watches(expired_watches, now=loop_now)
-                indicator_triggers = (
-                    []
-                    if args.once or bootstrap
-                    else cycle_scheduling.scan_indicator_watches(
+                scanned_indicator_triggers: list[dict] = []
+                if not args.once and not bootstrap:
+                    scanned_indicator_triggers = cycle_scheduling.scan_indicator_watches(
                         symbols,
                         sched=sched,
                         now=loop_now,
@@ -2572,6 +3100,26 @@ def main(
                         append_event=_append_event,
                         log_cycle_progress=_log_cycle_progress,
                     )
+                # Claim is the source of truth: this reload also recovers a
+                # trigger claimed immediately before a process crash.
+                indicator_triggers = sched.pending_indicator_triggers(now=loop_now)
+                cycle_scheduling.emit_recovered_indicator_trigger_events(
+                    indicator_triggers,
+                    already_emitted_outbox_ids={
+                        str(trigger.get("trigger_outbox_id") or "")
+                        for trigger in scanned_indicator_triggers
+                    },
+                    append_event=_append_event,
+                )
+                _reconcile_hot_wakes_before_due(
+                    sched,
+                    symbols=symbols,
+                    now=loop_now,
+                    process_state=process_state,
+                    state_key=str(STATE_DIR),
+                    held_symbols=set(_positions_reader()),
+                    hot_setup_symbols=_hot_setup_symbols(sched, now=loop_now),
+                    llm_gate_store=_loop_llm_gate_store,
                 )
                 due_symbols = cycle_scheduling.select_due_symbols(
                     symbols,
@@ -2642,7 +3190,11 @@ def main(
                         symbols_filter=symbols_filter,
                     )
                     log.debug("cycle: %s", json.dumps(report, ensure_ascii=False))
-                    cycle_reporting.persist_cycle_report(report, writer=_runtime_state_writer())
+                    cycle_reporting.persist_cycle_report(
+                        report,
+                        writer=_runtime_state_writer(),
+                        trigger_scheduler=sched,
+                    )
 
                     if args.once:
                         stop_after_iteration = True

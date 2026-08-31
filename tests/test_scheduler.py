@@ -102,6 +102,69 @@ def test_indicator_watch_expiree_est_purgee(tmp_path) -> None:
     assert watches == []
 
 
+def test_claim_watch_trigger_persiste_watch_et_wake_en_une_seule_sauvegarde(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    sched = Scheduler(tmp_path / "scheduler.json")
+    sched.set_symbol_indicator_watch(
+        "SPY",
+        {
+            "id": "SPY:armed",
+            "symbol": "SPY",
+            "on_trigger": "EXECUTE_ORDER",
+            "order": {"intent": "OPEN_LONG"},
+            "conditions": [],
+        },
+    )
+    saves = 0
+    original_save = sched._save_state
+
+    def counting_save(state):
+        nonlocal saves
+        saves += 1
+        original_save(state)
+
+    monkeypatch.setattr(sched, "_save_state", counting_save)
+    when = "2026-06-05T12:15:00+00:00"
+
+    assert sched.claim_indicator_watch_trigger(
+        "SPY:armed",
+        symbol="SPY",
+        closed_bar_key="SPY:15m:2026-06-05T12:00:00+00:00",
+        when_iso=when,
+        trigger_payload={
+            "watch_id": "SPY:armed",
+            "symbol": "SPY",
+            "on_trigger": "EXECUTE_ORDER",
+            "matched": [{"actual": 101.0}],
+        },
+    )
+
+    assert saves == 1
+    reloaded = Scheduler(tmp_path / "scheduler.json")
+    watch = reloaded.active_indicator_watches()[0]
+    assert watch["last_triggered_bar_key"] == "SPY:15m:2026-06-05T12:00:00+00:00"
+    assert reloaded.next_wake("SPY") == datetime.fromisoformat(when)
+    pending = reloaded.pending_indicator_triggers()
+    assert len(pending) == 1
+    assert pending[0]["trigger_outbox_id"] == "SPY:armed"
+    assert pending[0]["order"] == {"intent": "OPEN_LONG"}
+
+    assert not reloaded.claim_indicator_watch_trigger(
+        "SPY:armed",
+        symbol="SPY",
+        closed_bar_key="SPY:15m:2026-06-05T12:15:00+00:00",
+        when_iso="2026-06-05T12:30:00+00:00",
+        trigger_payload={"watch_id": "SPY:armed", "symbol": "SPY"},
+    )
+    assert reloaded.pending_indicator_triggers() == pending
+
+    reloaded.ack_indicator_triggers(["SPY:armed"])
+    reloaded.ack_indicator_triggers(["SPY:armed"])
+    assert reloaded.pending_indicator_triggers() == []
+
+
 def test_pop_expired_indicator_watches_retire_et_retourne_les_expirees(tmp_path) -> None:
     sched = Scheduler(tmp_path / "scheduler.json")
     sched.set_symbol_indicator_watch(
@@ -248,10 +311,10 @@ def test_plans_armes_coexistent_les_veilles_simples_se_remplacent(tmp_path) -> N
     veille_1 = {"id": "CL=F:w1", "symbol": "CL=F", "on_trigger": "WAKE"}
     veille_2 = {"id": "CL=F:w2", "symbol": "CL=F", "on_trigger": "WAKE"}
 
-    sched.set_symbol_indicator_watch("CL=F", plan_haussier)
-    sched.set_symbol_indicator_watch("CL=F", plan_baissier)  # coexiste
-    sched.set_symbol_indicator_watch("CL=F", veille_1)
-    sched.set_symbol_indicator_watch("CL=F", veille_2)  # remplace veille_1
+    assert sched.set_symbol_indicator_watch("CL=F", plan_haussier) == []
+    assert sched.set_symbol_indicator_watch("CL=F", plan_baissier) == []  # coexiste
+    assert sched.set_symbol_indicator_watch("CL=F", veille_1) == []
+    assert sched.set_symbol_indicator_watch("CL=F", veille_2) == ["CL=F:w1"]
 
     ids = {w["id"] for w in sched.active_indicator_watches()}
     assert ids == {"CL=F:up", "CL=F:down", "CL=F:w2"}

@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import copy
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from trader.domain.planning.scheduling import (
     stale_backoff_wake_minutes as stale_backoff_wake_minutes,
 )
 from trader.domain.planning.protocols import SchedulerLike
+from trader.domain.planning.relevance_gate import (
+    CALM_REVIEW_MAX_HOURS,
+    HOT_REVIEW_MAX_HOURS,
+)
 
 EventAppender = Callable[..., None]
 _UNSET = object()
@@ -81,6 +85,29 @@ def earliest_active_watch_expiry_iso(
         if dt > now:
             expiries.append(dt)
     return min(expiries).isoformat() if expiries else None
+
+
+def has_active_watch(
+    sched: SchedulerLike,
+    sym: str,
+    *,
+    now: datetime,
+) -> bool:
+    """Return whether one non-expired indicator watch belongs to ``sym``."""
+    try:
+        return any(
+            str(watch.get("symbol") or "") == sym
+            for watch in sched.active_indicator_watches(now=now)
+        )
+    except Exception:  # noqa: BLE001 - cadence comfort must stay best-effort
+        return False
+
+
+def _wake_datetime(raw: str) -> datetime:
+    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def resolve_wake_event(
@@ -179,6 +206,8 @@ def apply_decision_schedule(
     cancel_watch_ids: list[str],
     pending_indicator_watch: dict | None,
     entry: dict,
+    has_position: bool = False,
+    session_open: bool = False,
     append_event: EventAppender | None = None,
     logger: logging.Logger | None = None,
 ) -> None:
@@ -213,7 +242,18 @@ def apply_decision_schedule(
         entry["cancel_watch_results"] = cancel_results
 
     if pending_indicator_watch is not None:
-        sched.set_symbol_indicator_watch(sym, pending_indicator_watch)
+        superseded_watch_ids = (
+            sched.set_symbol_indicator_watch(sym, pending_indicator_watch) or []
+        )
+        for superseded_watch_id in superseded_watch_ids:
+            event_appender(
+                "indicator_watch_superseded",
+                symbol=sym,
+                watch_id=superseded_watch_id,
+                superseded_by_watch_id=pending_indicator_watch.get("id"),
+            )
+        if superseded_watch_ids:
+            entry["indicator_watch_superseded_ids"] = list(superseded_watch_ids)
         event_appender(
             "armed_plan_created"
             if pending_indicator_watch.get("on_trigger") == "EXECUTE_ORDER"
@@ -236,23 +276,45 @@ def apply_decision_schedule(
         # projection that drops its creation time, rationale or future fields.
         entry["indicator_watch"] = copy.deepcopy(pending_indicator_watch)
 
+    candidates: list[tuple[str, datetime]] = []
     if next_wake_iso is not None:
-        sched.set_symbol_next_wake(sym, next_wake_iso)
-        expected_next_wake = next_wake_iso
+        candidates.append(("agent", _wake_datetime(next_wake_iso)))
     elif next_wake_in_minutes is not None:
-        expected_next_wake = sched.set_symbol_next_wake_in(
-            sym,
-            minutes=next_wake_in_minutes,
-            now=now,
+        candidates.append(
+            (
+                "agent",
+                (now + timedelta(minutes=float(next_wake_in_minutes))).astimezone(
+                    timezone.utc
+                ),
+            )
         )
+
+    watch_wake_iso = earliest_active_watch_expiry_iso(sched, sym, now=now)
+    if watch_wake_iso is not None:
+        candidates.append(("watch_expiry", _wake_datetime(watch_wake_iso)))
+
+    hot = session_open and (has_position or has_active_watch(sched, sym, now=now))
+    if hot:
+        hot_deadline = (now + timedelta(hours=HOT_REVIEW_MAX_HOURS)).astimezone(
+            timezone.utc
+        )
+        candidates.append(("hot_review", hot_deadline))
+        entry["hot_review_deadline"] = hot_deadline.isoformat()
     else:
-        watch_wake_iso = earliest_active_watch_expiry_iso(sched, sym, now=now)
-        if watch_wake_iso is not None:
-            sched.set_symbol_next_wake(sym, watch_wake_iso)
-            expected_next_wake = watch_wake_iso
-        else:
-            sched.clear_symbol_next_wake(sym)
-            expected_next_wake = None
+        calm_deadline = (now + timedelta(hours=CALM_REVIEW_MAX_HOURS)).astimezone(
+            timezone.utc
+        )
+        candidates.append(("calm_review", calm_deadline))
+        entry["calm_review_deadline"] = calm_deadline.isoformat()
+
+    if candidates:
+        wake_source, wake_at = min(candidates, key=lambda item: item[1])
+        expected_next_wake = wake_at.isoformat()
+        sched.set_symbol_next_wake(sym, expected_next_wake)
+        entry["schedule_wake_source"] = wake_source
+    else:
+        sched.clear_symbol_next_wake(sym)
+        expected_next_wake = None
 
     entry["schedule_effect"] = read_schedule_effect(
         sched,

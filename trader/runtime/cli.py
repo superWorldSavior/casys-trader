@@ -526,6 +526,34 @@ def _cmd_dashboards_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_decisions_funnel(args: argparse.Namespace) -> int:
+    from trader.reporting.read_models.strategy_funnel import (
+        StrategyFunnelSourceError,
+        load_strategy_funnel,
+        render_strategy_funnel,
+    )
+
+    since = None
+    if args.since:
+        since = datetime.fromisoformat(str(args.since).replace("Z", "+00:00"))
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+    try:
+        funnel = load_strategy_funnel(
+            daemon.STATE_DIR,
+            since=since,
+            hours=None if since is not None else args.hours,
+        )
+    except StrategyFunnelSourceError as exc:
+        print(f"strategy funnel unavailable: {exc}")
+        return 2
+    if args.json:
+        _print_json(funnel.as_dict() | {"since": funnel.since, "until": funnel.until})
+        return 0
+    print(render_strategy_funnel(funnel))
+    return 0
+
+
 def _cmd_decisions_list(args: argparse.Namespace) -> int:
     store = decision_ledger.DecisionLedgerStore(daemon.STATE_DIR / decision_ledger.DEFAULT_LEDGER_FILENAME)
     rows = store.read_all(symbol=args.symbol, limit=args.limit)
@@ -1289,6 +1317,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     decisions = sub.add_parser("decisions", help="journal des décisions agent")
     decisions_sub = decisions.add_subparsers(dest="decisions_command", required=True)
+    decisions_funnel = decisions_sub.add_parser(
+        "funnel",
+        help="funnel LLM → watches → triggers → ordres → fills",
+    )
+    decisions_funnel.add_argument("--since", help="ISO 8601, borne inférieure")
+    decisions_funnel.add_argument(
+        "--hours",
+        type=float,
+        default=24.0,
+        help="fenêtre glissante si --since est absent (défaut 24h)",
+    )
+    decisions_funnel.add_argument("--json", action="store_true")
+    decisions_funnel.set_defaults(func=_cmd_decisions_funnel)
+
     decisions_list = decisions_sub.add_parser("list", help="liste les décisions persistées")
     decisions_list.add_argument("--symbol")
     decisions_list.add_argument("--limit", type=int)

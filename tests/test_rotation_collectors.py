@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,6 +99,27 @@ class TestStickyCollector:
         plans_fn = lambda: [_make_plan("AAA")]  # noqa: E731
 
         assert sticky_collector(positions_fn=positions_fn, plans_fn=plans_fn) == {"AAA"}
+
+    def test_union_includes_active_watches_and_pending_replays(self):
+        from trader.market.rotation.collectors import sticky_collector
+
+        result = sticky_collector(
+            positions_fn=lambda: {"POSITION": _make_position(3)},
+            plans_fn=lambda: [_make_plan("PLAN")],
+            watches_fn=lambda: [
+                {"symbol": "WATCH"},
+                SimpleNamespace(symbol="OBJECT_WATCH"),
+            ],
+            pending_symbols_fn=lambda: {"PENDING"},
+        )
+
+        assert result == {
+            "OBJECT_WATCH",
+            "PENDING",
+            "PLAN",
+            "POSITION",
+            "WATCH",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +253,263 @@ class TestBuildPlansFn:
         plans = build_plans_fn(tmp_path)()
 
         assert [p.symbol for p in plans] == ["SPY"]
+
+
+class TestBuildStickyFn:
+    def test_json_watch_snapshot_filters_expired_without_purging(self, tmp_path: Path):
+        from trader.runtime.market_rotation_runtime import build_watches_fn
+
+        now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+        scheduler_path = tmp_path / "scheduler.json"
+        scheduler_path.write_text(
+            json.dumps(
+                {
+                    "indicator_watches": {
+                        "active": {
+                            "id": "active",
+                            "symbol": "ACTIVE",
+                            "expires_at": (now + timedelta(hours=1)).isoformat(),
+                        },
+                        "expired": {
+                            "id": "expired",
+                            "symbol": "EXPIRED",
+                            "expires_at": now.isoformat(),
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = scheduler_path.read_text(encoding="utf-8")
+
+        watches = build_watches_fn(tmp_path, now_fn=lambda: now)()
+
+        assert [watch["symbol"] for watch in watches] == ["ACTIVE"]
+        assert scheduler_path.read_text(encoding="utf-8") == before
+
+    def test_sqlite_watch_and_recent_pending_replay_are_sticky_without_purge(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from trader.domain.planning.relevance_gate import (
+            STALE_REVIEW_FINGERPRINT_KEY,
+            STALE_REVIEW_PENDING,
+        )
+        from trader.infrastructure.state_db.connection import open_state_db
+        from trader.infrastructure.state_db.llm_gate_store import LlmGateStore
+        from trader.infrastructure.state_db.migrations import (
+            LLM_GATE_MIGRATIONS,
+            SCHEDULER_MIGRATION,
+        )
+        from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+        from trader.runtime.market_rotation_runtime import build_sticky_fn
+
+        now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+        db = open_state_db(tmp_path / "casys.db")
+        db.apply_migrations([SCHEDULER_MIGRATION, *LLM_GATE_MIGRATIONS])
+        scheduler = SqliteScheduler(db)
+        scheduler.set_symbol_indicator_watch(
+            "WATCH.ACTIVE",
+            {
+                "id": "watch-active",
+                "symbol": "WATCH.ACTIVE",
+                "created_at": (now - timedelta(hours=1)).isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "on_trigger": "WAKE",
+            },
+        )
+        scheduler.set_symbol_indicator_watch(
+            "WATCH.EXPIRED",
+            {
+                "id": "watch-expired",
+                "symbol": "WATCH.EXPIRED",
+                "created_at": (now - timedelta(hours=2)).isoformat(),
+                "expires_at": now.isoformat(),
+                "on_trigger": "WAKE",
+            },
+        )
+        scheduler.set_symbol_indicator_watch(
+            "OUTBOX.PENDING",
+            {
+                "id": "outbox-pending",
+                "symbol": "OUTBOX.PENDING",
+                "created_at": (now - timedelta(minutes=5)).isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "on_trigger": "WAKE",
+            },
+        )
+        assert scheduler.claim_indicator_watch_trigger(
+            "outbox-pending",
+            symbol="OUTBOX.PENDING",
+            closed_bar_key=None,
+            when_iso=now.isoformat(),
+            trigger_payload={
+                "watch_id": "outbox-pending",
+                "symbol": "OUTBOX.PENDING",
+                "on_trigger": "WAKE",
+            },
+        )
+        gate_store = LlmGateStore(db)
+        gate_store.record(
+            str(tmp_path),
+            "REPLAY.RECENT",
+            now - timedelta(hours=36),
+            wake_fingerprints={
+                STALE_REVIEW_FINGERPRINT_KEY: STALE_REVIEW_PENDING,
+            },
+        )
+        gate_store.record(
+            str(tmp_path),
+            "REPLAY.OLD",
+            now - timedelta(hours=36, seconds=1),
+            wake_fingerprints={
+                STALE_REVIEW_FINGERPRINT_KEY: STALE_REVIEW_PENDING,
+            },
+        )
+        gate_store.record(
+            str(tmp_path / "other-state"),
+            "REPLAY.OTHER_STATE",
+            now,
+            wake_fingerprints={
+                STALE_REVIEW_FINGERPRINT_KEY: STALE_REVIEW_PENDING,
+            },
+        )
+        scheduler.set_symbol_next_wake(
+            "REPLAY.RECENT",
+            (now + timedelta(minutes=15)).isoformat(),
+        )
+        scheduler.set_symbol_next_wake(
+            "REPLAY.OLD",
+            (now + timedelta(days=8)).isoformat(),
+        )
+
+        sticky = build_sticky_fn(tmp_path, now_fn=lambda: now)()
+
+        assert "WATCH.ACTIVE" in sticky
+        assert "REPLAY.RECENT" in sticky
+        assert "OUTBOX.PENDING" in sticky
+        assert "WATCH.EXPIRED" not in sticky
+        assert "REPLAY.OLD" not in sticky
+        assert "REPLAY.OTHER_STATE" not in sticky
+        assert "watch-expired" in scheduler.watches()
+
+        scheduler.reconcile_universe({"BASE", *sticky}, now=now)
+        assert "watch-active" in scheduler.watches()
+        assert scheduler.symbols_with_wake() == {
+            "OUTBOX.PENDING",
+            "REPLAY.RECENT",
+        }
+
+        # Même si un caller oubliait d'unir le sticky, le scheduler protège le
+        # wake d'une livraison durable non acquittée.
+        scheduler.reconcile_universe({"BASE"}, now=now)
+        assert scheduler.symbols_with_wake() == {"OUTBOX.PENDING"}
+
+    def test_weekend_pending_replay_keeps_agent_wake_without_probe_marker(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from trader.domain.planning.relevance_gate import (
+            STALE_REVIEW_FINGERPRINT_KEY,
+            STALE_REVIEW_PENDING,
+        )
+        from trader.infrastructure.state_db.connection import open_state_db
+        from trader.infrastructure.state_db.llm_gate_store import LlmGateStore
+        from trader.infrastructure.state_db.migrations import (
+            LLM_GATE_MIGRATIONS,
+            SCHEDULER_MIGRATION,
+        )
+        from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+        from trader.runtime.market_rotation_runtime import build_sticky_fn
+
+        friday_review = datetime(2026, 8, 28, 19, 45, tzinfo=timezone.utc)
+        sunday = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        monday_open = datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc)
+        db = open_state_db(tmp_path / "casys.db")
+        db.apply_migrations([SCHEDULER_MIGRATION, *LLM_GATE_MIGRATIONS])
+        SqliteScheduler(db).set_symbol_next_wake("SPY", monday_open.isoformat())
+        LlmGateStore(db).record(
+            str(tmp_path),
+            "SPY",
+            friday_review,
+            wake_fingerprints={
+                STALE_REVIEW_FINGERPRINT_KEY: STALE_REVIEW_PENDING,
+            },
+        )
+
+        sticky = build_sticky_fn(tmp_path, now_fn=lambda: sunday)()
+
+        assert "SPY" in sticky
+
+        just_after_open = monday_open + timedelta(minutes=5)
+        assert "SPY" in build_sticky_fn(
+            tmp_path,
+            now_fn=lambda: just_after_open,
+        )()
+
+        orphaned_after_grace = monday_open + timedelta(hours=37)
+        assert "SPY" not in build_sticky_fn(
+            tmp_path,
+            now_fn=lambda: orphaned_after_grace,
+        )()
+
+    def test_friday_probe_marker_survives_weekend_restart_and_rotation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from trader.domain.planning.relevance_gate import (
+            FRESH_PROBE_WAKE_FINGERPRINT_KEY,
+            STALE_REVIEW_FINGERPRINT_KEY,
+            STALE_REVIEW_PENDING,
+        )
+        from trader.infrastructure.state_db.connection import (
+            close_all_state_dbs,
+            open_state_db,
+        )
+        from trader.infrastructure.state_db.llm_gate_store import LlmGateStore
+        from trader.infrastructure.state_db.migrations import (
+            LLM_GATE_MIGRATIONS,
+            SCHEDULER_MIGRATION,
+        )
+        from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
+        from trader.runtime.market_rotation_runtime import build_sticky_fn
+
+        friday_review = datetime(2026, 8, 28, 19, 45, tzinfo=timezone.utc)
+        friday_probe = datetime(2026, 8, 28, 20, 0, tzinfo=timezone.utc)
+        sunday = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+        monday_open = datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc)
+        db = open_state_db(tmp_path / "casys.db")
+        db.apply_migrations([SCHEDULER_MIGRATION, *LLM_GATE_MIGRATIONS])
+        SqliteScheduler(db).set_symbol_next_wake("SPY", friday_probe.isoformat())
+        LlmGateStore(db).record(
+            str(tmp_path),
+            "SPY",
+            friday_review,
+            wake_fingerprints={
+                STALE_REVIEW_FINGERPRINT_KEY: STALE_REVIEW_PENDING,
+                FRESH_PROBE_WAKE_FINGERPRINT_KEY: friday_probe.isoformat(),
+            },
+        )
+        close_all_state_dbs()
+
+        sunday_sticky = build_sticky_fn(tmp_path, now_fn=lambda: sunday)()
+        assert "SPY" in sunday_sticky
+
+        restarted_scheduler = SqliteScheduler(open_state_db(tmp_path / "casys.db"))
+        restarted_scheduler.reconcile_universe({"BASE", *sunday_sticky})
+        assert restarted_scheduler.has_symbol_wake("SPY") is True
+
+        assert "SPY" in build_sticky_fn(
+            tmp_path,
+            now_fn=lambda: monday_open + timedelta(minutes=5),
+        )()
+
+        lease_deadline = monday_open + timedelta(hours=36)
+        assert "SPY" not in build_sticky_fn(
+            tmp_path,
+            now_fn=lambda: lease_deadline + timedelta(seconds=1),
+        )()
+        close_all_state_dbs()
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, Sequence
 
 from trader.application.cycle.schedule import stale_backoff_wake_minutes
@@ -16,6 +16,115 @@ class SymbolWakeSource(Protocol):
 
 class SessionWakeClamp(Protocol):
     def __call__(self, wake_minutes: float, *, now: datetime, symbol: str) -> float: ...
+
+
+def _wake_matches_fingerprint(
+    wake_source: SymbolWakeSource | None,
+    *,
+    symbol: str,
+    fingerprints: Mapping[str, str] | None,
+    fingerprint_key: str,
+) -> bool:
+    """Return whether the current override is the persisted internal wake."""
+    marker = (fingerprints or {}).get(fingerprint_key)
+    next_wake = getattr(wake_source, "next_wake", None)
+    if not marker or not callable(next_wake):
+        return False
+    try:
+        expected = datetime.fromisoformat(str(marker).replace("Z", "+00:00"))
+        actual = next_wake(symbol)
+    except (TypeError, ValueError):
+        return False
+    if actual is None:
+        return False
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=timezone.utc)
+    if actual.tzinfo is None:
+        actual = actual.replace(tzinfo=timezone.utc)
+    return actual.astimezone(timezone.utc) == expected.astimezone(timezone.utc)
+
+
+def _is_internal_fresh_probe(
+    wake_source: SymbolWakeSource | None,
+    *,
+    symbol: str,
+    fingerprints: Mapping[str, str] | None,
+) -> bool:
+    """Identify the scheduler override owned by the stale→fresh probe.
+
+    Ordinary agent wakes must keep bypassing the gate.  The exact timestamp is
+    persisted with the LLM-gate context so a restart can distinguish the
+    internal probe from an agent-requested wake without a second state store.
+    """
+    return _wake_matches_fingerprint(
+        wake_source,
+        symbol=symbol,
+        fingerprints=fingerprints,
+        fingerprint_key=relevance_gate.FRESH_PROBE_WAKE_FINGERPRINT_KEY,
+    )
+
+
+def _is_internal_hot_review_wake(
+    wake_source: SymbolWakeSource | None,
+    *,
+    symbol: str,
+    fingerprints: Mapping[str, str] | None,
+) -> bool:
+    """Identify the scheduler override owned by the 1-hour hot cadence."""
+    return _wake_matches_fingerprint(
+        wake_source,
+        symbol=symbol,
+        fingerprints=fingerprints,
+        fingerprint_key=relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY,
+    )
+
+
+def _due_symbol_wakes(
+    wake_source: SymbolWakeSource | None,
+    *,
+    symbols: set[str],
+    now: datetime,
+) -> set[str]:
+    """Filter overrides to wakes that are actually due in this cycle."""
+    if wake_source is None:
+        return set()
+    next_wake = getattr(wake_source, "next_wake", None)
+    if not callable(next_wake):
+        return symbols
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    due: set[str] = set()
+    for symbol in symbols:
+        try:
+            wake_at = next_wake(symbol)
+        except (TypeError, ValueError):
+            continue
+        if wake_at is None:
+            continue
+        if wake_at.tzinfo is None:
+            wake_at = wake_at.replace(tzinfo=timezone.utc)
+        if wake_at.astimezone(timezone.utc) <= now_utc.astimezone(timezone.utc):
+            due.add(symbol)
+    return due
+
+
+def _current_trigger_fingerprint(
+    triggers: Sequence[Mapping[str, Any]],
+    *,
+    runtime_bar_ts: str | None,
+) -> str | None:
+    """Identify the exact trigger claim, not merely its shared 15-minute bar."""
+    tokens: list[str] = []
+    for index, trigger in enumerate(triggers):
+        trigger_id = str(
+            trigger.get("watch_id")
+            or trigger.get("plan_id")
+            or f"{trigger.get('source') or 'trigger'}:{index}"
+        )
+        closed_bar_key = str(
+            trigger.get("closed_bar_key") or runtime_bar_ts or "unknown_bar"
+        )
+        tokens.append(f"{trigger_id}@{closed_bar_key}")
+    return relevance_gate.reviewed_trigger_fingerprint(tokens)
 
 
 @dataclass(frozen=True)
@@ -57,14 +166,27 @@ def quiet_gate_decisions(
     runtime_data_source_by_sym: Mapping[str, object],
     last_wake_reasons: Mapping[tuple[str, str], Sequence[str]] | None = None,
     last_wake_fingerprints: Mapping[tuple[str, str], Mapping[str, str]] | None = None,
+    execution_eligibility: Mapping[str, Mapping[str, Any]] | None = None,
+    hot_setup_symbols: set[str] | frozenset[str] | None = None,
+    runtime_bar_ts_by_symbol: Mapping[str, str] | None = None,
 ) -> QuietGateResult:
     """Split decidable symbols into LLM-needed and quiet infra-HOLD entries."""
     activity = relevance_gate.cockpit_activity(cockpit)
     strong_families = {family for family, bias in regime_families.items() if (bias.get("frac") or 0.0) >= 0.70}
     family_of = {member: family for family, members in active_families.items() for member in members}
-    agent_wakes = wake_source.symbols_with_wake() if wake_source is not None else set()
+    configured_wakes = (
+        wake_source.symbols_with_wake() if wake_source is not None else set()
+    )
+    agent_wakes = _due_symbol_wakes(
+        wake_source,
+        symbols=configured_wakes,
+        now=now,
+    )
     wake_reasons = last_wake_reasons or {}
     wake_fingerprints = last_wake_fingerprints or {}
+    eligibility = execution_eligibility or {}
+    hot_setups = hot_setup_symbols or set()
+    runtime_bars = runtime_bar_ts_by_symbol or {}
 
     gated_symbols: list[str] = []
     kept_symbols: list[str] = []
@@ -75,6 +197,7 @@ def quiet_gate_decisions(
     for symbol in symbols:
         key = (state_key, symbol)
         last_seen = last_llm_at.get(key)
+        previous_fingerprints = wake_fingerprints.get(key)
         hours = None if last_seen is None else (now - last_seen).total_seconds() / 3600.0
         activity_for_symbol = activity.get(symbol) or {}
         family = family_of.get(symbol)
@@ -96,9 +219,29 @@ def quiet_gate_decisions(
             aligned=activity_for_symbol.get("aligned"),
             sig=activity_for_symbol.get("sig"),
         )
+        execution = (eligibility.get(symbol) or {}).get("execution") or {}
+        bar_ts = runtime_bars.get(symbol) or execution.get("last_runtime_bar_ts")
+        bar_ts_text = str(bar_ts) if bar_ts else None
+        symbol_triggers = triggers_by_symbol.get(symbol) or []
+        trigger_fingerprint = _current_trigger_fingerprint(
+            symbol_triggers,
+            runtime_bar_ts=bar_ts_text,
+        )
         needed, gate_reason = relevance_gate.symbol_needs_llm(
-            agent_requested_wake=symbol in agent_wakes,
-            has_trigger=bool(triggers_by_symbol.get(symbol)),
+            agent_requested_wake=(
+                symbol in agent_wakes
+                and not _is_internal_fresh_probe(
+                    wake_source,
+                    symbol=symbol,
+                    fingerprints=previous_fingerprints,
+                )
+                and not _is_internal_hot_review_wake(
+                    wake_source,
+                    symbol=symbol,
+                    fingerprints=previous_fingerprints,
+                )
+            ),
+            has_trigger=bool(symbol_triggers),
             has_position=symbol in held_symbols,
             family_regime_strong=family_regime_strong,
             stretched=activity_for_symbol.get("stretched"),
@@ -107,7 +250,12 @@ def quiet_gate_decisions(
             hours_since_last_llm=hours,
             last_wake_reasons=wake_reasons.get(key),
             family_regime_fingerprint=family_regime_fingerprint,
-            last_wake_fingerprints=wake_fingerprints.get(key),
+            last_wake_fingerprints=previous_fingerprints,
+            session_open=relevance_gate.session_is_open(execution),
+            execution_enabled=relevance_gate.execution_is_enabled(execution),
+            has_hot_setup=symbol in hot_setups,
+            current_runtime_bar_ts=bar_ts_text,
+            current_trigger_fingerprint=trigger_fingerprint,
         )
         if needed:
             kept_symbols.append(symbol)
@@ -118,7 +266,21 @@ def quiet_gate_decisions(
                 aligned=activity_for_symbol.get("aligned"),
                 sig=activity_for_symbol.get("sig"),
             )
-            persistent_fingerprints[symbol] = current_fingerprints
+            fingerprints = dict(current_fingerprints)
+            if trigger_fingerprint is not None:
+                fingerprints[
+                    relevance_gate.REVIEWED_TRIGGER_FINGERPRINT_KEY
+                ] = trigger_fingerprint
+            if relevance_gate.should_mark_stale_review_pending(
+                execution
+            ) or (
+                relevance_gate.is_pending_stale_review(previous_fingerprints)
+                and not relevance_gate.execution_is_enabled(execution)
+            ):
+                fingerprints[relevance_gate.STALE_REVIEW_FINGERPRINT_KEY] = (
+                    relevance_gate.STALE_REVIEW_PENDING
+                )
+            persistent_fingerprints[symbol] = fingerprints
             continue
 
         gated_symbols.append(symbol)

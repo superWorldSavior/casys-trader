@@ -12,7 +12,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from sqlite3 import Cursor
 
+from trader.domain.planning.relevance_gate import (
+    FRESH_PROBE_WAKE_FINGERPRINT_KEY,
+)
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.migrations import LLM_GATE_MIGRATIONS
 
@@ -31,6 +35,47 @@ def _parse_ts(raw: str) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _utc_dt(at: datetime) -> datetime:
+    if at.tzinfo is None:
+        return at.replace(tzinfo=timezone.utc)
+    return at.astimezone(timezone.utc)
+
+
+def _encoded_context(
+    wake_reasons: Sequence[str],
+    wake_fingerprints: Mapping[str, str] | None,
+) -> tuple[str, str]:
+    return (
+        json.dumps(list(wake_reasons), separators=(",", ":")),
+        json.dumps(
+            dict(wake_fingerprints or {}),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )
+
+
+def _upsert_gate_row(
+    cur: Cursor,
+    *,
+    state_dir: str,
+    symbol: str,
+    last_at: str,
+    reasons_json: str,
+    fingerprints_json: str,
+) -> None:
+    cur.execute(
+        "INSERT INTO llm_gate_last_seen("
+        "state_dir, symbol, last_at, wake_reasons_json, wake_fingerprints_json"
+        ") VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(state_dir, symbol) DO UPDATE SET"
+        " last_at=excluded.last_at,"
+        " wake_reasons_json=excluded.wake_reasons_json,"
+        " wake_fingerprints_json=excluded.wake_fingerprints_json",
+        (state_dir, symbol, last_at, reasons_json, fingerprints_json),
+    )
 
 
 @dataclass(frozen=True)
@@ -120,29 +165,98 @@ class LlmGateStore:
     ) -> None:
         """Atomically replace timestamp, reasons and fingerprints for a review."""
         last_at = _canon_dt(at)
-        reasons_json = json.dumps(list(wake_reasons), separators=(",", ":"))
-        fingerprints_json = json.dumps(
-            dict(wake_fingerprints or {}),
-            separators=(",", ":"),
-            sort_keys=True,
+        reasons_json, fingerprints_json = _encoded_context(
+            wake_reasons,
+            wake_fingerprints,
         )
         with self._db.transaction() as cur:
-            cur.execute(
-                "INSERT INTO llm_gate_last_seen("
-                "state_dir, symbol, last_at, wake_reasons_json, wake_fingerprints_json"
-                ") VALUES (?, ?, ?, ?, ?)"
-                " ON CONFLICT(state_dir, symbol) DO UPDATE SET"
-                " last_at=excluded.last_at,"
-                " wake_reasons_json=excluded.wake_reasons_json,"
-                " wake_fingerprints_json=excluded.wake_fingerprints_json",
-                (
-                    state_dir,
-                    symbol,
-                    last_at,
-                    reasons_json,
-                    fingerprints_json,
-                ),
+            _upsert_gate_row(
+                cur,
+                state_dir=state_dir,
+                symbol=symbol,
+                last_at=last_at,
+                reasons_json=reasons_json,
+                fingerprints_json=fingerprints_json,
             )
+
+    def record_with_fresh_probe_wake(
+        self,
+        state_dir: str,
+        symbol: str,
+        at: datetime,
+        *,
+        now: datetime,
+        candidate_wake: datetime,
+        wake_reasons: Sequence[str] = (),
+        wake_fingerprints: Mapping[str, str] | None = None,
+    ) -> tuple[str | None, dict[str, str]]:
+        """Persist the stale replay marker and its scheduler wake atomically.
+
+        A nearer future symbol wake remains authoritative. It is only typed as
+        the replay probe when the existing fingerprint already owns that exact
+        timestamp; otherwise no probe marker is fabricated.
+
+        The scheduler migration must already be applied on this shared StateDb.
+        """
+        now_utc = _utc_dt(now)
+        candidate_utc = _utc_dt(candidate_wake)
+        if candidate_utc <= now_utc:
+            raise ValueError("fresh probe candidate must be in the future")
+
+        final_fingerprints = dict(wake_fingerprints or {})
+        last_at = _canon_dt(at)
+        candidate_iso = candidate_utc.isoformat()
+        selected_probe_wake: str | None = candidate_iso
+        should_write_candidate = True
+
+        with self._db.transaction() as cur:
+            row = cur.execute(
+                "SELECT when_iso FROM scheduler_symbol_wake WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
+            if row is not None:
+                current = _parse_ts(row["when_iso"])
+                if now_utc < current <= candidate_utc:
+                    should_write_candidate = False
+                    selected_probe_wake = None
+                    existing_marker = final_fingerprints.get(
+                        FRESH_PROBE_WAKE_FINGERPRINT_KEY
+                    )
+                    if existing_marker:
+                        try:
+                            if _parse_ts(existing_marker) == current:
+                                selected_probe_wake = current.isoformat()
+                        except (AttributeError, TypeError, ValueError):
+                            pass
+
+            if selected_probe_wake is None:
+                final_fingerprints.pop(
+                    FRESH_PROBE_WAKE_FINGERPRINT_KEY,
+                    None,
+                )
+            else:
+                final_fingerprints[
+                    FRESH_PROBE_WAKE_FINGERPRINT_KEY
+                ] = selected_probe_wake
+            reasons_json, fingerprints_json = _encoded_context(
+                wake_reasons,
+                final_fingerprints,
+            )
+            _upsert_gate_row(
+                cur,
+                state_dir=state_dir,
+                symbol=symbol,
+                last_at=last_at,
+                reasons_json=reasons_json,
+                fingerprints_json=fingerprints_json,
+            )
+            if should_write_candidate:
+                cur.execute(
+                    "INSERT INTO scheduler_symbol_wake(symbol, when_iso) VALUES (?, ?)"
+                    " ON CONFLICT(symbol) DO UPDATE SET when_iso=excluded.when_iso",
+                    (symbol, candidate_iso),
+                )
+        return selected_probe_wake, final_fingerprints
 
 
 def try_open_llm_gate_store(

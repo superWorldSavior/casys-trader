@@ -186,6 +186,138 @@ def test_cli_decisions_seed_existing_puis_liste_json(monkeypatch, tmp_path, caps
     assert rows[0]["price"] == 532.12
 
 
+def test_cli_decisions_funnel_separe_llm_watches_ordres_et_fills(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    (state_dir / "decisions.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "cycle_ts": "2026-06-11T14:00:00+00:00",
+                        "decision_id": "infra-1",
+                        "decision_source": "infra",
+                        "model_called": False,
+                        "action": "HOLD",
+                        "reason": "quiet_gate",
+                        "executed": False,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "cycle_ts": "2026-06-11T14:05:00+00:00",
+                        "decision_id": "llm-watch-simple",
+                        "decision_source": "llm",
+                        "model_called": True,
+                        "action": "HOLD",
+                        "rationale": "Attendre la confirmation.",
+                        "decision": {
+                            "indicator_watch": {
+                                "id": "SPY:w-simple",
+                                "on_trigger": "WAKE",
+                            }
+                        },
+                        "runtime": {"indicator_watch_created": True},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "cycle_ts": "2026-06-11T14:07:00+00:00",
+                        "decision_id": "llm-watch-armed",
+                        "decision_source": "llm",
+                        "model_called": True,
+                        "action": "HOLD",
+                        "rationale": "Armer après confirmation.",
+                        "decision": {
+                            "indicator_watch": {
+                                "id": "SPY:w-armed",
+                                "on_trigger": "EXECUTE_ORDER",
+                                "order": {"action": "BUY", "qty": 5.0},
+                            }
+                        },
+                        "runtime": {"indicator_watch_created": True},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "cycle_ts": "2026-06-11T14:10:00+00:00",
+                        "decision_id": "llm-buy",
+                        "decision_source": "llm",
+                        "model_called": True,
+                        "action": "BUY",
+                        "rationale": "Entrée immédiate validée.",
+                        "executed": True,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (state_dir / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-06-11T14:06:00+00:00",
+                        "event": "indicator_watch_created",
+                        "watch_id": "SPY:w-simple",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-06-11T14:08:00+00:00",
+                        "event": "armed_plan_created",
+                        "watch_id": "SPY:w-armed",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-06-11T14:13:00+00:00",
+                        "event": "indicator_watch_triggered",
+                        "watch_id": "SPY:w-simple",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (state_dir / "broker.json").write_text(
+        json.dumps(
+            {
+                "cash": 90_000.0,
+                "positions": {},
+                "fills": [
+                    {
+                        "symbol": "SPY",
+                        "side": "BUY",
+                        "quantity": 10.0,
+                        "price": 100.0,
+                        "ts": "2026-06-11T14:10:01+00:00",
+                        "decision_id": "llm-buy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert cli.main(["decisions", "funnel", "--since", "2026-06-11T00:00:00+00:00", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["llm_reviews"] == 3
+    assert payload["infra_holds"] == 1
+    assert payload["watches_created"] == 1
+    assert payload["watches_armed"] == 1
+    assert payload["watches_triggered"] == 1
+    assert payload["watches_pending_or_unresolved"] == 1
+    assert payload["buy_sell_proposed"] == 1
+    assert payload["orders_submitted"] == 1
+    assert payload["fills"] == 1
+
+
 def test_cli_decisions_seed_events_inclut_les_archives(monkeypatch, tmp_path, capsys) -> None:
     state_dir = tmp_path / "state"
     archive_dir = tmp_path / "state_archive_old"

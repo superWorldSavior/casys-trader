@@ -806,6 +806,7 @@ def test_armed_watch_consumed_before_queue_dispatch_even_if_queue_fails() -> Non
 
     def _timeout_dispatch(**kwargs):
         assert watch_id in sched.removed
+        assert kwargs["cycle_id"] == f"armed-trigger:{watch_id}"
         return SimpleNamespace(
             task_id="exec-1",
             terminal="timeout",

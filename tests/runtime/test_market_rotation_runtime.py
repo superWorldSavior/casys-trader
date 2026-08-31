@@ -24,6 +24,34 @@ class RecordingLogger:
         self.warnings.append(args)
 
 
+def test_load_effective_universe_propagates_injected_cycle_clock(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    universe_path = tmp_path / "universe.yaml"
+    universe_path.write_text("symbols:\n  - SPY\n", encoding="utf-8")
+    cycle_now = datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
+    observed: list[datetime] = []
+
+    def build_sticky(_state_dir, *, now_fn=None):
+        def sticky():
+            observed.append(now_fn())
+            return set()
+
+        return sticky
+
+    monkeypatch.setattr(market_rotation_runtime, "build_sticky_fn", build_sticky)
+
+    symbols = market_rotation_runtime.load_effective_universe(
+        universe_path,
+        tmp_path / "state",
+        now=cycle_now,
+    )
+
+    assert symbols == ["SPY"]
+    assert observed == [cycle_now]
+
+
 def test_build_llm_override_fn_returns_callable(monkeypatch) -> None:
     from trader.agent import llm as llm_module
 

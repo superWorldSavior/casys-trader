@@ -631,6 +631,8 @@ def _normalize_exit_watch(
     )
     if preserve_last_triggered_at and raw.get("last_triggered_at"):
         watch["last_triggered_at"] = str(raw["last_triggered_at"])
+    if preserve_last_triggered_at and raw.get("last_triggered_bar_key"):
+        watch["last_triggered_bar_key"] = str(raw["last_triggered_bar_key"])
     return watch
 
 

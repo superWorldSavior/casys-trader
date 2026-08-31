@@ -65,14 +65,16 @@ def test_run_cycle_persists_last_llm_at_and_hydrate_restores_it(
     persisted = LlmGateStore(db).load_state()
     assert persisted.last_llm_at[key] == now
     assert persisted.last_wake_reasons[key] == ()
-    assert persisted.last_wake_fingerprints[key] == {}
+    assert persisted.last_wake_fingerprints[key].get("regime") is None
+    assert persisted.last_wake_fingerprints[key].get("signal") is None
 
     restarted = CycleProcessState()
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
     daemon._hydrate_last_llm_at(restarted)
     assert restarted.last_llm_at[key] == now
     assert restarted.last_wake_reasons[key] == ()
-    assert restarted.last_wake_fingerprints[key] == {}
+    assert restarted.last_wake_fingerprints[key].get("regime") is None
+    assert restarted.last_wake_fingerprints[key].get("signal") is None
 
 
 def test_llm_gate_store_degrades_to_memory_when_backend_is_not_sqlite(monkeypatch, tmp_path: Path) -> None:

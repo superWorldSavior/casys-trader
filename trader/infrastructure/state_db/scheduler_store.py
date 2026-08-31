@@ -250,8 +250,8 @@ class SqliteScheduler:
     # Indicator watches
     # ------------------------------------------------------------------
 
-    def set_symbol_indicator_watch(self, symbol: str, watch: dict) -> None:
-        """Persiste une watch active pour un symbole.
+    def set_symbol_indicator_watch(self, symbol: str, watch: dict) -> list[str]:
+        """Persiste une watch et retourne les IDs réellement supersédés.
 
         Plans armés (EXECUTE_ORDER + order=dict) : coexistence — plusieurs scénarios
         alternatifs coexistent sur un symbole (scheduler.py:149-171).
@@ -266,8 +266,18 @@ class SqliteScheduler:
         on_trigger = watch.get("on_trigger", "WAKE")
         watch_json_str = json.dumps(watch)
 
+        superseded_ids: list[str] = []
         with self._db.transaction() as cur:
             if not incoming_armed:
+                rows = cur.execute(
+                    "SELECT id FROM scheduler_watches"
+                    " WHERE symbol=? AND id<>?"
+                    " AND NOT (on_trigger='EXECUTE_ORDER'"
+                    "          AND json_type(watch_json, '$.order')='object')"
+                    " ORDER BY seq",
+                    (symbol, watch_id),
+                ).fetchall()
+                superseded_ids = [str(row["id"]) for row in rows]
                 # Supprime le(s) non-armé(s) précédent(s) du même symbole.
                 # Non-armé = NOT (on_trigger='EXECUTE_ORDER' ET order est un objet JSON)
                 # — miroir exact de is_armed_plan appliqué aux watches existantes.
@@ -296,6 +306,163 @@ class SqliteScheduler:
                 (watch_id, symbol, watch.get("created_at"), expires_at, on_trigger, watch_json_str),
             )
         log.debug("[state_db] set_symbol_indicator_watch %s id=%s", symbol, watch_id)
+        return superseded_ids
+
+    def claim_indicator_watch_trigger(
+        self,
+        watch_id: str,
+        *,
+        symbol: str,
+        closed_bar_key: str | None,
+        when_iso: str,
+        trigger_payload: dict,
+    ) -> bool:
+        """Atomically persist payload, watch marker and immediate wake.
+
+        Returning ``False`` means the watch vanished, changed symbol, or this
+        closed bar was already claimed.  For a retained armed plan, refusing a
+        claim without a closed-bar key keeps execution fail-closed.
+        """
+        from trader.planning.indicator_watch import is_armed_plan  # noqa: PLC0415
+        from trader.domain.planning.trigger_outbox import (  # noqa: PLC0415
+            INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+            build_trigger_delivery,
+            normalize_trigger_outbox,
+        )
+
+        datetime.fromisoformat(when_iso)  # fail fast before opening the tx
+        canon_wake = _canon_ts(when_iso)
+        with self._db.transaction() as cur:
+            outbox_row = cur.execute(
+                "SELECT value FROM scheduler_meta WHERE key=?",
+                (INDICATOR_TRIGGER_OUTBOX_STATE_KEY,),
+            ).fetchone()
+            outbox = normalize_trigger_outbox(
+                None if outbox_row is None else json.loads(outbox_row["value"])
+            )
+            if watch_id in outbox:
+                return False
+            row = cur.execute(
+                "SELECT watch_json FROM scheduler_watches WHERE id=?",
+                (watch_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            watch = json.loads(row["watch_json"])
+            if not isinstance(watch, dict) or str(watch.get("symbol") or "") != symbol:
+                return False
+            delivery = build_trigger_delivery(
+                watch=watch,
+                watch_id=watch_id,
+                symbol=symbol,
+                closed_bar_key=closed_bar_key,
+                claimed_at=str(canon_wake),
+                trigger_payload=trigger_payload,
+            )
+            # Fail before changing marker/watch if the payload cannot be encoded.
+            json.dumps(delivery)
+            retained = is_armed_plan(watch)
+            if retained:
+                if not closed_bar_key:
+                    return False
+                if str(watch.get("last_triggered_bar_key") or "") == closed_bar_key:
+                    return False
+                watch["last_triggered_bar_key"] = closed_bar_key
+                cur.execute(
+                    "UPDATE scheduler_watches SET watch_json=? WHERE id=?",
+                    (json.dumps(watch), watch_id),
+                )
+            else:
+                cur.execute("DELETE FROM scheduler_watches WHERE id=?", (watch_id,))
+            cur.execute(
+                "INSERT INTO scheduler_symbol_wake(symbol, when_iso) VALUES (?, ?)"
+                " ON CONFLICT(symbol) DO UPDATE SET when_iso=excluded.when_iso",
+                (symbol, canon_wake),
+            )
+            outbox[watch_id] = delivery
+            cur.execute(
+                "INSERT INTO scheduler_meta(key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (
+                    INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+                    json.dumps(outbox, separators=(",", ":")),
+                ),
+            )
+        return True
+
+    def pending_indicator_triggers(
+        self,
+        now: datetime | None = None,
+    ) -> list[dict]:
+        """Return live deliveries and atomically purge expired payloads."""
+        from trader.domain.planning.trigger_outbox import (  # noqa: PLC0415
+            INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+            prune_expired_trigger_outbox,
+        )
+
+        with self._db.transaction() as cur:
+            row = cur.execute(
+                "SELECT value FROM scheduler_meta WHERE key=?",
+                (INDICATOR_TRIGGER_OUTBOX_STATE_KEY,),
+            ).fetchone()
+            outbox, expired_ids = prune_expired_trigger_outbox(
+                None if row is None else json.loads(row["value"]),
+                now=now or datetime.now(timezone.utc),
+            )
+            if expired_ids:
+                cur.execute(
+                    "INSERT INTO scheduler_meta(key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (
+                        INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+                        json.dumps(outbox, separators=(",", ":")),
+                    ),
+                )
+        return [dict(payload) for payload in outbox.values()]
+
+    def pending_indicator_trigger_symbols(
+        self,
+        now: datetime | None = None,
+    ) -> set[str]:
+        return {
+            str(payload["symbol"])
+            for payload in self.pending_indicator_triggers(now=now)
+            if payload.get("symbol")
+        }
+
+    def ack_indicator_triggers(self, outbox_ids: Iterable[str]) -> None:
+        """Acknowledge deliveries after their cycle report is durable."""
+        from trader.domain.planning.trigger_outbox import (  # noqa: PLC0415
+            INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+            normalize_trigger_outbox,
+        )
+
+        ids = {str(outbox_id) for outbox_id in outbox_ids if str(outbox_id)}
+        if not ids:
+            return
+        with self._db.transaction() as cur:
+            row = cur.execute(
+                "SELECT value FROM scheduler_meta WHERE key=?",
+                (INDICATOR_TRIGGER_OUTBOX_STATE_KEY,),
+            ).fetchone()
+            outbox = normalize_trigger_outbox(
+                None if row is None else json.loads(row["value"])
+            )
+            kept = {
+                watch_id: payload
+                for watch_id, payload in outbox.items()
+                if watch_id not in ids
+            }
+            if kept == outbox:
+                return
+            cur.execute(
+                "INSERT INTO scheduler_meta(key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (
+                    INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+                    json.dumps(kept, separators=(",", ":")),
+                ),
+            )
 
     def active_indicator_watches(self, now: datetime | None = None) -> list[dict]:
         """Retourne les watches NON expirées et purge silencieusement les expirées.
@@ -375,32 +542,62 @@ class SqliteScheduler:
     # Reconciliation univers
     # ------------------------------------------------------------------
 
-    def reconcile_universe(self, symbols: Iterable[str]) -> None:
+    def reconcile_universe(
+        self,
+        symbols: Iterable[str],
+        now: datetime | None = None,
+    ) -> None:
         """Purge tout état lié à un symbole absent de l'univers courant.
 
         DELETE des symboles hors-univers sur symbol_wake + stale_streaks + watches,
         en UNE transaction, idempotent.
         """
-        universe = list(set(symbols))
+        from trader.domain.planning.trigger_outbox import (  # noqa: PLC0415
+            INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+            prune_expired_trigger_outbox,
+        )
 
-        if not universe:
-            # Univers vide → tout supprimer
-            with self._db.transaction() as cur:
+        universe = set(symbols)
+        with self._db.transaction() as cur:
+            outbox_row = cur.execute(
+                "SELECT value FROM scheduler_meta WHERE key=?",
+                (INDICATOR_TRIGGER_OUTBOX_STATE_KEY,),
+            ).fetchone()
+            outbox, expired_ids = prune_expired_trigger_outbox(
+                None if outbox_row is None else json.loads(outbox_row["value"]),
+                now=now or datetime.now(timezone.utc),
+            )
+            if expired_ids:
+                cur.execute(
+                    "INSERT INTO scheduler_meta(key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (
+                        INDICATOR_TRIGGER_OUTBOX_STATE_KEY,
+                        json.dumps(outbox, separators=(",", ":")),
+                    ),
+                )
+            universe.update(
+                str(payload["symbol"])
+                for payload in outbox.values()
+                if payload.get("symbol")
+            )
+            if not universe:
+                # Univers vide → tout supprimer
                 cur.execute("DELETE FROM scheduler_symbol_wake")
                 cur.execute("DELETE FROM scheduler_stale_streaks")
                 cur.execute("DELETE FROM scheduler_watches")
-        else:
-            placeholders = ",".join("?" * len(universe))
-            with self._db.transaction() as cur:
+            else:
+                ordered_universe = sorted(universe)
+                placeholders = ",".join("?" * len(ordered_universe))
                 cur.execute(
                     f"DELETE FROM scheduler_symbol_wake WHERE symbol NOT IN ({placeholders})",  # noqa: S608
-                    universe,
+                    ordered_universe,
                 )
                 cur.execute(
                     f"DELETE FROM scheduler_stale_streaks WHERE symbol NOT IN ({placeholders})",  # noqa: S608
-                    universe,
+                    ordered_universe,
                 )
                 cur.execute(
                     f"DELETE FROM scheduler_watches WHERE symbol NOT IN ({placeholders})",  # noqa: S608
-                    universe,
+                    ordered_universe,
                 )

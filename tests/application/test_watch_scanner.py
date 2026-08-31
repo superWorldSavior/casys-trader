@@ -291,6 +291,34 @@ def test_scan_indicator_watches_keeps_execute_order_watch_after_trigger(tmp_path
     active = sched.active_indicator_watches(now=now)
     assert [watch["id"] for watch in active] == ["spy-watch"]
     assert active[0]["on_trigger"] == "EXECUTE_ORDER"
+    assert active[0]["last_triggered_bar_key"]
+
+    same_bar = scan_indicator_watches(
+        ["SPY"],
+        sched=sched,
+        now=now + timedelta(minutes=1),
+        data_source=data_source,
+    )
+    assert same_bar == []
+
+    # Une livraison durable encore pending bloque aussi la bougie suivante :
+    # aucun double EXECUTE_ORDER après crash avant ack.
+    next_bar = scan_indicator_watches(
+        ["SPY"],
+        sched=sched,
+        now=now + timedelta(minutes=16),
+        data_source=_DataSource(_return_bars("2026-06-05T12:00:00+00:00")),
+    )
+    assert next_bar == []
+
+    sched.ack_indicator_triggers(["spy-watch"])
+    next_bar = scan_indicator_watches(
+        ["SPY"],
+        sched=sched,
+        now=now + timedelta(minutes=16),
+        data_source=_DataSource(_return_bars("2026-06-05T12:00:00+00:00")),
+    )
+    assert [event["watch_id"] for event in next_bar] == ["spy-watch"]
 
 
 def test_scan_indicator_watches_ignores_non_connection_market_errors(tmp_path) -> None:
@@ -435,6 +463,7 @@ def test_scan_indicator_watches_retain_la_bougie_15m_terminee(tmp_path) -> None:
             "interval": "15m",
             "window": 3,
             "matched": True,
+            "closed_bar_ts": "2026-06-05T12:00:00+00:00",
             "type": "close",
         },
     ]
@@ -696,6 +725,18 @@ def test_scan_exit_watches_reuses_runtime_bars_and_persists_cooldown() -> None:
     assert triggered[0]["on_trigger"] == "WAKE"
     assert data_source.calls == []
     assert plan_store.upserts[0].exit_watch["last_triggered_at"] == now.isoformat()
+    assert plan_store.upserts[0].exit_watch["last_triggered_bar_key"]
+
+    repeated = scan_exit_watches(
+        plan_store=plan_store,
+        bars_by_symbol={"SPY": bars},
+        symbols=["SPY"],
+        now=now + timedelta(minutes=16),
+        dry_run=False,
+        bars_interval="15m",
+        data_source=data_source,
+    )
+    assert repeated == []
 
 
 def test_scan_exit_watches_dry_run_does_not_persist_cooldown() -> None:

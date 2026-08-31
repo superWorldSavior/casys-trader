@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from trader.application.cycle.infra_holds import quiet_gate_decisions
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.llm_gate_store import LlmGateStore
-from trader.infrastructure.state_db.migrations import LLM_GATE_MIGRATIONS
+from trader.infrastructure.state_db.migrations import (
+    LLM_GATE_MIGRATIONS,
+    SCHEDULER_MIGRATION,
+)
+from trader.infrastructure.state_db.scheduler_store import SqliteScheduler
 from trader.runtime.cycle_process_state import CycleProcessState
 
 
@@ -106,6 +113,91 @@ def test_record_atomically_round_trips_timestamp_reasons_and_fingerprints(
         "regime": "regime:us:up",
         "signal": "signal:1h:breakout_up",
     }
+
+
+def test_record_with_fresh_probe_wake_survives_restart_as_one_lease(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "casys.db"
+    state_dir = str(tmp_path)
+    candidate = NOW + timedelta(minutes=15)
+    db = StateDb(db_path)
+    db.apply_migrations([SCHEDULER_MIGRATION, *LLM_GATE_MIGRATIONS])
+
+    marker, fingerprints = LlmGateStore(db).record_with_fresh_probe_wake(
+        state_dir,
+        "SPY",
+        NOW,
+        now=NOW,
+        candidate_wake=candidate,
+        wake_fingerprints={"stale_review": "pending"},
+    )
+
+    assert marker == candidate.isoformat()
+    assert fingerprints == {
+        "stale_review": "pending",
+        "fresh_probe_wake": candidate.isoformat(),
+    }
+    db.close()
+
+    restarted_db = StateDb(db_path)
+    restarted = LlmGateStore(restarted_db).load_state()
+    assert restarted.last_wake_fingerprints[(state_dir, "SPY")] == fingerprints
+    assert SqliteScheduler(restarted_db).next_wake("SPY") == candidate
+    restarted_db.close()
+
+
+def test_record_with_fresh_probe_wake_preserves_nearer_unowned_wake(
+    tmp_path: Path,
+) -> None:
+    db = StateDb(tmp_path / "casys.db")
+    db.apply_migrations([SCHEDULER_MIGRATION, *LLM_GATE_MIGRATIONS])
+    scheduler = SqliteScheduler(db)
+    nearer = NOW + timedelta(minutes=5)
+    scheduler.set_symbol_next_wake("SPY", nearer.isoformat())
+
+    marker, fingerprints = LlmGateStore(db).record_with_fresh_probe_wake(
+        str(tmp_path),
+        "SPY",
+        NOW,
+        now=NOW,
+        candidate_wake=NOW + timedelta(minutes=15),
+        wake_fingerprints={"stale_review": "pending"},
+    )
+
+    assert marker is None
+    assert fingerprints == {"stale_review": "pending"}
+    assert scheduler.next_wake("SPY") == nearer
+
+
+def test_record_with_fresh_probe_wake_rolls_back_marker_on_wake_failure(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "casys.db"
+    state_dir = str(tmp_path)
+    db = StateDb(db_path)
+    db.apply_migrations([SCHEDULER_MIGRATION, *LLM_GATE_MIGRATIONS])
+    with db.transaction() as cur:
+        cur.execute(
+            "CREATE TRIGGER fail_probe_wake BEFORE INSERT ON scheduler_symbol_wake "
+            "BEGIN SELECT RAISE(ABORT, 'simulated_crash_boundary'); END"
+        )
+
+    with pytest.raises(sqlite3.DatabaseError, match="simulated_crash_boundary"):
+        LlmGateStore(db).record_with_fresh_probe_wake(
+            state_dir,
+            "SPY",
+            NOW,
+            now=NOW,
+            candidate_wake=NOW + timedelta(minutes=15),
+            wake_fingerprints={"stale_review": "pending"},
+        )
+    db.close()
+
+    restarted_db = StateDb(db_path)
+    assert LlmGateStore(restarted_db).load_state().last_wake_fingerprints == {}
+    assert SqliteScheduler(restarted_db).has_symbol_wake("SPY") is False
+    restarted_db.close()
 
 
 def test_corrupt_context_drops_atomic_review_state_and_fails_open(tmp_path: Path) -> None:
@@ -241,7 +333,7 @@ def test_restart_does_not_treat_persisted_symbols_as_never_seen(tmp_path: Path) 
 def test_persisted_review_debounces_open_position_across_restart(tmp_path: Path) -> None:
     store = _store(tmp_path)
     state_dir = str(tmp_path / "state")
-    store.record(state_dir, "SPY", NOW - timedelta(hours=1))
+    store.record(state_dir, "SPY", NOW - timedelta(minutes=30))
 
     restarted = CycleProcessState(last_llm_at=store.load_all())
     recent = _quiet_gate(
@@ -252,7 +344,7 @@ def test_persisted_review_debounces_open_position_across_restart(tmp_path: Path)
     due = _quiet_gate(
         restarted.last_llm_at,
         state_key=state_dir,
-        now=NOW + timedelta(hours=1),
+        now=NOW + timedelta(minutes=30),
         held_symbols={"SPY"},
     )
 

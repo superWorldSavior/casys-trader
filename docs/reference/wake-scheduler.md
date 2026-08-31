@@ -63,6 +63,13 @@ Le LLM peut demander une reconsultation du symbole :
 `set_next_wake` signifie toujours **reconsultation** : au réveil, l'agent reprend
 la main pour redire HOLD, poser un plan, annuler une veille ou proposer un ordre.
 
+Le wake effectif est le plus proche entre la demande de l'agent, l'expiration
+d'une watch et la borne de revue système. Une position ou un setup avec watch
+active est revu au plus tard sous **1 h pendant sa séance ouverte** ; un symbole
+calme est revu au plus tard sous **4 h**. Un wake agent plus proche, notamment
+15 minutes, reste prioritaire. Les ordres refusés n'appliquent ni leur wake ni
+leur watch : ils retombent sur cette cadence système.
+
 ## `indicator_watch`
 
 Une `indicator_watch` est une question posée au marché :
@@ -89,6 +96,10 @@ Invariants runtime :
   périodique normal ;
 - le `next_wake` du symbole est calé sur l'expiration active la plus proche ;
 - le daemon scanne les watches à chaque poll sans appel LLM ;
+- une nouvelle watch non armée remplace l'ancienne watch non armée du symbole
+  dans la même mutation scheduler (transaction SQLite canonique, réécriture
+  JSON unique). Le scheduler retourne les IDs effectivement retirés et le cycle
+  persiste un event `indicator_watch_superseded` par remplacement ;
 - si une watch `WAKE` se déclenche, elle est retirée, un event
   `indicator_watch_triggered` est persisté et le symbole reçoit `next_wake = now` ;
 - si une watch `EXECUTE_ORDER` se déclenche, le symbole est réveillé **sans**
@@ -153,7 +164,7 @@ Surveiller :
 | Surface | Ce qu'elle montre |
 |---|---|
 | tables `scheduler_*` de `state/casys.db` | timers, wakes par symbole, watches et streaks stale |
-| `state/events.jsonl` | `indicator_watch_created`, `armed_plan_created`, `indicator_watch_triggered`, `indicator_watch_expired`, `armed_plan_expired`, `exit_watch_triggered` |
+| `state/events.jsonl` | `indicator_watch_created`, `armed_plan_created`, `indicator_watch_superseded`, `indicator_watch_triggered`, `indicator_watch_expired`, `armed_plan_expired`, `exit_watch_triggered` |
 | `state/daemon_status.json` | phase courante et prochain sommeil estimé |
 | `state/daemon_console.log` | lignes `[watch]`, `[indicator_watch]`, `[exit_watch]`, `[cycle]` |
 
