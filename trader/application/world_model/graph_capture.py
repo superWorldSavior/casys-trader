@@ -45,12 +45,17 @@ class WorldGraphCaptureConfig:
     feature_mask: WorldFeatureMask | None = None
     max_depth: int | None = None
     max_paths: int | None = None
+    ontology_revision: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.scope_mapping, WorldScopeMapping):
             raise TypeError("scope_mapping must be WorldScopeMapping")
         if self.study_cohort_id is not None and not str(self.study_cohort_id).strip():
             raise ValueError("study_cohort_id must be a non-empty string when provided")
+        ontology_revision = None if self.ontology_revision is None else str(self.ontology_revision).strip()
+        if self.ontology_revision is not None and not ontology_revision:
+            raise ValueError("ontology_revision must be a non-empty string when provided")
+        object.__setattr__(self, "ontology_revision", ontology_revision)
 
 
 def attach_world_graph(
@@ -128,6 +133,7 @@ def _attach_one(episode: WorldEpisode, config: WorldGraphCaptureConfig) -> World
             scope_resolution=resolution,
             max_depth=config.max_depth,
             max_paths=config.max_paths,
+            ontology_revision=config.ontology_revision,
         )
         bundle = config.snapshot_service.build(request)
         _persist_snapshot(config.snapshot_service, bundle.snapshot)

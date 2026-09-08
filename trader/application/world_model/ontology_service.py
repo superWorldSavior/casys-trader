@@ -324,6 +324,31 @@ def _published_revision_at(
     return sorted(active, key=lambda item: item.revision_id)[-1]
 
 
+def _published_revision_for_id(
+    envelopes: Sequence[WorldOntologyRevisionEventEnvelope],
+    revision_id: str,
+) -> WorldOntologyRevision | None:
+    """Return a published revision by exact id, even after a later supersede."""
+
+    wanted = str(revision_id).strip()
+    if not wanted:
+        return None
+    ordered = _order_envelopes(envelopes, leading_types=(WorldOntologyRevisionPublished,))
+    published: WorldOntologyRevision | None = None
+    for envelope in ordered:
+        event = envelope.event
+        if not isinstance(event, WorldOntologyRevisionPublished):
+            continue
+        if event.revision.revision_id != wanted:
+            continue
+        published = (
+            event.revision
+            if published is None
+            else reconcile_world_ontology_revision(published, event.revision)
+        )
+    return published
+
+
 class WorldOntologyResolver:
     """Unique author of structural heads and the identity map at a cutoff."""
 
@@ -356,6 +381,13 @@ class WorldOntologyResolver:
             structural_heads_hash=_structural_heads_hash(structural_relations),
             identity_map_hash=identity_map.heads_hash_at(cutoff),
         )
+
+    def published_revision(self, revision_id: str, *, at: datetime | str) -> WorldOntologyRevision | None:
+        """Load one published revision by exact id. Does not move the live head."""
+
+        cutoff = _as_cutoff(at)
+        envelopes = _available_envelopes(self._ledger.list_revision_events_available_through(cutoff), cutoff)
+        return _published_revision_for_id(envelopes, revision_id)
 
 
 class WorldKnowledgeResolver:

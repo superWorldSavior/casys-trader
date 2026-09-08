@@ -494,6 +494,134 @@ def test_projector_imports_sole_graph_traversal_v1_directions() -> None:
     assert 'GRAPH_TRAVERSAL_V1_DIRECTIONS = MappingProxyType' not in source
 
 
+def test_projector_imports_the_domain_geographic_ancestry_walk() -> None:
+    from trader.application.world_model import pattern_path
+    from trader.domain.world_graph import GEOGRAPHIC_ANCESTRY_WALK, ROOT_BRANCH_WALK
+
+    assert nx_projector.GEOGRAPHIC_ANCESTRY_WALK is GEOGRAPHIC_ANCESTRY_WALK
+    assert pattern_path.GEOGRAPHIC_ANCESTRY_WALK is GEOGRAPHIC_ANCESTRY_WALK
+    assert nx_projector.ROOT_BRANCH_WALK is ROOT_BRANCH_WALK
+    assert pattern_path.ROOT_BRANCH_WALK is ROOT_BRANCH_WALK
+    projector_source = inspect.getsource(nx_projector)
+    pattern_source = inspect.getsource(pattern_path)
+    assert "GEOGRAPHIC_ANCESTRY_WALK =" not in projector_source
+    assert "GEOGRAPHIC_ANCESTRY_WALK =" not in pattern_source
+    assert "_BACKBONE_FORWARD" not in projector_source
+    assert "_ANCESTRY_WALK =" not in pattern_source
+    assert "GEOGRAPHIC_ANCESTRY_WALK = (" not in projector_source
+    assert "ROOT_BRANCH_WALK = (" not in projector_source
+
+
+def _peers_sorting_before(target: StructuralWorldRelation, count: int) -> tuple[StructuralWorldRelation, ...]:
+    peers: list[StructuralWorldRelation] = []
+    index = 0
+    while sum(1 for item in peers if item.relation_id < target.relation_id) < count:
+        peers.append(
+            _structural(
+                source=_instrument(f"P{index:04d}"),
+                source_refs=(f"provider:instrument-master:P{index:04d}",),
+            )
+        )
+        index += 1
+        if index > 5000:
+            raise RuntimeError("could not synthesize peer relations before target")
+    return tuple(peers)
+
+
+def _dense_venue_ancestry(
+    *, reverse: bool = False
+) -> tuple[tuple[WorldEntityRef, ...], tuple[StructuralWorldRelation, ...]]:
+    root = _instrument()
+    venue = _venue()
+    country = _country()
+    region = _region()
+    world = _world()
+    company = _company()
+    family = _family()
+    located_country = _structural(
+        kind="LOCATED_IN",
+        source=venue,
+        target=country,
+        source_refs=("world-scope-mapping:xtai-country",),
+    )
+    backbone = (
+        _structural(),
+        located_country,
+        _structural(
+            kind="LOCATED_IN",
+            source=country,
+            target=region,
+            source_refs=("world-scope-mapping:tw-region",),
+        ),
+        _structural(
+            kind="PART_OF_WORLD",
+            source=region,
+            target=world,
+            source_refs=("world-scope-mapping:region-world",),
+        ),
+        _structural(
+            kind="ISSUED_BY",
+            source=root,
+            target=company,
+            source_refs=("provider:lei:549300ABCDEFGHIJKLMN",),
+        ),
+        _structural(
+            kind="MEMBER_OF_FAMILY",
+            source=root,
+            target=family,
+            source_refs=("taxonomy:v1:semiconductors",),
+        ),
+    )
+    peers = _peers_sorting_before(located_country, 40)
+    structural = (*backbone, *peers)
+    if reverse:
+        structural = tuple(reversed(structural))
+    entities = (root, venue, country, region, world, company, family, *(item.source for item in peers))
+    return entities, structural
+
+
+def test_dense_venue_peers_do_not_starve_instrument_geographic_ancestry() -> None:
+    entities, structural = _dense_venue_ancestry()
+    view, overlay = _views(entities=entities, structural_relations=structural)
+    graph = WorldTemporalGraph.from_resolved_views(view, overlay)
+    enumerated = graph.enumerate_paths(_instrument())
+    assert GRAPH_TRAVERSAL_MAX_PATHS == 32
+    assert GRAPH_TRAVERSAL_MAX_DEPTH == 4
+    assert len(enumerated.paths) == 32
+    assert enumerated.status == "graph_budget_exceeded"
+    chains = [tuple((step.kind, step.target_kind) for step in path.steps) for path in enumerated.paths]
+    assert (
+        ("TRADED_ON", "venue"),
+        ("LOCATED_IN", "country"),
+        ("LOCATED_IN", "region"),
+        ("PART_OF_WORLD", "world"),
+    ) in chains
+    target_kinds = {step.target_kind for path in enumerated.paths for step in path.steps}
+    assert {"venue", "country", "region", "world", "company", "family"} <= target_kinds
+    assert any(step.target_kind == "instrument" for path in enumerated.paths for step in path.steps)
+
+
+def test_dense_instrument_traversal_is_deterministic_and_stays_within_budget() -> None:
+    first_entities, first_structural = _dense_venue_ancestry()
+    second_entities, second_structural = _dense_venue_ancestry(reverse=True)
+    first = WorldTemporalGraph.from_resolved_views(*_views(entities=first_entities, structural_relations=first_structural))
+    second = WorldTemporalGraph.from_resolved_views(
+        *_views(entities=second_entities, structural_relations=second_structural)
+    )
+    left = first.enumerate_paths(_instrument())
+    right = second.enumerate_paths(_instrument())
+    assert [path.signature for path in left.paths] == [path.signature for path in right.paths]
+    assert [tuple(step.relation_id for step in path.steps) for path in left.paths] == [
+        tuple(step.relation_id for step in path.steps) for path in right.paths
+    ]
+    assert len(left.paths) == GRAPH_TRAVERSAL_MAX_PATHS
+    assert left.status == right.status == "graph_budget_exceeded"
+    for path in left.paths:
+        nodes = (path.steps[0].source_node_id, *(step.target_node_id for step in path.steps))
+        assert len(nodes) == len(set(nodes))
+        assert len(path.steps) <= GRAPH_TRAVERSAL_MAX_DEPTH
+
+
 def test_foreign_knowledge_relation_is_dropped_from_the_bound_overlay() -> None:
     native = _knowledge()
     foreign = _knowledge(

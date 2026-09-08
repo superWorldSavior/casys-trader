@@ -323,6 +323,13 @@ class _MemoryPatternStore:
             return PatternOccurrence.from_events(events)
         raise TypeError("load requires PatternHypothesisId or PatternOccurrenceId")
 
+    def list_hypotheses(self) -> tuple[PatternHypothesis, ...]:
+        return tuple(
+            PatternHypothesis.from_events(events)
+            for _, events in sorted(self.hypothesis_events.items())
+            if events
+        )
+
     def evidence_for(self, event: PatternHypothesisEvent | PatternOccurrenceEvent) -> AvailabilityEvidence | None:
         envelope = self.envelopes.get(event.event_id)
         if envelope is None:
@@ -438,6 +445,10 @@ def test_ports_are_consumer_owned_typed_contracts() -> None:
     assert list(inspect.signature(PatternHypothesisLedger.load).parameters) == ["self", "hypothesis_id"]
     assert load_hints["hypothesis_id"] is PatternHypothesisId
     assert load_hints["return"] is PatternHypothesis
+
+    list_hints = get_type_hints(PatternHypothesisLedger.list_hypotheses)
+    assert list(inspect.signature(PatternHypothesisLedger.list_hypotheses).parameters) == ["self"]
+    assert list_hints["return"] == tuple[PatternHypothesis, ...]
 
     occ_append = get_type_hints(OccurrenceLedger.append_event)
     assert list(inspect.signature(OccurrenceLedger.append_event).parameters) == ["self", "event"]

@@ -19,8 +19,10 @@ import networkx as nx
 from trader.domain.world_episode import parse_utc_timestamp
 from trader.domain.world_graph import (
     FORBIDDEN_RELATION_KINDS,
+    GEOGRAPHIC_ANCESTRY_WALK,
     GRAPH_TRAVERSAL_POLICY_VERSION,
     GRAPH_TRAVERSAL_V1_DIRECTIONS,
+    ROOT_BRANCH_WALK,
     KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     MacroSourceFactVersionRef,
@@ -32,6 +34,7 @@ from trader.domain.world_graph import (
     WorldGraphSnapshotRef,
     WorldObservationRef,
     WorldOntologyRevision,
+    graph_expansion_priority,
     parse_world_graph_node_ref,
 )
 
@@ -104,6 +107,29 @@ class _Hop:
     from_kind: str
     to_kind: str
     freshness_bucket: str
+
+
+def _hop_rank(hop: _Hop) -> tuple[int, int]:
+    """Prefer geographic ancestry and root branches over venue-peer fan-out."""
+
+    return graph_expansion_priority(hop.kind, hop.direction, hop.to_kind)
+
+
+@dataclass(frozen=True)
+class _Pending:
+    hop: _Hop
+    visited: frozenset[str]
+    steps: tuple[WorldTemporalPathStep, ...]
+
+    def sort_key(self) -> tuple[object, ...]:
+        rank = _hop_rank(self.hop)
+        return (
+            *rank,
+            self.hop.relation_id,
+            self.hop.direction,
+            self.hop.to_id,
+            tuple(step.relation_id for step in self.steps),
+        )
 
 
 def _as_cutoff(value: datetime | str) -> datetime:
@@ -406,42 +432,54 @@ class WorldTemporalGraph:
         paths: list[WorldTemporalPath] = []
         truncated = False
 
-        def walk(current_id: str, visited: frozenset[str], steps: tuple[WorldTemporalPathStep, ...]) -> None:
-            nonlocal truncated
-            if truncated or len(steps) >= depth_limit:
-                return
+        def pending_from(
+            current_id: str, visited: frozenset[str], steps: tuple[WorldTemporalPathStep, ...]
+        ) -> list[_Pending]:
+            if len(steps) >= depth_limit:
+                return []
+            pending: list[_Pending] = []
             for hop in self._adjacency.get(current_id, ()):
-                if truncated:
-                    return
                 if hop.to_id in visited:
                     continue
-                if len(paths) >= path_limit:
-                    truncated = True
-                    return
-                step = WorldTemporalPathStep(
-                    relation_id=hop.relation_id,
-                    kind=hop.kind,
-                    family=hop.family,
-                    direction=hop.direction,
-                    source_kind=hop.from_kind,
-                    target_kind=hop.to_kind,
-                    source_node_id=hop.from_id,
-                    target_node_id=hop.to_id,
-                    freshness_bucket=hop.freshness_bucket,
-                )
-                next_steps = (*steps, step)
-                paths.append(WorldTemporalPath(steps=next_steps))
-                walk(hop.to_id, visited | {hop.to_id}, next_steps)
+                pending.append(_Pending(hop=hop, visited=visited, steps=steps))
+            return pending
 
-        walk(root_id, frozenset({root_id}), ())
+        frontier = pending_from(root_id, frozenset({root_id}), ())
+        frontier.sort(key=lambda item: item.sort_key())
+        while frontier:
+            if len(paths) >= path_limit:
+                truncated = True
+                break
+            item = frontier.pop(0)
+            hop = item.hop
+            if hop.to_id in item.visited:
+                continue
+            step = WorldTemporalPathStep(
+                relation_id=hop.relation_id,
+                kind=hop.kind,
+                family=hop.family,
+                direction=hop.direction,
+                source_kind=hop.from_kind,
+                target_kind=hop.to_kind,
+                source_node_id=hop.from_id,
+                target_node_id=hop.to_id,
+                freshness_bucket=hop.freshness_bucket,
+            )
+            next_steps = (*item.steps, step)
+            paths.append(WorldTemporalPath(steps=next_steps))
+            frontier.extend(pending_from(hop.to_id, item.visited | {hop.to_id}, next_steps))
+            frontier.sort(key=lambda pending: pending.sort_key())
+
         status = "graph_budget_exceeded" if truncated else "complete"
         return WorldTemporalPathSet(paths=tuple(paths), status=status)
 
 
 __all__ = [
+    "GEOGRAPHIC_ANCESTRY_WALK",
     "GRAPH_TRAVERSAL_MAX_DEPTH",
     "GRAPH_TRAVERSAL_MAX_PATHS",
     "GRAPH_TRAVERSAL_V1_DIRECTIONS",
+    "ROOT_BRANCH_WALK",
     "WorldTemporalGraph",
     "WorldTemporalPath",
     "WorldTemporalPathSet",

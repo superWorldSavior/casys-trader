@@ -1040,6 +1040,31 @@ def test_admit_slot_is_the_only_admission_gate_and_is_strictly_after_start() -> 
     assert not hasattr(WorldCohort, "set_status")
 
 
+def test_admit_slot_allows_inclusive_fixed_end_and_rejects_after() -> None:
+    from datetime import timedelta
+
+    from trader.domain.world_cohort import AdmitWorldCohortSlot
+
+    started = _started()
+    evidence = _evidence_for(started.started_event)
+    at_end = _slot_for(
+        started,
+        as_of_bar_ts=STOP_AT,
+        anchor_end_at=STOP_AT,
+        comparison_batch_id="batch:v1:at-end",
+    )
+    admitted = started.admit_slot(AdmitWorldCohortSlot(slot=at_end, started_evidence=evidence))
+    assert admitted.admitted_slots[-1].as_of_bar_ts == STOP_AT
+    after_end = _slot_for(
+        started,
+        as_of_bar_ts=STOP_AT + timedelta(microseconds=1),
+        anchor_end_at=STOP_AT + timedelta(microseconds=1),
+        comparison_batch_id="batch:v1:after-end",
+    )
+    with pytest.raises(ValueError, match="collection_stop_rule"):
+        admitted.admit_slot(AdmitWorldCohortSlot(slot=after_end, started_evidence=evidence))
+
+
 def test_unproven_start_envelope_cannot_be_used_as_cutoff_proof() -> None:
     from trader.domain.world_cohort import WorldCohortEventEnvelope
 

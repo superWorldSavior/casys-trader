@@ -511,6 +511,124 @@ def test_closed_cohort_lets_activation_start_successor_pinned_to_current_mapping
             assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_b)
 
 
+def test_expired_collecting_cohort_is_closed_and_successor_pins_current_mapping() -> None:
+    mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    expired_at = BOOT + timedelta(days=7, microseconds=1)
+    successor = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        now=expired_at,
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    assert set(successor_ids.values()).isdisjoint(set(first_ids.values()))
+    for key, cohort_id in first_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTION_CLOSED
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_a.content_sha256
+    for key, cohort_id in successor_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
+        assert loaded.manifest.planned_start_not_before == expired_at
+        if key == "graph":
+            assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_b)
+    replay = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        now=expired_at + timedelta(hours=1),
+    )
+    assert {item["key"]: item["cohort_id"] for item in replay.cohorts} == successor_ids
+    for cohort_id in successor_ids.values():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        started = [event for event in loaded.events if event.event_type == "world_cohort_started"]
+        assert len(started) == 1
+
+
+def test_expired_same_mapping_mints_successor_without_reviving_closed_id() -> None:
+    mapping_a, _mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    expired_at = BOOT + timedelta(days=7, microseconds=1)
+    successor = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+        now=expired_at,
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    assert set(successor_ids.values()).isdisjoint(set(first_ids.values()))
+    for cohort_id in first_ids.values():
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.COLLECTION_CLOSED
+    for cohort_id in successor_ids.values():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_a.content_sha256
+        assert loaded.manifest.planned_start_not_before == expired_at
+
+
+def test_mapping_rotation_during_successor_window_reuses_successor_not_a_second_collecting_graph() -> None:
+    mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+    )
+    expired_at = BOOT + timedelta(days=7, microseconds=1)
+    successor = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+        now=expired_at,
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    rotated = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        now=expired_at + timedelta(days=1),
+    )
+    rotated_ids = {item["key"]: item["cohort_id"] for item in rotated.cohorts}
+    assert rotated_ids == successor_ids
+    collecting = store.list_collecting_cohorts()
+    graph_collecting = [
+        cohort
+        for cohort in collecting
+        if cohort.manifest.lanes and all(lane.lane_id.endswith(".graph") for lane in cohort.manifest.lanes)
+    ]
+    assert [cohort.cohort_id for cohort in graph_collecting] == [successor_ids["graph"]]
+    loaded = store.load(WorldCohortId(successor_ids["graph"]))
+    assert loaded.phase is CohortPhase.COLLECTING
+    assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_a.content_sha256
+    assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_a)
+
+
 def test_already_invalidated_cohort_is_not_revived_by_mapping_rotation() -> None:
     from trader.domain.world_cohort import InvalidateWorldCohort
 
@@ -773,6 +891,163 @@ def test_prior_lifecycle_generation_is_not_reused_while_still_collecting(tmp_pat
         loaded = store.load(WorldCohortId(cohort_id))
         assert loaded.phase is CohortPhase.COLLECTING
         assert loaded.manifest.planned_start_not_before == BOOT + timedelta(days=1)
+
+
+def test_expired_prior_lifecycle_mapping_cohort_is_closed_without_touching_unrelated(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    from tests.application.test_world_cohort_service import _collecting, _manifest
+    from tests.application.test_world_pilot_activation import CONFIG_PATH, _write_hashed_pilot_config
+    from tests.read_models.test_world_graph_report import _graph_manifest, _required_sensors
+    from trader.domain.world_cohort import ArmWorldCohort, StartWorldCohort
+
+    mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    first_events = {
+        cohort_id: tuple(event.event_id for event in store.load(WorldCohortId(cohort_id)).events)
+        for cohort_id in first_ids.values()
+    }
+    unrelated = _collecting(
+        service,
+        store,
+        _manifest(cohort_id="world_cohort:v1:" + "e" * 64),
+    )
+    unrelated_events = tuple(event.event_id for event in unrelated.events)
+    manual_graph = _graph_manifest(
+        cohort_id="world_cohort:v1:" + "f" * 64,
+        question="manual graph cohort must stay collecting",
+        planned_start_not_before=BOOT,
+        collection_stop_rule={"kind": "fixed_end", "at": BOOT + timedelta(days=1)},
+        scope_mapping={"mapping_id": mapping_a.mapping_id, "mapping_sha256": mapping_a.content_sha256},
+    )
+    service.register(RegisterWorldCohort(manifest=manual_graph))
+    service.arm(
+        ArmWorldCohort(
+            cohort_id=manual_graph.cohort_id,
+            manifest_sha256=manual_graph.manifest_sha256,
+            runtime_identity=manual_graph.runtime_identity,
+            satisfied_sensor_ids=_required_sensors(manual_graph),
+        )
+    )
+    service.start(
+        StartWorldCohort(
+            cohort_id=manual_graph.cohort_id,
+            manifest_sha256=manual_graph.manifest_sha256,
+            runtime_identity=manual_graph.runtime_identity,
+        )
+    )
+    manual_events = tuple(event.event_id for event in store.load(WorldCohortId(manual_graph.cohort_id)).events)
+    payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    payload["lifecycle_generation"] = int(payload["lifecycle_generation"]) + 1
+    next_dir = _write_hashed_pilot_config(tmp_path / "expired_prior_lifecycle", payload)
+    expired_at = BOOT + timedelta(days=7, microseconds=1)
+    successor = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        config_dir=next_dir,
+        now=expired_at,
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    assert set(successor_ids.values()).isdisjoint(set(first_ids.values()))
+    for key, cohort_id in first_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTION_CLOSED
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_a.content_sha256
+        assert loaded.cohort_id == cohort_id
+        assert tuple(event.event_id for event in loaded.events[:-1]) == first_events[cohort_id]
+        assert loaded.events[-1].event_type == "world_cohort_collection_closed"
+        if key == "graph":
+            assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_a)
+    for key, cohort_id in successor_ids.items():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert loaded.manifest.scope_mapping.mapping_sha256 == mapping_b.content_sha256
+        assert loaded.manifest.planned_start_not_before == expired_at
+        if key == "graph":
+            assert loaded.manifest.ontology_revision == market_ontology_revision_id(mapping_b)
+    graph_collecting = [
+        cohort
+        for cohort in store.list_collecting_cohorts()
+        if cohort.manifest.lanes and all(lane.lane_id.endswith(".graph") for lane in cohort.manifest.lanes)
+        and cohort.manifest.question != "manual graph cohort must stay collecting"
+    ]
+    assert [cohort.cohort_id for cohort in graph_collecting] == [successor_ids["graph"]]
+    loaded_unrelated = store.load(WorldCohortId(unrelated.cohort_id))
+    assert loaded_unrelated.phase is CohortPhase.COLLECTING
+    assert tuple(event.event_id for event in loaded_unrelated.events) == unrelated_events
+    loaded_manual = store.load(WorldCohortId(manual_graph.cohort_id))
+    assert loaded_manual.phase is CohortPhase.COLLECTING
+    assert tuple(event.event_id for event in loaded_manual.events) == manual_events
+    replay = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        config_dir=next_dir,
+        now=expired_at + timedelta(hours=1),
+    )
+    assert {item["key"]: item["cohort_id"] for item in replay.cohorts} == successor_ids
+    for cohort_id in first_ids.values():
+        closed = store.load(WorldCohortId(cohort_id))
+        assert closed.phase is CohortPhase.COLLECTION_CLOSED
+        assert sum(1 for event in closed.events if event.event_type == "world_cohort_collection_closed") == 1
+    for cohort_id in successor_ids.values():
+        loaded = store.load(WorldCohortId(cohort_id))
+        assert loaded.phase is CohortPhase.COLLECTING
+        assert len([event for event in loaded.events if event.event_type == "world_cohort_started"]) == 1
+
+
+def test_collection_window_stays_open_at_fixed_end_and_closes_after() -> None:
+    mapping_a, mapping_b = _mapping_generation_b()
+    generations = _MemoryMappingGenerationStore()
+    service, store = _service()
+    first = _activate(
+        cohort_service=service,
+        mapping=mapping_a,
+        ontology_proof=_matching_graph_proof(mapping_a),
+        mapping_generations=generations,
+    )
+    first_ids = {item["key"]: item["cohort_id"] for item in first.cohorts}
+    stop_at = BOOT + timedelta(days=7)
+    at_end = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        now=stop_at,
+    )
+    assert {item["key"]: item["cohort_id"] for item in at_end.cohorts} == first_ids
+    for cohort_id in first_ids.values():
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.COLLECTING
+    successor = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        mapping_generations=generations,
+        now=stop_at + timedelta(microseconds=1),
+    )
+    successor_ids = {item["key"]: item["cohort_id"] for item in successor.cohorts}
+    assert set(successor_ids.values()).isdisjoint(set(first_ids.values()))
+    for cohort_id in first_ids.values():
+        assert store.load(WorldCohortId(cohort_id)).phase is CohortPhase.COLLECTION_CLOSED
+    graph_collecting = [
+        cohort.cohort_id
+        for cohort in store.list_collecting_cohorts()
+        if cohort.manifest.lanes and all(lane.lane_id.endswith(".graph") for lane in cohort.manifest.lanes)
+    ]
+    assert graph_collecting == [successor_ids["graph"]]
 
 
 def test_configured_mapping_generation_query_fails_closed_when_pin_is_missing() -> None:

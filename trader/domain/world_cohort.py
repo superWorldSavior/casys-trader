@@ -2642,6 +2642,9 @@ class WorldCohort:
         _assert_start_evidence(self.started_event, evidence)
         if slot.anchor_end_at <= evidence.effective_ready_at:
             raise ValueError("anchor_end_at must be strictly after the proven start")
+        stop_at = self.manifest.collection_stop_rule.at
+        if slot.as_of_bar_ts > stop_at or slot.anchor_end_at > stop_at:
+            raise ValueError("cannot admit after collection_stop_rule.at")
         _validate_slot_against_manifest(slot, self.manifest, self.started_event)
         existing = next((item for item in self.admitted_slots if item.slot_id == slot.slot_id), None)
         if existing is not None:

@@ -501,6 +501,47 @@ def compose_world_ontology_attestation(
         return None
 
 
+def _load_cohort_pinned_capture_inputs(
+    store: object,
+    study_cohort_id: str,
+) -> tuple[object, str] | None:
+    """Load the cohort's exact mapping generation and ontology revision. Fail closed."""
+
+    from trader.domain.world_cohort import WorldCohortId
+
+    load = getattr(store, "load", None)
+    load_generation = getattr(store, "load_mapping_generation", None)
+    if not callable(load) or not callable(load_generation):
+        return None
+    try:
+        cohort = load(WorldCohortId(study_cohort_id))
+    except (LookupError, TypeError, ValueError):
+        return None
+    pin = getattr(getattr(cohort, "manifest", None), "scope_mapping", None)
+    mapping_id = getattr(pin, "mapping_id", None)
+    mapping_sha256 = getattr(pin, "mapping_sha256", None)
+    revision = getattr(getattr(cohort, "manifest", None), "ontology_revision", None)
+    if not isinstance(mapping_id, str) or not isinstance(mapping_sha256, str):
+        return None
+    if not isinstance(revision, str) or not revision.strip():
+        return None
+    generation = load_generation(mapping_id, mapping_sha256)
+    if generation is None:
+        return None
+    if getattr(generation, "mapping_id", None) != mapping_id:
+        return None
+    if getattr(generation, "mapping_sha256", None) != mapping_sha256:
+        return None
+    mapping = getattr(generation, "mapping", None)
+    if mapping is None:
+        return None
+    if getattr(mapping, "mapping_id", None) != mapping_id:
+        return None
+    if getattr(mapping, "content_sha256", None) != mapping_sha256:
+        return None
+    return mapping, revision.strip()
+
+
 def _compose_graph_capture(
     *,
     store: object | None,
@@ -515,10 +556,16 @@ def _compose_graph_capture(
         return None
     from trader.application.world_model.graph_capture import WorldGraphCaptureConfig
     from trader.application.world_model.graph_snapshot import WorldGraphSnapshotService
-    from trader.application.world_model.world_scope_resolver import WorldScopeResolver
     from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
 
-    resolver = WorldScopeResolver.load(Path(config_dir))
+    pinned_mapping = None
+    pinned_revision = None
+    if study_cohort_id is not None:
+        pinned = _load_cohort_pinned_capture_inputs(store, study_cohort_id)
+        if pinned is None:
+            return None
+        pinned_mapping, pinned_revision = pinned
+
     from trader.application.world_model.ontology_bootstrap import WorldOntologyAttestation
 
     if isinstance(ontology_attestation, WorldOntologyAttestation):
@@ -529,17 +576,29 @@ def _compose_graph_capture(
             return None
         db = getattr(store, "_db", None)
         graph_store = WorldGraphStore(db if db is not None else path)
-        attestation = WorldOntologyAttestation(graph_store, resolver.mapping)
-    attestation.ensure_published()
+        attestation = None
+    if pinned_mapping is not None:
+        scope_mapping = pinned_mapping
+        ontology_revision = pinned_revision
+    else:
+        from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+
+        resolver = WorldScopeResolver.load(Path(config_dir))
+        if attestation is None:
+            attestation = WorldOntologyAttestation(graph_store, resolver.mapping)
+        attestation.ensure_published()
+        scope_mapping = attestation.mapping
+        ontology_revision = None
     service = WorldGraphSnapshotService(
         ledger=graph_store,
         traversal=WorldTemporalTraversalAdapter(),
         snapshot_ledger=graph_store,
     )
     return WorldGraphCaptureConfig(
-        scope_mapping=attestation.mapping,
+        scope_mapping=scope_mapping,
         snapshot_service=service,
         study_cohort_id=study_cohort_id,
+        ontology_revision=ontology_revision,
         max_depth=4,
         max_paths=32,
     )

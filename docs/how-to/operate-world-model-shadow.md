@@ -90,9 +90,13 @@ Il n'existe pas de second flag patterns : couper la voie graphe empêche sa
 composition. Le premier batch éligible sélectionne l'unique cohorte graphe
 `collecting`, prend comme `formation_cutoff` la disponibilité prouvée de son
 `WorldCohortStarted`, puis fixe `evaluation_start_not_before` à la prochaine
-frontière de barre. `PatternDiscoveryCompleted` est écrit même avec zéro
-candidat ; le restart rejoue ce marqueur et ne redécouvre pas avec des données
-arrivées après le cutoff. C'est la séparation prospective, pas une panne.
+frontière de barre. `PatternDiscoveryCompleted` n'est écrit que si un ensemble
+mûr de la révision exacte a été examiné, y compris zéro candidat. Zéro record
+mûr exact à ce cutoff figé → `no_ripe_exact_records_at_formation_cutoff`,
+workflow `partial`, pas de marqueur. Ce n'est pas une attente dans la même
+fenêtre : une capture postérieure au start ne peut pas former. Le restart
+rejoue un marqueur déjà écrit et ne redécouvre pas avec des données arrivées
+après le cutoff. C'est la séparation prospective, pas une panne.
 
 Les batches suivants matchent uniquement après cette frontière, persistent les
 prédictions/occurrences shadow, puis lient en dernier les feuilles réellement
@@ -111,8 +115,10 @@ uv run casys-trader world pattern report COHORT_ID --json
 `world pattern status` affiche le marqueur durable
 (`formation_cutoff`, `evaluation_start_not_before`, ids/compte sélectionnés,
 empreintes, autorité de replay). Un restart rejoue ce marqueur ; il ne
-redécouvre pas. Le pilote ne ferme pas et n'archive pas les hypothèses :
-la fin de lifecycle (`PatternEvaluationClosed`) reste hors périmètre.
+redécouvre pas. Quand la cohorte d'évaluation liée est `collection_closed`
+ou a dépassé son `fixed_end` inclusif, le lifecycle append `PatternEvaluationClosed`
+via `ClosePatternEvaluation`. Les occurrences, outcomes, snapshots, marqueurs
+et slots restent immuables.
 
 Un pattern n'est déclaré que s'il existe une `PatternHypothesis` persistée et
 des occurrences prospectives liées à leurs outcomes. Une régularité Markov/GRU

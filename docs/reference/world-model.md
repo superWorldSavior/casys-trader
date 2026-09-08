@@ -124,8 +124,10 @@ Markov/GRU : il cherche des chaînes typées dans les snapshots du graphe, pas
 des motifs cachés dans l'état récurrent du GRU. Ses agrégats DDD sont
 `PatternHypothesis` et `PatternOccurrence`; leurs transitions sont des events
 append-only. `PatternDiscoveryCompleted` ferme une fois pour toutes le dataset
-de formation d'une cohorte, y compris quand la sélection contient zéro
-hypothèse.
+de formation d'une cohorte après examen d'un ensemble mûr de la révision
+exacte, y compris quand la sélection contient zéro hypothèse. L'absence de
+record mûr exact à `formation_cutoff` (start prouvé) n'écrit pas de marqueur
+et ne se résout pas en attendant des captures postérieures au cutoff.
 
 `PatternShadowWorkflow` orchestre automatiquement le lifecycle dans le worker
 background, après la capture du batch :
@@ -145,8 +147,10 @@ identités canoniques déterministes. Toutes les étapes restent
 `world_pattern_lifecycle_events` : `formation_cutoff`,
 `evaluation_start_not_before`, identifiants/compte sélectionnés, empreintes
 et autorité de replay (`event_id` / `started_event_id`). Ce n'est pas une
-étiquette, ni une claim causale. Le pilote **ne ferme ni n'archive** les
-hypothèses : `PatternEvaluationClosed` reste hors de ce périmètre.
+étiquette, ni une claim causale. Quand la cohorte d'évaluation liée est
+`collection_closed` ou a dépassé son `fixed_end` inclusif, le lifecycle
+append `PatternEvaluationClosed` via `ClosePatternEvaluation` ; occurrences
+et snapshots restent immuables.
 
 ## Évaluation
 

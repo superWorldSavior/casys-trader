@@ -8,13 +8,23 @@ from pathlib import Path
 import pytest
 
 from tests.application.test_world_cohort_service import START_READY, START_SEEN, _arm_command, _start_command
-from tests.application.test_world_pattern_service import _MemoryPatternStore, _spec
+from tests.application.test_world_pattern_discovery import _record
+from tests.application.test_world_pattern_service import (
+    _MemoryPatternStore,
+    _link,
+    _outcome,
+    _prediction,
+    _record as _record_occurrence,
+    _spec,
+)
 from tests.application.test_world_pilot_activation import BOOT, LATER_BOOT, _activate, _service as _pilot_service
 from tests.package_layout._helpers import REPO_ROOT
 from trader.application.world_model.pattern_discovery import (
     PatternDiscoveryCandidate,
     PatternDiscoveryResult,
+    PatternDiscoveryService,
 )
+from trader.application.world_model.pattern_discovery_ports import PatternFormationBatch
 from trader.application.world_model.pattern_evaluation_request import (
     PatternEvaluationPersistResult,
     PatternEvaluationRequest,
@@ -31,13 +41,22 @@ from trader.application.world_model.pattern_shadow_workflow import (
     next_canonical_bar_boundary,
     pattern_evaluation_dataset_fingerprint,
 )
-from trader.domain.world_cohort import WorldCohort, WorldCohortEvent, WorldCohortEventEnvelope, WorldCohortId
+from trader.domain.world_cohort import (
+    CloseWorldCohort,
+    CohortPhase,
+    WorldCohort,
+    WorldCohortEvent,
+    WorldCohortEventEnvelope,
+    WorldCohortId,
+)
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import graph_content_mask, graph_feature_contract
 from trader.domain.world_pattern import (
     EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY,
     PatternDiscoveryCompleted,
+    PatternEvaluationClosed,
     PatternHypothesisId,
+    PatternOccurrenceId,
 )
 
 
@@ -76,10 +95,20 @@ class _Lifecycle:
 
 
 class _Discovery:
-    def __init__(self, calls: list[str], *, candidates: int = 1, failure: Exception | None = None) -> None:
+    def __init__(
+        self,
+        calls: list[str],
+        *,
+        candidates: int = 1,
+        failure: Exception | None = None,
+        considered_records: int | None = None,
+        eligible_records: int | None = None,
+    ) -> None:
         self.calls = calls
         self.candidates = candidates
         self.failure = failure
+        self.considered_records = considered_records
+        self.eligible_records = eligible_records
         self.requests = []
 
     def discover(self, request):
@@ -99,16 +128,17 @@ class _Discovery:
                 feature_mask_id=mask.mask_id,
                 feature_mask_fingerprint=mask.fingerprint,
                 model_identity=EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY,
-                ontology_revision="market_ontology.v1",
+                ontology_revision=request.ontology_revision or "market_ontology.v1",
             ),
             semantic_signature="instrument:TRADED_ON:forward:venue",
         )
         return PatternDiscoveryResult(
             candidates=() if self.candidates == 0 else (candidate,),
             formation_dataset_fingerprint=FORMATION_FP,
-            eligible_records=20,
+            eligible_records=20 if self.eligible_records is None else self.eligible_records,
             rejection_counts={},
             source_evidence_ids=(),
+            considered_records=20 if self.considered_records is None else self.considered_records,
         )
 
 
@@ -137,6 +167,7 @@ class _Evaluation:
             rejection_counts={},
             source_evidence_ids=(),
             request=request,
+            considered_records=0,
         )
 
     def persist(self, result, *, patterns, predictions) -> PatternEvaluationPersistResult:
@@ -187,6 +218,10 @@ class _Query:
         assert self.delegate is not None
         return self.delegate.list_slots(cohort_id)
 
+    def load(self, cohort_id: WorldCohortId) -> WorldCohort:
+        assert self.delegate is not None
+        return self.delegate.load(cohort_id)
+
     def envelope_for(self, event: WorldCohortEvent) -> WorldCohortEventEnvelope:
         assert self.delegate is not None
         return self.delegate.envelope_for(event)
@@ -202,6 +237,35 @@ def _collecting_graph() -> tuple[object, WorldCohort]:
     return store, store.load(WorldCohortId(graph_id))
 
 
+class _CutoffAwareFormationSource:
+    """Admit only records whose source clocks are at or before the frozen cutoff."""
+
+    def __init__(self) -> None:
+        self.records: list[object] = []
+
+    def load_formation_batch(self, request) -> PatternFormationBatch:
+        cutoff = request.formation_cutoff
+        admitted = []
+        for record in self.records:
+            observation = record.episode.observation
+            if observation.as_of_bar_ts > cutoff:
+                continue
+            if observation.available_at is not None and observation.available_at > cutoff:
+                continue
+            if record.snapshot.cutoff_at > cutoff:
+                continue
+            if record.recorded_at > cutoff:
+                continue
+            if record.available_at is not None and record.available_at > cutoff:
+                continue
+            admitted.append(record)
+        return PatternFormationBatch(
+            records=tuple(admitted),
+            rejection_counts={},
+            source_evidence_ids=tuple(dict.fromkeys(item.episode.episode_id for item in admitted)),
+        )
+
+
 def _workflow(
     *,
     query=None,
@@ -210,6 +274,10 @@ def _workflow(
     evaluate_failure: Exception | None = None,
     persist_failure: Exception | None = None,
     outcome_failure: Exception | None = None,
+    considered_records: int | None = None,
+    eligible_records: int | None = None,
+    evaluation: object | None = None,
+    discovery: object | None = None,
 ):
     store, graph = _collecting_graph()
     calls: list[str] = []
@@ -220,8 +288,14 @@ def _workflow(
         availability=pattern_store,
     )
     lifecycle = _Lifecycle()
-    discovery = _Discovery(calls, candidates=candidates, failure=discovery_failure)
-    evaluation = _Evaluation(
+    discovery = discovery or _Discovery(
+        calls,
+        candidates=candidates,
+        failure=discovery_failure,
+        considered_records=considered_records,
+        eligible_records=eligible_records,
+    )
+    evaluation = evaluation or _Evaluation(
         calls,
         evaluate_failure=evaluate_failure,
         persist_failure=persist_failure,
@@ -264,6 +338,7 @@ def test_first_run_freezes_window_registers_then_evaluates_and_links_last() -> N
     assert evaluation.requests[0].hypothesis_ids == result.selected_hypothesis_ids
     assert outcomes.requests[0].hypothesis_ids == result.selected_hypothesis_ids
     assert discovery.requests[0].horizons == graph.manifest.horizons
+    assert discovery.requests[0].ontology_revision == graph.manifest.ontology_revision
 
 
 def test_replay_never_rediscovers_or_restarts_and_keeps_fingerprint_stable() -> None:
@@ -702,6 +777,234 @@ def test_reopen_sqlite_stores_with_later_clock_continues_evaluation_and_linking(
         "persist",
         "outcome_link",
     ]
+
+
+def test_unripe_formation_does_not_write_empty_discovery_marker() -> None:
+    workflow, _graph, lifecycle, discovery, evaluation, *_rest, calls = _workflow(
+        candidates=0,
+        considered_records=0,
+        eligible_records=0,
+    )
+    result = workflow.run(BOOT)
+
+    assert lifecycle.marker is None
+    assert lifecycle.append_calls == 0
+    assert result.status == "partial"
+    assert _stage(result, "discovery").status == "skipped"
+    assert _stage(result, "discovery").reason == "no_ripe_exact_records_at_formation_cutoff"
+    assert _stage(result, "evaluation").reason == "discovery_not_completed"
+    assert result.selected_hypothesis_ids == ()
+    assert evaluation.requests == []
+    assert calls == ["discover", "outcome_link"]
+    replay = workflow.run(BOOT)
+    assert lifecycle.marker is None
+    assert replay.status == "partial"
+    assert len(discovery.requests) == 2
+    assert replay.replayed is False
+    assert replay.formation_cutoff == result.formation_cutoff
+
+
+def test_post_start_exact_records_cannot_form_on_frozen_cutoff() -> None:
+    source = _CutoffAwareFormationSource()
+    workflow, graph, lifecycle, *_rest = _workflow(discovery=PatternDiscoveryService(source))
+    first = workflow.run(BOOT)
+
+    assert first.status == "partial"
+    assert lifecycle.marker is None
+    assert _stage(first, "discovery").reason == "no_ripe_exact_records_at_formation_cutoff"
+    cutoff = first.formation_cutoff
+    assert cutoff == START_SEEN
+
+    source.records.append(
+        _record(
+            as_of=cutoff + timedelta(days=2),
+            ontology_revision=graph.manifest.ontology_revision,
+            available_at=cutoff + timedelta(days=3),
+        )
+    )
+    second = workflow.run(BOOT + timedelta(days=4))
+
+    assert second.formation_cutoff == cutoff
+    assert second.status == "partial"
+    assert lifecycle.marker is None
+    assert lifecycle.append_calls == 0
+    assert second.replayed is False
+    assert _stage(second, "discovery").reason == "no_ripe_exact_records_at_formation_cutoff"
+    assert _stage(second, "evaluation").reason == "discovery_not_completed"
+
+
+def test_predecessor_same_revision_records_are_admitted_at_successor_cutoff() -> None:
+    source = _CutoffAwareFormationSource()
+    workflow, graph, lifecycle, *_rest = _workflow(discovery=PatternDiscoveryService(source))
+    as_of = START_SEEN - timedelta(days=2)
+    source.records.append(
+        _record(
+            as_of=as_of,
+            ontology_revision=graph.manifest.ontology_revision,
+            available_at=as_of + timedelta(days=1, minutes=5),
+        )
+    )
+    result = workflow.run(BOOT)
+
+    assert result.formation_cutoff == START_SEEN
+    assert lifecycle.marker is not None
+    assert lifecycle.marker.selected_count == 0
+    assert _stage(result, "discovery").reason == "discovered"
+    assert result.status == "completed"
+
+
+def test_examined_zero_candidates_remains_a_durable_empty_marker() -> None:
+    workflow, _graph, lifecycle, *_rest = _workflow(candidates=0, considered_records=20, eligible_records=20)
+    result = workflow.run(BOOT)
+    assert lifecycle.marker is not None
+    assert lifecycle.marker.selected_count == 0
+    assert result.status == "completed"
+    assert _stage(result, "discovery").reason == "discovered"
+
+
+def test_all_incompatible_evaluation_is_visible_on_the_workflow() -> None:
+    class _Incompatible(_Evaluation):
+        def evaluate(self, request: PatternEvaluationRequest) -> PatternEvaluationResult:
+            self.calls.append("evaluate")
+            self.requests.append(request)
+            return PatternEvaluationResult(
+                matches=(),
+                hypotheses=(),
+                eligible_records=0,
+                rejection_counts={"ontology_revision_mismatch": 5},
+                source_evidence_ids=("snap-1",),
+                request=request,
+                considered_records=5,
+            )
+
+    calls: list[str] = []
+    workflow, *_rest = _workflow(evaluation=_Incompatible(calls))
+    result = workflow.run(BOOT)
+    assert result.status == "partial"
+    assert result.evaluation_considered_records == 5
+    assert result.evaluation_eligible_records == 0
+    assert result.evaluation_rejection_counts["ontology_revision_mismatch"] == 5
+    assert _stage(result, "evaluation").status == "skipped"
+    assert _stage(result, "evaluation").reason == "all_records_incompatible"
+    payload = result.to_dict()
+    assert payload["status"] == "partial"
+    assert payload["evaluation_considered_records"] == 5
+    assert payload["evaluation_eligible_records"] == 0
+    assert payload["evaluation_rejection_counts"]["ontology_revision_mismatch"] == 5
+
+
+def test_ended_evaluation_cohort_closes_hypotheses_without_rewriting_occurrences() -> None:
+    from trader.application.world_model.cohort_service import WorldCohortService
+
+    store, graph = _collecting_graph()
+    calls: list[str] = []
+    pattern_store = _MemoryPatternStore()
+    patterns = WorldPatternService(
+        hypotheses=pattern_store,
+        occurrences=pattern_store,
+        availability=pattern_store,
+    )
+    workflow = PatternShadowWorkflow(
+        cohorts=store,
+        lifecycle=_Lifecycle(),
+        discovery=_Discovery(calls),
+        patterns=patterns,
+        evaluation=_Evaluation(calls),
+        predictions=_Predictions(),
+        outcomes=_Outcomes(calls),
+    )
+    first = workflow.run(BOOT)
+    assert first.status == "completed"
+    hypothesis_id = first.selected_hypothesis_ids[0]
+    assert pattern_store.load(PatternHypothesisId(hypothesis_id)).status == "evaluating"
+    recorded = _record_occurrence(
+        patterns,
+        hypothesis_id,
+        cohort_id=graph.cohort_id,
+        forecast=_prediction(model_id=EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY),
+    )
+    occurrence_id = recorded.event.occurrence_id
+    occurrence_events = tuple(event.event_id for event in pattern_store.load(PatternOccurrenceId(occurrence_id)).events)
+    hypothesis_events_before = tuple(
+        event.event_id for event in pattern_store.load(PatternHypothesisId(hypothesis_id)).events
+    )
+    WorldCohortService(repository=store, query=store).close(
+        graph.cohort_id,
+        CloseWorldCohort(reason="fixed_end reached"),
+    )
+    assert store.load(WorldCohortId(graph.cohort_id)).phase is CohortPhase.COLLECTION_CLOSED
+    closed_run = workflow.run(BOOT + timedelta(hours=1))
+    loaded = pattern_store.load(PatternHypothesisId(hypothesis_id))
+    assert loaded.status == "evaluation_closed"
+    assert isinstance(loaded.events[-1], PatternEvaluationClosed)
+    assert tuple(event.event_id for event in loaded.events[:-1]) == hypothesis_events_before
+    assert tuple(
+        event.event_id for event in pattern_store.load(PatternOccurrenceId(occurrence_id)).events
+    ) == occurrence_events
+    assert _stage(closed_run, "evaluation_close").status == "completed"
+    replay = workflow.run(BOOT + timedelta(hours=2))
+    replayed = pattern_store.load(PatternHypothesisId(hypothesis_id))
+    assert replayed.status == "evaluation_closed"
+    assert replayed.events[-1].event_id == loaded.events[-1].event_id
+    assert sum(1 for event in replayed.events if isinstance(event, PatternEvaluationClosed)) == 1
+    assert _stage(replay, "evaluation_close").reason == "none_due"
+    linked = _link(patterns, occurrence_id, _outcome())
+    assert linked.event.occurrence_id == occurrence_id
+
+
+def test_elapsed_collecting_evaluation_cohort_closes_hypotheses_at_fixed_end() -> None:
+    store, graph = _collecting_graph()
+    calls: list[str] = []
+    pattern_store = _MemoryPatternStore()
+    patterns = WorldPatternService(
+        hypotheses=pattern_store,
+        occurrences=pattern_store,
+        availability=pattern_store,
+    )
+    workflow = PatternShadowWorkflow(
+        cohorts=store,
+        lifecycle=_Lifecycle(),
+        discovery=_Discovery(calls),
+        patterns=patterns,
+        evaluation=_Evaluation(calls),
+        predictions=_Predictions(),
+        outcomes=_Outcomes(calls),
+    )
+    first = workflow.run(BOOT)
+    hypothesis_id = first.selected_hypothesis_ids[0]
+    at_end = workflow.run(graph.manifest.collection_stop_rule.at)
+    assert pattern_store.load(PatternHypothesisId(hypothesis_id)).status == "evaluating"
+    assert _stage(at_end, "evaluation_close").reason == "none_due"
+    after_end = workflow.run(graph.manifest.collection_stop_rule.at + timedelta(microseconds=1))
+    assert pattern_store.load(PatternHypothesisId(hypothesis_id)).status == "evaluation_closed"
+    assert store.load(WorldCohortId(graph.cohort_id)).phase is CohortPhase.COLLECTING
+    assert _stage(after_end, "evaluation_close").status == "completed"
+
+
+def test_live_evaluation_cohort_does_not_close_hypotheses() -> None:
+    live_store, live_graph = _collecting_graph()
+    live_calls: list[str] = []
+    live_patterns_store = _MemoryPatternStore()
+    live_patterns = WorldPatternService(
+        hypotheses=live_patterns_store,
+        occurrences=live_patterns_store,
+        availability=live_patterns_store,
+    )
+    live_workflow = PatternShadowWorkflow(
+        cohorts=live_store,
+        lifecycle=_Lifecycle(),
+        discovery=_Discovery(live_calls),
+        patterns=live_patterns,
+        evaluation=_Evaluation(live_calls),
+        predictions=_Predictions(),
+        outcomes=_Outcomes(live_calls),
+    )
+    live_first = live_workflow.run(BOOT)
+    live_replay = live_workflow.run(BOOT + timedelta(hours=1))
+    live_id = live_first.selected_hypothesis_ids[0]
+    assert live_patterns_store.load(PatternHypothesisId(live_id)).status == "evaluating"
+    assert live_graph.phase is CohortPhase.COLLECTING
+    assert _stage(live_replay, "evaluation_close").reason == "none_due"
 
 
 def test_module_stays_application_owned_without_runtime_or_storage_imports() -> None:

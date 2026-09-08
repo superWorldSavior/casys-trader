@@ -6,15 +6,18 @@ runtime, infrastructure, CLI, trading, or broker dependency.  Formation may
 read historical labels through its own port; prospective evaluation remains
 unlabelled and the outcome service is invoked last.
 
-The pilot never closes or archives hypotheses. ``PatternEvaluationClosed``
-stays a domain event for a later operator-owned end-of-life; this workflow
-does not emit it.
+Evaluating hypotheses are closed through ``ClosePatternEvaluation`` when
+their bound evaluation cohort is ``collection_closed`` or past its inclusive
+fixed end. Occurrences, outcomes, snapshots, markers, and slots stay
+append-only.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from types import MappingProxyType
 from typing import Literal, Protocol
 
 from trader.application.world_model.cohort_ports import WorldCohortQuery
@@ -32,12 +35,13 @@ from trader.application.world_model.pattern_outcome_link import (
     PatternOutcomeLinkResult,
 )
 from trader.application.world_model.pattern_service import (
+    ClosePatternEvaluation,
     RegisterPatternHypothesis,
     StartPatternEvaluation,
     WorldPatternService,
 )
 from trader.domain.world_availability import AvailabilityEvidence
-from trader.domain.world_cohort import WorldCohort
+from trader.domain.world_cohort import CohortPhase, WorldCohort, WorldCohortId
 from trader.domain.world_episode import canonical_sha256, parse_bar_interval, parse_utc_timestamp
 from trader.domain.world_feature_contract import graph_content_mask, graph_feature_contract
 from trader.domain.world_pattern import EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY, PatternDiscoveryCompleted
@@ -114,6 +118,9 @@ class PatternShadowWorkflowResult:
     persisted_prediction_count: int = 0
     persisted_occurrence_count: int = 0
     linked_outcome_count: int = 0
+    evaluation_considered_records: int = 0
+    evaluation_eligible_records: int = 0
+    evaluation_rejection_counts: Mapping[str, int] | None = None
     shadow_only: bool = True
     decision_effect: str = "none"
     learning_authority: str = "shadow_only"
@@ -141,15 +148,27 @@ class PatternShadowWorkflowResult:
             "persisted_prediction_count",
             "persisted_occurrence_count",
             "linked_outcome_count",
+            "evaluation_considered_records",
+            "evaluation_eligible_records",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
+        rejection_counts = self.evaluation_rejection_counts
+        if rejection_counts is None:
+            frozen_rejections: Mapping[str, int] = MappingProxyType({})
+        else:
+            if not isinstance(rejection_counts, Mapping):
+                raise TypeError("evaluation_rejection_counts must be a mapping")
+            frozen_rejections = MappingProxyType(
+                {str(key): int(value) for key, value in rejection_counts.items()}
+            )
         object.__setattr__(self, "as_of", as_of)
         object.__setattr__(self, "formation_cutoff", formation)
         object.__setattr__(self, "evaluation_start_not_before", evaluation_start)
         object.__setattr__(self, "stages", tuple(self.stages))
         object.__setattr__(self, "selected_hypothesis_ids", tuple(self.selected_hypothesis_ids))
+        object.__setattr__(self, "evaluation_rejection_counts", frozen_rejections)
         object.__setattr__(self, "shadow_only", True)
         object.__setattr__(self, "decision_effect", "none")
         object.__setattr__(self, "learning_authority", "shadow_only")
@@ -171,6 +190,9 @@ class PatternShadowWorkflowResult:
             "persisted_prediction_count": self.persisted_prediction_count,
             "persisted_occurrence_count": self.persisted_occurrence_count,
             "linked_outcome_count": self.linked_outcome_count,
+            "evaluation_considered_records": self.evaluation_considered_records,
+            "evaluation_eligible_records": self.evaluation_eligible_records,
+            "evaluation_rejection_counts": dict(self.evaluation_rejection_counts),
             "shadow_only": self.shadow_only,
             "decision_effect": self.decision_effect,
             "learning_authority": self.learning_authority,
@@ -233,6 +255,12 @@ def _graph_only(cohort: WorldCohort) -> bool:
     return bool(lane_ids) and all(lane_id.endswith(".graph") for lane_id in lane_ids)
 
 
+def _collection_window_elapsed(cohort: WorldCohort, now: datetime) -> bool:
+    """Inclusive end: the window is still open at collection_stop_rule.at."""
+
+    return now > cohort.manifest.collection_stop_rule.at
+
+
 def _error(exc: Exception) -> str:
     return f"{type(exc).__name__}:{exc}"
 
@@ -275,9 +303,43 @@ class PatternShadowWorkflow:
     predictions: PatternPredictionWriter
     outcomes: PatternOutcomeLinkPort
 
+    def _close_ended_evaluations(self, as_of: datetime) -> PatternShadowStageResult:
+        load = getattr(self.cohorts, "load", None)
+        if not callable(load):
+            return PatternShadowStageResult("evaluation_close", "skipped", reason="close_path_unavailable")
+        closed = 0
+        try:
+            for hypothesis in self.patterns.hypotheses.list_hypotheses():
+                if hypothesis.status != "evaluating":
+                    continue
+                cohort_id = hypothesis.evaluation_cohort_id
+                if not cohort_id:
+                    continue
+                try:
+                    cohort = load(WorldCohortId(cohort_id))
+                except LookupError:
+                    continue
+                if not isinstance(cohort, WorldCohort):
+                    continue
+                ended = cohort.phase in {CohortPhase.COLLECTION_CLOSED, CohortPhase.COMPLETE} or (
+                    cohort.phase is CohortPhase.COLLECTING and _collection_window_elapsed(cohort, as_of)
+                )
+                if not ended:
+                    continue
+                self.patterns.close(
+                    ClosePatternEvaluation(hypothesis_id=hypothesis.hypothesis_id, closed_at=as_of)
+                )
+                closed += 1
+        except Exception as exc:  # noqa: BLE001 - pattern close cannot affect Trader
+            return PatternShadowStageResult("evaluation_close", "failed", error=_error(exc))
+        if closed == 0:
+            return PatternShadowStageResult("evaluation_close", "skipped", reason="none_due")
+        return PatternShadowStageResult("evaluation_close", "completed", reason="closed")
+
     def run(self, as_of: datetime | str) -> PatternShadowWorkflowResult:
         resolved_as_of = parse_utc_timestamp(as_of, "as_of")
         stages: list[PatternShadowStageResult] = []
+        stages.append(self._close_ended_evaluations(resolved_as_of))
         try:
             graph_cohorts = tuple(filter(_graph_only, self.cohorts.list_collecting_cohorts()))
         except Exception as exc:  # noqa: BLE001 - shadow workflow is fail-open
@@ -384,57 +446,76 @@ class PatternShadowWorkflow:
                         formation_cutoff=formation_cutoff,
                         evaluation_start_not_before=evaluation_start,
                         horizons=cohort.manifest.horizons,
+                        ontology_revision=cohort.manifest.ontology_revision,
                     )
                 )
                 discovered_count = len(discovery_result.candidates)
-                registered_ids: list[str] = []
-                for candidate in discovery_result.candidates:
-                    spec = candidate.spec
-                    if (
-                        spec.formation_cutoff != formation_cutoff
-                        or spec.evaluation_start_not_before != evaluation_start
-                    ):
-                        raise ValueError("discovery candidate window does not match the proven cohort start")
-                    registered = self.patterns.register(
-                        RegisterPatternHypothesis(spec=spec, registered_at=formation_cutoff)
-                    )
-                    hypothesis_id = registered.event.hypothesis_id
-                    self.patterns.start(
-                        StartPatternEvaluation(
-                            hypothesis_id=hypothesis_id,
-                            evaluation_cohort_id=cohort.cohort_id,
-                            started_at=evaluation_start,
-                            evaluation_dataset_fingerprint=evaluation_fingerprint,
+                if (
+                    not discovery_result.candidates
+                    and discovery_result.eligible_records == 0
+                    and discovery_result.considered_records == 0
+                ):
+                    stages.append(
+                        PatternShadowStageResult(
+                            "discovery",
+                            "skipped",
+                            reason="no_ripe_exact_records_at_formation_cutoff",
                         )
                     )
-                    registered_ids.append(hypothesis_id)
-                candidate_marker = PatternDiscoveryCompleted(
-                    evaluation_cohort_id=cohort.cohort_id,
-                    manifest_sha256=cohort.manifest.manifest_sha256,
-                    formation_dataset_fingerprint=discovery_result.formation_dataset_fingerprint,
-                    evaluation_dataset_fingerprint=evaluation_fingerprint,
-                    started_event_id=started.event_id,
-                    formation_cutoff=formation_cutoff,
-                    evaluation_start_not_before=evaluation_start,
-                    selected_hypothesis_ids=tuple(registered_ids),
-                    selected_count=len(registered_ids),
-                )
-                self.lifecycle.append_discovery_completed(candidate_marker)
-                committed_marker = self.lifecycle.get_discovery_completed(cohort.cohort_id, started.event_id)
-                if committed_marker is None:
-                    raise RuntimeError("discovery lifecycle marker is not durable after append")
-                if committed_marker != candidate_marker:
-                    raise ValueError("discovery lifecycle marker changed during durable append")
-                marker = committed_marker
-                selected_ids = marker.selected_hypothesis_ids
-            stages.append(
-                PatternShadowStageResult("discovery", "completed", reason="replayed" if replayed else "discovered")
-            )
+                else:
+                    registered_ids: list[str] = []
+                    for candidate in discovery_result.candidates:
+                        spec = candidate.spec
+                        if (
+                            spec.formation_cutoff != formation_cutoff
+                            or spec.evaluation_start_not_before != evaluation_start
+                        ):
+                            raise ValueError("discovery candidate window does not match the proven cohort start")
+                        if spec.ontology_revision != cohort.manifest.ontology_revision:
+                            raise ValueError("discovery candidate ontology_revision does not match the cohort")
+                        registered = self.patterns.register(
+                            RegisterPatternHypothesis(spec=spec, registered_at=formation_cutoff)
+                        )
+                        hypothesis_id = registered.event.hypothesis_id
+                        self.patterns.start(
+                            StartPatternEvaluation(
+                                hypothesis_id=hypothesis_id,
+                                evaluation_cohort_id=cohort.cohort_id,
+                                started_at=evaluation_start,
+                                evaluation_dataset_fingerprint=evaluation_fingerprint,
+                            )
+                        )
+                        registered_ids.append(hypothesis_id)
+                    candidate_marker = PatternDiscoveryCompleted(
+                        evaluation_cohort_id=cohort.cohort_id,
+                        manifest_sha256=cohort.manifest.manifest_sha256,
+                        formation_dataset_fingerprint=discovery_result.formation_dataset_fingerprint,
+                        evaluation_dataset_fingerprint=evaluation_fingerprint,
+                        started_event_id=started.event_id,
+                        formation_cutoff=formation_cutoff,
+                        evaluation_start_not_before=evaluation_start,
+                        selected_hypothesis_ids=tuple(registered_ids),
+                        selected_count=len(registered_ids),
+                    )
+                    self.lifecycle.append_discovery_completed(candidate_marker)
+                    committed_marker = self.lifecycle.get_discovery_completed(cohort.cohort_id, started.event_id)
+                    if committed_marker is None:
+                        raise RuntimeError("discovery lifecycle marker is not durable after append")
+                    if committed_marker != candidate_marker:
+                        raise ValueError("discovery lifecycle marker changed during durable append")
+                    marker = committed_marker
+                    selected_ids = marker.selected_hypothesis_ids
+                    stages.append(PatternShadowStageResult("discovery", "completed", reason="discovered"))
+            if marker is not None and existing_marker is not None:
+                stages.append(PatternShadowStageResult("discovery", "completed", reason="replayed"))
         except Exception as exc:  # noqa: BLE001 - discovery cannot affect Trader
             stages.append(PatternShadowStageResult("discovery", "failed", error=_error(exc)))
 
         persisted_prediction_count = 0
         persisted_occurrence_count = 0
+        evaluation_considered_records = 0
+        evaluation_eligible_records = 0
+        evaluation_rejection_counts: dict[str, int] = {}
         if marker is None:
             stages.append(PatternShadowStageResult("evaluation", "skipped", reason="discovery_not_completed"))
         elif not selected_ids:
@@ -451,6 +532,9 @@ class PatternShadowWorkflow:
                         hypothesis_ids=selected_ids,
                     )
                 )
+                evaluation_considered_records = evaluation_result.considered_records
+                evaluation_eligible_records = evaluation_result.eligible_records
+                evaluation_rejection_counts = dict(evaluation_result.rejection_counts)
                 persisted = self.evaluation.persist(
                     evaluation_result,
                     patterns=self.patterns,
@@ -458,7 +542,16 @@ class PatternShadowWorkflow:
                 )
                 persisted_prediction_count = len(persisted.persisted_prediction_ids)
                 persisted_occurrence_count = len(persisted.persisted_occurrence_ids)
-                stages.append(PatternShadowStageResult("evaluation", "completed"))
+                if evaluation_considered_records == 0:
+                    eval_status: PatternShadowStageStatus = "completed"
+                    eval_reason = "no_new_data"
+                elif evaluation_eligible_records == 0:
+                    eval_status = "skipped"
+                    eval_reason = "all_records_incompatible"
+                else:
+                    eval_status = "completed"
+                    eval_reason = None
+                stages.append(PatternShadowStageResult("evaluation", eval_status, reason=eval_reason))
             except Exception as exc:  # noqa: BLE001 - evaluation cannot affect Trader
                 stages.append(PatternShadowStageResult("evaluation", "failed", error=_error(exc)))
 
@@ -477,8 +570,17 @@ class PatternShadowWorkflow:
         except Exception as exc:  # noqa: BLE001 - outcome linking cannot affect Trader
             stages.append(PatternShadowStageResult("outcome_link", "failed", error=_error(exc)))
 
+        incompatible = any(
+            item.stage == "evaluation" and item.reason == "all_records_incompatible" for item in stages
+        )
+        empty_at_cutoff = any(
+            item.stage == "discovery" and item.reason == "no_ripe_exact_records_at_formation_cutoff"
+            for item in stages
+        )
         status: PatternShadowWorkflowStatus = (
-            "partial" if any(item.status == "failed" for item in stages) else "completed"
+            "partial"
+            if incompatible or empty_at_cutoff or any(item.status == "failed" for item in stages)
+            else "completed"
         )
         return PatternShadowWorkflowResult(
             resolved_as_of,
@@ -494,6 +596,9 @@ class PatternShadowWorkflow:
             persisted_prediction_count=persisted_prediction_count,
             persisted_occurrence_count=persisted_occurrence_count,
             linked_outcome_count=linked_outcome_count,
+            evaluation_considered_records=evaluation_considered_records,
+            evaluation_eligible_records=evaluation_eligible_records,
+            evaluation_rejection_counts=evaluation_rejection_counts,
         )
 
 

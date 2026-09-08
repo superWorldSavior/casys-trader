@@ -1688,3 +1688,81 @@ def test_id_free_traversal_hop_owns_v1_directions_and_canonical_pairs() -> None:
             direction="forward",
             target_kind="country",
         )
+
+
+def test_geographic_ancestry_walk_is_the_single_domain_backbone() -> None:
+    from trader.domain.world_graph import (
+        GEOGRAPHIC_ANCESTRY_WALK,
+        GRAPH_OVERLAY_RELATION_KINDS,
+        ROOT_BRANCH_WALK,
+        geographic_ancestry_hops,
+        geographic_ancestry_is_complete,
+        graph_expansion_priority,
+    )
+
+    domain_source = (REPO_ROOT / "trader" / "domain" / "world_graph.py").read_text(encoding="utf-8")
+    assigned_names = {
+        target.id
+        for node in ast.walk(ast.parse(domain_source))
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert "GEOGRAPHIC_ANCESTRY_WALK" in assigned_names
+    assert "_ANCESTRY_WALK" not in assigned_names
+    assert "_BACKBONE_FORWARD" not in assigned_names
+    assert domain_source.count("GEOGRAPHIC_ANCESTRY_WALK =") == 1
+    assert GEOGRAPHIC_ANCESTRY_WALK == (
+        ("TRADED_ON", "forward", "venue"),
+        ("LOCATED_IN", "forward", "country"),
+        ("LOCATED_IN", "forward", "region"),
+        ("PART_OF_WORLD", "forward", "world"),
+    )
+    assert ROOT_BRANCH_WALK == (
+        ("ISSUED_BY", "forward", "company"),
+        ("MEMBER_OF_FAMILY", "forward", "family"),
+    )
+    hop_sources = {
+        ("TRADED_ON", "venue"): "instrument",
+        ("LOCATED_IN", "country"): "venue",
+        ("LOCATED_IN", "region"): "country",
+        ("PART_OF_WORLD", "world"): "region",
+        ("ISSUED_BY", "company"): "instrument",
+        ("MEMBER_OF_FAMILY", "family"): "instrument",
+    }
+    for kind, direction, target_kind in (*GEOGRAPHIC_ANCESTRY_WALK, *ROOT_BRANCH_WALK):
+        assert direction in GRAPH_TRAVERSAL_V1_DIRECTIONS[kind]
+        validate_id_free_traversal_hop(
+            source_kind=hop_sources[(kind, target_kind)],
+            relation_kind=kind,
+            direction=direction,
+            target_kind=target_kind,
+        )
+    assert GRAPH_OVERLAY_RELATION_KINDS == frozenset({"OBSERVES", "ABOUT"})
+    assert graph_expansion_priority("TRADED_ON", "forward", "venue") < graph_expansion_priority(
+        "ISSUED_BY", "forward", "company"
+    )
+    assert graph_expansion_priority("ISSUED_BY", "forward", "company") < graph_expansion_priority(
+        "OBSERVES", "reverse", "world_observation"
+    )
+    assert graph_expansion_priority("OBSERVES", "reverse", "world_observation") < graph_expansion_priority(
+        "TRADED_ON", "reverse", "instrument"
+    )
+
+    root = WorldEntityRef(kind="instrument", entity_id="mic:XTAI:symbol:2330")
+    venue = WorldEntityRef(kind="venue", entity_id="mic:XTAI")
+    country = WorldEntityRef(kind="country", entity_id="iso-3166:TW")
+    region = WorldEntityRef(kind="region", entity_id="iso-un-m49:030")
+    world = WorldEntityRef(kind="world", entity_id="market")
+    hops = (
+        _structural(source=root, target=venue),
+        _structural(kind="LOCATED_IN", source=venue, target=country),
+        _structural(kind="LOCATED_IN", source=country, target=region),
+        _structural(kind="PART_OF_WORLD", source=region, target=world),
+    )
+    captured = geographic_ancestry_hops(root, hops)
+    assert captured == hops
+    assert geographic_ancestry_is_complete(captured)
+    assert geographic_ancestry_hops(root, hops[:2]) == hops[:2]
+    assert not geographic_ancestry_is_complete(hops[:2])
+    assert "GEOGRAPHIC_ANCESTRY_WALK" in inspect.getsource(ancestry_distance_from_instrument_root)

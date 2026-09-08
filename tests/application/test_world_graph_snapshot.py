@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from trader.domain.world_graph import (
     StructuralWorldRelationAsserted,
     WorldEntityIdentityLink,
     WorldEntityRef,
+    WorldGraphSnapshot,
     WorldKnowledgeRelationRef,
     WorldObservationRef,
     WorldOntologyRevision,
@@ -923,6 +925,48 @@ def test_later_structural_relation_is_visible_only_after_superseding_revision() 
     assert extra in after.structural_relations
 
 
+def test_snapshot_can_bind_superseded_revision_without_moving_the_live_head() -> None:
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    first = _seed_rfc_graph(ledger, mapping)
+    extra_family = WorldEntityRef(kind="family", entity_id="taxonomy:v1:later-family")
+    extra = _structural(
+        kind="MEMBER_OF_FAMILY",
+        source=_instrument(),
+        target=extra_family,
+        source_refs=("taxonomy:v1:later-family",),
+    )
+    ontology = WorldOntologyService(ledger)
+    ontology.assert_entity(
+        AssertWorldEntity(entity=extra_family, source_refs=("taxonomy:v1:later-family",), effective_from=T0)
+    )
+    ontology.assert_structural_relation(AssertStructuralWorldRelation(relation=extra))
+    successor = WorldOntologyRevision(
+        revision_id="market_ontology.other",
+        entities=_rfc_entities() + (extra_family,),
+        structural_relation_refs=tuple(
+            WorldStructuralRelationRef.from_relation(item) for item in _rfc_structural() + (extra,)
+        ),
+        identity_link_refs=(_link().as_ref(),),
+        scope_mapping_id=mapping.mapping_id,
+        scope_mapping_hash=mapping.content_sha256,
+    )
+    ontology.supersede_revision(
+        SupersedeWorldOntologyRevision(revision_id="market_ontology.v1", successor_revision_id=successor.revision_id)
+    )
+    ontology.publish_revision(PublishWorldOntologyRevision(revision=successor))
+    live = _service(ledger).build(_request(mapping))
+    assert live.snapshot.ontology_revision == successor.revision_id
+    pinned = _service(ledger).build(_request(mapping, ontology_revision=first.revision_id))
+    extra_ref = WorldStructuralRelationRef.from_relation(extra)
+    assert pinned.snapshot.ontology_revision == first.revision_id == "market_ontology.v1"
+    assert extra_ref not in pinned.snapshot.structural_relation_refs
+    missing = _service(ledger).build(_request(mapping, ontology_revision="market_ontology.missing"))
+    assert missing.snapshot.status == "missing"
+    assert missing.snapshot.missingness["ontology"] == "revision_unavailable"
+    assert missing.snapshot.ontology_revision == "unpublished"
+
+
 def test_world_targeted_observes_is_member_at_default_depth_without_path_invention() -> None:
     mapping = _mapping()
     ledger = _InMemoryWorldGraphLedger()
@@ -970,3 +1014,148 @@ def test_knowledge_outside_visited_nodes_is_excluded_from_snapshot_membership() 
     assert outsider.relation_id not in member_ids
     assert all(ref.relation_id != outsider.relation_id for ref in bundle.snapshot.knowledge_relation_refs)
     assert bundle.snapshot.status == "complete"
+
+
+def _peers_sorting_before(target: StructuralWorldRelation, count: int) -> tuple[StructuralWorldRelation, ...]:
+    peers: list[StructuralWorldRelation] = []
+    index = 0
+    while sum(1 for item in peers if item.relation_id < target.relation_id) < count:
+        peers.append(
+            _structural(
+                source=_instrument(f"P{index:04d}"),
+                source_refs=(f"provider:instrument-master:P{index:04d}",),
+            )
+        )
+        index += 1
+        if index > 5000:
+            raise RuntimeError("could not synthesize peer relations before target")
+    return tuple(peers)
+
+
+def _seed_dense_peer_graph(
+    ledger: _InMemoryWorldGraphLedger,
+    mapping: WorldScopeMapping,
+    *,
+    reverse: bool = False,
+    knowledge: tuple[KnowledgeWorldRelation, ...] = (),
+) -> tuple[WorldOntologyRevision, tuple[StructuralWorldRelation, ...]]:
+    service = WorldOntologyService(ledger)
+    backbone = _rfc_structural()
+    located_country = next(item for item in backbone if item.kind == "LOCATED_IN" and item.source.kind == "venue")
+    peers = _peers_sorting_before(located_country, 40)
+    structural = backbone + peers
+    if reverse:
+        structural = tuple(reversed(structural))
+    entities = _rfc_entities() + tuple(item.source for item in peers)
+    link = _link()
+    for entity in entities:
+        service.assert_entity(
+            AssertWorldEntity(entity=entity, source_refs=(f"provider:entity:{entity.node_id}",), effective_from=T0)
+        )
+    service.link_identity(LinkWorldEntityIdentity(link=link))
+    for relation in structural:
+        service.assert_structural_relation(AssertStructuralWorldRelation(relation=relation))
+    revision = _revision_for(mapping, entities=entities, structural=structural, identity_links=(link,))
+    service.publish_revision(PublishWorldOntologyRevision(revision=revision))
+    for item in knowledge:
+        service.assert_knowledge_relation(AssertKnowledgeWorldRelation(relation=item))
+    return revision, structural
+
+
+@dataclass(frozen=True)
+class _BundlePathSource:
+    snapshot: WorldGraphSnapshot
+    structural_relations: tuple[StructuralWorldRelation, ...]
+    knowledge_relations: tuple[KnowledgeWorldRelation, ...] = ()
+
+    @property
+    def driver_state_by_relation_id(self) -> dict[str, object]:
+        return {}
+
+
+def test_dense_peer_snapshot_keeps_usable_ancestry_within_same_path_budget() -> None:
+    from trader.application.world_model.pattern_path import project_pattern_path_details
+    from trader.infrastructure.graph.world_temporal_networkx import GRAPH_TRAVERSAL_MAX_PATHS
+
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    _seed_dense_peer_graph(ledger, mapping)
+    bundle = _service(ledger).build(_request(mapping))
+    path_ids = {step.relation_id for path in bundle.paths.paths for step in path.steps}
+    structural_ids = {item.relation_id for item in bundle.structural_relations}
+    assert GRAPH_TRAVERSAL_MAX_PATHS == 32
+    assert len(bundle.paths.paths) == 32
+    assert bundle.paths.status == "graph_budget_exceeded"
+    assert bundle.snapshot.status == "partial"
+    assert bundle.snapshot.missingness["budget"] == "graph_budget_exceeded"
+    assert "ancestry" not in bundle.snapshot.missingness
+    assert structural_ids <= path_ids
+    assert structural_ids == {ref.relation_id for ref in bundle.snapshot.structural_relation_refs}
+    chains = [tuple((step.kind, step.target_kind) for step in path.steps) for path in bundle.paths.paths]
+    assert (
+        ("TRADED_ON", "venue"),
+        ("LOCATED_IN", "country"),
+        ("LOCATED_IN", "region"),
+        ("PART_OF_WORLD", "world"),
+    ) in chains
+    member_kinds = {item.kind for item in bundle.structural_relations}
+    assert {"TRADED_ON", "LOCATED_IN", "PART_OF_WORLD", "ISSUED_BY", "MEMBER_OF_FAMILY"} <= member_kinds
+    details = project_pattern_path_details(
+        _BundlePathSource(
+            snapshot=bundle.snapshot,
+            structural_relations=bundle.structural_relations,
+            knowledge_relations=bundle.knowledge_relations,
+        )
+    )
+    projected = {tuple((step.source_kind, step.relation_kind, step.target_kind) for step in path.steps) for path in details}
+    assert (
+        ("instrument", "TRADED_ON", "venue"),
+        ("venue", "LOCATED_IN", "country"),
+        ("country", "LOCATED_IN", "region"),
+        ("region", "PART_OF_WORLD", "world"),
+    ) in projected
+
+
+def test_dense_peer_snapshot_membership_is_deterministic_for_reversed_ledger_order() -> None:
+    mapping = _mapping()
+    first_ledger = _InMemoryWorldGraphLedger()
+    second_ledger = _InMemoryWorldGraphLedger()
+    _seed_dense_peer_graph(first_ledger, mapping)
+    _seed_dense_peer_graph(second_ledger, mapping, reverse=True)
+    first = _service(first_ledger).build(_request(mapping))
+    second = _service(second_ledger).build(_request(mapping))
+    assert [path.signature for path in first.paths.paths] == [path.signature for path in second.paths.paths]
+    assert {ref.relation_id for ref in first.snapshot.structural_relation_refs} == {
+        ref.relation_id for ref in second.snapshot.structural_relation_refs
+    }
+    assert first.snapshot.status == second.snapshot.status == "partial"
+
+
+def test_max_paths_one_marks_incomplete_ancestry_without_inventing_members() -> None:
+    from trader.application.world_model.pattern_path import project_pattern_path_details
+
+    mapping = _mapping()
+    ledger = _InMemoryWorldGraphLedger()
+    _seed_rfc_graph(ledger, mapping, knowledge=())
+    bundle = _service(ledger).build(_request(mapping, max_paths=1))
+    path_ids = {step.relation_id for path in bundle.paths.paths for step in path.steps}
+    structural_ids = {item.relation_id for item in bundle.structural_relations}
+    assert bundle.snapshot.status == "partial"
+    assert bundle.snapshot.missingness["budget"] == "graph_budget_exceeded"
+    assert bundle.snapshot.missingness["ancestry"] == "incomplete"
+    assert structural_ids <= path_ids
+    details = project_pattern_path_details(
+        _BundlePathSource(
+            snapshot=bundle.snapshot,
+            structural_relations=bundle.structural_relations,
+            knowledge_relations=bundle.knowledge_relations,
+        )
+    )
+    chains = {tuple((step.source_kind, step.relation_kind, step.target_kind) for step in path.steps) for path in details}
+    geographic = (
+        ("instrument", "TRADED_ON", "venue"),
+        ("venue", "LOCATED_IN", "country"),
+        ("country", "LOCATED_IN", "region"),
+        ("region", "PART_OF_WORLD", "world"),
+    )
+    assert not any(chain == geographic[:length] for chain in chains for length in range(1, 5))

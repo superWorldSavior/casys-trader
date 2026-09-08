@@ -450,6 +450,7 @@ def test_late_labels_are_rejected_defensively() -> None:
         evaluation_start_not_before=late_cutoff + timedelta(days=1),
     )
     assert result.eligible_records == 0
+    assert result.considered_records == 0
     assert result.rejection_counts.get("late_label", 0) == 1
     assert result.candidates == ()
 
@@ -629,6 +630,25 @@ def test_conflicting_anchor_labels_are_rejected_and_identical_evidence_dedupes()
     ]
     assert overlay_candidates[0].spec.stats.support == 1
     assert overlay_candidates[0].spec.stats.population_support == 1
+
+
+def test_pinned_ontology_revision_excludes_other_revisions_from_formation() -> None:
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+    pinned = _record(as_of=when, ontology_revision="market_ontology:v1:" + "a" * 64)
+    other = _record(
+        as_of=when,
+        ontology_revision="market_ontology:v1:" + "b" * 64,
+        symbol="2454",
+        outcome_digest="c" * 64,
+    )
+    mixed = _discover((pinned, other), ontology_revision=pinned.snapshot.ontology_revision, min_support=1)
+    assert mixed.considered_records == 1
+    assert mixed.rejection_counts.get("ontology_revision_mismatch") == 1
+    assert {item.spec.ontology_revision for item in mixed.candidates} == {pinned.snapshot.ontology_revision}
+    empty = _discover((other,), ontology_revision=pinned.snapshot.ontology_revision, min_support=1)
+    assert empty.candidates == ()
+    assert empty.considered_records == 0
+    assert empty.eligible_records == 0
 
 
 def test_zero_candidates_and_import_boundaries() -> None:

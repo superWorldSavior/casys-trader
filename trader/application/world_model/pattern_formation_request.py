@@ -89,6 +89,7 @@ class PatternFormationRequest:
     feature_contract_fingerprint: str | None = None
     feature_mask_id: str | None = None
     feature_mask_fingerprint: str | None = None
+    ontology_revision: str | None = None
 
     def __post_init__(self) -> None:
         formation_cutoff = parse_utc_timestamp(self.formation_cutoff, "formation_cutoff")
@@ -138,10 +139,14 @@ class PatternFormationRequest:
         object.__setattr__(self, "max_candidates", _non_negative_int(self.max_candidates, "max_candidates"))
         object.__setattr__(self, "smoothing_alpha", _finite_positive(self.smoothing_alpha, "smoothing_alpha"))
         object.__setattr__(self, "model_identity", model_identity)
+        ontology_revision = None if self.ontology_revision is None else _required_text(
+            self.ontology_revision, "ontology_revision"
+        )
         object.__setattr__(self, "feature_contract_id", contract_id)
         object.__setattr__(self, "feature_contract_fingerprint", contract_fp)
         object.__setattr__(self, "feature_mask_id", mask_id)
         object.__setattr__(self, "feature_mask_fingerprint", mask_fp)
+        object.__setattr__(self, "ontology_revision", ontology_revision)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +162,7 @@ class PatternFormationRequest:
             "feature_contract_fingerprint": self.feature_contract_fingerprint,
             "feature_mask_id": self.feature_mask_id,
             "feature_mask_fingerprint": self.feature_mask_fingerprint,
+            "ontology_revision": self.ontology_revision,
         }
 
 

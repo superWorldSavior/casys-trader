@@ -117,6 +117,19 @@ GRAPH_TRAVERSAL_V1_DIRECTIONS = MappingProxyType(
         "USES": frozenset({"forward"}),
     }
 )
+# Canonical instrument → world backbone and root branches. Direction is part of
+# the hop: reverse TRADED_ON/LOCATED_IN is peer fan-out, not ancestry.
+GEOGRAPHIC_ANCESTRY_WALK = (
+    ("TRADED_ON", "forward", "venue"),
+    ("LOCATED_IN", "forward", "country"),
+    ("LOCATED_IN", "forward", "region"),
+    ("PART_OF_WORLD", "forward", "world"),
+)
+ROOT_BRANCH_WALK = (
+    ("ISSUED_BY", "forward", "company"),
+    ("MEMBER_OF_FAMILY", "forward", "family"),
+)
+GRAPH_OVERLAY_RELATION_KINDS = frozenset({"ABOUT", "OBSERVES"})
 # Sensor is a graph node, but it has no legal relation endpoint, so it is not a path kind.
 GRAPH_PATH_NODE_KINDS = WORLD_ENTITY_KINDS | frozenset(
     {
@@ -3104,12 +3117,68 @@ def admits_macro_observes_relation(
     return macro_observes_producer_ref(admitted_producer_version) in relation.source_refs
 
 
-_ANCESTRY_WALK = (
-    ("TRADED_ON", "venue"),
-    ("LOCATED_IN", "country"),
-    ("LOCATED_IN", "region"),
-    ("PART_OF_WORLD", "world"),
-)
+def graph_expansion_priority(kind: str, direction: str, target_kind: str) -> tuple[int, int]:
+    """Lower ranks expand first: ancestry, root branches, overlays, then fan-out."""
+
+    key = (kind, direction, target_kind)
+    try:
+        return (0, GEOGRAPHIC_ANCESTRY_WALK.index(key))
+    except ValueError:
+        pass
+    try:
+        return (1, ROOT_BRANCH_WALK.index(key))
+    except ValueError:
+        pass
+    if kind in GRAPH_OVERLAY_RELATION_KINDS:
+        return (2, 0)
+    return (3, 0)
+
+
+def _unique_structural_forward(
+    relations: Sequence[StructuralWorldRelation],
+    *,
+    source: WorldEntityRef,
+    kind: str,
+    target_kind: str,
+) -> StructuralWorldRelation | None:
+    matches = [
+        item
+        for item in relations
+        if item.source.node_id == source.node_id and item.kind == kind and item.target.kind == target_kind
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def geographic_ancestry_hops(
+    root: WorldEntityRef,
+    relations: Sequence[StructuralWorldRelation],
+) -> tuple[StructuralWorldRelation, ...]:
+    """Unique forward instrument → world hops present in ``relations``. Never invents."""
+
+    if not isinstance(root, WorldEntityRef):
+        raise TypeError("root must be WorldEntityRef")
+    hops: list[StructuralWorldRelation] = []
+    current = root
+    for kind, direction, target_kind in GEOGRAPHIC_ANCESTRY_WALK:
+        if direction != "forward":
+            break
+        nxt = _unique_structural_forward(relations, source=current, kind=kind, target_kind=target_kind)
+        if nxt is None:
+            break
+        hops.append(nxt)
+        current = nxt.target
+    return tuple(hops)
+
+
+def geographic_ancestry_is_complete(hops: Sequence[StructuralWorldRelation]) -> bool:
+    if len(hops) != len(GEOGRAPHIC_ANCESTRY_WALK):
+        return False
+    for hop, (kind, _direction, target_kind) in zip(hops, GEOGRAPHIC_ANCESTRY_WALK, strict=True):
+        if hop.kind != kind or hop.target.kind != target_kind:
+            return False
+    return True
 
 
 def ancestry_distance_from_instrument_root(
@@ -3133,7 +3202,7 @@ def ancestry_distance_from_instrument_root(
             raise TypeError("relations must be StructuralWorldRelation")
         outgoing.setdefault(relation.source.node_id, []).append(relation)
     current = root
-    for distance, (kind, target_kind) in enumerate(_ANCESTRY_WALK):
+    for distance, (kind, _direction, target_kind) in enumerate(GEOGRAPHIC_ANCESTRY_WALK):
         matches = [
             item for item in outgoing.get(current.node_id, ()) if item.kind == kind and item.target.kind == target_kind
         ]
@@ -4012,10 +4081,13 @@ class MacroGraphBridgeRegistry:
 
 __all__ = [
     "FORBIDDEN_RELATION_KINDS",
+    "GEOGRAPHIC_ANCESTRY_WALK",
+    "GRAPH_OVERLAY_RELATION_KINDS",
     "GRAPH_PATH_NODE_KINDS",
     "GRAPH_TRAVERSAL_POLICY_VERSION",
     "GRAPH_TRAVERSAL_V1_DIRECTIONS",
     "KNOWLEDGE_RELATION_KINDS",
+    "ROOT_BRANCH_WALK",
     "MACRO_GRAPH_BLOCK_REASONS",
     "MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA",
     "MACRO_GRAPH_SKIP_REASONS",
@@ -4024,6 +4096,9 @@ __all__ = [
     "WORLD_ENTITY_KINDS",
     "WORLD_GRAPH_SNAPSHOT_SCHEMA",
     "ancestry_distance_from_instrument_root",
+    "geographic_ancestry_hops",
+    "geographic_ancestry_is_complete",
+    "graph_expansion_priority",
     "reconstruct_macro_observes_provenance",
     "IdFreeTraversalHop",
     "KnowledgeArtifactRef",

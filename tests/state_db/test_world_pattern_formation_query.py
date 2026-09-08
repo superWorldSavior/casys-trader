@@ -515,6 +515,26 @@ def test_successor_recorded_before_cutoff_becomes_active_leaf(
     assert batch.records[0].outcome.direction == "DOWN"
 
 
+def test_frozen_cutoff_keeps_pre_cutoff_rows_and_never_admits_later_exact_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pre = _seed_labeled(tmp_path / "pre", monkeypatch)
+    pre_batch = SqlitePatternFormationSource(pre["db_path"]).load_formation_batch(_request())
+    assert pre_batch.records
+    post = _seed_labeled(
+        tmp_path / "post",
+        monkeypatch,
+        as_of=FORMATION + timedelta(days=1),
+        snapshot_clock=FORMATION + timedelta(hours=2),
+        recorded_at=FORMATION + timedelta(hours=2),
+    )
+    source = SqlitePatternFormationSource(post["db_path"])
+    first = source.load_formation_batch(_request())
+    second = source.load_formation_batch(_request())
+    assert first.records == ()
+    assert second.records == ()
+
+
 def test_snapshot_and_relation_receipts_must_be_proven_with_exact_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

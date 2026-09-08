@@ -63,6 +63,8 @@ def _defensive_reject(record: PatternFormationRecord, request: PatternFormationR
         return "late_label"
     if outcome.direction not in PREDICTION_CLASSES:
         return "outcome_class_missing"
+    if request.ontology_revision is not None and record.snapshot.ontology_revision != request.ontology_revision:
+        return "ontology_revision_mismatch"
     return None
 
 
@@ -137,12 +139,14 @@ class PatternDiscoveryResult:
     eligible_records: int
     rejection_counts: Mapping[str, int]
     source_evidence_ids: tuple[str, ...]
+    considered_records: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "candidates": [item.to_dict() for item in self.candidates],
             "formation_dataset_fingerprint": self.formation_dataset_fingerprint,
             "eligible_records": self.eligible_records,
+            "considered_records": self.considered_records,
             "rejection_counts": dict(self.rejection_counts),
             "source_evidence_ids": list(self.source_evidence_ids),
         }
@@ -170,13 +174,23 @@ class PatternDiscoveryService:
             raise TypeError("source must return a PatternFormationBatch")
         rejection_counts: dict[str, int] = dict(batch.rejection_counts)
         eligible: list[PatternFormationRecord] = []
+        considered_records = 0
         for record in batch.records:
             if not isinstance(record, PatternFormationRecord):
                 raise TypeError("batch records must be PatternFormationRecord")
+            if (
+                request.ontology_revision is not None
+                and record.snapshot.ontology_revision != request.ontology_revision
+            ):
+                rejection_counts["ontology_revision_mismatch"] = (
+                    rejection_counts.get("ontology_revision_mismatch", 0) + 1
+                )
+                continue
             reason = _defensive_reject(record, request)
             if reason is not None:
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
                 continue
+            considered_records += 1
             eligible.append(record)
 
         labels_by_anchor: dict[tuple[Any, ...], dict[tuple[str, ...], set[str]]] = defaultdict(
@@ -325,6 +339,7 @@ class PatternDiscoveryService:
             eligible_records=len(eligible),
             rejection_counts=dict(sorted(rejection_counts.items())),
             source_evidence_ids=batch.source_evidence_ids,
+            considered_records=considered_records,
         )
 
 

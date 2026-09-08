@@ -116,6 +116,10 @@ class PatternHypothesisLedger(Protocol):
 
     def load(self, hypothesis_id: PatternHypothesisId) -> PatternHypothesis: ...
 
+    def list_hypotheses(self) -> tuple[PatternHypothesis, ...]:
+        """Inspection path: reconstruct every hypothesis from the full event stream."""
+        ...
+
 
 class OccurrenceLedger(Protocol):
     def append_event(self, event: PatternOccurrenceEvent) -> OccurrenceEventEnvelope:

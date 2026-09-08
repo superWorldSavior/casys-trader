@@ -17,27 +17,23 @@ from trader.application.world_model.pattern_discovery_ports import PatternDriver
 from trader.domain.world_driver import DriverState
 from trader.domain.world_feature_contract import GRAPH_PATH_RULE_VERSION
 from trader.domain.world_graph import (
+    GEOGRAPHIC_ANCESTRY_WALK,
+    GRAPH_OVERLAY_RELATION_KINDS,
+    ROOT_BRANCH_WALK,
     KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     StructuralWorldRelation,
     WorldEntityRef,
     WorldGraphSnapshot,
     WorldObservationRef,
+    geographic_ancestry_hops,
+    geographic_ancestry_is_complete,
 )
 from trader.domain.world_pattern import PATTERN_FRESHNESS_BUCKETS, PatternMatchedHop, PatternStep
 
 
-_ANCESTRY_WALK = (
-    ("TRADED_ON", "venue"),
-    ("LOCATED_IN", "country"),
-    ("LOCATED_IN", "region"),
-    ("PART_OF_WORLD", "world"),
-)
-_ROOT_BRANCHES = (
-    ("ISSUED_BY", "company"),
-    ("MEMBER_OF_FAMILY", "family"),
-)
-_OVERLAY_KINDS = frozenset({"OBSERVES", "ABOUT"})
+_BUDGET_EXCEEDED = "graph_budget_exceeded"
+_ANCESTRY_INCOMPLETE = "incomplete"
 _FOUR_HOURS = timedelta(hours=4)
 _ONE_DAY = timedelta(hours=24)
 _SEVEN_DAYS = timedelta(days=7)
@@ -215,26 +211,42 @@ def _unique_forward(
     return matches[0]
 
 
+def _capture_is_budget_truncated(snapshot: WorldGraphSnapshot) -> bool:
+    if snapshot.status == "partial":
+        return True
+    missingness = snapshot.missingness or {}
+    return missingness.get("budget") == _BUDGET_EXCEEDED or missingness.get("ancestry") == _ANCESTRY_INCOMPLETE
+
+
+def geographic_ancestry_pattern_eligible(
+    snapshot: WorldGraphSnapshot,
+    hops: Sequence[StructuralWorldRelation],
+) -> bool:
+    """True when the geographic chain may be emitted as a pattern path."""
+
+    if not hops:
+        return False
+    if geographic_ancestry_is_complete(hops):
+        return True
+    return not _capture_is_budget_truncated(snapshot)
+
+
 def _walk_ancestry(
     root: WorldEntityRef,
     relations: Sequence[StructuralWorldRelation],
 ) -> tuple[tuple[StructuralWorldRelation, ...], dict[str, tuple[StructuralWorldRelation, ...]]]:
-    hops: list[StructuralWorldRelation] = []
+    hops = geographic_ancestry_hops(root, relations)
     prefixes: dict[str, tuple[StructuralWorldRelation, ...]] = {root.node_id: ()}
-    current = root
-    for kind, target_kind in _ANCESTRY_WALK:
-        nxt = _unique_forward(relations, source=current, kind=kind, target_kind=target_kind)
-        if nxt is None:
-            break
-        hops.append(nxt)
-        prefixes[nxt.target.node_id] = tuple(hops)
-        current = nxt.target
-    for kind, target_kind in _ROOT_BRANCHES:
+    acc: list[StructuralWorldRelation] = []
+    for hop in hops:
+        acc.append(hop)
+        prefixes[hop.target.node_id] = tuple(acc)
+    for kind, _direction, target_kind in ROOT_BRANCH_WALK:
         branch = _unique_forward(relations, source=root, kind=kind, target_kind=target_kind)
         if branch is None:
             continue
         prefixes[branch.target.node_id] = (branch,)
-    return tuple(hops), prefixes
+    return hops, prefixes
 
 
 def _path_from_relations(
@@ -268,14 +280,14 @@ def project_pattern_path_details(source: PatternPathSource) -> tuple[ProjectedPa
     ancestry_hops, prefixes = _walk_ancestry(root, structural)
     cutoff = source.snapshot.cutoff_at
     projected: list[ProjectedPatternPath] = []
-    if ancestry_hops:
+    if geographic_ancestry_pattern_eligible(source.snapshot, ancestry_hops):
         projected.append(_path_from_relations(ancestry_hops, cutoff=cutoff))
     for prefix in prefixes.values():
         if len(prefix) == 1 and prefix[0].kind in {"ISSUED_BY", "MEMBER_OF_FAMILY"}:
             projected.append(_path_from_relations(prefix, cutoff=cutoff))
     visited = set(prefixes)
     for relation in knowledge:
-        if relation.kind not in _OVERLAY_KINDS:
+        if relation.kind not in GRAPH_OVERLAY_RELATION_KINDS:
             continue
         if not isinstance(relation.target, WorldEntityRef):
             continue
@@ -317,9 +329,12 @@ def paths_matching_steps(
 
 
 __all__ = (
+    "GEOGRAPHIC_ANCESTRY_WALK",
+    "ROOT_BRANCH_WALK",
     "PatternPathSource",
     "ProjectedPatternPath",
     "freshness_bucket",
+    "geographic_ancestry_pattern_eligible",
     "paths_matching_steps",
     "pattern_path_signature",
     "project_pattern_path_details",

@@ -40,6 +40,7 @@ from trader.domain.world_graph import (
     WorldKnowledgeRelationRef,
     WorldOntologyRevision,
     WorldStructuralRelationRef,
+    geographic_ancestry_hops,
 )
 from trader.domain.world_macro import MACRO_PRODUCER_VERSION
 from trader.domain.world_scope import WorldScopeMapping, WorldScopeResolution
@@ -65,6 +66,7 @@ class WorldGraphSnapshotRequest:
     slot: WorldCohortSlot | Mapping[str, Any] | None = None
     max_depth: int | None = None
     max_paths: int | None = None
+    ontology_revision: str | None = None
 
     def __post_init__(self) -> None:
         episode = self.episode if isinstance(self.episode, WorldEpisode) else WorldEpisode.from_dict(self.episode)
@@ -82,11 +84,15 @@ class WorldGraphSnapshotRequest:
             root = WorldEntityRef.from_mapping(self.root_entity)
             if root.kind != "instrument":
                 raise ValueError("graph root_entity must have kind=instrument")
+        ontology_revision = None if self.ontology_revision is None else str(self.ontology_revision).strip()
+        if self.ontology_revision is not None and not ontology_revision:
+            raise ValueError("ontology_revision must be a non-empty string when provided")
         object.__setattr__(self, "episode", episode)
         object.__setattr__(self, "root_entity", root)
         object.__setattr__(self, "cutoff_at", parse_utc_timestamp(self.cutoff_at, "cutoff_at"))
         object.__setattr__(self, "scope_resolution", resolution)
         object.__setattr__(self, "slot", slot)
+        object.__setattr__(self, "ontology_revision", ontology_revision)
 
 
 @dataclass(frozen=True)
@@ -329,7 +335,18 @@ class WorldGraphSnapshotService:
         resolved = request if isinstance(request, WorldGraphSnapshotRequest) else WorldGraphSnapshotRequest(**request)
         cutoff = resolved.cutoff_at
         view = self._ontology.at_cutoff(cutoff)
-        published = view.published_revision
+        if resolved.ontology_revision is not None:
+            published = self._ontology.published_revision(resolved.ontology_revision, at=cutoff)
+            if published is None or published.revision_id != resolved.ontology_revision:
+                return _missing_snapshot(
+                    request=resolved,
+                    view=view,
+                    published=None,
+                    missingness={"ontology": "revision_unavailable"},
+                    status="missing",
+                )
+        else:
+            published = view.published_revision
         _require_mapping_alignment(resolved, published)
         if resolved.scope_resolution.status in {"unmapped", "ambiguous"}:
             missingness = {"scope": resolved.scope_resolution.status}
@@ -397,6 +414,10 @@ class WorldGraphSnapshotService:
         if paths.status == "graph_budget_exceeded":
             status = "partial"
             missingness["budget"] = "graph_budget_exceeded"
+            available = geographic_ancestry_hops(request.root_entity, view.structural_relations)
+            captured = geographic_ancestry_hops(request.root_entity, structural_members)
+            if captured != available:
+                missingness["ancestry"] = "incomplete"
         elif not paths.paths and not structural_members:
             status = "missing"
             missingness["coverage"] = "empty_subgraph"

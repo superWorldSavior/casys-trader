@@ -103,9 +103,12 @@ def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_pa
         )
         assert pattern_workflow is not None
         pattern_result = pattern_workflow.run(BOOT)
-        assert pattern_result.status == "completed"
+        assert pattern_result.status == "partial"
         assert pattern_result.discovered_count == 0
         assert pattern_result.selected_hypothesis_ids == ()
+        discovery = next(item for item in pattern_result.stages if item.stage == "discovery")
+        assert discovery.status == "skipped"
+        assert discovery.reason == "no_ripe_exact_records_at_formation_cutoff"
         runner = WorldModelBackgroundRunner(
             runtime=object(),  # type: ignore[arg-type]
             resource_guard=guard,

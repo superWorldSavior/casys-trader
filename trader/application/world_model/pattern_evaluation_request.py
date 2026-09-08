@@ -131,11 +131,13 @@ class PatternEvaluationResult:
     rejection_counts: Mapping[str, int]
     source_evidence_ids: tuple[str, ...]
     request: PatternEvaluationRequest
+    considered_records: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "matches": [item.to_dict() for item in self.matches],
             "hypothesis_ids": [item.hypothesis_id for item in self.hypotheses],
+            "considered_records": self.considered_records,
             "eligible_records": self.eligible_records,
             "rejection_counts": dict(self.rejection_counts),
             "source_evidence_count": len(self.source_evidence_ids),

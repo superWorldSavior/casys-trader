@@ -1453,7 +1453,7 @@ def test_compose_graph_accepts_frozen_study_cohort_id_without_a_second_scope_map
     assert enricher.config.scope_mapping is capture.scope_mapping
 
 
-def test_compose_local_graph_injects_study_cohort_id_when_capture_is_composed(tmp_path) -> None:
+def test_compose_local_graph_fails_closed_when_study_cohort_or_generation_is_missing(tmp_path) -> None:
     from pathlib import Path
 
     from trader.infrastructure.state_db.world_model_store import WorldModelStore
@@ -1468,9 +1468,111 @@ def test_compose_local_graph_injects_study_cohort_id_when_capture_is_composed(tm
             config_dir=Path(__file__).resolve().parents[2] / "config",
             study_cohort_id=cohort_id,
         )
-        assert enricher is not None
-        assert enricher.config.study_cohort_id == cohort_id
+        assert predictors == ()
+        assert enricher is None
         assert store.counts()["episodes"] == 0
+    finally:
+        store.close()
+
+
+def test_compose_graph_capture_uses_pinned_generation_not_live_mapping(tmp_path) -> None:
+    from pathlib import Path
+
+    from tests.application.test_world_cohort_lifecycle import (
+        BOOT,
+        IDENTITY_A,
+        _FixedIdentity,
+        _FixedOntologyProof,
+        _mapping_generation_b,
+        _matching_graph_proof,
+    )
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
+    from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+    from trader.domain.world_cohort import WorldCohortId
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import _compose_graph_capture
+
+    mapping_a, mapping_b = _mapping_generation_b()
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: BOOT)
+    config_dir = Path(__file__).resolve().parents[2] / "config"
+    try:
+        report = activate_world_shadow_pilot(
+            cohort_service=WorldCohortService(repository=store, query=store),
+            config_dir=config_dir,
+            now=BOOT,
+            environ={},
+            runtime_identity=_FixedIdentity(IDENTITY_A),
+            ontology_proof=_FixedOntologyProof(_matching_graph_proof(mapping_b)),
+            mapping=mapping_b,
+            mapping_generations=store,
+        )
+        graph_id = next(item["cohort_id"] for item in report.cohorts if item["key"] == "graph")
+        capture = _compose_graph_capture(
+            store=store,
+            config_dir=config_dir,
+            study_cohort_id=graph_id,
+        )
+        live = WorldScopeResolver.load(config_dir).mapping
+        cohort = store.load(WorldCohortId(graph_id))
+        assert capture is not None
+        assert capture.study_cohort_id == graph_id
+        assert capture.scope_mapping.content_sha256 == mapping_b.content_sha256
+        assert capture.scope_mapping.content_sha256 != live.content_sha256
+        assert capture.ontology_revision == market_ontology_revision_id(mapping_b)
+        assert capture.ontology_revision == cohort.manifest.ontology_revision
+        assert capture.ontology_revision != market_ontology_revision_id(mapping_a)
+    finally:
+        store.close()
+
+
+def test_compose_pinned_capture_does_not_require_live_yaml(tmp_path) -> None:
+    from pathlib import Path
+
+    from tests.application.test_world_cohort_lifecycle import (
+        BOOT,
+        IDENTITY_A,
+        _FixedIdentity,
+        _FixedOntologyProof,
+        _mapping_generation_b,
+        _matching_graph_proof,
+    )
+    from trader.application.world_model.cohort_service import WorldCohortService
+    from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
+    from trader.infrastructure.state_db.world_model_store import WorldModelStore
+    from trader.runtime.world_model_runtime import _compose_graph_capture
+
+    _mapping_a, mapping_b = _mapping_generation_b()
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: BOOT)
+    config_dir = Path(__file__).resolve().parents[2] / "config"
+    broken = tmp_path / "broken_config"
+    broken.mkdir()
+    (broken / "world_scope_mapping.yaml").write_text("::::not-a-mapping", encoding="utf-8")
+    try:
+        report = activate_world_shadow_pilot(
+            cohort_service=WorldCohortService(repository=store, query=store),
+            config_dir=config_dir,
+            now=BOOT,
+            environ={},
+            runtime_identity=_FixedIdentity(IDENTITY_A),
+            ontology_proof=_FixedOntologyProof(_matching_graph_proof(mapping_b)),
+            mapping=mapping_b,
+            mapping_generations=store,
+        )
+        graph_id = next(item["cohort_id"] for item in report.cohorts if item["key"] == "graph")
+        capture = _compose_graph_capture(
+            store=store,
+            config_dir=broken,
+            study_cohort_id=graph_id,
+        )
+        assert capture is not None
+        assert capture.study_cohort_id == graph_id
+        assert capture.scope_mapping.content_sha256 == mapping_b.content_sha256
+        assert capture.ontology_revision == market_ontology_revision_id(mapping_b)
+        with pytest.raises((TypeError, ValueError, OSError)):
+            _compose_graph_capture(store=store, config_dir=broken)
     finally:
         store.close()
 

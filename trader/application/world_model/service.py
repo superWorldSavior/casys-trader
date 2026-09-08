@@ -1669,6 +1669,9 @@ class WorldModelService:
                 proven_end = _episode_completed_bar_end(episode)
                 if proven_end is None or proven_end <= evidence.effective_ready_at:
                     continue
+                stop_at = cohort.manifest.collection_stop_rule.at
+                if proven_end > stop_at:
+                    continue
                 existing_end = anchor_ends.get(anchor)
                 if existing_end is not None and existing_end != proven_end:
                     continue

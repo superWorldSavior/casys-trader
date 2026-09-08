@@ -108,7 +108,7 @@ def _evaluating_hypothesis(*, steps, **overrides: object) -> PatternHypothesis:
     )
 
 
-def _eval_record(*, as_of: datetime, knowledge=(), extra_structural=(), driver_state_bindings=None):
+def _eval_record(*, as_of: datetime, knowledge=(), extra_structural=(), driver_state_bindings=None, **kwargs):
     formation = _record(
         as_of=as_of,
         structural=(_structural("TRADED_ON", _instrument(), _venue()),),
@@ -116,6 +116,7 @@ def _eval_record(*, as_of: datetime, knowledge=(), extra_structural=(), driver_s
         extra_structural=extra_structural,
         driver_state_bindings=driver_state_bindings,
         available_at=as_of,
+        **kwargs,
     )
     return PatternEvaluationRecord(
         episode=formation.episode,
@@ -206,6 +207,19 @@ def test_evaluate_forwards_evaluation_cohort_identity_on_the_scan() -> None:
     assert source.last_request.evaluation_cohort_id == COHORT_ID
     assert source.last_request.as_of == AS_OF
     assert not hasattr(source.last_request, "evaluation_dataset_fingerprint")
+
+
+def test_all_records_incompatible_are_counted_and_not_silent() -> None:
+    hypothesis, record = _matched_pair()
+    drifted = _eval_record(as_of=POST, ontology_revision="market_ontology:v1:" + "f" * 64)
+    result = PatternEvaluationService(MemoryCatalog((hypothesis,)), MemorySource((drifted,))).evaluate(_request())
+    assert result.considered_records == 1
+    assert result.eligible_records == 0
+    assert result.matches == ()
+    assert result.rejection_counts.get("ontology_revision_mismatch") == 1
+    payload = result.to_dict()
+    assert payload["considered_records"] == 1
+    assert payload["eligible_records"] == 0
 
 
 def test_zero_occurrence_evaluating_hypothesis_is_visible() -> None:

@@ -176,7 +176,7 @@ class _Ledger:
         self.relation_events = relation_events
         self.outcomes = outcomes
         self.macro_observations = macro_observations
-        self._snapshot_eval: dict[str, tuple[str, _SnapshotBundle | None]] = {}
+        self._snapshot_eval: dict[tuple[str, str | None], tuple[str, _SnapshotBundle | None]] = {}
         self._parsed_events: dict[str, Any] = {}
 
 
@@ -351,7 +351,9 @@ def _record_for_episode(
     except (TypeError, ValueError):
         rejections["embedded_snapshot_id_missing"] += 1
         return ()
-    snapshot_bundle = _admitted_snapshot(ledger, snapshot_id, cutoff, rejections)
+    snapshot_bundle = _admitted_snapshot(
+        ledger, snapshot_id, cutoff, rejections, ontology_revision=request.ontology_revision
+    )
     if snapshot_bundle is None:
         return ()
     snapshot, snapshot_row, snapshot_receipt, snapshot_recorded, snapshot_receipt_recorded = snapshot_bundle
@@ -658,11 +660,14 @@ def _admitted_snapshot(
     snapshot_id: str,
     cutoff: datetime,
     rejections: Counter[str],
+    *,
+    ontology_revision: str | None = None,
 ) -> _SnapshotBundle | None:
-    cached = ledger._snapshot_eval.get(snapshot_id)
+    cache_key = (snapshot_id, ontology_revision)
+    cached = ledger._snapshot_eval.get(cache_key)
     if cached is None:
-        cached = _evaluate_snapshot(ledger, snapshot_id, cutoff)
-        ledger._snapshot_eval[snapshot_id] = cached
+        cached = _evaluate_snapshot(ledger, snapshot_id, cutoff, ontology_revision=ontology_revision)
+        ledger._snapshot_eval[cache_key] = cached
     reason, bundle = cached
     if bundle is None:
         rejections[reason] += 1
@@ -674,6 +679,8 @@ def _evaluate_snapshot(
     ledger: _Ledger,
     snapshot_id: str,
     cutoff: datetime,
+    *,
+    ontology_revision: str | None = None,
 ) -> tuple[str, _SnapshotBundle | None]:
     row = ledger.snapshots.get(snapshot_id)
     if row is None:
@@ -693,6 +700,8 @@ def _evaluate_snapshot(
         return "snapshot_payload_mismatch", None
     if snapshot.status not in _ADMITTED_SNAPSHOT_STATUSES:
         return "snapshot_not_admitted", None
+    if ontology_revision is not None and snapshot.ontology_revision != ontology_revision:
+        return "ontology_revision_mismatch", None
     if not _clocks_not_after(cutoff, snapshot.cutoff_at, recorded_at):
         return "snapshot_after_formation_cutoff", None
     payload_digest = str(row["payload_sha256"])

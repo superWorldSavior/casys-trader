@@ -38,6 +38,7 @@ from trader.domain.world_cohort import (
     COHORT_DECISION_EFFECT,
     COHORT_RECOMMENDATION,
     ArmWorldCohort,
+    CloseWorldCohort,
     CohortPhase,
     InvalidateWorldCohort,
     InvalidationReason,
@@ -54,6 +55,7 @@ from trader.domain.world_cohort import (
     WorldRuntimeIdentityIntent,
     WorldSensorRequirement,
     is_live_same_shape_mapping_cohort,
+    is_same_shape_mapping_cohort,
     world_cohort_lane_signature,
 )
 from trader.domain.world_episode import SUPPORTED_WORLD_HORIZONS, canonical_sha256, parse_utc_timestamp
@@ -424,19 +426,23 @@ def _stable_cohort_id(
     *,
     mapping_sha256: str | None = None,
     ontology_revision: str | None = None,
+    predecessor_cohort_id: str | None = None,
+    predecessor_stop_at: str | None = None,
 ) -> str:
-    return "world_cohort:v1:" + canonical_sha256(
-        {
-            "pilot_id": config.payload.get("pilot_id") or WORLD_SHADOW_PILOT_SCHEMA,
-            "schema_version": config.schema_version,
-            "cohort_key": key,
-            "activation_policy": config.activation_policy,
-            "config_sha256": config.content_sha256,
-            "lifecycle_generation": config.payload.get("lifecycle_generation"),
-            "mapping_sha256": mapping_sha256,
-            "ontology_revision": ontology_revision,
-        }
-    )
+    payload: dict[str, Any] = {
+        "pilot_id": config.payload.get("pilot_id") or WORLD_SHADOW_PILOT_SCHEMA,
+        "schema_version": config.schema_version,
+        "cohort_key": key,
+        "activation_policy": config.activation_policy,
+        "config_sha256": config.content_sha256,
+        "lifecycle_generation": config.payload.get("lifecycle_generation"),
+        "mapping_sha256": mapping_sha256,
+        "ontology_revision": ontology_revision,
+    }
+    if predecessor_cohort_id is not None:
+        payload["predecessor_cohort_id"] = predecessor_cohort_id
+        payload["predecessor_stop_at"] = predecessor_stop_at
+    return "world_cohort:v1:" + canonical_sha256(payload)
 
 
 def _window_for(config: WorldShadowPilotConfig, now: datetime) -> tuple[datetime, datetime]:
@@ -602,15 +608,19 @@ def _persist_mapping_generation(
     mapping_generations.persist_mapping_generation(mapping)
 
 
-def _reusable_same_shape_cohort(
+def _collection_window_elapsed(cohort: WorldCohort, now: datetime) -> bool:
+    """Inclusive end: the window is still open at collection_stop_rule.at."""
+
+    return _utc(now) > cohort.manifest.collection_stop_rule.at
+
+
+def _same_shape_operator_cohorts(
     service: WorldCohortService,
     config: WorldShadowPilotConfig,
     spec: Mapping[str, Any],
     *,
     mapping: WorldScopeMapping,
-) -> WorldCohort | None:
-    """Return the live same-shape cohort of this operator lifecycle, pinned to its mapping."""
-
+) -> list[WorldCohort]:
     key = _required_text(spec.get("key"), "cohorts[].key")
     study_kind = _required_text(spec.get("study_kind"), "cohorts[].study_kind")
     question = _required_text(spec.get("question"), "cohorts[].question")
@@ -630,19 +640,166 @@ def _reusable_same_shape_cohort(
         pin = cohort.manifest.scope_mapping
         if pin is None:
             continue
-        expected_id = _stable_cohort_id(
+        if not _operator_lifecycle_contains(
+            service,
             config,
             key,
             mapping_sha256=pin.mapping_sha256,
-            ontology_revision=cohort.manifest.ontology_revision if graph else None,
-        )
-        if cohort.cohort_id != expected_id:
+            ontology_pin=cohort.manifest.ontology_revision if graph else None,
+            cohort_id=cohort.cohort_id,
+        ):
             continue
         matches.append(cohort)
+    matches.sort(key=lambda item: (item.manifest.planned_start_not_before, item.cohort_id))
+    return matches
+
+
+def _reusable_same_shape_cohort(
+    service: WorldCohortService,
+    config: WorldShadowPilotConfig,
+    spec: Mapping[str, Any],
+    *,
+    mapping: WorldScopeMapping,
+    now: datetime,
+) -> WorldCohort | None:
+    """Return the live same-shape cohort of this operator lifecycle, pinned to its mapping."""
+
+    matches = [
+        cohort
+        for cohort in _same_shape_operator_cohorts(service, config, spec, mapping=mapping)
+        if not _collection_window_elapsed(cohort, now)
+    ]
     if not matches:
         return None
-    matches.sort(key=lambda item: (item.manifest.planned_start_not_before, item.cohort_id))
     return matches[0]
+
+
+def _close_expired_same_shape_cohorts(
+    service: WorldCohortService,
+    config: WorldShadowPilotConfig,
+    spec: Mapping[str, Any],
+    *,
+    mapping: WorldScopeMapping,
+    ontology_pin: str | None,
+    now: datetime,
+) -> None:
+    study_kind = _required_text(spec.get("study_kind"), "cohorts[].study_kind")
+    question = _required_text(spec.get("question"), "cohorts[].question")
+    signature = _lane_signature_for_spec(spec)
+    for cohort in service.query.list_live_cohorts():
+        if cohort.phase is not CohortPhase.COLLECTING:
+            continue
+        if not _collection_window_elapsed(cohort, now):
+            continue
+        if cohort.manifest.scope_mapping is None:
+            continue
+        if not is_same_shape_mapping_cohort(
+            cohort,
+            mapping_id=mapping.mapping_id,
+            lane_signature=signature,
+            study_kind=study_kind,
+            question=question,
+        ):
+            continue
+        service.close(cohort.cohort_id, CloseWorldCohort(reason="fixed_end reached"))
+    key = _required_text(spec.get("key"), "cohorts[].key")
+    current_id = _cohort_id_after_closed_predecessors(
+        service,
+        config,
+        key,
+        mapping=mapping,
+        ontology_pin=ontology_pin,
+    )
+    current = _try_load(service, current_id)
+    if (
+        current is not None
+        and current.phase is CohortPhase.COLLECTING
+        and _collection_window_elapsed(current, now)
+    ):
+        service.close(current.cohort_id, CloseWorldCohort(reason="fixed_end reached"))
+
+
+def _successor_id_after(
+    config: WorldShadowPilotConfig,
+    key: str,
+    *,
+    mapping_sha256: str,
+    ontology_pin: str | None,
+    predecessor: WorldCohort,
+) -> str:
+    return _stable_cohort_id(
+        config,
+        key,
+        mapping_sha256=mapping_sha256,
+        ontology_revision=ontology_pin,
+        predecessor_cohort_id=predecessor.cohort_id,
+        predecessor_stop_at=predecessor.manifest.collection_stop_rule.at.isoformat(),
+    )
+
+
+def _operator_lifecycle_contains(
+    service: WorldCohortService,
+    config: WorldShadowPilotConfig,
+    key: str,
+    *,
+    mapping_sha256: str,
+    ontology_pin: str | None,
+    cohort_id: str,
+) -> bool:
+    """True when cohort_id is the origin id or a closed-predecessor successor of this pin."""
+
+    cursor = _stable_cohort_id(
+        config,
+        key,
+        mapping_sha256=mapping_sha256,
+        ontology_revision=ontology_pin,
+    )
+    seen: set[str] = set()
+    while cursor not in seen:
+        seen.add(cursor)
+        if cursor == cohort_id:
+            return True
+        existing = _try_load(service, cursor)
+        if existing is None or existing.phase is not CohortPhase.COLLECTION_CLOSED:
+            return False
+        cursor = _successor_id_after(
+            config,
+            key,
+            mapping_sha256=mapping_sha256,
+            ontology_pin=ontology_pin,
+            predecessor=existing,
+        )
+    return False
+
+
+def _cohort_id_after_closed_predecessors(
+    service: WorldCohortService,
+    config: WorldShadowPilotConfig,
+    key: str,
+    *,
+    mapping: WorldScopeMapping,
+    ontology_pin: str | None,
+) -> str:
+    cohort_id = _stable_cohort_id(
+        config,
+        key,
+        mapping_sha256=mapping.content_sha256,
+        ontology_revision=ontology_pin,
+    )
+    seen: set[str] = set()
+    while cohort_id not in seen:
+        seen.add(cohort_id)
+        existing = _try_load(service, cohort_id)
+        if existing is None or existing.phase is not CohortPhase.COLLECTION_CLOSED:
+            return cohort_id
+        cohort_id = _successor_id_after(
+            config,
+            key,
+            mapping_sha256=mapping.content_sha256,
+            ontology_pin=ontology_pin,
+            predecessor=existing,
+        )
+    return cohort_id
 
 
 def _activate_one(
@@ -659,16 +816,20 @@ def _activate_one(
     logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
     graph = "graph" in logicals
     ontology_pin = market_ontology_revision_id(mapping) if graph else None
-    reusable = _reusable_same_shape_cohort(service, config, spec, mapping=mapping)
+    _close_expired_same_shape_cohorts(
+        service, config, spec, mapping=mapping, ontology_pin=ontology_pin, now=now
+    )
+    reusable = _reusable_same_shape_cohort(service, config, spec, mapping=mapping, now=now)
     if reusable is not None:
         cohort_id = reusable.cohort_id
         existing = reusable
     else:
-        cohort_id = _stable_cohort_id(
+        cohort_id = _cohort_id_after_closed_predecessors(
+            service,
             config,
             key,
-            mapping_sha256=mapping.content_sha256,
-            ontology_revision=ontology_pin,
+            mapping=mapping,
+            ontology_pin=ontology_pin,
         )
         existing = _try_load(service, cohort_id)
     if existing is not None:

@@ -181,6 +181,7 @@ class PatternEvaluationService:
                 rejection_counts=rejection_counts,
                 source_evidence_ids=(),
                 request=request,
+                considered_records=0,
             )
         for hypothesis in hypotheses:
             if hypothesis.status != "evaluating":
@@ -205,6 +206,7 @@ class PatternEvaluationService:
                 rejection_counts={"scan_window_empty": 1},
                 source_evidence_ids=(),
                 request=request,
+                considered_records=0,
             )
         batch = self.source.load_evaluation_batch(
             PatternEvaluationScanRequest(
@@ -260,6 +262,7 @@ class PatternEvaluationService:
             rejection_counts=dict(sorted(rejection_counts.items())),
             source_evidence_ids=batch.source_evidence_ids,
             request=request,
+            considered_records=len(batch.records),
         )
 
     def persist(
