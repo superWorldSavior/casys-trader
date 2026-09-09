@@ -14,7 +14,8 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -63,6 +64,17 @@ from trader.infrastructure.state_db.availability_receipt import (
     default_utc_clock,
 )
 from trader.infrastructure.state_db.connection import StateDb
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageLease,
+    shared_prediction_storage_lease,
+)
+from trader.infrastructure.state_db.world_prediction_tiers import (
+    cold_prediction_for_replay,
+    ensure_cold_schema,
+    prediction_count,
+    read_prediction_identities,
+    read_prediction_rows,
+)
 
 _MARKET_FEATURE_CONTRACT = "world_feature.market.v1"
 _CONTEXT_FEATURE_CONTRACT = "world_feature.context.v1"
@@ -134,6 +146,8 @@ def apply_current_world_model_schema(db: StateDb) -> None:
     ensure_world_prediction_identity_index(db)
     ensure_world_prediction_recorded_at_index(db)
     ensure_world_scope_mapping_generations_schema(db)
+    with db.transaction() as cur:
+        ensure_cold_schema(cur)
     _assert_current_world_model_schema(db)
 
 
@@ -1091,6 +1105,23 @@ _PREDICTION_COLUMNS = (
     "feature_mask_fingerprint",
 )
 
+_COLD_REPLAY_FIELDS = (
+    "run_id",
+    "episode_id",
+    "horizon_code",
+    "model_kind",
+    "model_version",
+    "predicted_at",
+    "input_sha256",
+    "prediction_sha256",
+    "payload_sha256",
+    "study_cohort_id",
+    "lane_id",
+    "manifest_sha256",
+    "feature_contract_fingerprint",
+    "feature_mask_fingerprint",
+)
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -1358,6 +1389,41 @@ def _json_load(text: str) -> Any:
     return json.loads(text)
 
 
+class _LeasedWorldModelStateDb(StateDb):
+    """Dedicated world-model SQLite connection whose shared storage lease outlives close.
+
+    The lease is acquired before SQLite opens and released only after
+    ``StateDb.close()``. Caller-supplied ``StateDb`` instances are never wrapped.
+    """
+
+    def __init__(self, db_path: str | Path, *, lease: PredictionStorageLease) -> None:
+        self._storage_lease: PredictionStorageLease | None = lease
+        try:
+            super().__init__(db_path)
+        except Exception:
+            conn = getattr(self, "_conn", None)
+            if conn is not None:
+                self._conn = None
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+            self._release_storage_lease()
+            raise
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self._release_storage_lease()
+
+    def _release_storage_lease(self) -> None:
+        lease = self._storage_lease
+        self._storage_lease = None
+        if lease is not None:
+            lease.close()
+
+
 def _open_dedicated_state_db(path: str | Path) -> StateDb:
     """Open a newly-created WAL database safely when workers start together.
 
@@ -1366,19 +1432,27 @@ def _open_dedicated_state_db(path: str | Path) -> StateDb:
     race only at that first pragma.  Retrying this tiny initialization window
     here keeps concurrent evidence capture reliable without changing the
     shared StateDb behavior used by production stores.
+
+    A shared prediction storage lease is acquired before SQLite opens and
+    released only after the dedicated connection is closed.
     """
 
     last_error: sqlite3.OperationalError | None = None
     for attempt in range(12):
+        lease = shared_prediction_storage_lease(path, create=True)
         try:
-            return StateDb(path)
+            return _LeasedWorldModelStateDb(path, lease=lease)
         except sqlite3.OperationalError as exc:
+            lease.close()
             if "locked" not in str(exc).lower():
                 raise
             last_error = exc
             # 25ms, 50ms, 75ms, ... capped at 150ms: normally a single retry,
             # and roughly 1.5 seconds maximum even for a stuck peer.
             time.sleep(min(0.025 * (attempt + 1), 0.15))
+        except Exception:
+            lease.close()
+            raise
     assert last_error is not None
     raise last_error
 
@@ -1393,30 +1467,74 @@ class WorldModelStore:
     """
 
     def __init__(self, db_or_path: StateDb | str | Path, *, clock: UtcClock | None = None) -> None:
-        if isinstance(db_or_path, StateDb):
-            self._db = db_or_path
-            self._owns_db = False
-        else:
-            if Path(db_or_path).name.casefold() == "casys.db":
+        self._storage_lease = None
+        self._owns_db = False
+        opened: StateDb | None = None
+        try:
+            if isinstance(db_or_path, StateDb):
+                if db_or_path.path.name.casefold() == "casys.db":
+                    raise ValueError("WorldModelStore requires a dedicated world_model.db, never casys.db")
+                self._storage_lease = shared_prediction_storage_lease(db_or_path.path, create=True)
+                opened = db_or_path
+            else:
+                path = Path(db_or_path)
+                if path.name.casefold() == "casys.db":
+                    raise ValueError("WorldModelStore requires a dedicated world_model.db, never casys.db")
+                opened = _open_dedicated_state_db(path)
+                self._owns_db = True
+            self._db = opened
+            self.path = self._db.path
+            if self.path.name.casefold() == "casys.db":
                 raise ValueError("WorldModelStore requires a dedicated world_model.db, never casys.db")
-            self._db = _open_dedicated_state_db(db_or_path)
-            self._owns_db = True
-        self.path = self._db.path
-        if self.path.name.casefold() == "casys.db":
-            raise ValueError("WorldModelStore requires a dedicated world_model.db, never casys.db")
-        self._clock = clock or default_utc_clock
-        self._first_seen_at: dict[str, datetime] = {}
-        # ``foreign_keys`` is connection-local and StateDb intentionally stays
-        # generic, so set it before the world schema is used.
-        self._db.query_one("PRAGMA foreign_keys=ON")
-        apply_current_world_model_schema(self._db)
-        self._prime_existing_receipts()
+            self._clock = clock or default_utc_clock
+            self._first_seen_at: dict[str, datetime] = {}
+            # ``foreign_keys`` is connection-local and StateDb intentionally stays
+            # generic, so set it before the world schema is used.
+            self._db.query_one("PRAGMA foreign_keys=ON")
+            apply_current_world_model_schema(self._db)
+            self._prime_existing_receipts()
+        except Exception:
+            if self._owns_db and opened is not None:
+                opened.close()
+            if self._storage_lease is not None:
+                self._storage_lease.close()
+                self._storage_lease = None
+            raise
 
     def close(self) -> None:
-        """Close only a connection this store created itself."""
+        """Close a store-owned connection and always release the storage lease."""
 
-        if self._owns_db:
-            self._db.close()
+        try:
+            if self._owns_db:
+                self._db.close()
+        finally:
+            lease = self._storage_lease
+            self._storage_lease = None
+            if lease is not None:
+                lease.close()
+
+    @contextmanager
+    def _prediction_read_tx(self) -> Iterator[sqlite3.Connection]:
+        """Snapshot prediction reads without BEGIN IMMEDIATE."""
+
+        with self._db._lock:
+            self._db._ensure_open()
+            conn = self._db._conn
+            started = False
+            if not conn.in_transaction:
+                conn.execute("BEGIN DEFERRED")
+                started = True
+            try:
+                yield conn
+                if started:
+                    conn.execute("COMMIT")
+            except Exception:
+                if started:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                raise
 
     def integrity_check(self) -> list[str]:
         return self._db.integrity_check()
@@ -1806,7 +1924,10 @@ class WorldModelStore:
                 (values["prediction_id"],),
             )
             if existing is None:
-                _assert_live_prediction(payload, predicted)
+                with self._prediction_read_tx() as conn:
+                    cold = cold_prediction_for_replay(conn, values["prediction_id"])
+                if cold is None:
+                    _assert_live_prediction(payload, predicted)
         return self._append(
             table="world_shadow_predictions",
             id_column="prediction_id",
@@ -2084,51 +2205,33 @@ class WorldModelStore:
         horizon_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        conditions: list[str] = []
-        params: list[Any] = []
         horizon = _horizon_filter(horizon_code=horizon_code, horizon_id=horizon_id)
-        if run_id is not None:
-            conditions.append("p.run_id=?")
-            params.append(run_id)
-        if episode_id is not None:
-            conditions.append("p.episode_id=?")
-            params.append(episode_id)
-        if horizon is not None:
-            conditions.append("p.horizon_code=?")
-            params.append(horizon)
-        where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        sql = (
-            "SELECT p.*, e.observed_at AS episode_observed_at "
-            "FROM world_shadow_predictions p JOIN world_episodes e ON e.episode_id=p.episode_id"
-            f"{where} ORDER BY p.run_id, e.observed_at, p.episode_id, p.prediction_id"
-        )
-        rows = self._db.query_all(*self._with_limit(sql, tuple(params), limit))
+        columns = (*_PREDICTION_COLUMNS, "recorded_at", "episode_observed_at")
+        with self._prediction_read_tx() as conn:
+            rows = read_prediction_rows(
+                conn,
+                columns=columns,
+                run_id=run_id,
+                episode_ids=None if episode_id is None else (episode_id,),
+                horizon_code=horizon,
+                order="episode",
+                limit=limit,
+            )
         return [self._prediction_row(row) for row in rows]
 
     def list_prediction_identities(self) -> list[dict[str, Any]]:
         """Return only the stable deduplication key required at service startup."""
 
-        rows = self._db.query_all(
-            "SELECT DISTINCT episode_id, horizon_code, model_kind, model_version "
-            "FROM world_shadow_predictions "
-            "ORDER BY episode_id, horizon_code, model_kind, model_version"
-        )
-        return [
-            {
-                "episode_id": row[0],
-                "horizon_code": row[1],
-                "model_kind": row[2],
-                "model_version": row[3],
-            }
-            for row in rows
-        ]
+        with self._prediction_read_tx() as conn:
+            return read_prediction_identities(conn)
 
     def counts(self) -> dict[str, int]:
-        return {
-            "episodes": int(self._db.query_one("SELECT COUNT(*) FROM world_episodes")[0]),
-            "outcome_events": int(self._db.query_one("SELECT COUNT(*) FROM world_outcome_events")[0]),
-            "predictions": int(self._db.query_one("SELECT COUNT(*) FROM world_shadow_predictions")[0]),
-        }
+        with self._prediction_read_tx() as conn:
+            return {
+                "episodes": int(conn.execute("SELECT COUNT(*) FROM world_episodes").fetchone()[0]),
+                "outcome_events": int(conn.execute("SELECT COUNT(*) FROM world_outcome_events").fetchone()[0]),
+                "predictions": prediction_count(conn),
+            }
 
     def register(self, manifest: WorldCohortManifest, event: WorldCohortRegistered) -> WorldCohortEventEnvelope:
         if not isinstance(manifest, WorldCohortManifest):
@@ -2636,11 +2739,25 @@ class WorldModelStore:
         placeholders = ", ".join("?" for _ in columns)
         stored_values = tuple(values[column] for column in columns)
         with self._db.transaction() as cur:
-            cur.execute(
-                f"INSERT INTO {table}({column_names}, recorded_at) "  # noqa: S608 -- constants only
-                f"VALUES ({placeholders}, ?) ON CONFLICT({id_column}) DO NOTHING",
-                (*stored_values, _utc_now()),
-            )
+            if table == "world_shadow_predictions":
+                replayed = self._cold_prediction_replay(cur, values)
+                if replayed is not None:
+                    return replayed
+            try:
+                cur.execute(
+                    f"INSERT INTO {table}({column_names}, recorded_at) "  # noqa: S608 -- constants only
+                    f"VALUES ({placeholders}, ?) ON CONFLICT({id_column}) DO NOTHING",
+                    (*stored_values, _utc_now()),
+                )
+            except sqlite3.IntegrityError as exc:
+                if table == "world_shadow_predictions" and "cold storage" in str(exc):
+                    replayed = self._cold_prediction_replay(cur, values)
+                    if replayed is not None:
+                        return replayed
+                    raise WorldModelConflictError(
+                        f"{id_column} {values[id_column]!r} already exists with different canonical content"
+                    ) from exc
+                raise
             if cur.rowcount == 1:
                 return True
             row = cur.execute(
@@ -2653,6 +2770,17 @@ class WorldModelStore:
                     f"{id_column} {values[id_column]!r} already exists with different canonical content"
                 )
             return False
+
+    def _cold_prediction_replay(self, cur: sqlite3.Cursor, values: Mapping[str, Any]) -> bool | None:
+        cold = cold_prediction_for_replay(cur, values["prediction_id"])
+        if cold is None:
+            return None
+        for field in _COLD_REPLAY_FIELDS:
+            if cold.get(field) != values.get(field):
+                raise WorldModelConflictError(
+                    f"prediction_id {values['prediction_id']!r} already exists with different canonical content"
+                )
+        return False
 
     @staticmethod
     def _with_limit(

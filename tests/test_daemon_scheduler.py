@@ -88,7 +88,7 @@ def test_run_cycle_pose_la_cadence_calme_si_agent_ne_modifie_pas(
     )
 
     assert report["decisions"][0]["next_wake_in_minutes"] is None
-    assert sched.next_wake("SPY") == datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    assert sched.next_wake("SPY") == datetime(2026, 6, 5, 13, 30, tzinfo=timezone.utc)
     assert sched.next_wake("QQQ") == datetime(2026, 6, 5, 12, 30, tzinfo=timezone.utc)
 
 
@@ -114,7 +114,7 @@ def test_run_cycle_remplace_un_override_expire_par_la_cadence_calme(
 
     daemon.run_cycle(dry_run=True, now=now, symbols_filter=["SPY"], sched=sched, data_source=data_source)
 
-    assert sched.next_wake("SPY") == datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
+    assert sched.next_wake("SPY") == datetime(2026, 6, 5, 13, 30, tzinfo=timezone.utc)
 
 
 def test_select_due_symbols_respecte_le_scheduler_au_demarrage_incremental(tmp_path) -> None:

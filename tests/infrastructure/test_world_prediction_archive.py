@@ -25,6 +25,11 @@ from trader.infrastructure.state_db.world_prediction_archive_source import (
 from trader.infrastructure.state_db.world_prediction_parquet_store import (
     DuckDbWorldPredictionParquetStore,
 )
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    cutover_journal_path,
+    exclusive_prediction_storage_lease,
+)
 
 UTC = timezone.utc
 
@@ -470,3 +475,342 @@ def test_publish_fsyncs_parquet_and_parent_directory_before_verified(
     assert parquet.is_file() and not parquet.is_symlink()
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM world_shadow_predictions").fetchone()[0] == 3
+
+
+_COLD_PARTITIONS_DDL = """
+CREATE TABLE IF NOT EXISTS world_prediction_cold_partitions (
+    partition_id TEXT PRIMARY KEY,
+    manifest_json TEXT NOT NULL,
+    manifest_sha256 TEXT NOT NULL,
+    cutover_id TEXT,
+    activated_at TEXT,
+    recorded_date TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    row_count INTEGER NOT NULL
+)
+"""
+
+
+def _activate_canonical_catalog(
+    db_path: Path,
+    manifest: dict[str, object],
+    *,
+    cutover_id: str = "cutover-test",
+    manifest_json: str | None = None,
+    manifest_sha256: str | None = None,
+    relative_path: str | None = None,
+) -> None:
+    payload = manifest_json if manifest_json is not None else json.dumps(manifest, ensure_ascii=False, sort_keys=True)
+    digest = manifest_sha256 or ("sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest())
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(_COLD_PARTITIONS_DDL)
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS world_prediction_cold_index ("
+            "prediction_id TEXT PRIMARY KEY, partition_id TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO world_prediction_cold_partitions("
+            "partition_id, manifest_json, manifest_sha256, cutover_id, activated_at, "
+            "recorded_date, relative_path, row_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(manifest["relative_path"]),
+                payload,
+                digest,
+                cutover_id,
+                "2026-08-28T03:00:00+00:00",
+                str(manifest["recorded_date"]),
+                str(relative_path if relative_path is not None else manifest["relative_path"]),
+                int(manifest["row_count"]),  # type: ignore[arg-type]
+            ),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO world_prediction_cold_index(prediction_id, partition_id) "
+            "SELECT prediction_id, ? FROM world_shadow_predictions WHERE substr(recorded_at, 1, 10) = ?",
+            (str(manifest["relative_path"]), str(manifest["recorded_date"])),
+        )
+
+
+def test_plan_before_and_catalog_do_not_create_cold_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+
+    plans = source.plan_before(date(2026, 8, 25))
+    catalog = source.canonical_catalog()
+
+    assert len(plans) == 1
+    assert catalog == ()
+    with sqlite3.connect(db_path) as connection:
+        tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "world_prediction_cold_partitions" not in tables
+    assert "world_prediction_cold_index" not in tables
+
+
+def test_exporter_skips_canonical_active_date_and_leaves_late_hot_row(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _two_closed_days(db_path)
+    archive_root = tmp_path / "world_model_archive"
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(
+        archive_root,
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    service = WorldPredictionArchiveService(source=source, sink=sink, clock=_closed_day_clock)
+    first = service.execute(before=date(2026, 8, 26), apply=True)
+    day_24 = first["partitions"][0]["manifest"]
+    parquet = archive_root / day_24["relative_path"]
+    original = parquet.read_bytes()
+    _activate_canonical_catalog(db_path, day_24)
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DELETE FROM world_shadow_predictions WHERE prediction_id IN ('p-1', 'p-2')")
+        connection.execute(
+            "INSERT INTO world_shadow_predictions VALUES (?, ?, ?, ?)",
+            ("p-late", "e-late", "2026-08-24T09:00:00+00:00", json.dumps({"value": 99})),
+        )
+
+    applied = service.execute(before=date(2026, 8, 26), apply=True)
+    statuses = [item["status"] for item in applied["partitions"]]
+    canonical = next(item for item in applied["partitions"] if item["status"] == "canonical_active")
+
+    assert "rebuilt" not in statuses
+    assert canonical["late_hot_count"] == 1
+    assert canonical["source_retained"] is True
+    assert parquet.read_bytes() == original
+    assert not list(archive_root.rglob("quarantine/**"))
+    with sqlite3.connect(db_path) as connection:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT prediction_id FROM world_shadow_predictions ORDER BY prediction_id")
+        }
+    assert "p-late" in ids
+    assert "p-3" in ids
+
+
+def test_exporter_refuses_to_quarantine_or_rebuild_damaged_canonical_partition(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    archive_root = tmp_path / "world_model_archive"
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(
+        archive_root,
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    service = WorldPredictionArchiveService(source=source, sink=sink, clock=_closed_day_clock)
+    first = service.execute(before=date(2026, 8, 25), apply=True)
+    manifest = first["partitions"][0]["manifest"]
+    parquet = archive_root / manifest["relative_path"]
+    original = parquet.read_bytes()
+    parquet.write_bytes(original[:20])
+    _activate_canonical_catalog(db_path, manifest)
+
+    with pytest.raises(InvalidWorldPredictionArchiveError, match="canonical|unavailable"):
+        service.execute(before=date(2026, 8, 25), apply=True)
+    with pytest.raises(InvalidWorldPredictionArchiveError, match="canonical|unavailable"):
+        service.execute(before=date(2026, 8, 25), apply=False)
+
+    assert parquet.read_bytes() == original[:20]
+    assert list(archive_root.rglob("quarantine.json")) == []
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM world_shadow_predictions").fetchone()[0] == 3
+
+
+def test_exporter_still_publishes_unaffected_days_when_another_date_is_canonical(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _two_closed_days(db_path)
+    archive_root = tmp_path / "world_model_archive"
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(
+        archive_root,
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    service = WorldPredictionArchiveService(source=source, sink=sink, clock=_closed_day_clock)
+    first = service.execute(before=date(2026, 8, 25), apply=True)
+    day_24 = first["partitions"][0]["manifest"]
+    _activate_canonical_catalog(db_path, day_24)
+
+    applied = service.execute(before=date(2026, 8, 26), apply=True)
+    statuses = {item["status"] for item in applied["partitions"]}
+
+    assert "canonical_active" in statuses
+    assert "verified" in statuses
+    assert "rebuilt" not in statuses
+    day_25 = next(item for item in applied["partitions"] if item["status"] == "verified")
+    assert day_25["manifest"]["recorded_date"] == "2026-08-25"
+    assert (archive_root / day_24["relative_path"]).is_file()
+
+
+def test_canonical_catalog_accepts_compact_and_spaced_exact_stored_hashes(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(
+        tmp_path / "world_model_archive",
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    plan = source.plan_before(date(2026, 8, 25))[0]
+    manifest = sink.publish(plan, source.iter_partition(plan)).to_dict()
+    compact = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    _activate_canonical_catalog(db_path, manifest, manifest_json=compact)
+    assert source.canonical_catalog()[0].to_dict() == manifest
+
+    spaced = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DELETE FROM world_prediction_cold_partitions")
+    _activate_canonical_catalog(db_path, manifest, manifest_json=spaced)
+    assert source.canonical_catalog()[0].row_count == 2
+    assert source.canonical_catalog()[0].source_retained is True
+
+
+def test_canonical_catalog_fails_closed_on_hash_or_path_mismatch(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(
+        tmp_path / "world_model_archive",
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    plan = source.plan_before(date(2026, 8, 25))[0]
+    manifest = sink.publish(plan, source.iter_partition(plan)).to_dict()
+    _activate_canonical_catalog(
+        db_path,
+        manifest,
+        manifest_sha256="sha256:" + ("0" * 64),
+    )
+    with pytest.raises(InvalidWorldPredictionArchiveError, match="hash mismatch"):
+        source.canonical_catalog()
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DELETE FROM world_prediction_cold_partitions")
+    _activate_canonical_catalog(db_path, manifest, relative_path="not-the-registered-path.parquet")
+    with pytest.raises(InvalidWorldPredictionArchiveError, match="identity mismatch"):
+        source.canonical_catalog()
+
+
+def test_exporter_rejects_substituted_canonical_partition_matching_plan_fields(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    archive_root = tmp_path / "world_model_archive"
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(
+        archive_root,
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    service = WorldPredictionArchiveService(source=source, sink=sink, clock=_closed_day_clock)
+    first = service.execute(before=date(2026, 8, 25), apply=True)
+    manifest = first["partitions"][0]["manifest"]
+    parquet = archive_root / manifest["relative_path"]
+    original = parquet.read_bytes()
+    _activate_canonical_catalog(db_path, manifest)
+
+    alt_db = tmp_path / "alt.db"
+    _db(alt_db)
+    with sqlite3.connect(alt_db) as connection:
+        connection.execute(
+            "UPDATE world_shadow_predictions SET payload_json=? WHERE prediction_id='p-1'",
+            (json.dumps({"value": 1, "tamper": True}),),
+        )
+    alt_root = tmp_path / "alt-archive"
+    alt_source = SQLiteWorldPredictionArchiveSource(alt_db)
+    alt_sink = DuckDbWorldPredictionParquetStore(
+        alt_root,
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    alt_plan = alt_source.plan_before(date(2026, 8, 25))[0]
+    assert alt_plan.row_count == 2
+    assert tuple(alt_plan.first_key) == tuple(manifest["first_key"])
+    assert tuple(alt_plan.last_key) == tuple(manifest["last_key"])
+    assert alt_plan.schema_sha256 == manifest["schema_sha256"]
+    alt_manifest = alt_sink.publish(alt_plan, alt_source.iter_partition(alt_plan))
+    alt_part = (alt_root / alt_manifest.relative_path).parent
+    parquet.write_bytes((alt_part / "part-00000.parquet").read_bytes())
+    (parquet.parent / "manifest.json").write_text(
+        (alt_part / "manifest.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidWorldPredictionArchiveError, match="manifest.*does not match"):
+        service.execute(before=date(2026, 8, 25), apply=False)
+    with pytest.raises(InvalidWorldPredictionArchiveError, match="manifest.*does not match"):
+        service.execute(before=date(2026, 8, 25), apply=True)
+    assert list(archive_root.rglob("quarantine.json")) == []
+    assert parquet.read_bytes() != original
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM world_shadow_predictions").fetchone()[0] == 3
+
+
+def test_exporter_refuses_busy_lease_and_any_cutover_journal(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    service = WorldPredictionArchiveService(
+        source=SQLiteWorldPredictionArchiveSource(db_path),
+        sink=DuckDbWorldPredictionParquetStore(
+            tmp_path / "world_model_archive",
+            clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+        ),
+        clock=_closed_day_clock,
+    )
+    with exclusive_prediction_storage_lease(db_path):
+        with pytest.raises(PredictionStorageBusyError):
+            service.execute(before=date(2026, 8, 25), apply=False)
+
+    journal = Path(cutover_journal_path(db_path))
+    journal.write_text(
+        json.dumps({"schema_version": "world_prediction_cutover_journal.v1", "stage": "success"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(PredictionStorageBusyError, match="cutover journal"):
+        service.execute(before=date(2026, 8, 25), apply=True)
+    assert not (tmp_path / "world_model_archive").exists()
+
+
+def test_apply_export_holds_a_real_lease_before_reading_legacy_catalog(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    lock_path = Path(str(db_path) + ".storage.lock")
+
+    class CheckedSource(SQLiteWorldPredictionArchiveSource):
+        def canonical_catalog(self):
+            assert lock_path.is_file()
+            with pytest.raises(PredictionStorageBusyError):
+                with exclusive_prediction_storage_lease(self.db_path):
+                    pass
+            return super().canonical_catalog()
+
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(tmp_path / "world_model_archive", clock=_closed_day_clock)
+    WorldPredictionArchiveService(source=source, sink=sink, clock=_closed_day_clock).execute(
+        before=date(2026, 8, 25), apply=False
+    )
+    assert not lock_path.exists()
+    report = WorldPredictionArchiveService(
+        source=CheckedSource(db_path), sink=sink, clock=_closed_day_clock
+    ).execute(before=date(2026, 8, 25), apply=True)
+    assert report["partitions"][0]["status"] == "verified"
+
+
+@pytest.mark.parametrize("half", ["partitions", "index"])
+def test_exporter_refuses_partial_cold_catalog(tmp_path: Path, half: str) -> None:
+    db_path = tmp_path / "world_model.db"
+    _db(db_path)
+    connection = sqlite3.connect(db_path)
+    try:
+        if half == "partitions":
+            connection.execute(_COLD_PARTITIONS_DDL)
+        else:
+            connection.execute(
+                "CREATE TABLE world_prediction_cold_index (prediction_id TEXT PRIMARY KEY, partition_id TEXT)"
+            )
+        connection.commit()
+    finally:
+        connection.close()
+    archive_root = tmp_path / "world_model_archive"
+    service = WorldPredictionArchiveService(
+        source=SQLiteWorldPredictionArchiveSource(db_path),
+        sink=DuckDbWorldPredictionParquetStore(archive_root, clock=_closed_day_clock),
+        clock=_closed_day_clock,
+    )
+    for apply in (False, True):
+        with pytest.raises(InvalidWorldPredictionArchiveError, match="incomplete"):
+            service.execute(before=date(2026, 8, 25), apply=apply)
+    assert not archive_root.exists()

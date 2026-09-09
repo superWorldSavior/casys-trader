@@ -649,7 +649,7 @@ class MutableMacroTransport:
 def _ecb_facts(root: Path, clock: FakeClock) -> list:
     from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
 
-    prefix = "ECB/FM/B.U2.EUR.4F.KR.DFR.LEV:"
+    prefix = "ECB/FM/D.U2.EUR.4F.KR.DFR.LEV:"
     return [
         fact
         for fact in WorldMacroStore(root / "world_macro", clock=clock).list_facts()

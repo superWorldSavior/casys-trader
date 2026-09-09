@@ -61,7 +61,7 @@ def _guard(probe: FakeProbe, *, budget: WorldResourceBudget | None = None):
     )
 
 
-def test_committed_resource_budget_config_is_versioned_hashed_and_conservative() -> None:
+def test_committed_operator_resource_budget_config_is_versioned_and_hashed() -> None:
     from trader.application.world_model.resource_budget import (
         WORLD_SHADOW_RESOURCE_BUDGET_CONFIG_NAME,
         load_world_shadow_resource_budget,
@@ -80,7 +80,7 @@ def test_committed_resource_budget_config_is_versioned_hashed_and_conservative()
     assert claimed == canonical_sha256(hashed)
     budget = load_world_shadow_resource_budget(REPO_ROOT / "config")
     assert budget.content_sha256 == claimed
-    assert budget.max_db_bytes == 3 * GiB
+    assert budget.max_db_bytes == 100 * GiB
     assert DEFAULT_MAX_DB_BYTES == 2 * GiB
     assert budget.min_free_bytes == DEFAULT_MIN_FREE_BYTES
     assert budget.warn_interval_seconds == DEFAULT_WARN_INTERVAL_SECONDS

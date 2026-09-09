@@ -24,7 +24,7 @@ from trader.domain.world_macro import (
     MacroScope,
     MacroSourceRegistry,
     committed_macro_collection_plan,
-    compatible_macro_source_leaves,
+    compatible_macro_source_history,
 )
 
 
@@ -335,7 +335,7 @@ def wire_world_macro_runtime(
         transport=transport or UrllibMacroTransport(),
         clock=resolved_clock,
         sleeper=sleeper,
-        leaves=compatible_macro_source_leaves(operator.registry, store.list_facts()),
+        leaves=compatible_macro_source_history(operator.registry, store.list_facts()),
     )
     source_timeouts = {
         entry.source_id: source_deadline_s(

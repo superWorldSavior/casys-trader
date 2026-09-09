@@ -337,7 +337,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def _cmd_world_status(args: argparse.Namespace) -> int:
     from trader.interfaces.cli.world_model import read_world_graph_status, read_world_model_status
 
-    payload = {**read_world_model_status(daemon.STATE_DIR), "graph": read_world_graph_status(daemon.STATE_DIR)}
+    world = read_world_model_status(daemon.STATE_DIR)
+    payload = {**world, "graph": read_world_graph_status(daemon.STATE_DIR, world_status=world)}
     if args.json:
         _print_json(payload)
     else:

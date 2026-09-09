@@ -10,12 +10,19 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from trader.domain.world_episode import DEFAULT_WORLD_HORIZONS
 from trader.infrastructure.state_db.sqlite_in import sqlite_in_chunks, sqlite_placeholders
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    shared_prediction_storage_lease,
+)
+from trader.infrastructure.state_db.world_prediction_tiers import PredictionReadUnavailable, read_prediction_rows
 
 HORIZONS = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
 _REQUIRED_TABLES = frozenset(
@@ -124,30 +131,40 @@ def read_world_model_ledger(db_path: str | Path) -> dict[str, Any]:
                 connection,
                 {str(row["episode_id"]) for row in prediction_rows if row["episode_id"] not in (None, "")},
             )
-    except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
+            try:
+                return _project_loaded_ledger(
+                    episodes=episodes,
+                    eligible=eligible,
+                    outcome_rows=outcome_rows,
+                    prediction_rows=prediction_rows,
+                    prediction_episode_rows=prediction_episode_rows,
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                return {
+                    "status": "unavailable",
+                    "exists": True,
+                    "error": f"{type(exc).__name__}:{exc}",
+                }
+    except (
+        PredictionReadUnavailable,
+        PredictionStorageBusyError,
+        OSError,
+        sqlite3.Error,
+        json.JSONDecodeError,
+    ) as exc:
         return {
             "status": "unavailable",
             "exists": True,
             "error": f"{type(exc).__name__}:{exc}",
         }
 
-    try:
-        return _project_loaded_ledger(
-            episodes=episodes,
-            eligible=eligible,
-            outcome_rows=outcome_rows,
-            prediction_rows=prediction_rows,
-            prediction_episode_rows=prediction_episode_rows,
-        )
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        return {
-            "status": "unavailable",
-            "exists": True,
-            "error": f"{type(exc).__name__}:{exc}",
-        }
 
-
-def read_world_cohort_ledger(db_path: str | Path, cohort_id: str) -> dict[str, Any]:
+def read_world_cohort_ledger(
+    db_path: str | Path,
+    cohort_id: str,
+    *,
+    include_predictions: bool = True,
+) -> dict[str, Any]:
     """Read one reconstructible cohort without creating or migrating the ledger."""
 
     path = Path(db_path)
@@ -214,7 +231,9 @@ def read_world_cohort_ledger(db_path: str | Path, cohort_id: str) -> dict[str, A
                     "SELECT payload_json FROM world_availability_receipts "
                     "WHERE subject_kind='world_cohort_event' ORDER BY ready_at, receipt_id"
                 ).fetchall()
-            prediction_rows = _fetch_predictions(connection, study_cohort_id=cohort_id)
+            prediction_rows = (
+                _fetch_predictions(connection, study_cohort_id=cohort_id) if include_predictions else []
+            )
             episode_ids = {str(row["episode_id"]) for row in prediction_rows if row["episode_id"]}
             slots = [_json_object(row["payload_json"]) for row in slot_rows]
             for slot in slots:
@@ -223,28 +242,33 @@ def read_world_cohort_ledger(db_path: str | Path, cohort_id: str) -> dict[str, A
                     episode_ids.update(str(value) for value in refs.values() if value)
             episodes = _fetch_episodes(connection, episode_ids)
             outcomes = _fetch_outcomes(connection, episode_ids=episode_ids)
-    except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
-        return {
-            "status": "unavailable",
-            "exists": True,
-            "cohort_id": cohort_id,
-            "error": f"{type(exc).__name__}:{exc}",
-        }
-
-    try:
-        return {
-            "status": "loaded",
-            "exists": True,
-            "cohort_id": cohort_id,
-            "manifest": _json_object(manifest_row["payload_json"]),
-            "events": [_json_object(row["payload_json"]) for row in event_rows],
-            "slots": slots,
-            "episodes": [_project_episode(row) for row in episodes],
-            "outcomes": [_project_outcome(row) for row in outcomes],
-            "predictions": [_project_prediction(row) for row in prediction_rows],
-            "receipts": [_json_object(row["payload_json"]) for row in receipt_rows],
-        }
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            try:
+                return {
+                    "status": "loaded",
+                    "exists": True,
+                    "cohort_id": cohort_id,
+                    "manifest": _json_object(manifest_row["payload_json"]),
+                    "events": [_json_object(row["payload_json"]) for row in event_rows],
+                    "slots": slots,
+                    "episodes": [_project_episode(row) for row in episodes],
+                    "outcomes": [_project_outcome(row) for row in outcomes],
+                    "predictions": [_project_prediction(row) for row in prediction_rows],
+                    "receipts": [_json_object(row["payload_json"]) for row in receipt_rows],
+                }
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                return {
+                    "status": "unavailable",
+                    "exists": True,
+                    "cohort_id": cohort_id,
+                    "error": f"{type(exc).__name__}:{exc}",
+                }
+    except (
+        PredictionReadUnavailable,
+        PredictionStorageBusyError,
+        OSError,
+        sqlite3.Error,
+        json.JSONDecodeError,
+    ) as exc:
         return {
             "status": "unavailable",
             "exists": True,
@@ -277,32 +301,31 @@ def read_world_cohort_catalog(db_path: str | Path) -> dict[str, Any]:
                 "SELECT cohort_id, payload_json FROM world_cohort_events "
                 "ORDER BY cohort_id ASC, sequence ASC, event_id ASC"
             ).fetchall()
-    except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
-        return {
-            "status": "unavailable",
-            "exists": True,
-            "error": f"{type(exc).__name__}:{exc}",
-            "cohorts": [],
-        }
-
-    try:
-        events_by_cohort: dict[str, list[dict[str, Any]]] = {}
-        for row in event_rows:
-            cohort_id = str(row["cohort_id"])
-            events_by_cohort.setdefault(cohort_id, []).append(_json_object(row["payload_json"]))
-        return {
-            "status": "loaded",
-            "exists": True,
-            "cohorts": [
-                {
-                    "cohort_id": str(row["cohort_id"]),
-                    "manifest": _json_object(row["payload_json"]),
-                    "events": events_by_cohort.get(str(row["cohort_id"]), []),
+            try:
+                events_by_cohort: dict[str, list[dict[str, Any]]] = {}
+                for row in event_rows:
+                    cohort_id = str(row["cohort_id"])
+                    events_by_cohort.setdefault(cohort_id, []).append(_json_object(row["payload_json"]))
+                return {
+                    "status": "loaded",
+                    "exists": True,
+                    "cohorts": [
+                        {
+                            "cohort_id": str(row["cohort_id"]),
+                            "manifest": _json_object(row["payload_json"]),
+                            "events": events_by_cohort.get(str(row["cohort_id"]), []),
+                        }
+                        for row in manifest_rows
+                    ],
                 }
-                for row in manifest_rows
-            ],
-        }
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                return {
+                    "status": "unavailable",
+                    "exists": True,
+                    "error": f"{type(exc).__name__}:{exc}",
+                    "cohorts": [],
+                }
+    except (PredictionStorageBusyError, OSError, sqlite3.Error, json.JSONDecodeError) as exc:
         return {
             "status": "unavailable",
             "exists": True,
@@ -311,7 +334,12 @@ def read_world_cohort_catalog(db_path: str | Path) -> dict[str, Any]:
         }
 
 
-def read_world_pattern_ledger(db_path: str | Path, cohort_id: str | None = None) -> dict[str, Any]:
+def read_world_pattern_ledger(
+    db_path: str | Path,
+    cohort_id: str | None = None,
+    *,
+    include_predictions: bool = True,
+) -> dict[str, Any]:
     """Read reconstructible pattern events without creating or migrating the ledger.
 
     Hypothesis events for an evaluating cohort are included even when that
@@ -361,8 +389,8 @@ def read_world_pattern_ledger(db_path: str | Path, cohort_id: str | None = None)
                 _fetch_pattern_lifecycle_events(connection, cohort_id) if _PATTERN_LIFECYCLE_TABLE in tables else []
             )
             episode_ids = _pattern_episode_ids(occurrence_rows)
-            prediction_rows: list[sqlite3.Row] = []
-            if "world_shadow_predictions" in tables:
+            prediction_rows: list[dict[str, Any]] = []
+            if include_predictions and "world_shadow_predictions" in tables:
                 prediction_columns = _table_columns(connection, "world_shadow_predictions")
                 if cohort_id is not None and "study_cohort_id" in prediction_columns:
                     prediction_rows = _fetch_predictions(connection, study_cohort_id=cohort_id)
@@ -378,7 +406,34 @@ def read_world_pattern_ledger(db_path: str | Path, cohort_id: str | None = None)
                     "WHERE subject_kind IN ('pattern_hypothesis_event', 'pattern_occurrence_event') "
                     "ORDER BY ready_at, receipt_id"
                 ).fetchall()
-    except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
+            try:
+                return {
+                    "status": "loaded",
+                    "exists": True,
+                    "cohort_id": cohort_id,
+                    "hypothesis_events": [_project_pattern_hypothesis_event(row) for row in hypothesis_rows],
+                    "occurrence_events": [_project_pattern_occurrence_event(row) for row in occurrence_rows],
+                    "outcome_links": [_project_pattern_outcome_link(row) for row in link_rows],
+                    "lifecycle_events": [_project_pattern_lifecycle_event(row) for row in lifecycle_rows],
+                    "episodes": [_project_episode(row) for row in episodes],
+                    "outcomes": [_project_outcome(row) for row in outcomes],
+                    "predictions": [_project_prediction(row) for row in prediction_rows],
+                    "receipts": [_json_object(row["payload_json"]) for row in receipt_rows],
+                }
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                return {
+                    "status": "unavailable",
+                    "exists": True,
+                    "cohort_id": cohort_id,
+                    "error": f"{type(exc).__name__}:{exc}",
+                }
+    except (
+        PredictionReadUnavailable,
+        PredictionStorageBusyError,
+        OSError,
+        sqlite3.Error,
+        json.JSONDecodeError,
+    ) as exc:
         return {
             "status": "unavailable",
             "exists": True,
@@ -386,34 +441,22 @@ def read_world_pattern_ledger(db_path: str | Path, cohort_id: str | None = None)
             "error": f"{type(exc).__name__}:{exc}",
         }
 
-    try:
-        return {
-            "status": "loaded",
-            "exists": True,
-            "cohort_id": cohort_id,
-            "hypothesis_events": [_project_pattern_hypothesis_event(row) for row in hypothesis_rows],
-            "occurrence_events": [_project_pattern_occurrence_event(row) for row in occurrence_rows],
-            "outcome_links": [_project_pattern_outcome_link(row) for row in link_rows],
-            "lifecycle_events": [_project_pattern_lifecycle_event(row) for row in lifecycle_rows],
-            "episodes": [_project_episode(row) for row in episodes],
-            "outcomes": [_project_outcome(row) for row in outcomes],
-            "predictions": [_project_prediction(row) for row in prediction_rows],
-            "receipts": [_json_object(row["payload_json"]) for row in receipt_rows],
-        }
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        return {
-            "status": "unavailable",
-            "exists": True,
-            "cohort_id": cohort_id,
-            "error": f"{type(exc).__name__}:{exc}",
-        }
 
-
-def _readonly_connection(path: Path) -> sqlite3.Connection:
-    uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
-    connection.row_factory = sqlite3.Row
-    return connection
+@contextmanager
+def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    with shared_prediction_storage_lease(path, create=False):
+        uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        try:
+            connection.isolation_level = None
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN")
+            yield connection
+        finally:
+            try:
+                connection.rollback()
+            finally:
+                connection.close()
 
 
 def _table_names(connection: sqlite3.Connection) -> set[str]:
@@ -430,7 +473,7 @@ def _fetch_predictions(
     connection: sqlite3.Connection,
     *,
     study_cohort_id: str | None = None,
-) -> list[sqlite3.Row]:
+) -> list[dict[str, Any]]:
     columns = _table_columns(connection, "world_shadow_predictions")
     selected = [
         name
@@ -447,13 +490,12 @@ def _fetch_predictions(
         )
         if name in columns
     ]
-    sql = f"SELECT {', '.join(selected)} FROM world_shadow_predictions"
-    params: tuple[str, ...] = ()
-    if study_cohort_id is not None:
-        sql += " WHERE study_cohort_id=?"
-        params = (study_cohort_id,)
-    sql += " ORDER BY recorded_at, prediction_id"
-    return list(connection.execute(sql, params).fetchall())
+    return read_prediction_rows(
+        connection,
+        columns=selected,
+        study_cohort_id=study_cohort_id,
+        order="recorded",
+    )
 
 
 def _fetch_outcomes(
@@ -732,7 +774,7 @@ def _project_loaded_ledger(
     episodes: int,
     eligible: int,
     outcome_rows: list[sqlite3.Row],
-    prediction_rows: list[sqlite3.Row],
+    prediction_rows: Sequence[sqlite3.Row | Mapping[str, Any]],
     prediction_episode_rows: list[sqlite3.Row],
 ) -> dict[str, Any]:
     superseded_ids = {
@@ -779,7 +821,7 @@ def _project_loaded_ledger(
     }
 
 
-def _project_prediction(row: sqlite3.Row) -> dict[str, Any]:
+def _project_prediction(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
     payload = _json_object(row["payload_json"])
     projected = {
         **payload,

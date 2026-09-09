@@ -12,14 +12,39 @@ from pathlib import Path
 from urllib.parse import quote
 
 from trader.application.world_model.prediction_archive_ports import PredictionRow
-from trader.domain.world_prediction_archive import WorldPredictionArchivePlan
+from trader.domain.world_prediction_archive import (
+    InvalidWorldPredictionArchiveError,
+    WorldPredictionArchiveManifest,
+    WorldPredictionArchivePlan,
+)
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    shared_prediction_storage_lease,
+)
+from trader.infrastructure.state_db.world_prediction_tiers import (
+    PredictionReadUnavailable,
+    cold_catalog_present,
+    validate_registered_cold_storage,
+)
 
 _TABLE = "world_shadow_predictions"
+_COLD_PARTITIONS = "world_prediction_cold_partitions"
+_CATALOG_COLUMNS = (
+    "partition_id",
+    "manifest_json",
+    "manifest_sha256",
+    "recorded_date",
+    "relative_path",
+    "row_count",
+)
 
 
 def _digest(value: object) -> str:
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _sha256_stored_text(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 @contextmanager
@@ -55,6 +80,70 @@ class SQLiteWorldPredictionArchiveSource:
             raise ValueError("batch_size must be >= 1")
         self.db_path = Path(db_path)
         self.batch_size = batch_size
+
+    def export_storage_lease(self, *, apply: bool = False):
+        """Shared lease spanning one export service operation, never source methods."""
+
+        return shared_prediction_storage_lease(self.db_path, create=apply)
+
+    def canonical_catalog(self) -> tuple[WorldPredictionArchiveManifest, ...]:
+        """Read and verify the active catalog without creating schema."""
+
+        with _readonly(self.db_path) as connection:
+            try:
+                if not cold_catalog_present(connection):
+                    return ()
+            except PredictionReadUnavailable as exc:
+                raise InvalidWorldPredictionArchiveError(f"canonical catalog unavailable: {exc}") from exc
+            columns = {
+                str(row[1]) for row in connection.execute(f"PRAGMA table_info({_COLD_PARTITIONS})")
+            }
+            missing = [name for name in _CATALOG_COLUMNS if name not in columns]
+            if missing:
+                raise InvalidWorldPredictionArchiveError(
+                    "world_prediction_cold_partitions schema is incomplete: " + ", ".join(missing)
+                )
+            order_by = "recorded_date, partition_id"
+            selected = ", ".join(_CATALOG_COLUMNS)
+            manifests: list[WorldPredictionArchiveManifest] = []
+            for row in connection.execute(f"SELECT {selected} FROM {_COLD_PARTITIONS} ORDER BY {order_by}"):
+                partition_id, manifest_json, manifest_sha256, recorded_date, relative_path, row_count = row
+                if not isinstance(manifest_json, str):
+                    raise InvalidWorldPredictionArchiveError("canonical partition manifest_json is unreadable")
+                stored_hash = _sha256_stored_text(manifest_json)
+                if stored_hash != str(manifest_sha256 or ""):
+                    raise InvalidWorldPredictionArchiveError(
+                        f"canonical partition registry hash mismatch: {partition_id}"
+                    )
+                try:
+                    payload = json.loads(manifest_json)
+                except json.JSONDecodeError as exc:
+                    raise InvalidWorldPredictionArchiveError(
+                        "canonical partition manifest_json is unreadable"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise InvalidWorldPredictionArchiveError("canonical partition manifest_json must be an object")
+                try:
+                    manifest = WorldPredictionArchiveManifest.from_mapping(payload)
+                except (TypeError, ValueError) as exc:
+                    raise InvalidWorldPredictionArchiveError(
+                        f"canonical partition manifest is invalid: {exc}"
+                    ) from exc
+                if (
+                    manifest.relative_path != str(relative_path or "")
+                    or manifest.relative_path != str(partition_id or "")
+                    or manifest.recorded_date.isoformat() != str(recorded_date or "")
+                    or manifest.row_count != int(row_count or 0)
+                ):
+                    raise InvalidWorldPredictionArchiveError(
+                        f"canonical partition registry identity mismatch: {partition_id}"
+                    )
+                manifests.append(manifest)
+            try:
+                validate_registered_cold_storage(connection)
+            except PredictionReadUnavailable as exc:
+                raise InvalidWorldPredictionArchiveError(f"canonical catalog unavailable: {exc}") from exc
+            return tuple(manifests)
 
     def plan_before(self, before: date) -> tuple[WorldPredictionArchivePlan, ...]:
         if not isinstance(before, date) or isinstance(before, datetime):

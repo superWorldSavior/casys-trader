@@ -7,7 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -51,6 +51,7 @@ _METRIC_UNITS = MappingProxyType(
     }
 )
 _YAHOO_UA = "Mozilla/5.0 (compatible; casys-trader/1.0)"
+_SERIES_POINTS_LIMIT = 2
 
 
 class MacroSourceFetchError(Exception):
@@ -127,6 +128,8 @@ class MacroTtlPolicy:
     series_point_daily_h: int
     series_point_monthly_d: int
     market_benchmark_daily_h: int
+    policy_rate_until_superseded_d: int | None = None
+    until_superseded_source_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -201,10 +204,11 @@ def load_world_macro_operator_configs(*, config_dir: Path) -> WorldMacroOperator
     for dimension, values in vocabularies.items():
         if frozenset(values) != MACRO_FEATURE_VALUES[str(dimension)]:
             raise ValueError(f"policy vocabulary mismatch for {dimension}")
-    policy = MacroDerivationPolicy(
-        transform_version=policy_raw.get("transform_version"),
-        producer_version=policy_raw.get("producer_version"),
-    )
+    policy = MacroDerivationPolicy.from_mapping(policy_raw)
+    if policy.content_sha256 != policy_hash:
+        raise ValueError("policy content_sha256 does not match the canonical operator config")
+    if policy.rule_for("rates_regime") is None:
+        raise ValueError("derivation policy must declare a rates_regime rule")
     require_admitted_macro_producer(sources.get("producer_version"))
     if sources.get("registry_version") != MACRO_SOURCE_REGISTRY_VERSION:
         raise ValueError(f"registry_version must be {MACRO_SOURCE_REGISTRY_VERSION}")
@@ -272,11 +276,22 @@ def load_world_macro_operator_configs(*, config_dir: Path) -> WorldMacroOperator
     ttl_raw = sources.get("ttl") or {}
     if not isinstance(ttl_raw, Mapping):
         raise TypeError("ttl must be a mapping")
+    until_superseded_ids = _as_text_tuple(ttl_raw.get("until_superseded_source_ids"))
+    unknown_until = sorted(set(until_superseded_ids) - source_ids)
+    if unknown_until:
+        raise ValueError(f"until_superseded_source_ids not in registry: {unknown_until}")
+    policy_until_days = ttl_raw.get("policy_rate_until_superseded_d")
+    if until_superseded_ids and policy_until_days is None:
+        raise ValueError("policy_rate_until_superseded_d is required when until_superseded_source_ids is set")
     ttl = MacroTtlPolicy(
         series_point_daily_h=int(ttl_raw["series_point_daily_h"]),
         series_point_monthly_d=int(ttl_raw["series_point_monthly_d"]),
         market_benchmark_daily_h=int(ttl_raw["market_benchmark_daily_h"]),
+        policy_rate_until_superseded_d=None if policy_until_days is None else int(policy_until_days),
+        until_superseded_source_ids=until_superseded_ids,
     )
+    if ttl.policy_rate_until_superseded_d is not None and ttl.policy_rate_until_superseded_d <= 0:
+        raise ValueError("policy_rate_until_superseded_d must be positive")
     return WorldMacroOperatorBundle(
         registry=registry,
         registry_operator_config_sha256=registry_operator_hash,
@@ -306,7 +321,19 @@ def _period_occurred_at(period: str) -> datetime:
     raise ValueError(f"unsupported period: {period}")
 
 
-def _ttl_valid_until(published_at: datetime, *, fact_kind: str, period: str, ttl: MacroTtlPolicy) -> datetime:
+def _ttl_valid_until(
+    published_at: datetime,
+    *,
+    fact_kind: str,
+    period: str,
+    source_id: str,
+    ttl: MacroTtlPolicy,
+) -> datetime:
+    until_superseded = None
+    if source_id in ttl.until_superseded_source_ids:
+        if ttl.policy_rate_until_superseded_d is None:
+            raise ValueError("until_superseded sources require policy_rate_until_superseded_d")
+        until_superseded = timedelta(days=ttl.policy_rate_until_superseded_d)
     return derive_macro_source_fact_valid_until(
         fact_kind=fact_kind,
         period=period,
@@ -314,6 +341,7 @@ def _ttl_valid_until(published_at: datetime, *, fact_kind: str, period: str, ttl
         series_point_daily=timedelta(hours=ttl.series_point_daily_h),
         series_point_monthly=timedelta(days=ttl.series_point_monthly_d),
         market_benchmark_daily=timedelta(hours=ttl.market_benchmark_daily_h),
+        policy_until_superseded=until_superseded,
     )
 
 
@@ -462,26 +490,53 @@ class ProviderRateLimiter:
         raise MacroSourceFetchError("unavailable", "unavailable")
 
 
-def _parse_dbnomics(body: str) -> tuple[str, float, datetime | None] | None:
+def _parse_dbnomics_indexed_at(payload: Mapping[str, Any]) -> datetime | None:
+    """Series-level DBnomics index clock. Never a statistical-office publication."""
+
+    try:
+        docs = payload["series"]["docs"]
+        indexed = docs[0].get("indexed_at") if docs else None
+        if indexed:
+            return parse_utc_timestamp(indexed, "indexed_at")
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _parse_dbnomics_points(body: str) -> tuple[tuple[tuple[str, float], ...], datetime | None] | None:
+    """Return ordered (period, value) pairs. ``indexed_at`` is parsed only as indexing."""
+
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
         return None
     if not isinstance(payload, dict):
         return None
-    obs = parse_dbnomics_last_observation(payload)
-    if obs is None:
-        return None
-    period, value = obs
-    published: datetime | None = None
     try:
         docs = payload["series"]["docs"]
-        indexed = docs[0].get("indexed_at") if docs else None
-        if indexed:
-            published = parse_utc_timestamp(indexed, "indexed_at")
-    except (KeyError, IndexError, TypeError, ValueError):
-        published = None
-    return period, float(value), published
+        if not docs:
+            return None
+        doc = docs[0]
+        periods = doc.get("period", [])
+        values = doc.get("value", [])
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not isinstance(periods, list) or not isinstance(values, list):
+        return None
+    points: list[tuple[str, float]] = []
+    for period, raw in zip(periods, values, strict=False):
+        if raw is None or period in (None, ""):
+            continue
+        try:
+            points.append((str(period), float(raw)))
+        except (TypeError, ValueError):
+            continue
+    if not points:
+        last = parse_dbnomics_last_observation(payload)
+        if last is None:
+            return None
+        points.append((str(last[0]), float(last[1])))
+    return tuple(points), _parse_dbnomics_indexed_at(payload)
 
 
 def macro_source_resource_ref(entry: MacroSourceRegistryEntry, budget: ProviderBudget) -> str:
@@ -523,17 +578,24 @@ class BoundMacroSourceAdapter:
         self._clock = clock
         self._cache_lock = threading.Lock()
         self._cache: tuple[datetime, tuple[MacroSourceFact, ...]] | None = None
-        self._last_leaf: MacroSourceFact | None = None
+        self._last_leaves: dict[str, MacroSourceFact] = {}
 
     def seed_compatible_leaf(self, leaf: MacroSourceFact | None) -> None:
         """Hydrate the in-process correction leaf from persisted compatible history."""
 
         if leaf is None:
             return
-        if latest_compatible_macro_source_leaf(self._entry, (leaf,)) is None:
-            raise ValueError("incompatible macro source leaf")
+        self.seed_compatible_facts((leaf,))
+
+    def seed_compatible_facts(self, facts: Sequence[MacroSourceFact]) -> None:
+        """Hydrate every compatible period leaf so corrections do not start a parallel chain."""
+
+        for leaf in facts:
+            if latest_compatible_macro_source_leaf(self._entry, (leaf,)) is None:
+                raise ValueError("incompatible macro source leaf")
         with self._cache_lock:
-            self._last_leaf = leaf
+            for leaf in facts:
+                self._last_leaves[leaf.fact_key.value] = leaf
 
     def read_facts(self, scope: MacroScope, observed_at: datetime) -> tuple[MacroSourceFact, ...]:
         del scope
@@ -550,49 +612,48 @@ class BoundMacroSourceAdapter:
         parsed = self._parse(body)
         if parsed is None:
             raise MacroSourceFetchError("unavailable", "unavailable")
-        period, value, published_at = parsed
+        points, _series_indexed_at = parsed
+        del _series_indexed_at
         observed = _utc(observed_at)
-        fact = self._to_fact(
-            period,
-            value,
-            published_at,
-            observed,
-            macro_source_resource_ref(self._entry, self._budget),
-        )
+        resource = macro_source_resource_ref(self._entry, self._budget)
+        emitted = points[-_SERIES_POINTS_LIMIT:] if self._entry.provider_id == "dbnomics" else points
+        resolved: list[MacroSourceFact] = []
         with self._cache_lock:
-            if self._last_leaf is not None and self._last_leaf.fact_key == fact.fact_key:
-                if self._last_leaf.fact_version_id == fact.fact_version_id:
-                    facts = (self._last_leaf,)
-                else:
-                    facts = (
-                        self._last_leaf.corrected(
+            for period, value in emitted:
+                fact = self._to_fact(period, value, observed, resource)
+                previous = self._last_leaves.get(fact.fact_key.value)
+                if previous is not None and previous.fact_key == fact.fact_key:
+                    if previous.fact_version_id == fact.fact_version_id:
+                        chosen = previous
+                    else:
+                        chosen = previous.corrected(
                             value=fact.value,
                             published_at=fact.published_at,
                             ingested_at=fact.ingested_at,
                             valid_until=fact.valid_until,
                             source=fact.source,
-                        ),
-                    )
-            else:
-                facts = (fact,)
-            self._last_leaf = facts[0]
+                        )
+                else:
+                    chosen = fact
+                self._last_leaves[chosen.fact_key.value] = chosen
+                resolved.append(chosen)
+            facts = tuple(resolved)
             self._cache = (now, facts)
             return facts
 
-    def _parse(self, body: str) -> tuple[str, float, datetime | None] | None:
+    def _parse(self, body: str) -> tuple[tuple[tuple[str, float], ...], datetime | None] | None:
         if self._entry.provider_id == "dbnomics":
-            return _parse_dbnomics(body)
+            return _parse_dbnomics_points(body)
         obs = parse_yahoo_last_close(body)
         if obs is None:
             return None
         period, value = obs
-        return period, float(value), None
+        return ((str(period), float(value)),), None
 
     def _to_fact(
         self,
         period: str,
         value: float,
-        published_at: datetime | None,
         observed_at: datetime,
         url: str,
     ) -> MacroSourceFact:
@@ -600,7 +661,9 @@ class BoundMacroSourceAdapter:
         if unit is None:
             raise ValueError(f"no closed unit for metric_key {self._entry.metric_key}")
         occurred_at = _period_occurred_at(period)
-        published = published_at if published_at is not None else occurred_at
+        # DBnomics does not attest observation-level publication. Period vintage
+        # is the conservative TTL anchor; series indexed_at is not a release.
+        published = occurred_at
         return MacroSourceFact(
             fact_kind=self._entry.fact_kind,
             metric_key=self._entry.metric_key,
@@ -620,6 +683,7 @@ class BoundMacroSourceAdapter:
                 published,
                 fact_kind=self._entry.fact_kind,
                 period=period,
+                source_id=self._entry.source_id,
                 ttl=self._ttl,
             ),
         )
@@ -645,17 +709,31 @@ class YahooCommodityAdapter(BoundMacroSourceAdapter):
         super().__init__(**kwargs)
 
 
+def _normalize_seed_facts(
+    leaves: Mapping[str, MacroSourceFact | Sequence[MacroSourceFact]] | None,
+) -> dict[str, tuple[MacroSourceFact, ...]]:
+    if leaves is None:
+        return {}
+    normalized: dict[str, tuple[MacroSourceFact, ...]] = {}
+    for source_id, value in leaves.items():
+        if isinstance(value, MacroSourceFact):
+            normalized[str(source_id)] = (value,)
+        else:
+            normalized[str(source_id)] = tuple(value)
+    return normalized
+
+
 def build_macro_source_ports(
     bundle: WorldMacroOperatorBundle,
     *,
     transport: MacroHttpTransport,
     clock: Callable[[], datetime] | None = None,
     sleeper: Callable[[float], None] | None = None,
-    leaves: Mapping[str, MacroSourceFact] | None = None,
+    leaves: Mapping[str, MacroSourceFact | Sequence[MacroSourceFact]] | None = None,
 ) -> dict[str, BoundMacroSourceAdapter]:
     resolved_clock = clock or (lambda: datetime.now(timezone.utc))
     resolved_sleeper = sleeper or time.sleep
-    resolved_leaves = {} if leaves is None else dict(leaves)
+    resolved_leaves = _normalize_seed_facts(leaves)
     known = {entry.source_id for entry in bundle.registry.entries}
     extra = set(resolved_leaves) - known
     if extra:
@@ -689,7 +767,7 @@ def build_macro_source_ports(
             clock=resolved_clock,
         )
         if entry.source_id in resolved_leaves:
-            adapter.seed_compatible_leaf(resolved_leaves[entry.source_id])
+            adapter.seed_compatible_facts(resolved_leaves[entry.source_id])
         ports[entry.source_id] = adapter
     return ports
 

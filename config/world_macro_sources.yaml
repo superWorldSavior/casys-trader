@@ -3,8 +3,8 @@ registry_version: world_macro_sources.v1
 authority: shadow_only
 decision_effect: none
 producer_version: world_macro_source.v1
-content_sha256: "5707728d3f71a190783802add3179b329fe87c7ad055b8548439b8004e47876b"
-operator_config_sha256: "5f5306aeeaebb5a3611496427b3dbd23fd1111ea29adec750fe24f61361d3f2e"
+content_sha256: "c9af23a2e5a1e5783021dd3df11a94090a06b0060158ec85ae0670229b30ad85"
+operator_config_sha256: "55db82c0684b71d1ce908aa5e0730e71786ca4e7296f8726af74dd4cb375202b"
 
 budgets:
   worker: single_flight
@@ -50,6 +50,9 @@ ttl:
   series_point_daily_h: 72
   series_point_monthly_d: 40
   market_benchmark_daily_h: 72
+  policy_rate_until_superseded_d: 56
+  until_superseded_source_ids:
+    - ecb_deposit_rate
 
 entries:
   - source_id: fed_funds_effective
@@ -68,7 +71,7 @@ entries:
     metric_key: cpi_index
   - source_id: ecb_deposit_rate
     provider_id: dbnomics
-    provider_entity_id: ECB/FM/B.U2.EUR.4F.KR.DFR.LEV
+    provider_entity_id: ECB/FM/D.U2.EUR.4F.KR.DFR.LEV
     canonical_scope: {kind: region, entity_id: "iso-un-m49:150"}
     adapter_version: world_dbnomics_series.v1
     fact_kind: series_point

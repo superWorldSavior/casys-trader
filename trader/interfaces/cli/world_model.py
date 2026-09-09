@@ -116,7 +116,7 @@ def read_world_cohort_status(state_dir: str | Path, cohort_id: str) -> dict[str,
     from trader.infrastructure.state_db.world_model_query import read_world_cohort_ledger
 
     db_path = _db_path(state_dir)
-    ledger = read_world_cohort_ledger(db_path, cohort_id)
+    ledger = read_world_cohort_ledger(db_path, cohort_id, include_predictions=False)
     payload: dict[str, Any] = {
         "schema_version": "world_cohort_status.v1",
         "command": "status",

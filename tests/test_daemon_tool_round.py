@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trader.agent import client as codex_client
 from trader.agent.protocol.parsing import parse_batch
@@ -579,11 +580,16 @@ def test_run_cycle_record_recall_apres_tool_round(monkeypatch, tmp_path, make_da
 # ---------------------------------------------------------------------------
 
 
-def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_data_source, write_runtime_config):
-    """Finding 1 : db corrompu → run_cycle ne lève pas, outil recall répond unavailable.
+def _cycle_bars(_sym, _lookback, _interval):
+    from trader.market.market_data import Bar
+    return [
+        Bar(ts="2026-07-02T09:45:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
+        Bar(ts="2026-07-02T10:00:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
+    ]
 
-    Le flag _RECALL_STORE_FAILED est réinitialisé pour isoler ce test.
-    """
+
+def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_data_source, write_runtime_config):
+    """Finding 1 : db corrompu → run_cycle ne lève pas, outil recall répond unavailable."""
     write_runtime_config(tmp_path, symbols=["SPY"])
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -591,7 +597,6 @@ def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_da
     # Fichier corrompu (pas un SQLite valide)
     (state_dir / "learnings.db").write_text("NOT A DATABASE\n", encoding="utf-8")
 
-    monkeypatch.setattr(daemon, "_RECALL_STORE_FAILED", False)
     monkeypatch.setattr(daemon, "ROOT", tmp_path)
     monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
 
@@ -609,20 +614,13 @@ def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_da
 
     monkeypatch.setattr(daemon.codex_client, "decide_batch", fake_decide_batch)
 
-    def _bars(sym, lookback, interval):
-        from trader.market.market_data import Bar
-        return [
-            Bar(ts="2026-07-02T09:45:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
-            Bar(ts="2026-07-02T10:00:00+00:00", open=100, high=101, low=99, close=100, volume=1000),
-        ]
-
     # Ne doit pas lever d'exception
     report = daemon.run_cycle(
         dry_run=True,
         now=NOW,
         symbols_filter=["SPY"],
         sched=None,
-        data_source=make_data_source(_bars),
+        data_source=make_data_source(_cycle_bars),
         agent_tools_enabled=True,
     )
     assert report is not None
@@ -635,6 +633,95 @@ def test_run_cycle_recall_db_corrompu_ne_leve_pas(monkeypatch, tmp_path, make_da
         )
         if recall_result:
             assert recall_result.get("result", {}).get("error") == "unavailable"
+
+
+def test_try_open_cycle_learnings_store_recovers_after_transient_error(tmp_path):
+    db_path = tmp_path / "learnings.db"
+    db_path.write_text("NOT A DATABASE\n", encoding="utf-8")
+
+    assert daemon.try_open_cycle_learnings_store(db_path) is None
+
+    db_path.unlink()
+    store = daemon.try_open_cycle_learnings_store(db_path)
+    assert store is not None
+    try:
+        assert store.count() == 0
+    finally:
+        store.close()
+
+
+def test_run_cycle_recovers_learnings_store_on_next_cycle(
+    monkeypatch, tmp_path, make_data_source, write_runtime_config, patch_batch
+):
+    """A transient constructor failure must not disable recall for later cycles."""
+    write_runtime_config(tmp_path, symbols=["SPY"])
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    db_path = state_dir / "learnings.db"
+    db_path.write_text("NOT A DATABASE\n", encoding="utf-8")
+
+    monkeypatch.setattr(daemon, "ROOT", tmp_path)
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+
+    def decide(**kwargs):
+        return codex_client.Decision(
+            symbol=kwargs["symbol"],
+            action="HOLD",
+            quantity=0.0,
+            confidence=0.5,
+            rationale="range",
+            intent="HOLD",
+            learning="range SPY tient",
+            llm_provider="acpx",
+            llm_model="gpt-5.5",
+        )
+
+    patch_batch(decide)
+    data_source = make_data_source(_cycle_bars)
+    process_state = daemon.CycleProcessState()
+
+    first = daemon.run_cycle(
+        dry_run=True,
+        now=NOW,
+        symbols_filter=["SPY"],
+        sched=None,
+        data_source=data_source,
+        max_market_data_age_minutes=24 * 60,
+        process_state=process_state,
+    )
+    assert first is not None
+    assert db_path.read_text(encoding="utf-8").startswith("NOT A DATABASE")
+
+    db_path.unlink()
+    second = daemon.run_cycle(
+        dry_run=True,
+        now=NOW + timedelta(hours=5),
+        symbols_filter=["SPY"],
+        sched=None,
+        data_source=data_source,
+        max_market_data_age_minutes=24 * 60,
+        process_state=process_state,
+    )
+    assert second is not None
+    assert db_path.exists()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        note_count = (
+            int(conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0])
+            if "notes" in tables
+            else 0
+        )
+    finally:
+        conn.close()
+    assert "notes" in tables
+    assert note_count >= 1
 
 
 def test_build_recall_provider_embed_timeout_3s(tmp_path, monkeypatch):

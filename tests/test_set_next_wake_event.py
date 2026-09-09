@@ -288,7 +288,7 @@ def test_apply_decision_schedule_iso_takes_precedence_over_minutes(tmp_path) -> 
 
 
 def test_apply_decision_schedule_late_iso_is_clamped_to_calm_review(tmp_path) -> None:
-    """Un wake événementiel lointain ne repousse pas la revue calme au-delà de 4 h."""
+    """Un wake événementiel lointain ne repousse pas la revue calme au-delà de 4 h en séance."""
     from trader.runtime import cycle_scheduling
     from trader.planning.scheduler import Scheduler
 
@@ -305,10 +305,39 @@ def test_apply_decision_schedule_late_iso_is_clamped_to_calm_review(tmp_path) ->
         cancel_watch_ids=[],
         pending_indicator_watch=None,
         entry=entry,
+        session_open=True,
     )
 
     assert sched.next_wake("AAPL") == now + timedelta(hours=4)
     assert entry["schedule_wake_source"] == "calm_review"
+
+
+def test_apply_decision_schedule_session_open_stays_exact_while_closed(tmp_path) -> None:
+    """Hors séance, un `{on: session_open}` agent n'est pas écrasé par la borne 4 h."""
+    from trader.domain.market.sessions import next_regular_session_open
+    from trader.planning.scheduler import Scheduler
+    from trader.runtime import cycle_scheduling
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 11, 16, 0, tzinfo=timezone.utc)
+    next_open = next_regular_session_open(now, symbol="AIR.PA")
+    entry: dict = {}
+
+    cycle_scheduling.apply_decision_schedule(
+        sched=sched,
+        sym="AIR.PA",
+        now=now,
+        next_wake_in_minutes=None,
+        next_wake_iso=next_open.isoformat(),
+        cancel_watch_ids=[],
+        pending_indicator_watch=None,
+        entry=entry,
+        session_open=False,
+    )
+
+    assert next_open > now + timedelta(hours=4)
+    assert sched.next_wake("AIR.PA") == next_open
+    assert entry["schedule_wake_source"] == "agent"
 
 
 # ---------------------------------------------------------------------------

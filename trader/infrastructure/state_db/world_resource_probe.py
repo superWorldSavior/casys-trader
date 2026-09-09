@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from trader.domain.world_resource import WorldResourceUsage
+from trader.infrastructure.state_db.world_prediction_storage_lock import shared_prediction_storage_lease
 
 _SIDECARS = ("-wal", "-shm", "-journal")
 
@@ -59,12 +60,13 @@ class FilesystemWorldResourceProbe:
                 free_bytes=_free_bytes(path),
                 store_exists=False,
             )
-        return WorldResourceUsage(
-            logical_bytes=_logical_bytes(path),
-            on_disk_bytes=_on_disk_bytes(path),
-            free_bytes=_free_bytes(path),
-            store_exists=True,
-        )
+        with shared_prediction_storage_lease(path, create=False):
+            return WorldResourceUsage(
+                logical_bytes=_logical_bytes(path),
+                on_disk_bytes=_on_disk_bytes(path),
+                free_bytes=_free_bytes(path),
+                store_exists=True,
+            )
 
 
 __all__ = ["FilesystemWorldResourceProbe"]

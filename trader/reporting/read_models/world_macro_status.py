@@ -31,6 +31,10 @@ from trader.domain.world_macro import (
     MacroWorldObservation,
 )
 from trader.infrastructure.state_db.availability_receipt import load_receipts, parse_world_availability_receipt
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    shared_prediction_storage_lease,
+)
 
 
 MACRO_STATUS_SCHEMA = "world_macro_status.v1"
@@ -161,6 +165,8 @@ def _bounded_base(*, macro_root: Path, as_of: datetime) -> dict[str, Any]:
             "required_sources": 0,
             "fresh_sources": 0,
             "by_scope": [],
+            "by_dimension": [],
+            "source_coverage_is_not_dimension_coverage": True,
         },
         "freshness": {
             "status": "unknown",
@@ -169,6 +175,8 @@ def _bounded_base(*, macro_root: Path, as_of: datetime) -> dict[str, Any]:
             "stale_observations": 0,
             "unknown_expiry": 0,
             "mtime_is_not_proof": True,
+            "indexed_at_is_not_publication": True,
+            "period_is_not_known_release": True,
         },
         "gaps": {
             "missing_source_ids": [],
@@ -401,6 +409,8 @@ def _project_coverage(
             "required_sources": 0,
             "fresh_sources": 0,
             "by_scope": [],
+            "by_dimension": [],
+            "source_coverage_is_not_dimension_coverage": True,
         }
     by_scope: dict[tuple[str, str], MacroWorldObservation] = {}
     for observation in sorted(observations, key=lambda item: (item.cutoff_at, item.observation_id)):
@@ -415,12 +425,23 @@ def _project_coverage(
         status = "unknown"
     else:
         status = "partial"
+    by_dimension: dict[str, dict[str, Any]] = {}
+    for key in MACRO_FEATURE_KEYS:
+        values = {item.features[key] for item in selected}
+        coverages = {next(dim.coverage_status for dim in item.dimensions if dim.dimension == key) for item in selected}
+        by_dimension[key] = {
+            "dimension": key,
+            "values": sorted(values),
+            "coverage_statuses": sorted(coverages),
+            "unknown": "unknown" in values or coverages <= {"unknown", "missing"},
+        }
     return {
         "status": status,
         "observations": len(observations),
         "proven_observations": proven_observations,
         "required_sources": sum(item.coverage.required_sources for item in selected),
         "fresh_sources": sum(item.coverage.fresh_sources for item in selected),
+        "source_coverage_is_not_dimension_coverage": True,
         "by_scope": [
             {
                 "scope": item.scope.to_dict(),
@@ -429,9 +450,19 @@ def _project_coverage(
                 "fresh_sources": item.coverage.fresh_sources,
                 "missing_source_ids": list(item.coverage.missing_source_ids),
                 "observation_id": item.observation_id,
+                "dimensions": [
+                    {
+                        "dimension": dim.dimension,
+                        "value": dim.value,
+                        "coverage_status": dim.coverage_status,
+                        "method": dim.method,
+                    }
+                    for dim in item.dimensions
+                ],
             }
             for item in selected
         ],
+        "by_dimension": [by_dimension[key] for key in MACRO_FEATURE_KEYS],
     }
 
 
@@ -460,6 +491,8 @@ def _project_freshness(observations: Sequence[MacroWorldObservation], *, as_of: 
         "stale_observations": stale,
         "unknown_expiry": unknown,
         "mtime_is_not_proof": True,
+        "indexed_at_is_not_publication": True,
+        "period_is_not_known_release": True,
     }
 
 
@@ -510,17 +543,18 @@ def _read_attach(state_dir: Path) -> dict[str, Any]:
         return payload
     payload["exists"] = True
     try:
-        uri = f"file:{quote(str(db_path.resolve()), safe='/')}?mode=ro&immutable=1"
-        connection = sqlite3.connect(uri, uri=True)
-        try:
-            tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if "world_episodes" not in tables:
-                payload["status"] = "schema_unavailable"
-                return payload
-            rows = connection.execute("SELECT payload_json FROM world_episodes").fetchall()
-        finally:
-            connection.close()
-    except (OSError, sqlite3.Error) as exc:
+        with shared_prediction_storage_lease(db_path, create=False):
+            uri = f"file:{quote(str(db_path.resolve()), safe='/')}?mode=ro&immutable=1"
+            connection = sqlite3.connect(uri, uri=True)
+            try:
+                tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "world_episodes" not in tables:
+                    payload["status"] = "schema_unavailable"
+                    return payload
+                rows = connection.execute("SELECT payload_json FROM world_episodes").fetchall()
+            finally:
+                connection.close()
+    except (PredictionStorageBusyError, OSError, sqlite3.Error) as exc:
         payload["status"] = "unavailable"
         payload["error"] = f"{type(exc).__name__}:{exc}"
         return payload

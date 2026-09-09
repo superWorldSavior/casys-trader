@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from trader.agent.client import Decision
 from trader.application.cycle import schedule as cycle_schedule
 from trader.application.cycle.infra_holds import quiet_gate_decisions
+from trader.domain.planning import relevance_gate
 from trader.market.market_data import Bar
 from trader.market import market_data as market
 from trader.planning.scheduler import Scheduler
@@ -331,10 +332,14 @@ def test_hot_review_reconcile_replaces_legacy_three_hour_wake(tmp_path) -> None:
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc)
     last_review = now - timedelta(minutes=20)
-    sched.set_symbol_next_wake("SPY", (now + timedelta(hours=3)).isoformat())
+    owned_wake = (now + timedelta(hours=3)).isoformat()
+    sched.set_symbol_next_wake("SPY", owned_wake)
     process_state = daemon.CycleProcessState()
     key = (str(tmp_path / "state"), "SPY")
     process_state.last_llm_at[key] = last_review
+    process_state.last_wake_fingerprints[key] = {
+        relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY: owned_wake,
+    }
 
     reconciled = daemon._reconcile_hot_wakes_before_due(
         sched,
@@ -375,9 +380,13 @@ def test_pre_due_reconcile_clamps_calm_24h_wake_to_last_review_plus_4h(
     sched = Scheduler(tmp_path / "scheduler.json")
     now = datetime(2026, 6, 11, 14, 30, tzinfo=timezone.utc)
     last_review = now - timedelta(minutes=30)
-    sched.set_symbol_next_wake("SPY", (now + timedelta(hours=24)).isoformat())
+    owned_wake = (now + timedelta(hours=24)).isoformat()
+    sched.set_symbol_next_wake("SPY", owned_wake)
     process_state = daemon.CycleProcessState()
     process_state.last_llm_at[(state_key, "SPY")] = last_review
+    process_state.last_wake_fingerprints[(state_key, "SPY")] = {
+        relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY: owned_wake,
+    }
 
     reconciled = daemon._reconcile_hot_wakes_before_due(
         sched,
@@ -445,6 +454,128 @@ def test_mechanical_hot_wake_is_typed_and_not_an_agent_wake_after_close(tmp_path
 
     assert gated.kept_symbols == []
     assert gated.gated_symbols == ["SPY"]
+
+
+def test_pre_due_reconcile_preserves_future_stale_backoff_despite_old_last_llm(
+    tmp_path,
+) -> None:
+    """A stale-data backoff is not cadence-owned; old last_llm_at must not pull it to now."""
+    state_key = str(tmp_path / "state")
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 11, 16, 0, tzinfo=timezone.utc)
+    backoff_at = now + timedelta(minutes=45)
+    sched.set_symbol_next_wake("AIR.PA", backoff_at.isoformat())
+    process_state = daemon.CycleProcessState()
+    key = (state_key, "AIR.PA")
+    process_state.last_llm_at[key] = now - timedelta(hours=8)
+    process_state.last_wake_fingerprints[key] = {
+        relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY: (
+            now - timedelta(hours=4)
+        ).isoformat(),
+    }
+
+    reconciled = daemon._reconcile_hot_wakes_before_due(
+        sched,
+        symbols=["AIR.PA"],
+        now=now,
+        process_state=process_state,
+        state_key=state_key,
+        held_symbols=set(),
+        hot_setup_symbols=set(),
+    )
+
+    assert reconciled == {}
+    assert sched.next_wake("AIR.PA") == backoff_at
+    assert cycle_schedule.select_due_symbols(
+        ["AIR.PA"],
+        sched=sched,
+        once=False,
+        bootstrap=False,
+        now=now,
+    ) == []
+    assert cycle_schedule.select_due_symbols(
+        ["AIR.PA"],
+        sched=sched,
+        once=False,
+        bootstrap=False,
+        now=backoff_at,
+    ) == ["AIR.PA"]
+
+
+def test_pre_due_reconcile_defers_owned_closed_session_cadence_to_session_open(
+    tmp_path,
+) -> None:
+    """Internal cadence alone must not keep a closed European symbol due overnight."""
+    state_key = str(tmp_path / "state")
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 11, 16, 0, tzinfo=timezone.utc)
+    owned_wake = now.isoformat()
+    sched.set_symbol_next_wake("AIR.PA", owned_wake)
+    process_state = daemon.CycleProcessState()
+    key = (state_key, "AIR.PA")
+    process_state.last_llm_at[key] = now - timedelta(hours=6)
+    process_state.last_wake_fingerprints[key] = {
+        relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY: owned_wake,
+    }
+
+    reconciled = daemon._reconcile_hot_wakes_before_due(
+        sched,
+        symbols=["AIR.PA"],
+        now=now,
+        process_state=process_state,
+        state_key=state_key,
+        held_symbols=set(),
+        hot_setup_symbols=set(),
+    )
+
+    expected = market.next_regular_session_open(now, symbol="AIR.PA")
+    assert market.session_snapshot("AIR.PA", now=now).get("open") is False
+    assert reconciled == {"AIR.PA": expected.isoformat()}
+    assert sched.next_wake("AIR.PA") == expected
+    assert process_state.last_wake_fingerprints[key][
+        relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY
+    ] == expected.isoformat()
+    assert cycle_schedule.select_due_symbols(
+        ["AIR.PA"],
+        sched=sched,
+        once=False,
+        bootstrap=False,
+        now=now,
+    ) == []
+    assert cycle_schedule.select_due_symbols(
+        ["AIR.PA"],
+        sched=sched,
+        once=False,
+        bootstrap=False,
+        now=expected,
+    ) == ["AIR.PA"]
+
+
+def test_pre_due_reconcile_preserves_agent_session_open_wake(tmp_path) -> None:
+    state_key = str(tmp_path / "state")
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 11, 16, 0, tzinfo=timezone.utc)
+    session_open_at = market.next_regular_session_open(now, symbol="AIR.PA")
+    sched.set_symbol_next_wake("AIR.PA", session_open_at.isoformat())
+    process_state = daemon.CycleProcessState()
+    key = (state_key, "AIR.PA")
+    process_state.last_llm_at[key] = now - timedelta(hours=6)
+
+    reconciled = daemon._reconcile_hot_wakes_before_due(
+        sched,
+        symbols=["AIR.PA"],
+        now=now,
+        process_state=process_state,
+        state_key=state_key,
+        held_symbols=set(),
+        hot_setup_symbols=set(),
+    )
+
+    assert reconciled == {}
+    assert sched.next_wake("AIR.PA") == session_open_at
+    assert relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY not in (
+        process_state.last_wake_fingerprints.get(key) or {}
+    )
 
 
 def test_pre_due_hot_reconcile_never_steals_pending_fresh_probe(tmp_path) -> None:

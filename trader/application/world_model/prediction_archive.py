@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
@@ -14,6 +15,7 @@ from trader.application.world_model.prediction_archive_ports import (
 from trader.domain.world_prediction_archive import (
     InvalidWorldPredictionArchiveError,
     WorldPredictionArchiveManifest,
+    WorldPredictionArchivePlan,
 )
 
 
@@ -33,6 +35,7 @@ class WorldPredictionArchiveService:
     source: WorldPredictionArchiveSource
     sink: WorldPredictionArchiveSink
     clock: Callable[[], datetime] = field(default=_utc_now)
+    storage_lease: Callable[[], AbstractContextManager[Any]] | None = None
 
     def execute(self, *, before: date, apply: bool) -> dict[str, Any]:
         """Plan or publish every closed partition before the exclusive cutoff."""
@@ -44,6 +47,13 @@ class WorldPredictionArchiveService:
             raise ValueError(
                 f"before {before.isoformat()} includes the open UTC day {today.isoformat()} or a future day"
             )
+        with _operation_lease(self, apply=apply):
+            return self._execute_locked(before=before, apply=apply, today=today)
+
+    def _execute_locked(self, *, before: date, apply: bool, today: date) -> dict[str, Any]:
+        catalog = _canonical_catalog(self.source)
+        catalog_by_date = {manifest.recorded_date: manifest for manifest in catalog}
+        _require_canonical_catalog(catalog, self.sink)
         plans = tuple(self.source.plan_before(before))
         partitions: list[dict[str, Any]] = []
         for plan in plans:
@@ -52,6 +62,20 @@ class WorldPredictionArchiveService:
                     f"archive partition {plan.partition_id} includes the open UTC day "
                     f"{today.isoformat()} or a future day"
                 )
+            canonical = catalog_by_date.get(plan.recorded_date)
+            if canonical is not None:
+                partitions.append(
+                    {
+                        "status": "canonical_active",
+                        "late_hot_count": plan.row_count,
+                        "plan": plan.to_dict(),
+                        "manifest": canonical.to_dict(),
+                        "source_retained": True,
+                        "authority": "shadow_only",
+                        "decision_effect": "none",
+                    }
+                )
+                continue
             try:
                 existing = self.sink.published(plan)
             except InvalidWorldPredictionArchiveError as exc:
@@ -97,6 +121,58 @@ class WorldPredictionArchiveService:
             "decision_effect": "none",
             "partitions": partitions,
         }
+
+
+def _operation_lease(service: WorldPredictionArchiveService, *, apply: bool) -> AbstractContextManager[Any]:
+    if service.storage_lease is not None:
+        return service.storage_lease()
+    factory = getattr(service.source, "export_storage_lease", None)
+    if callable(factory):
+        return factory(apply=apply)
+    return nullcontext()
+
+
+def _canonical_catalog(source: WorldPredictionArchiveSource) -> tuple[WorldPredictionArchiveManifest, ...]:
+    catalog = getattr(source, "canonical_catalog", None)
+    if not callable(catalog):
+        return ()
+    return tuple(catalog())
+
+
+def _plan_from_manifest(manifest: WorldPredictionArchiveManifest) -> WorldPredictionArchivePlan:
+    return WorldPredictionArchivePlan(
+        recorded_date=manifest.recorded_date,
+        row_count=manifest.row_count,
+        first_key=manifest.first_key,
+        last_key=manifest.last_key,
+        column_names=manifest.column_names,
+        column_types=manifest.column_types,
+        schema_sha256=manifest.schema_sha256,
+    )
+
+
+def _require_canonical_catalog(
+    catalog: tuple[WorldPredictionArchiveManifest, ...],
+    sink: WorldPredictionArchiveSink,
+) -> None:
+    """Fail closed on an active canonical partition; never quarantine from this path."""
+
+    for manifest in catalog:
+        plan = _plan_from_manifest(manifest)
+        try:
+            existing = sink.published(plan)
+        except InvalidWorldPredictionArchiveError as exc:
+            raise InvalidWorldPredictionArchiveError(
+                f"canonical partition {manifest.recorded_date.isoformat()} unavailable: {exc.reason}"
+            ) from exc
+        if existing is None:
+            raise InvalidWorldPredictionArchiveError(
+                f"canonical partition {manifest.recorded_date.isoformat()} is missing"
+            )
+        if existing.to_dict() != manifest.to_dict():
+            raise InvalidWorldPredictionArchiveError(
+                f"canonical partition {manifest.recorded_date.isoformat()} does not match the registered manifest"
+            )
 
 
 def _assert_same_partition(expected_rows: int, manifest: WorldPredictionArchiveManifest) -> None:

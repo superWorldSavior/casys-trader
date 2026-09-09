@@ -202,13 +202,30 @@ dans `state/world_model_archive/` en Parquet ZSTD. Chaque partition publiée a
 un manifeste `verified` (schéma et types physiques, bornes, cardinalité,
 unicité, hash ordonné du contenu et hash du fichier). L'export lit le ledger
 via un index `recorded_at` additif (bornes `[jour, jour suivant[`) et refuse
-la journée UTC ouverte. Un miroir Parquet endommagé est quarantiné (jamais
-écrasé ni effacé) puis reconstruit depuis SQLite, sans bloquer les jours
-suivants. Cette projection reste `shadow_only`,
-`decision_effect=none` et `source_retained=true` : elle ne permet actuellement
-aucun `DELETE`, `VACUUM` ou remplacement de `world_model.db`. Le futur cutover
-hot/cold devra d'abord fournir un index d'identités et des query adapters
-SQLite + Parquet avec tests de parité.
+la journée UTC ouverte. Un miroir Parquet endommagé qui n'est pas encore inscrit au registre
+canonique est quarantiné (jamais écrasé ni effacé) puis reconstruit depuis
+SQLite, sans bloquer les jours suivants. Cette projection reste `shadow_only`
+et `decision_effect=none`. Le champ `source_retained=true` des manifestes v1
+décrit l'état au moment de l'export et reste inchangé après le cutover ; le
+registre froid établit alors l'emplacement canonique des données.
+L'export v1 prend un lease de stockage partagé sur toute
+l'opération (catalogue, lecture, publication) ; un `.cutover.json` présent
+bloque l'export même avec un statut d'apparence terminale. Une date déjà
+canonique n'est jamais quarantenée ni reconstruite ; le manifeste publié doit
+être sémantiquement égal au registre (`to_dict()`), pas seulement au plan
+scalaire. Un cutover hors ligne (`scripts/cutover_world_predictions.py`) peut
+ensuite activer les journées UTC closes dans un registre froid SQLite +
+Parquet : les lignes historiques quittent `world_shadow_predictions`, leurs
+identités restent indexées dans SQLite et leurs payloads sont dans Parquet.
+Le journal append-only reste logiquement complet.
+Un daemon.pid vivant refuse l'application. Preview en lecture seule : SQLite
+`mode=ro` peut créer `-wal`/`-shm` ; ce n'est pas une mutation de payload.
+La CLI conserve une sauvegarde et propose `--resume`, sans restauration
+automatique. Après de nouvelles écritures, la récupération doit réhydrater
+les partitions froides dans une copie de la base courante : restaurer l'ancienne
+sauvegarde ferait perdre ces écritures. Une corruption d'archive
+canonique, même après `verified`/`pre_swap`/`swapped`, échoue fermé et
+laisse le journal.
 
 Les nouvelles prédictions référencent l'épisode canonique par `episode_id`,
 `feature_hash` et `input_sha256` au lieu de recopier son observation complète.

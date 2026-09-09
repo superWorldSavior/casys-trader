@@ -105,7 +105,7 @@ def read_world_pattern_status(state_dir: str | Path, cohort_id: str | None = Non
     """Hypothesis-first status, including evaluating hypotheses with zero occurrences."""
 
     db_path = Path(state_dir) / "world_model.db"
-    ledger = read_world_pattern_ledger(db_path, cohort_id)
+    ledger = read_world_pattern_ledger(db_path, cohort_id, include_predictions=False)
     return project_world_pattern_status(ledger, db_path=db_path)
 
 

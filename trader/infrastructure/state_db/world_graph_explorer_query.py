@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -16,6 +17,10 @@ from urllib.parse import quote
 from trader.application.world_model.graph_explorer_ports import (
     WorldGraphExplorerEventRecord,
     WorldGraphExplorerQuerySnapshot,
+)
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    shared_prediction_storage_lease,
 )
 
 _REQUIRED_TABLES = frozenset(
@@ -38,7 +43,11 @@ _EVENT_TABLES = (
 def _readonly_connection(path: Path) -> sqlite3.Connection:
     uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
     connection = sqlite3.connect(uri, uri=True)
-    connection.row_factory = sqlite3.Row
+    try:
+        connection.row_factory = sqlite3.Row
+    except Exception:
+        connection.close()
+        raise
     return connection
 
 
@@ -69,7 +78,9 @@ class SqliteWorldGraphExplorerQuery:
                 records=(),
             )
         try:
-            with _readonly_connection(path) as connection:
+            with shared_prediction_storage_lease(path, create=False), closing(
+                _readonly_connection(path)
+            ) as connection:
                 tables = _table_names(connection)
                 missing = tuple(sorted(_REQUIRED_TABLES.difference(tables)))
                 if missing:
@@ -81,7 +92,14 @@ class SqliteWorldGraphExplorerQuery:
                     )
                 receipts = _load_receipts(connection)
                 records = _load_event_records(connection, receipts)
-        except (OSError, sqlite3.Error, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (
+            PredictionStorageBusyError,
+            OSError,
+            sqlite3.Error,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             return WorldGraphExplorerQuerySnapshot(
                 status="unavailable",
                 exists=True,

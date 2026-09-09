@@ -181,13 +181,29 @@ CREATE INDEX IF NOT EXISTS global_rule_citations_pending
 """
 
 
+def _close_sqlite_connection(conn: sqlite3.Connection) -> None:
+    """Rollback + close without masking the caller's exception."""
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
 def _open_db(db_path: str | Path) -> sqlite3.Connection:
     """Ouvre (ou crée) la base, active WAL, retourne la connexion."""
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    for pragma in _PRAGMAS:
-        conn.execute(pragma)
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        for pragma in _PRAGMAS:
+            conn.execute(pragma)
+        return conn
+    except BaseException:
+        _close_sqlite_connection(conn)
+        raise
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -260,6 +276,20 @@ def _ensure_column(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
+def _stored_outcome_semantics_version(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM learnings_metadata WHERE key=?",
+        (_OUTCOME_SEMANTICS_METADATA_KEY,),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row[0])
+
+
+def _outcome_semantics_is_current(conn: sqlite3.Connection) -> bool:
+    return _stored_outcome_semantics_version(conn) == str(BENCHMARK_SEMANTICS_VERSION)
+
+
 def _migrate_benchmark_semantics(
     conn: sqlite3.Connection,
     *,
@@ -272,15 +302,20 @@ def _migrate_benchmark_semantics(
     older benchmark or realised-economics semantics.  A metadata marker makes
     the reset idempotent even when several short-lived workers reopen the same
     database.
+
+    A no-op on an already-current marker must not take a write lock: opening
+    under a concurrent WAL writer is the daemon/queue steady state.
     """
+
+    already_current = _outcome_semantics_is_current(conn)
+    if conn.in_transaction:
+        conn.commit()
+    if already_current:
+        return
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        current = conn.execute(
-            "SELECT value FROM learnings_metadata WHERE key=?",
-            (_OUTCOME_SEMANTICS_METADATA_KEY,),
-        ).fetchone()
-        if current is not None and str(current[0]) == str(BENCHMARK_SEMANTICS_VERSION):
+        if _outcome_semantics_is_current(conn):
             conn.commit()
             return
 
@@ -394,7 +429,11 @@ class LearningsStore:
         self._lock = threading.Lock()
         self._outcome_scorer = outcome_scorer
         self._conn = _open_db(self._db_path)
-        _create_schema(self._conn)
+        try:
+            _create_schema(self._conn)
+        except BaseException:
+            _close_sqlite_connection(self._conn)
+            raise
 
     # ------------------------------------------------------------------
     # Lecture

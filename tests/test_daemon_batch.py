@@ -1711,7 +1711,8 @@ def test_veille_armee_sans_next_wake_dort_jusqu_a_expiration(monkeypatch, tmp_pa
 
 
 def test_hold_sans_veille_ni_wake_suit_la_cadence_calme(tmp_path) -> None:
-    """Sans veille ni wake agent, une revue calme reste garantie sous 4 h."""
+    """Sans veille ni wake agent, la cadence interne vise la prochaine ouverture hors séance."""
+    from trader.domain.market.sessions import next_regular_session_open
     from trader.planning.scheduler import Scheduler
 
     sched = Scheduler(tmp_path / "scheduler.json")
@@ -1726,7 +1727,7 @@ def test_hold_sans_veille_ni_wake_suit_la_cadence_calme(tmp_path) -> None:
         pending_indicator_watch=None,
         entry={},
     )
-    assert sched.next_wake("SPY") == now + timedelta(hours=4)
+    assert sched.next_wake("SPY") == next_regular_session_open(now, symbol="SPY")
 
 
 # ---------------------------------------------------------------------------

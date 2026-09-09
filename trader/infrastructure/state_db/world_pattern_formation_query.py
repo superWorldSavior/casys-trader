@@ -14,6 +14,7 @@ import json
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,10 @@ from trader.infrastructure.state_db.sqlite_in import sqlite_placeholders as _pla
 from trader.infrastructure.state_db.availability_receipt import load_receipts, parse_world_availability_receipt
 from trader.infrastructure.state_db.world_macro_store import WORLD_MACRO_STORE_ID
 from trader.infrastructure.state_db.world_model_store import WORLD_MODEL_STORE_ID
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    shared_prediction_storage_lease,
+)
 
 _READONLY_TIMEOUT_S = 5.0
 _REQUIRED_TABLES = frozenset(
@@ -104,8 +109,12 @@ def _empty_batch(*reasons: str) -> PatternFormationBatch:
 def _readonly_connection(path: Path) -> sqlite3.Connection:
     uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=_READONLY_TIMEOUT_S)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+    except Exception:
+        connection.close()
+        raise
     return connection
 
 
@@ -194,13 +203,15 @@ class SqlitePatternFormationSource:
         if not path.exists():
             return _empty_batch("missing_db")
         try:
-            with _readonly_connection(path) as connection:
+            with shared_prediction_storage_lease(path, create=False), closing(
+                _readonly_connection(path)
+            ) as connection:
                 tables = _table_names(connection)
                 missing = sorted(_REQUIRED_TABLES.difference(tables))
                 if missing:
                     return _empty_batch("schema_unavailable")
                 return _load_batch(connection, request, self.macro_root)
-        except (OSError, sqlite3.Error):
+        except (PredictionStorageBusyError, OSError, sqlite3.Error):
             return _empty_batch("unavailable")
 
 

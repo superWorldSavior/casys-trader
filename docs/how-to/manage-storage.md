@@ -141,8 +141,53 @@ Une partition dérivée invalide (Parquet tronqué, manifeste manquant, coupure
 secteur) est déplacée atomiquement sous `quarantine/` avec un motif forensique ;
 le jour est reconstruit depuis `world_model.db` et les jours suivants continuent.
 Rien n'est écrasé ni supprimé en silence. Elle ne modifie pas
-`state/world_model.db` et ne libère donc pas encore ses anciennes lignes. Ce
-miroir froid est le préalable au futur ledger hot/cold ; une compaction du
-SQLite ne sera autorisée qu'après un cutover hors ligne et des tests de parité
-des rapports/cohortes/patterns. Le LaunchAgent de rétention agents ne l'exporte
-pas et ne le compacte pas.
+`state/world_model.db` et ne libère donc pas encore ses anciennes lignes. Une
+date déjà inscrite au registre froid (`world_prediction_cold_partitions`) n'est
+jamais quarantenée, reconstruite ni remplacée par cet export : les lignes hot
+tardives restent hot et sont seulement comptées. Une partition canonique
+absente ou corrompue échoue fermé, sans reconstruction automatique.
+
+Le cutover hors ligne est un opérateur distinct, dry-run par défaut, et refuse
+un `daemon.pid` vivant. Il s'applique à une copie de `state/` (ou à l'état
+source seulement après arrêt et lease exclusif) :
+
+```bash
+uv run python -m scripts.cutover_world_predictions --state-dir state --before YYYY-MM-DD
+uv run python -m scripts.cutover_world_predictions --state-dir state --before YYYY-MM-DD --apply
+uv run python -m scripts.cutover_world_predictions --state-dir state --before YYYY-MM-DD --apply --adopt
+uv run python -m scripts.cutover_world_predictions --state-dir state --resume
+```
+
+`--apply` sans `--adopt` construit un candidat compact à côté de la source, en
+conserve une sauvegarde SQLite vérifiée, et laisse `world_model.db` intact.
+`--adopt` exige `--apply` (ou `--resume`) : checkpoint WAL complet des deux
+fichiers, `journal_mode=delete` vérifié (un checkpoint incomplet ou occupé
+bloque l'opération), puis remplacement atomique. Les sidecars WAL/SHM
+actifs ne sont jamais supprimés manuellement. Un journal `world_model.db.cutover.json` rend
+l'opération reprenable ; `--resume` est obligatoire s'il reste. Toute
+présence de ce journal bloque l'export et les accès partagés, y compris un
+statut `success` ou `rolled_back` ; seul l'opérateur archive ou retire le
+fichier après finalisation durable.
+
+La CLI ne propose pas de restauration automatique. La sauvegarde permet une
+restauration hors ligne avant toute nouvelle écriture. Après de nouvelles
+écritures, il faut réhydrater les partitions froides dans une copie de la base
+courante : restaurer l'ancienne sauvegarde ferait perdre ces écritures.
+
+Le dry-run / preview est en lecture (lease partagé `create=False`). Il ne crée
+pas d'archive, de journal, de backup ni de candidat. Une connexion SQLite
+`mode=ro` peut créer des sidecars `-wal`/`-shm` s'ils étaient absents ;
+les données source restent inchangées.
+
+Journal, étapes et reprise : `acquired` → `snapshot` → `archives_verified` →
+`candidate` → `compacted` → `verified` → `prepared` (sans adopt) ou
+`pre_swap` → `swapped` → `success`. Un marqueur `pre_swap` seul ne dispense
+pas des preuves : avant chaque remplacement on revalide la source logique
+contre la sauvegarde figée (toutes les tables métier), le candidat, et les
+empreintes **après checkpoint** (distinctes de l'empreinte physique initiale ;
+un checkpoint source peut changer les octets sans changer les données). Une
+mutation WAL-only ou un candidat substitué refuse la reprise ; on ne restaure
+pas la sauvegarde. Après swap, un marqueur de génération ne suffit pas :
+intégrité, catalogue froid/archives canoniques et parité attendue avant
+d'effacer le journal. Le LaunchAgent de rétention agents n'exporte pas et ne
+compacte pas le World Model.

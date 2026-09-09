@@ -43,6 +43,7 @@
 | FX | [`fx.md`](fx.md) | `domain/market/fx`, `infrastructure/market_sources/fx_rates` |
 | News, scout challengers, analyste | [`news.md`](news.md) | `infrastructure/market_sources/news_feed`, `runtime/news_*` |
 | Macro | [`macro.md`](macro.md) | `market/macro_*`, `runtime/news_macro_runtime` |
+| Dérivation World Macro (source-only) | [`world-macro-derivation.md`](world-macro-derivation.md) | `world_macro`, `macro_pipeline`, `world_macro/series` |
 
 ## Surfaces opérateur
 

@@ -66,7 +66,12 @@ def test_gm_stays_explicitly_unmapped() -> None:
 
 def test_logical_venues_are_not_defaulted_to_a_mic() -> None:
     resolver = _resolver()
-    for venue, instrument in (("TW", "UNMAPPED.TW"), ("US", "AAPL"), ("EU", "AIR.PA"), ("XTAI", "2301.TW")):
+    for venue, instrument in (
+        ("TW", "UNMAPPED.TW"),
+        ("US", "UNMAPPED.US"),
+        ("EU", "UNMAPPED.EU"),
+        ("XTAI", "UNMAPPED.XTAI"),
+    ):
         unresolved = resolver.resolve(WorldMarketAnchorRef(market_venue=venue, instrument=instrument))
         assert unresolved.status == "unmapped"
         assert unresolved.scopes == ()

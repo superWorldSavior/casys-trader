@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+from trader.domain.market.sessions import next_regular_session_open
 from trader.domain.planning.scheduling import (
     stale_backoff_wake_minutes as stale_backoff_wake_minutes,
 )
@@ -300,12 +301,20 @@ def apply_decision_schedule(
         )
         candidates.append(("hot_review", hot_deadline))
         entry["hot_review_deadline"] = hot_deadline.isoformat()
-    else:
+    elif session_open:
         calm_deadline = (now + timedelta(hours=CALM_REVIEW_MAX_HOURS)).astimezone(
             timezone.utc
         )
         candidates.append(("calm_review", calm_deadline))
         entry["calm_review_deadline"] = calm_deadline.isoformat()
+    else:
+        session_deadline = next_regular_session_open(now, symbol=sym)
+        if session_deadline.tzinfo is None:
+            session_deadline = session_deadline.replace(tzinfo=timezone.utc)
+        else:
+            session_deadline = session_deadline.astimezone(timezone.utc)
+        candidates.append(("calm_review", session_deadline))
+        entry["calm_review_deadline"] = session_deadline.isoformat()
 
     if candidates:
         wake_source, wake_at = min(candidates, key=lambda item: item[1])

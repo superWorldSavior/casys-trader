@@ -233,7 +233,7 @@ def test_compose_guard_does_not_create_missing_store(tmp_path) -> None:
     guard = compose_world_resource_guard(db_path=db_path, config_dir=REPO_ROOT / "config")
     evaluation = guard.evaluate(now=NOW)
     assert db_path.exists() is False
-    assert evaluation.decision.budget.max_db_bytes == 3 * GiB
+    assert evaluation.decision.budget.max_db_bytes == 100 * GiB
 
 
 def test_daemon_wires_typed_resource_guard_without_magic_env_reads() -> None:

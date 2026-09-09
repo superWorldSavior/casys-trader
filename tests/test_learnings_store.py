@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from trader.agent.learnings.store import LearningsStore
 from trader.domain.decision_benchmark import BENCHMARK_SEMANTICS_VERSION
+from trader.infrastructure.state_db import learnings_store as learnings_store_mod
 
 
 # ---------------------------------------------------------------------------
@@ -1059,8 +1062,6 @@ def test_search_vide_si_tous_les_matchs_sont_nuisibles_mesures(tmp_path: Path) -
 # Findings review Codex 2026-07-02 : thread-safety, query restriction, verdict
 # ---------------------------------------------------------------------------
 
-import threading  # noqa: E402
-
 
 def test_search_record_recall_thread_safe(tmp_path: Path) -> None:
     """Finding 3 : 8 threads × search+record_recall concurrents → aucune exception."""
@@ -1723,3 +1724,221 @@ def test_pending_memrl_replay_is_chronological_after_v2_reset(tmp_path: Path) ->
         "citation-old",
         "citation-new",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Contention WAL + init fail-close (learnings lock repair)
+# ---------------------------------------------------------------------------
+
+_BUSY_TIMEOUT_S = 2.0
+
+
+def _seed_legacy_v2_feedback(tmp_path: Path, db_path: Path) -> tuple[int, float]:
+    jsonl = tmp_path / f"{db_path.stem}.jsonl"
+    _write_jsonl(jsonl, [_ROWS[2]])
+    store = LearningsStore(db_path)
+    store.ingest_jsonl(jsonl, source="runtime")
+    note_id = int(store._conn.execute("SELECT id FROM notes").fetchone()[0])
+    store.update_note_outcomes([{
+        "id": note_id,
+        "verdict": "WIN",
+        "forward_return": 0.05,
+    }])
+    store._conn.execute(
+        """
+        UPDATE notes
+        SET outcome_score=0.4, q_value=0.7, q_updates=9,
+            outcome_semantics_version=2,
+            curated_revision=curation_revision
+        """
+    )
+    revision = int(store._conn.execute("SELECT curation_revision FROM notes").fetchone()[0])
+    q_value = float(store._conn.execute("SELECT q_value FROM notes").fetchone()[0])
+    store._conn.execute(
+        "UPDATE learnings_metadata SET value='2' WHERE key='outcome_semantics_version'"
+    )
+    store._conn.commit()
+    store.close()
+    return revision, q_value
+
+
+def _hold_wal_writer(db_path: Path) -> sqlite3.Connection:
+    writer = sqlite3.connect(str(db_path), isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+    return writer
+
+
+def test_open_current_schema_succeeds_under_concurrent_wal_writer(tmp_path: Path) -> None:
+    """Reopen of an already-current store must not take BEGIN IMMEDIATE."""
+    db_path = tmp_path / "current.db"
+    store1 = LearningsStore(db_path)
+    marker = store1._conn.execute(
+        "SELECT value FROM learnings_metadata WHERE key='outcome_semantics_version'"
+    ).fetchone()[0]
+    assert marker == str(BENCHMARK_SEMANTICS_VERSION)
+
+    writer = _hold_wal_writer(db_path)
+    try:
+        started = time.monotonic()
+        store2 = LearningsStore(db_path)
+        elapsed = time.monotonic() - started
+        try:
+            reopened = store2._conn.execute(
+                "SELECT value FROM learnings_metadata WHERE key='outcome_semantics_version'"
+            ).fetchone()[0]
+            assert reopened == str(BENCHMARK_SEMANTICS_VERSION)
+            assert elapsed < _BUSY_TIMEOUT_S / 2
+        finally:
+            store2.close()
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+        store1.close()
+
+
+def test_outdated_semantics_migration_resets_derived_feedback(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-v2-reset.db"
+    revision_before, q_before = _seed_legacy_v2_feedback(tmp_path, db_path)
+    assert q_before == 0.7
+
+    migrated = LearningsStore(db_path)
+    row = migrated._conn.execute(
+        """
+        SELECT verdict, q_value, q_updates, curation_revision,
+               outcome_semantics_version
+        FROM notes
+        """
+    ).fetchone()
+    marker = migrated._conn.execute(
+        "SELECT value FROM learnings_metadata WHERE key='outcome_semantics_version'"
+    ).fetchone()[0]
+    migrated.close()
+
+    assert tuple(row) == (None, 0.0, 0, revision_before + 1, None)
+    assert marker == str(BENCHMARK_SEMANTICS_VERSION)
+
+
+def test_concurrent_openers_recheck_metadata_before_resetting_feedback(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-v2-race.db"
+    revision_before, _q_before = _seed_legacy_v2_feedback(tmp_path, db_path)
+    barrier = threading.Barrier(2)
+    revisions: list[int] = []
+    errors: list[BaseException] = []
+
+    def _open_one() -> None:
+        barrier.wait(timeout=5)
+        store = LearningsStore(db_path)
+        try:
+            revisions.append(
+                int(store._conn.execute("SELECT curation_revision FROM notes").fetchone()[0])
+            )
+        except BaseException as exc:  # noqa: BLE001 - collect and fail after join
+            errors.append(exc)
+        finally:
+            store.close()
+
+    threads = [threading.Thread(target=_open_one) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert errors == []
+    assert revisions == [revision_before + 1, revision_before + 1]
+
+
+def test_waiting_migrator_rechecks_version_and_skips_second_reset(
+    tmp_path: Path,
+) -> None:
+    """If another writer finishes the version bump first, do not reset again."""
+    db_path = tmp_path / "legacy-v2-recheck.db"
+    revision_before, q_before = _seed_legacy_v2_feedback(tmp_path, db_path)
+    writer = _hold_wal_writer(db_path)
+    started = threading.Event()
+    result: dict[str, object] = {}
+
+    def _open_store() -> None:
+        started.set()
+        try:
+            store = LearningsStore(db_path)
+            result["q_value"] = float(
+                store._conn.execute("SELECT q_value FROM notes").fetchone()[0]
+            )
+            result["revision"] = int(
+                store._conn.execute("SELECT curation_revision FROM notes").fetchone()[0]
+            )
+            store.close()
+        except BaseException as exc:  # noqa: BLE001 - surface after join
+            result["error"] = exc
+
+    thread = threading.Thread(target=_open_store)
+    thread.start()
+    assert started.wait(timeout=2)
+    time.sleep(0.2)
+    writer.execute(
+        """
+        UPDATE learnings_metadata
+        SET value=?
+        WHERE key='outcome_semantics_version'
+        """,
+        (str(BENCHMARK_SEMANTICS_VERSION),),
+    )
+    writer.execute("COMMIT")
+    thread.join(timeout=5)
+    writer.close()
+
+    assert "error" not in result, result.get("error")
+    assert result["q_value"] == q_before
+    assert result["revision"] == revision_before
+
+
+def test_constructor_closes_connection_if_schema_init_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[sqlite3.Connection] = []
+    real_open = learnings_store_mod._open_db
+
+    def tracking_open(db_path: str | Path) -> sqlite3.Connection:
+        conn = real_open(db_path)
+        opened.append(conn)
+        return conn
+
+    def boom(_conn: sqlite3.Connection, **_kwargs: object) -> None:
+        raise sqlite3.OperationalError("injected schema failure")
+
+    monkeypatch.setattr(learnings_store_mod, "_open_db", tracking_open)
+    monkeypatch.setattr(learnings_store_mod, "_create_schema", boom)
+
+    with pytest.raises(sqlite3.OperationalError, match="injected schema failure"):
+        LearningsStore(tmp_path / "init-fail.db")
+
+    assert opened
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
+
+
+def test_open_db_closes_connection_if_pragma_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)
+        created.append(conn)
+        return conn
+
+    monkeypatch.setattr(learnings_store_mod.sqlite3, "connect", tracking_connect)
+    monkeypatch.setattr(
+        learnings_store_mod,
+        "_PRAGMAS",
+        ["SELECT 1 FROM casys_pragma_failure"],
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="casys_pragma_failure"):
+        learnings_store_mod._open_db(tmp_path / "pragma-fail.db")
+
+    assert created
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        created[0].execute("SELECT 1")

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from trader.domain.execution.fill_accounting import POSITION_EPSILON
 from trader.execution.broker import Order
 from trader.infrastructure.state_db.broker_store import SqliteBroker
 from trader.infrastructure.state_db.connection import open_state_db
@@ -518,3 +519,138 @@ def test_reversal_splits_usd_basis_and_commission_between_two_cycles(
     assert sum(trip["pnl"] for trip in trips) == pytest.approx(
         expected_cash_delta
     )
+
+
+def test_broker_flat_dust_residual_closes_cycle_and_keeps_later_round_trip_independent() -> None:
+    residual = 9.2e-9
+    assert 1e-9 < residual < POSITION_EPSILON
+
+    opened = 10.0
+    dust_sell = opened - residual
+    later_qty = 8.0
+
+    def fill(*, ts: str, side: str, quantity: float, price: float) -> dict[str, object]:
+        return {
+            "ts": ts,
+            "symbol": "3081.TWO",
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            "fx_rate": 1.0,
+            "commission": 0.0,
+            "commission_currency": "TWD",
+            "commission_model": "ibkr_taiwan_stock_tiered",
+        }
+
+    trips = compute_round_trips(
+        fills=[
+            fill(
+                ts="2026-01-01T10:00:00+00:00",
+                side="BUY",
+                quantity=opened,
+                price=100.0,
+            ),
+            fill(
+                ts="2026-01-01T11:00:00+00:00",
+                side="SELL",
+                quantity=dust_sell,
+                price=110.0,
+            ),
+            fill(
+                ts="2026-02-01T10:00:00+00:00",
+                side="BUY",
+                quantity=later_qty,
+                price=100.0,
+            ),
+            fill(
+                ts="2026-02-01T11:00:00+00:00",
+                side="SELL",
+                quantity=later_qty,
+                price=80.0,
+            ),
+        ],
+    )
+    cycles = aggregate_position_cycles(trips)
+
+    assert len(trips) == 2
+    assert trips[0]["position_cycle_closed"] is True
+    assert trips[1]["position_cycle_closed"] is True
+    assert trips[0]["position_cycle_id"] != trips[1]["position_cycle_id"]
+    assert trips[1]["quantity"] == pytest.approx(later_qty)
+    assert trips[1]["gross_pnl"] == pytest.approx((80.0 - 100.0) * later_qty)
+
+    assert len(cycles) == 2
+    assert [cycle["position_cycle_closed"] for cycle in cycles] == [True, True]
+    assert cycles[0]["position_cycle_id"] != cycles[1]["position_cycle_id"]
+    assert cycles[1]["quantity"] == pytest.approx(later_qty)
+    assert cycles[1]["gross_pnl"] == pytest.approx(-160.0)
+    assert cycles[0]["gross_pnl"] == pytest.approx((110.0 - 100.0) * dust_sell)
+
+
+def test_broker_flat_dust_cleanup_keeps_its_cycle_economics() -> None:
+    residual = 9.99999993922529e-09
+    partial_exit = 3.33333333
+    assert 1e-9 < residual < POSITION_EPSILON
+
+    def fill(
+        *, ts: str, side: str, quantity: float, price: float
+    ) -> dict[str, object]:
+        return {
+            "ts": ts,
+            "symbol": "SPY",
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            "fx_rate": 1.0,
+            "commission": 0.35,
+            "commission_currency": "USD",
+            "commission_model": "ibkr_us_stock_tiered",
+        }
+
+    trips = compute_round_trips(
+        fills=[
+            fill(
+                ts="2026-01-01T10:00:00+00:00",
+                side="BUY",
+                quantity=10.0,
+                price=100.0,
+            ),
+            *[
+                fill(
+                    ts=f"2026-01-01T{hour}:00:00+00:00",
+                    side="SELL",
+                    quantity=partial_exit,
+                    price=110.0,
+                )
+                for hour in (11, 12, 13)
+            ],
+            fill(
+                ts="2026-01-01T14:00:00+00:00",
+                side="SELL",
+                quantity=residual,
+                price=110.0,
+            ),
+            fill(
+                ts="2026-01-02T10:00:00+00:00",
+                side="BUY",
+                quantity=8.0,
+                price=100.0,
+            ),
+            fill(
+                ts="2026-01-02T11:00:00+00:00",
+                side="SELL",
+                quantity=8.0,
+                price=80.0,
+            ),
+        ],
+    )
+    cycles = aggregate_position_cycles(trips)
+
+    assert len(cycles) == 2
+    first, second = cycles
+    assert first["exit_leg_count"] == 4
+    assert first["quantity"] == pytest.approx(10.0)
+    assert first["gross_pnl"] == pytest.approx(100.0)
+    assert first["commission"] == pytest.approx(1.75)
+    assert first["pnl"] == pytest.approx(98.25)
+    assert first["position_cycle_id"] != second["position_cycle_id"]

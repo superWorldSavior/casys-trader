@@ -288,8 +288,18 @@ def test_collection_coverage_freshness_and_gaps_are_reconstructed_from_histories
     assert coverage["fresh_sources"] == 2
     assert coverage["by_scope"][0]["scope"] == {"kind": "venue", "entity_id": "mic:XTAI"}
     assert coverage["by_scope"][0]["missing_source_ids"] == ["broad_usd_index"]
+    assert coverage["source_coverage_is_not_dimension_coverage"] is True
+    assert [item["dimension"] for item in coverage["by_dimension"]] == [
+        "macro_regime",
+        "rates_regime",
+        "usd_regime",
+    ]
+    usd_dim = next(item for item in coverage["by_dimension"] if item["dimension"] == "usd_regime")
+    assert usd_dim["unknown"] is True
     freshness = fresh["freshness"]
     assert freshness["status"] == "fresh"
+    assert freshness["indexed_at_is_not_publication"] is True
+    assert freshness["period_is_not_known_release"] is True
     assert freshness["fresh_observations"] == 1
     assert freshness["stale_observations"] == 0
     assert freshness["as_of"] == NOW.isoformat()

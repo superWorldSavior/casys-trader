@@ -301,14 +301,13 @@ Fichier versionné : `config/world_shadow_resource_budget.yaml`
 Pas de lecture magique d'environnement pour les seuils. YAML absent ou
 invalide → les défauts conservateurs restent actifs.
 
-Le fallback conservateur sans YAML reste à 2 GiB. Le profil versionné actif a
-été recalibré à 3 GiB après l'export Parquet vérifié des journées closes et la
-suppression de la recopie de l'observation complète dans chaque nouvelle
-prédiction. La réserve filesystem reste indépendante et inchangée :
+Le fallback conservateur sans YAML reste à 2 GiB. Le profil opérateur
+versionné est porté à 100 GiB. La réserve filesystem reste indépendante
+et inchangée :
 
 | Seuil | Défaut | Effet |
 |---|---|---|
-| `max_db_bytes` | 3221225472 (3 GiB ; fallback 2 GiB) | saute le batch si la taille logique **ou** on-disk (`world_model.db` + WAL/SHM) atteint le plafond |
+| `max_db_bytes` | 107374182400 (100 GiB ; fallback 2 GiB) | saute le batch si la taille logique **ou** on-disk (`world_model.db` + WAL/SHM) atteint le plafond |
 | `min_free_bytes` | 3221225472 (3 GiB) | saute le batch si le filesystem a moins que cette réserve |
 | `warn_interval_seconds` | 300 | warning structuré `[world_model_shadow]` au plus une fois par intervalle |
 

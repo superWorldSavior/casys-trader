@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import quote
@@ -22,6 +23,10 @@ from trader.infrastructure.state_db.sqlite_in import sqlite_in_chunk_size, sqlit
 from trader.infrastructure.state_db.world_pattern_store import (
     reconstruct_pattern_hypotheses,
     reconstruct_pattern_occurrences,
+)
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    shared_prediction_storage_lease,
 )
 
 _READONLY_TIMEOUT_S = 5.0
@@ -34,8 +39,12 @@ T = TypeVar("T")
 def _readonly_connection(path: Path) -> sqlite3.Connection:
     uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=_READONLY_TIMEOUT_S)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+    except Exception:
+        connection.close()
+        raise
     return connection
 
 
@@ -127,12 +136,14 @@ class SqlitePatternCatalogQuery:
         if not path.exists():
             return default
         try:
-            with _readonly_connection(path) as connection:
+            with shared_prediction_storage_lease(path, create=False), closing(
+                _readonly_connection(path)
+            ) as connection:
                 tables = _table_names(connection)
                 if not _REQUIRED_TABLES.issubset(tables):
                     return default
                 return callback(connection)
-        except (OSError, sqlite3.Error):
+        except (PredictionStorageBusyError, OSError, sqlite3.Error):
             return default
 
 

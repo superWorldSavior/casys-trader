@@ -11,6 +11,7 @@ import json
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,10 @@ from trader.infrastructure.state_db.world_pattern_formation_query import (
     _parse_clock,
     _readonly_connection,
     _table_names,
+)
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    shared_prediction_storage_lease,
 )
 
 _READONLY_TIMEOUT_S = 5.0
@@ -74,13 +79,15 @@ class SqlitePatternEvaluationSource:
         if not path.exists():
             return _empty_batch("missing_db")
         try:
-            with _readonly_connection(path) as connection:
+            with shared_prediction_storage_lease(path, create=False), closing(
+                _readonly_connection(path)
+            ) as connection:
                 tables = _table_names(connection)
                 missing = sorted(_REQUIRED_TABLES.difference(tables))
                 if missing:
                     return _empty_batch("schema_unavailable")
                 return _load_batch(connection, request, self.macro_root)
-        except (OSError, sqlite3.Error):
+        except (PredictionStorageBusyError, OSError, sqlite3.Error):
             return _empty_batch("unavailable")
 
 

@@ -94,10 +94,14 @@ def _graph_gaps(state_dir: str | Path, *, world_status: Mapping[str, Any] | None
     }
 
 
-def read_world_graph_status(state_dir: str | Path) -> dict[str, Any]:
+def read_world_graph_status(
+    state_dir: str | Path,
+    *,
+    world_status: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Read-only graph budgets/gaps. Never creates world_model.db."""
 
-    world = read_world_model_status(state_dir)
+    world = world_status if world_status is not None else read_world_model_status(state_dir)
     exists = bool(world.get("exists"))
     status = "not_started" if not exists else str(world.get("status") or "unavailable")
     return {

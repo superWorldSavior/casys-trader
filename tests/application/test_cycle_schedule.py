@@ -233,10 +233,63 @@ def test_cycle_schedule_clamps_late_agent_wake_to_four_hour_calm_review(tmp_path
         cancel_watch_ids=[],
         pending_indicator_watch=None,
         entry=entry,
+        session_open=True,
     )
 
     assert sched.next_wake("SPY") == now + timedelta(hours=4)
     assert entry["schedule_wake_source"] == "calm_review"
+
+
+def test_cycle_schedule_defers_closed_session_cadence_to_next_open(tmp_path) -> None:
+    from trader.application.cycle import schedule as cycle_schedule
+    from trader.domain.market.sessions import next_regular_session_open
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 11, 16, 0, tzinfo=timezone.utc)
+    entry: dict = {}
+
+    cycle_schedule.apply_decision_schedule(
+        sched=sched,
+        sym="AIR.PA",
+        now=now,
+        next_wake_in_minutes=None,
+        cancel_watch_ids=[],
+        pending_indicator_watch=None,
+        entry=entry,
+        session_open=False,
+    )
+
+    expected = next_regular_session_open(now, symbol="AIR.PA")
+    assert sched.next_wake("AIR.PA") == expected
+    assert entry["schedule_wake_source"] == "calm_review"
+    assert entry["calm_review_deadline"] == expected.isoformat()
+
+
+def test_cycle_schedule_keeps_explicit_session_open_wake_while_closed(tmp_path) -> None:
+    from trader.application.cycle import schedule as cycle_schedule
+    from trader.domain.market.sessions import next_regular_session_open
+
+    sched = Scheduler(tmp_path / "scheduler.json")
+    now = datetime(2026, 6, 11, 16, 0, tzinfo=timezone.utc)
+    next_open = next_regular_session_open(now, symbol="AIR.PA")
+    entry: dict = {}
+
+    cycle_schedule.apply_decision_schedule(
+        sched=sched,
+        sym="AIR.PA",
+        now=now,
+        next_wake_in_minutes=None,
+        next_wake_iso=next_open.isoformat(),
+        cancel_watch_ids=[],
+        pending_indicator_watch=None,
+        entry=entry,
+        session_open=False,
+    )
+
+    assert next_open > now + timedelta(hours=4)
+    assert sched.next_wake("AIR.PA") == next_open
+    assert entry["schedule_wake_source"] == "agent"
+    assert entry["schedule_effect"]["next_wake"] == next_open.isoformat()
 
 
 def test_cycle_schedule_keeps_missing_scheduler_evidence_explicit() -> None:
@@ -300,6 +353,7 @@ def test_schedule_receipt_verifies_calm_deadline_as_symbol_override(tmp_path) ->
         cancel_watch_ids=[],
         pending_indicator_watch=None,
         entry=entry,
+        session_open=True,
     )
 
     assert sched.has_symbol_wake("SPY") is True

@@ -14,9 +14,9 @@ from pathlib import Path
 from trader.application.execute.fee_estimate import (
     UNAVAILABLE_COMMISSION_MODELS,
 )
+from trader.domain.execution.fill_accounting import POSITION_EPSILON
 from trader.domain.market import fx
 
-_FLAT_EPS = 1e-9
 _UNKNOWN_EXPERIMENT_COHORT = "unknown"
 _MIXED_EXPERIMENT_COHORT = "mixed"
 _US_COMMISSION_MODELS = frozenset(
@@ -534,7 +534,7 @@ class _OpenLeg:
         new_commission = self.commission_usd + max(commission_usd, 0.0)
         if (
             not math.isfinite(new_qty)
-            or abs(new_qty) <= _FLAT_EPS
+            or new_qty == 0.0
             or not math.isfinite(weighted_native_cost)
             or not math.isfinite(entry_notional_increment)
             or not math.isfinite(new_entry_notional)
@@ -817,11 +817,32 @@ def compute_round_trips(
         signed = qty if action == "BUY" else -qty
         leg = legs.setdefault(symbol, _OpenLeg())
 
-        if abs(leg.qty) <= _FLAT_EPS or (leg.qty > 0) == (signed > 0):
-            position_cycle_id = None
-            if abs(leg.qty) <= _FLAT_EPS:
-                cycle_numbers[symbol] = cycle_numbers.get(symbol, 0) + 1
-                position_cycle_id = f"{symbol}:{cycle_numbers[symbol]}"
+        # The broker considers a position under POSITION_EPSILON flat.  Keep a
+        # raw same-side residual only long enough to attach an opposite dust
+        # cleanup fill (and its commission) to the cycle that just closed.
+        # Any material fill after that broker-flat boundary starts fresh.
+        broker_flat = abs(leg.qty) <= POSITION_EPSILON
+        dust_cleanup = (
+            0.0 < abs(leg.qty) <= POSITION_EPSILON
+            and qty <= POSITION_EPSILON
+            and (leg.qty > 0) != (signed > 0)
+        )
+        position_cycle_id: str | None = None
+        opens_position = False
+        if broker_flat and not dust_cleanup:
+            legs[symbol] = _OpenLeg()
+            leg = legs[symbol]
+            # A dust fill on a broker-flat position has no position cycle to
+            # attribute.  It must not become a phantom long or short.
+            if qty <= POSITION_EPSILON:
+                continue
+            cycle_numbers[symbol] = cycle_numbers.get(symbol, 0) + 1
+            position_cycle_id = f"{symbol}:{cycle_numbers[symbol]}"
+            opens_position = True
+        elif (leg.qty > 0) == (signed > 0):
+            opens_position = True
+
+        if opens_position:
             leg.open_or_add(
                 added_qty=signed,
                 price=price,
@@ -841,7 +862,11 @@ def compute_round_trips(
         entry_sign = 1.0 if leg.qty > 0 else -1.0
         old_abs = abs(leg.qty)
         entry_commission = leg.commission_usd * (closing_qty / old_abs) if old_abs > 0 else 0.0
-        exit_commission = row_commission_usd * (closing_qty / qty) if qty > 0 else 0.0
+        exit_commission = (
+            row_commission_usd
+            if dust_cleanup
+            else row_commission_usd * (closing_qty / qty) if qty > 0 else 0.0
+        )
         entry_notional_usd = leg.entry_notional_usd * (closing_qty / old_abs) if old_abs > 0 else 0.0
         exit_notional_usd = price * closing_qty * row_fx_rate
         gross_pnl_usd = entry_sign * (exit_notional_usd - entry_notional_usd)
@@ -912,15 +937,13 @@ def compute_round_trips(
                 "entry_decision_id": (leg.entry_decision_ids[0] if len(leg.entry_decision_ids) == 1 else None),
                 "entry_decision_ids": list(leg.entry_decision_ids),
                 "position_cycle_id": leg.position_cycle_id,
-                "position_cycle_closed": closing_qty >= old_abs - _FLAT_EPS,
+                "position_cycle_closed": closing_qty >= old_abs - POSITION_EPSILON,
             }
         )
 
         remaining = qty - closing_qty
         leg.qty += signed
-        if abs(leg.qty) <= _FLAT_EPS:
-            legs[symbol] = _OpenLeg()
-        elif remaining > _FLAT_EPS:
+        if remaining > POSITION_EPSILON:
             fresh = _OpenLeg()
             cycle_numbers[symbol] = cycle_numbers.get(symbol, 0) + 1
             fresh.open_or_add(
@@ -937,6 +960,11 @@ def compute_round_trips(
                 position_cycle_id=f"{symbol}:{cycle_numbers[symbol]}",
             )
             legs[symbol] = fresh
+        elif leg.qty == 0.0 or (
+            abs(leg.qty) <= POSITION_EPSILON
+            and (leg.qty > 0) != (entry_sign > 0)
+        ):
+            legs[symbol] = _OpenLeg()
         else:
             leg.entry_notional_usd = max(
                 leg.entry_notional_usd - entry_notional_usd,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -19,6 +20,10 @@ from trader.application.world_model.pattern_outcome_link import PatternQueryUnav
 from trader.domain.world_episode import WorldOutcome, parse_utc_timestamp
 from trader.infrastructure.state_db.sqlite_in import sqlite_in_chunks, sqlite_placeholders
 from trader.infrastructure.state_db.world_pattern_formation_query import _active_outcomes_as_of
+from trader.infrastructure.state_db.world_prediction_storage_lock import (
+    PredictionStorageBusyError,
+    shared_prediction_storage_lease,
+)
 
 _READONLY_TIMEOUT_S = 5.0
 _REQUIRED_TABLES = frozenset({"world_outcome_events"})
@@ -27,8 +32,12 @@ _REQUIRED_TABLES = frozenset({"world_outcome_events"})
 def _readonly_connection(path: Path) -> sqlite3.Connection:
     uri = f"file:{quote(str(path.resolve()), safe='/')}?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=_READONLY_TIMEOUT_S)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+    except Exception:
+        connection.close()
+        raise
     return connection
 
 
@@ -63,7 +72,9 @@ class SqlitePatternOutcomeLeafQuery:
             return ()
         grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
         try:
-            with _readonly_connection(path) as connection:
+            with shared_prediction_storage_lease(path, create=False), closing(
+                _readonly_connection(path)
+            ) as connection:
                 tables = _table_names(connection)
                 if not _REQUIRED_TABLES.issubset(tables):
                     return ()
@@ -79,9 +90,7 @@ class SqlitePatternOutcomeLeafQuery:
                     """
                     for row in connection.execute(sql, (*chunk, *extra)):
                         grouped[str(row["episode_id"])].append(row)
-        except OSError as exc:
-            raise _unavailable(exc, operation="load_active_observed_leaves") from exc
-        except sqlite3.Error as exc:
+        except (PredictionStorageBusyError, OSError, sqlite3.Error) as exc:
             raise _unavailable(exc, operation="load_active_observed_leaves") from exc
         rejections: Counter[str] = Counter()
         leaves: list[WorldOutcome] = []

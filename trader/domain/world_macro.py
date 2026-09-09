@@ -44,7 +44,7 @@ MACRO_ADAPTER_VERSIONS_BY_PROVIDER = MappingProxyType(
         "yahoo_finance": MACRO_YAHOO_COMMODITY_ADAPTER_VERSION,
     }
 )
-WORLD_MACRO_COLLECTION_PLAN_SHA256 = "7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83"
+WORLD_MACRO_COLLECTION_PLAN_SHA256 = "656391e83bd0f70729666f4474247a5af2e74e62fca16f1c2811ccb1363a39df"
 WORLD_MACRO_COLLECTION_PLAN_ID = "macro_collection_plan:v1:" + WORLD_MACRO_COLLECTION_PLAN_SHA256
 
 MACRO_FACT_KINDS = frozenset({"series_point", "market_benchmark"})
@@ -59,6 +59,13 @@ MACRO_FEATURE_VALUES = MappingProxyType(
         "macro_regime": MACRO_REGIME_VALUES,
         "rates_regime": RATES_REGIME_VALUES,
         "usd_regime": USD_REGIME_VALUES,
+    }
+)
+MACRO_DERIVATION_METHODS = frozenset(
+    {
+        "last_two_admissible_points_delta_pp",
+        "always_unknown",
+        "always_unknown_until_inflation_yoy_proven",
     }
 )
 MACRO_COVERAGE_STATUSES = frozenset({"complete", "partial", "unknown", "missing"})
@@ -528,11 +535,14 @@ def derive_macro_source_fact_valid_until(
     series_point_daily: timedelta,
     series_point_monthly: timedelta,
     market_benchmark_daily: timedelta,
+    policy_until_superseded: timedelta | None = None,
 ) -> datetime:
     """Vintage expiration from published_at plus the frozen operator TTL.
 
     Reconstruction clocks (`observed_at`, `ingested_at`, local now) must not
     participate: identical external data must replay the same valid_until.
+    A standing policy rate may use ``policy_until_superseded`` from the same
+    period vintage; that is not a daily effective-rate window and not ``now``.
     """
 
     kind = _required_text(fact_kind, "fact_kind")
@@ -544,6 +554,10 @@ def derive_macro_source_fact_valid_until(
     daily = _positive_timedelta(series_point_daily, "series_point_daily")
     monthly = _positive_timedelta(series_point_monthly, "series_point_monthly")
     benchmark = _positive_timedelta(market_benchmark_daily, "market_benchmark_daily")
+    if policy_until_superseded is not None:
+        if kind != "series_point":
+            raise ValueError("policy_until_superseded applies only to series_point facts")
+        return published + _positive_timedelta(policy_until_superseded, "policy_until_superseded")
     if kind == "market_benchmark":
         return published + benchmark
     if len(period_text) == 7:
@@ -978,6 +992,26 @@ def compatible_macro_source_leaves(
     return leaves
 
 
+def compatible_macro_source_history(
+    registry: MacroSourceRegistry,
+    facts: Sequence[MacroSourceFact],
+) -> dict[str, tuple[MacroSourceFact, ...]]:
+    """Map each registry source_id to every persisted compatible fact, not only the latest leaf."""
+
+    if not isinstance(registry, MacroSourceRegistry):
+        raise TypeError("registry must be MacroSourceRegistry")
+    history: dict[str, tuple[MacroSourceFact, ...]] = {}
+    for entry in registry.entries:
+        matching = tuple(
+            fact
+            for fact in facts
+            if isinstance(fact, MacroSourceFact) and macro_source_fact_matches_registry_entry(fact, entry)
+        )
+        if matching:
+            history[entry.source_id] = matching
+    return history
+
+
 @dataclass(frozen=True)
 class MacroCollectionTarget:
     """Immutable collection unit: one canonical scope and its declared source IDs."""
@@ -1173,12 +1207,303 @@ def committed_macro_collection_plan(registry: MacroSourceRegistry) -> MacroColle
     return require_committed_macro_collection_plan(MacroCollectionPlan.from_registry(registry))
 
 
+def _optional_finite(value: Any, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _finite_number(value, field_name)
+
+
+def _optional_bool(value: Any, field_name: str) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a boolean")
+    return value
+
+
+def macro_numeric_series_identity(fact: MacroSourceFact) -> tuple[str, str, str, str]:
+    """Identity used to keep one numeric series from mixing with another.
+
+    Distinct providers, dataset identities, metric keys, or units never vote together.
+    """
+
+    if not isinstance(fact, MacroSourceFact):
+        raise TypeError("fact must be MacroSourceFact")
+    if not isinstance(fact.value, MacroNumericValue):
+        raise TypeError("numeric series identity requires MacroNumericValue")
+    record = fact.source.source_record_id
+    entity, separator, _period = record.rpartition(":")
+    series_id = entity if separator else record
+    return (fact.source.provider_id, series_id, fact.metric_key, fact.value.unit)
+
+
+@dataclass(frozen=True)
+class MacroDimensionDerivationRule:
+    """Closed derivation rule for one observation dimension. Unknown is always legal."""
+
+    dimension: str
+    method: str
+    metric_keys: Sequence[str] = ()
+    rising_if_delta_pp_ge: float | None = None
+    falling_if_delta_pp_le: float | None = None
+    stable_if_abs_delta_pp_lt: float | None = None
+    min_fresh_sources: int | None = None
+    on_conflict: str = "unknown"
+    on_single_point: str = "unknown"
+    value: str | None = None
+    missing_source_ids: Sequence[str] = ()
+    do_not_infer_yoy_from_single_index_level: bool = False
+    do_not_use_front_month_futures: bool = False
+
+    def __post_init__(self) -> None:
+        dimension = _required_text(self.dimension, "dimension")
+        if dimension not in MACRO_FEATURE_VALUES:
+            raise ValueError(f"unknown macro dimension: {dimension}")
+        method = _required_text(self.method, "method")
+        if method not in MACRO_DERIVATION_METHODS:
+            allowed = ", ".join(sorted(MACRO_DERIVATION_METHODS))
+            raise ValueError(f"unsupported derivation method: {method}; must be one of: {allowed}")
+        metric_keys = _immutable_text_tuple(self.metric_keys, "metric_keys")
+        missing = _unique_sorted_texts(self.missing_source_ids, "missing_source_ids")
+        on_conflict = _required_text(self.on_conflict, "on_conflict")
+        on_single_point = _required_text(self.on_single_point, "on_single_point")
+        if on_conflict != "unknown":
+            raise ValueError("on_conflict must be unknown")
+        if on_single_point != "unknown":
+            raise ValueError("on_single_point must be unknown")
+        rising = _optional_finite(self.rising_if_delta_pp_ge, "rising_if_delta_pp_ge")
+        falling = _optional_finite(self.falling_if_delta_pp_le, "falling_if_delta_pp_le")
+        stable = _optional_finite(self.stable_if_abs_delta_pp_lt, "stable_if_abs_delta_pp_lt")
+        min_fresh = None if self.min_fresh_sources is None else _non_negative_int(self.min_fresh_sources, "min_fresh_sources")
+        declared_value = None if self.value is None else _required_text(self.value, "value")
+        if method == "last_two_admissible_points_delta_pp":
+            if not metric_keys:
+                raise ValueError("last_two_admissible_points_delta_pp requires metric_keys")
+            if rising is None or falling is None or stable is None:
+                raise ValueError("last_two_admissible_points_delta_pp requires closed delta thresholds")
+            if rising <= 0 or falling >= 0 or stable <= 0:
+                raise ValueError("rate delta thresholds must keep unknown as the non-partition remainder")
+            if declared_value is not None:
+                raise ValueError("last_two_admissible_points_delta_pp must not pre-declare a category")
+        else:
+            if declared_value != "unknown":
+                raise ValueError(f"{method} must declare value unknown")
+            if rising is not None or falling is not None or stable is not None:
+                raise ValueError(f"{method} must not declare numeric delta thresholds")
+        if declared_value is not None and declared_value not in MACRO_FEATURE_VALUES[dimension]:
+            allowed = ", ".join(sorted(MACRO_FEATURE_VALUES[dimension]))
+            raise ValueError(f"{dimension} value must be one of: {allowed}")
+        object.__setattr__(self, "dimension", dimension)
+        object.__setattr__(self, "method", method)
+        object.__setattr__(self, "metric_keys", metric_keys)
+        object.__setattr__(self, "rising_if_delta_pp_ge", rising)
+        object.__setattr__(self, "falling_if_delta_pp_le", falling)
+        object.__setattr__(self, "stable_if_abs_delta_pp_lt", stable)
+        object.__setattr__(self, "min_fresh_sources", min_fresh)
+        object.__setattr__(self, "on_conflict", on_conflict)
+        object.__setattr__(self, "on_single_point", on_single_point)
+        object.__setattr__(self, "value", declared_value)
+        object.__setattr__(self, "missing_source_ids", missing)
+        object.__setattr__(
+            self,
+            "do_not_infer_yoy_from_single_index_level",
+            _optional_bool(self.do_not_infer_yoy_from_single_index_level, "do_not_infer_yoy_from_single_index_level"),
+        )
+        object.__setattr__(
+            self,
+            "do_not_use_front_month_futures",
+            _optional_bool(self.do_not_use_front_month_futures, "do_not_use_front_month_futures"),
+        )
+        assert_source_only_payload(self.to_dict(), "macro_dimension_derivation_rule")
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "dimension": self.dimension,
+            "method": self.method,
+            "metric_keys": list(self.metric_keys),
+            "on_conflict": self.on_conflict,
+            "on_single_point": self.on_single_point,
+            "missing_source_ids": list(self.missing_source_ids),
+        }
+        if self.rising_if_delta_pp_ge is not None:
+            payload["rising_if_delta_pp_ge"] = self.rising_if_delta_pp_ge
+        if self.falling_if_delta_pp_le is not None:
+            payload["falling_if_delta_pp_le"] = self.falling_if_delta_pp_le
+        if self.stable_if_abs_delta_pp_lt is not None:
+            payload["stable_if_abs_delta_pp_lt"] = self.stable_if_abs_delta_pp_lt
+        if self.min_fresh_sources is not None:
+            payload["min_fresh_sources"] = self.min_fresh_sources
+        if self.value is not None:
+            payload["value"] = self.value
+        if self.do_not_infer_yoy_from_single_index_level:
+            payload["do_not_infer_yoy_from_single_index_level"] = True
+        if self.do_not_use_front_month_futures:
+            payload["do_not_use_front_month_futures"] = True
+        return payload
+
+    @classmethod
+    def from_mapping(
+        cls, value: Mapping[str, Any] | MacroDimensionDerivationRule, *, dimension: str | None = None
+    ) -> MacroDimensionDerivationRule:
+        if isinstance(value, MacroDimensionDerivationRule):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("dimension derivation rule must be a mapping")
+        assert_source_only_payload(value, "macro_dimension_derivation_rule")
+        resolved_dimension = dimension if dimension is not None else value.get("dimension")
+        return cls(
+            dimension=resolved_dimension,
+            method=value.get("method"),
+            metric_keys=value.get("metric_keys") or (),
+            rising_if_delta_pp_ge=value.get("rising_if_delta_pp_ge"),
+            falling_if_delta_pp_le=value.get("falling_if_delta_pp_le"),
+            stable_if_abs_delta_pp_lt=value.get("stable_if_abs_delta_pp_lt"),
+            min_fresh_sources=value.get("min_fresh_sources"),
+            on_conflict=value.get("on_conflict", "unknown"),
+            on_single_point=value.get("on_single_point", "unknown"),
+            value=value.get("value"),
+            missing_source_ids=value.get("missing_source_ids") or (),
+            do_not_infer_yoy_from_single_index_level=bool(value.get("do_not_infer_yoy_from_single_index_level")),
+            do_not_use_front_month_futures=bool(value.get("do_not_use_front_month_futures")),
+        )
+
+
+def classify_rates_regime_delta_pp(delta_pp: float, rule: MacroDimensionDerivationRule) -> str:
+    """Map a percentage-point delta onto the closed rates vocabulary. Never invent a fill."""
+
+    if not isinstance(rule, MacroDimensionDerivationRule):
+        raise TypeError("rule must be MacroDimensionDerivationRule")
+    if rule.method != "last_two_admissible_points_delta_pp":
+        raise ValueError("classify_rates_regime_delta_pp requires last_two_admissible_points_delta_pp")
+    number = _finite_number(delta_pp, "delta_pp")
+    if number >= rule.rising_if_delta_pp_ge:
+        return "rising"
+    if number <= rule.falling_if_delta_pp_le:
+        return "falling"
+    if abs(number) < rule.stable_if_abs_delta_pp_lt:
+        return "stable"
+    return "unknown"
+
+
+def derive_macro_dimension_state(
+    *,
+    policy: MacroDerivationPolicy,
+    dimension: str,
+    facts: Sequence[MacroSourceFact],
+) -> MacroDimensionState:
+    """Pure dimension projection. Category voting is used only when no numeric rule exists."""
+
+    if not isinstance(policy, MacroDerivationPolicy):
+        raise TypeError("policy must be MacroDerivationPolicy")
+    key = _required_text(dimension, "dimension")
+    if key not in MACRO_FEATURE_VALUES:
+        raise ValueError(f"unknown macro dimension: {key}")
+    rule = policy.rule_for(key)
+    if rule is None:
+        return _category_dimension_state(policy=policy, dimension=key, facts=facts)
+    if rule.method in {"always_unknown", "always_unknown_until_inflation_yoy_proven"}:
+        return MacroDimensionState(
+            dimension=key,
+            value="unknown",
+            coverage_status="unknown",
+            method=rule.method,
+            fact_refs=(),
+        )
+    return _last_two_points_dimension_state(rule=rule, facts=facts)
+
+
+def _unknown_dimension(rule: MacroDimensionDerivationRule) -> MacroDimensionState:
+    return MacroDimensionState(
+        dimension=rule.dimension,
+        value="unknown",
+        coverage_status="unknown",
+        method=rule.method,
+        fact_refs=(),
+    )
+
+
+def _category_dimension_state(
+    *,
+    policy: MacroDerivationPolicy,
+    dimension: str,
+    facts: Sequence[MacroSourceFact],
+) -> MacroDimensionState:
+    votes: set[str] = set()
+    refs: list[str] = []
+    for fact in facts:
+        if fact.metric_key != dimension:
+            continue
+        if not isinstance(fact.value, MacroCategoryValue):
+            continue
+        if fact.value.category not in policy.allowed_values(dimension):
+            continue
+        votes.add(fact.value.category)
+        refs.append(fact.fact_version_id.value)
+    if len(votes) == 1:
+        return MacroDimensionState(
+            dimension=dimension,
+            value=next(iter(votes)),
+            coverage_status="complete",
+            method=policy.transform_version,
+            fact_refs=tuple(refs),
+        )
+    return MacroDimensionState(
+        dimension=dimension,
+        value="unknown",
+        coverage_status="unknown",
+        method=policy.transform_version,
+        fact_refs=(),
+    )
+
+
+def _last_two_points_dimension_state(
+    *,
+    rule: MacroDimensionDerivationRule,
+    facts: Sequence[MacroSourceFact],
+) -> MacroDimensionState:
+    metric_keys = frozenset(rule.metric_keys)
+    grouped: dict[tuple[str, str, str, str], list[MacroSourceFact]] = {}
+    for fact in facts:
+        if fact.metric_key not in metric_keys:
+            continue
+        if not isinstance(fact.value, MacroNumericValue):
+            continue
+        grouped.setdefault(macro_numeric_series_identity(fact), []).append(fact)
+    if len(grouped) != 1:
+        return _unknown_dimension(rule)
+    series_facts = next(iter(grouped.values()))
+    by_period: dict[str, MacroSourceFact] = {}
+    for fact in sorted(
+        series_facts,
+        key=lambda item: (item.period, item.published_at, item.ingested_at, item.fact_version_id.value),
+    ):
+        by_period[fact.period] = fact
+    ordered = tuple(sorted(by_period.values(), key=lambda item: (item.period, item.occurred_at)))
+    if len(ordered) < 2:
+        return _unknown_dimension(rule)
+    earlier, later = ordered[-2], ordered[-1]
+    if earlier.value.unit != later.value.unit:
+        return _unknown_dimension(rule)
+    category = classify_rates_regime_delta_pp(later.value.number - earlier.value.number, rule)
+    if category == "unknown":
+        return _unknown_dimension(rule)
+    return MacroDimensionState(
+        dimension=rule.dimension,
+        value=category,
+        coverage_status="complete",
+        method=rule.method,
+        fact_refs=(earlier.fact_version_id.value, later.fact_version_id.value),
+    )
+
+
 @dataclass(frozen=True)
 class MacroDerivationPolicy:
-    """Versioned closed vocabularies. Threshold constants live in transform_version, not here."""
+    """Closed vocabularies plus the hashed derivation rules named by transform_version."""
 
     transform_version: str
     producer_version: str = MACRO_PRODUCER_VERSION
+    content_sha256: str | None = None
+    dimensions: Sequence[MacroDimensionDerivationRule | Mapping[str, Any]] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "transform_version", _required_text(self.transform_version, "transform_version"))
@@ -1186,6 +1511,25 @@ class MacroDerivationPolicy:
         for values in MACRO_FEATURE_VALUES.values():
             if "unknown" not in values:
                 raise ValueError("every macro feature vocabulary must include unknown")
+        rules: list[MacroDimensionDerivationRule] = []
+        seen: set[str] = set()
+        for item in self.dimensions:
+            rule = (
+                item
+                if isinstance(item, MacroDimensionDerivationRule)
+                else MacroDimensionDerivationRule.from_mapping(item)
+            )
+            if rule.dimension in seen:
+                raise ValueError(f"duplicate derivation rule for {rule.dimension}")
+            seen.add(rule.dimension)
+            rules.append(rule)
+        digest = None if self.content_sha256 is None else _required_text(self.content_sha256, "content_sha256")
+        if digest is not None and (
+            len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+        ):
+            raise ValueError("content_sha256 digest must be a sha256 hex digest")
+        object.__setattr__(self, "dimensions", tuple(rules))
+        object.__setattr__(self, "content_sha256", digest)
 
     def allowed_values(self, dimension: str) -> frozenset[str]:
         key = _required_text(dimension, "dimension")
@@ -1193,6 +1537,40 @@ class MacroDerivationPolicy:
             return MACRO_FEATURE_VALUES[key]
         except KeyError as exc:
             raise ValueError(f"unknown macro dimension: {key}") from exc
+
+    def rule_for(self, dimension: str) -> MacroDimensionDerivationRule | None:
+        key = _required_text(dimension, "dimension")
+        for rule in self.dimensions:
+            if rule.dimension == key:
+                return rule
+        return None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | MacroDerivationPolicy) -> MacroDerivationPolicy:
+        if isinstance(value, MacroDerivationPolicy):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("derivation policy must be a mapping")
+        raw_dimensions = value.get("dimensions") or {}
+        if raw_dimensions and not isinstance(raw_dimensions, Mapping):
+            raise TypeError("policy dimensions must be a mapping")
+        selected = {
+            "transform_version": value.get("transform_version"),
+            "producer_version": value.get("producer_version"),
+            "content_sha256": value.get("content_sha256"),
+            "dimensions": dict(raw_dimensions),
+        }
+        assert_source_only_payload(selected, "macro_derivation_policy")
+        dimensions = tuple(
+            MacroDimensionDerivationRule.from_mapping(rule, dimension=str(name))
+            for name, rule in dict(raw_dimensions).items()
+        )
+        return cls(
+            transform_version=value.get("transform_version"),
+            producer_version=value.get("producer_version") or MACRO_PRODUCER_VERSION,
+            content_sha256=value.get("content_sha256"),
+            dimensions=dimensions,
+        )
 
 
 @dataclass(frozen=True)
@@ -2677,8 +3055,10 @@ __all__ = [
     "MacroCollectionTerminalResult",
     "MacroContextSearchPlan",
     "MacroContextSelection",
+    "MACRO_DERIVATION_METHODS",
     "MacroCoverage",
     "MacroDerivationPolicy",
+    "MacroDimensionDerivationRule",
     "MacroDimensionState",
     "MacroFactKey",
     "MacroFactSource",
@@ -2697,8 +3077,12 @@ __all__ = [
     "WorldScopeMapping",
     "WorldScopeResolution",
     "assert_source_only_payload",
+    "classify_rates_regime_delta_pp",
+    "compatible_macro_source_history",
     "compatible_macro_source_leaves",
+    "derive_macro_dimension_state",
     "derive_macro_source_fact_valid_until",
+    "macro_numeric_series_identity",
     "evaluate_macro_point_in_time",
     "is_admitted_macro_producer",
     "latest_compatible_macro_source_leaf",

@@ -1121,7 +1121,7 @@ def test_first_cutoff_can_stage_receipt_and_later_cutoff_publishes_after_adapter
     first_cutoff = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
     staged_ready = datetime(2026, 8, 23, 12, 5, tzinfo=UTC)
     second_cutoff = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
-    published = datetime(2026, 8, 23, 11, 55, tzinfo=UTC)
+    published = datetime(2026, 8, 22, tzinfo=UTC)
     clock = FakeClock(staged_ready)
     store = WorldMacroStore(tmp_path, clock=clock)
     pipeline = MacroWorldPipeline(history=store, ledger=store, reader=store, policy=bundle.policy)

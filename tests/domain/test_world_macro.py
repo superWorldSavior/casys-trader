@@ -425,6 +425,33 @@ def test_fact_valid_until_is_derived_from_published_at_not_the_observation_clock
     )
 
 
+def test_policy_until_superseded_ttl_is_period_vintage_not_daily_72h() -> None:
+    published = datetime(2026, 9, 5, tzinfo=UTC)
+    until = derive_macro_source_fact_valid_until(
+        fact_kind="series_point",
+        period="2026-09-05",
+        published_at=published,
+        series_point_daily=timedelta(hours=72),
+        series_point_monthly=timedelta(days=40),
+        market_benchmark_daily=timedelta(hours=72),
+        policy_until_superseded=timedelta(days=56),
+    )
+    assert until == published + timedelta(days=56)
+    assert until != published + timedelta(hours=72)
+    cutoff = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+    assert cutoff < until
+    replayed = derive_macro_source_fact_valid_until(
+        fact_kind="series_point",
+        period="2026-09-05",
+        published_at=published,
+        series_point_daily=timedelta(hours=72),
+        series_point_monthly=timedelta(days=40),
+        market_benchmark_daily=timedelta(hours=72),
+        policy_until_superseded=timedelta(days=56),
+    )
+    assert replayed == until
+
+
 def test_same_version_different_valid_until_remains_an_explicit_conflict() -> None:
     first = _fact(valid_until=VALID_UNTIL)
     drifted = _fact(valid_until=datetime(2026, 8, 24, 17, 0, tzinfo=UTC))

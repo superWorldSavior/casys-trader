@@ -30,14 +30,12 @@ from trader.domain.world_availability import (
 from trader.domain.world_macro import (
     MACRO_FEATURE_KEYS,
     MACRO_TERMINAL_STATUSES,
-    MacroCategoryValue,
     MacroCollectionPlan,
     MacroCollectionRun,
     MacroCollectionRunId,
     MacroCollectionTarget,
     MacroCoverage,
     MacroDerivationPolicy,
-    MacroDimensionState,
     MacroObservationEnvelope,
     MacroScope,
     MacroSourceCompleted,
@@ -47,6 +45,7 @@ from trader.domain.world_macro import (
     MacroSourceRegistry,
     MacroSourceRegistryEntry,
     MacroWorldObservation,
+    derive_macro_dimension_state,
 )
 
 
@@ -148,9 +147,10 @@ def project_macro_world_observation(
 ) -> MacroWorldObservation | None:
     """Deterministic closed-vocabulary projection with honest missingness.
 
-    Numeric facts are evidence only. A dimension becomes a known category solely
-    when admissible facts carry that closed feature key and agree. Missing or
-    failed sources stay ``unknown`` / ``partial``; they are never filled in.
+    Numeric facts are evidence. A dimension becomes a known category only when
+    the hashed derivation policy can prove it from admissible facts. Source
+    coverage and dimension coverage stay distinct. Missing or failed sources
+    stay ``unknown`` / ``partial``; they are never filled in.
     """
 
     ordered = tuple(sorted(facts, key=lambda item: item.fact_version_id.value))
@@ -171,39 +171,10 @@ def project_macro_world_observation(
         fresh_sources=fresh_count,
         missing_source_ids=missing,
     )
-    votes: dict[str, set[str]] = {key: set() for key in MACRO_FEATURE_KEYS}
-    refs_by_dim: dict[str, list[str]] = {key: [] for key in MACRO_FEATURE_KEYS}
-    for fact in ordered:
-        if fact.metric_key not in MACRO_FEATURE_KEYS:
-            continue
-        if not isinstance(fact.value, MacroCategoryValue):
-            continue
-        if fact.value.category not in policy.allowed_values(fact.metric_key):
-            continue
-        votes[fact.metric_key].add(fact.value.category)
-        refs_by_dim[fact.metric_key].append(fact.fact_version_id.value)
-    features: dict[str, str] = {}
-    dimensions: list[MacroDimensionState] = []
-    for key in MACRO_FEATURE_KEYS:
-        categories = votes[key]
-        if len(categories) == 1:
-            value = next(iter(categories))
-            fact_refs = tuple(refs_by_dim[key])
-            coverage_for_dim = "complete"
-        else:
-            value = "unknown"
-            fact_refs = ()
-            coverage_for_dim = "unknown"
-        features[key] = value
-        dimensions.append(
-            MacroDimensionState(
-                dimension=key,
-                value=value,
-                coverage_status=coverage_for_dim,
-                method=policy.transform_version,
-                fact_refs=fact_refs,
-            )
-        )
+    dimensions = tuple(
+        derive_macro_dimension_state(policy=policy, dimension=key, facts=ordered) for key in MACRO_FEATURE_KEYS
+    )
+    features = {item.dimension: item.value for item in dimensions}
     untils = [fact.valid_until for fact in ordered if fact.valid_until is not None]
     return MacroWorldObservation(
         scope=scope,

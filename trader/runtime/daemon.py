@@ -152,10 +152,24 @@ STATE_DIR = ROOT / "state"
 
 log = logging.getLogger("casys-trader")
 
-# Drapeau d'échec définitif du store recall (db corrompu/verrouillé à l'ouverture).
-# Posé à True dès le premier échec ; ne pas réessayer à chaque cycle pour éviter
-# de logguer la même erreur indéfiniment. Réinitialisable dans les tests.
-_RECALL_STORE_FAILED: bool = False
+
+def try_open_cycle_learnings_store(
+    db_path: str | Path,
+) -> recall_store_mod.LearningsStore | None:
+    """Open the cycle-local recall store, or None after a transient failure.
+
+    Fail-open for trading: a locked or corrupt derived DB must not abort the
+    cycle. The next cycle retries once. Queue workers keep their own store.
+    """
+    try:
+        return recall_store_mod.LearningsStore(str(db_path))
+    except (sqlite3.Error, OSError) as exc:
+        log.warning(
+            "learnings_recall: ouverture store du cycle échouée "
+            "(retry au prochain cycle) — %s",
+            exc,
+        )
+        return None
 
 
 def evaluate_plan(*args: object, **kwargs: object) -> object:
@@ -525,6 +539,54 @@ def _arm_and_persist_fresh_probe(
     return probe_wake, fingerprints, False
 
 
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _symbol_wake_at(sched: SchedulerLike | None, symbol: str) -> datetime | None:
+    has_symbol_wake = getattr(sched, "has_symbol_wake", None)
+    if sched is None or not callable(has_symbol_wake) or not has_symbol_wake(symbol):
+        return None
+    current = sched.next_wake(symbol)
+    if current is None:
+        return None
+    return _aware_utc(current)
+
+
+def _owns_cadence_wake(
+    sched: SchedulerLike | None,
+    *,
+    symbol: str,
+    fingerprints: Mapping[str, str] | None,
+) -> bool:
+    """Ownership is the persisted cadence marker, not timestamp arithmetic."""
+    return _scheduler_wake_matches_marker(
+        sched,
+        symbol=symbol,
+        marker=(fingerprints or {}).get(relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY),
+    )
+
+
+def _internal_cadence_deadline(
+    *,
+    now_utc: datetime,
+    reviewed_utc: datetime,
+    session_open: bool,
+    hot: bool,
+    symbol: str,
+) -> datetime:
+    if not session_open:
+        return _aware_utc(market.next_regular_session_open(now_utc, symbol=symbol))
+    max_hours = (
+        relevance_gate.HOT_REVIEW_MAX_HOURS
+        if hot
+        else relevance_gate.CALM_REVIEW_MAX_HOURS
+    )
+    return max(now_utc, reviewed_utc + timedelta(hours=max_hours))
+
+
 def _reconcile_hot_review_wake(
     sched: SchedulerLike | None,
     *,
@@ -532,6 +594,8 @@ def _reconcile_hot_review_wake(
     now: datetime,
     last_review_at: datetime | None,
     max_hours: float = relevance_gate.HOT_REVIEW_MAX_HOURS,
+    session_open: bool = True,
+    fingerprints: Mapping[str, str] | None = None,
 ) -> str | None:
     """Bring one symbol onto its review deadline anchored at the last LLM call.
 
@@ -541,28 +605,24 @@ def _reconcile_hot_review_wake(
     """
     if sched is None or last_review_at is None:
         return None
-    now_utc = (
-        now.replace(tzinfo=timezone.utc)
-        if now.tzinfo is None
-        else now.astimezone(timezone.utc)
+    now_utc = _aware_utc(now)
+    reviewed_utc = _aware_utc(last_review_at)
+    deadline = (
+        _aware_utc(market.next_regular_session_open(now_utc, symbol=symbol))
+        if not session_open
+        else reviewed_utc + timedelta(hours=max_hours)
     )
-    reviewed_utc = (
-        last_review_at.replace(tzinfo=timezone.utc)
-        if last_review_at.tzinfo is None
-        else last_review_at.astimezone(timezone.utc)
-    )
-    deadline = reviewed_utc + timedelta(hours=max_hours)
-    if deadline <= now_utc:
+    if session_open and deadline <= now_utc:
         return None
-    has_symbol_wake = getattr(sched, "has_symbol_wake", None)
-    if callable(has_symbol_wake) and has_symbol_wake(symbol):
-        current = sched.next_wake(symbol)
-        if current is not None:
-            if current.tzinfo is None:
-                current = current.replace(tzinfo=timezone.utc)
-            current = current.astimezone(timezone.utc)
-            if now_utc < current <= deadline:
-                return None
+    current = _symbol_wake_at(sched, symbol)
+    owned = _owns_cadence_wake(sched, symbol=symbol, fingerprints=fingerprints)
+    if current is not None and current > now_utc:
+        if not owned:
+            return None
+        if session_open and current <= deadline:
+            return None
+        if current == deadline:
+            return None
     wake_at = deadline.isoformat()
     sched.set_symbol_next_wake(symbol, wake_at)
     return wake_at
@@ -605,21 +665,16 @@ def _reconcile_hot_wakes_before_due(
     hot_setup_symbols: set[str],
     llm_gate_store: object | None = None,
 ) -> dict[str, str]:
-    """Clamp legacy overrides to the 1h-hot / 4h-calm review deadlines."""
+    """Clamp cadence-owned overrides to the 1h-hot / 4h-calm / next-open deadlines."""
     if sched is None:
         return {}
-    now_utc = (
-        now.replace(tzinfo=timezone.utc)
-        if now.tzinfo is None
-        else now.astimezone(timezone.utc)
-    )
+    now_utc = _aware_utc(now)
     reconciled: dict[str, str] = {}
     hot_symbols = held_symbols | hot_setup_symbols
     for symbol in sorted(set(symbols)):
         key = (state_key, symbol)
-        if relevance_gate.is_pending_stale_review(
-            process_state.last_wake_fingerprints.get(key)
-        ):
+        fingerprints = process_state.last_wake_fingerprints.get(key)
+        if relevance_gate.is_pending_stale_review(fingerprints):
             # The fresh-probe lease owns this symbol until a fresh/open review.
             continue
         last_review_at = process_state.last_llm_at.get(key)
@@ -629,35 +684,34 @@ def _reconcile_hot_wakes_before_due(
         # already due through the scheduler's normal semantics.
         if last_review_at is None:
             continue
+        current = _symbol_wake_at(sched, symbol)
+        owned = _owns_cadence_wake(
+            sched,
+            symbol=symbol,
+            fingerprints=fingerprints,
+        )
+        if current is not None and current > now_utc and not owned:
+            continue
         session_open = market.session_snapshot(symbol, now=now_utc).get("open") is True
-        max_hours = (
-            relevance_gate.HOT_REVIEW_MAX_HOURS
-            if symbol in hot_symbols and session_open
-            else relevance_gate.CALM_REVIEW_MAX_HOURS
+        candidate = _internal_cadence_deadline(
+            now_utc=now_utc,
+            reviewed_utc=_aware_utc(last_review_at),
+            session_open=session_open,
+            hot=symbol in hot_symbols,
+            symbol=symbol,
         )
-        reviewed_utc = (
-            last_review_at.replace(tzinfo=timezone.utc)
-            if last_review_at.tzinfo is None
-            else last_review_at.astimezone(timezone.utc)
-        )
-        candidate = max(now_utc, reviewed_utc + timedelta(hours=max_hours))
-
-        has_symbol_wake = getattr(sched, "has_symbol_wake", None)
-        if callable(has_symbol_wake) and has_symbol_wake(symbol):
-            current = sched.next_wake(symbol)
-            if current is not None:
-                if current.tzinfo is None:
-                    current = current.replace(tzinfo=timezone.utc)
-                current = current.astimezone(timezone.utc)
-                if current <= now_utc or current <= candidate:
+        if current is not None:
+            if current <= now_utc:
+                if not (owned and not session_open):
                     continue
-
+            elif session_open and current <= candidate:
+                continue
+            elif current == candidate:
+                continue
         wake_at = candidate.isoformat()
         sched.set_symbol_next_wake(symbol, wake_at)
         reconciled[symbol] = wake_at
-        wake_fingerprints = dict(
-            process_state.last_wake_fingerprints.get(key, {})
-        )
+        wake_fingerprints = dict(fingerprints or {})
         wake_fingerprints[
             relevance_gate.HOT_REVIEW_WAKE_FINGERPRINT_KEY
         ] = wake_at
@@ -1387,17 +1441,7 @@ def run_cycle(
     # Store SQLite dérivé, toujours ouvrable/créable. Le worker de maintenance
     # l'alimente en arrière-plan ; les readers voient les commits via WAL.
     _learnings_db_path = STATE_DIR / "learnings.db"
-    _recall_store: recall_store_mod.LearningsStore | None = None
-    global _RECALL_STORE_FAILED
-    if not _RECALL_STORE_FAILED:
-        try:
-            _recall_store = recall_store_mod.LearningsStore(str(_learnings_db_path))
-        except (sqlite3.Error, OSError) as _store_exc:
-            _RECALL_STORE_FAILED = True
-            log.warning(
-                "learnings_recall: échec ouverture db (échec définitif, outil unavailable) — %s",
-                _store_exc,
-            )
+    _recall_store = try_open_cycle_learnings_store(_learnings_db_path)
     _recall_provider: Callable[[dict], dict] | None = (
         _build_recall_provider(_recall_store, now) if _recall_store is not None else None
     )
@@ -1936,6 +1980,8 @@ def run_cycle(
                     now=now,
                     last_review_at=process_state.last_llm_at.get(key),
                     max_hours=max_hours,
+                    session_open=session_open,
+                    fingerprints=wake_fingerprints,
                 )
                 if expected_next_wake is None:
                     schedule_expectation_known = False

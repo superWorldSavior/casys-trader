@@ -270,9 +270,12 @@ def test_dbnomics_adapter_emits_typed_fact_for_canonical_scope_not_run_scope() -
     assert fact.value == MacroNumericValue(number=4.33, unit="percent")
     assert fact.source.provider_id == "dbnomics"
     assert fact.source.adapter_version == "world_dbnomics_series.v1"
-    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
-    assert fact.published_at == published
-    assert fact.valid_until == published + timedelta(hours=72)
+    indexed_at = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    occurred = datetime(2026, 8, 22, tzinfo=UTC)
+    assert fact.published_at == occurred
+    assert fact.published_at != indexed_at
+    assert fact.valid_until == occurred + timedelta(hours=72)
+    assert fact.valid_until != indexed_at + timedelta(hours=72)
     assert fact.valid_until != OBSERVED_AT + timedelta(hours=72)
     assert fact.source.source_ref == "https://api.db.nomics.world/v22/series/FED/H15/RIFSPFF_N.D"
     assert "observations=" not in fact.source.source_ref
@@ -292,7 +295,8 @@ def test_dbnomics_urls_add_metadata_zero_and_keep_period_value_indexed_at() -> N
         facts = ports[entry.source_id].read_facts(RUN_SCOPE, OBSERVED_AT)
         assert facts[0].period == "2026-08-22"
         assert facts[0].value.number == 4.33
-        assert facts[0].published_at == datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+        assert facts[0].published_at == datetime(2026, 8, 22, tzinfo=UTC)
+        assert facts[0].published_at != datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
         assert facts[0].source.source_ref.endswith(entry.provider_entity_id)
         assert "?" not in facts[0].source.source_ref
         assert "metadata=" not in facts[0].source.source_ref
@@ -309,9 +313,11 @@ def test_dbnomics_monthly_cpi_uses_monthly_ttl_and_index_unit() -> None:
     assert facts[0].metric_key == "cpi_index"
     assert facts[0].value.unit == "index"
     assert facts[0].occurred_at == datetime(2026, 7, 1, tzinfo=UTC)
-    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
-    assert facts[0].published_at == published
-    assert facts[0].valid_until == published + timedelta(days=40)
+    indexed_at = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    assert facts[0].published_at == facts[0].occurred_at
+    assert facts[0].published_at != indexed_at
+    assert facts[0].valid_until == facts[0].occurred_at + timedelta(days=40)
+    assert facts[0].valid_until != indexed_at + timedelta(days=40)
     assert facts[0].valid_until != OBSERVED_AT + timedelta(days=40)
 
 
@@ -353,9 +359,13 @@ def test_period_correction_keeps_fact_key_and_supersedes_previous_leaf() -> None
     assert second[0].fact_version_id != first[0].fact_version_id
     assert second[0].supersedes_fact_version_id == first[0].fact_version_id.value
     assert second[0].value == MacroNumericValue(number=4.50, unit="percent")
-    second_published = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-    assert second[0].valid_until == second_published + timedelta(days=40)
-    assert second[0].valid_until != first[0].valid_until
+    period_vintage = datetime(2026, 8, 1, tzinfo=UTC)
+    assert second[0].published_at == period_vintage
+    assert first[0].valid_until == period_vintage + timedelta(days=56)
+    assert first[0].valid_until != period_vintage + timedelta(days=40)
+    assert first[0].valid_until != period_vintage + timedelta(hours=72)
+    assert second[0].valid_until == first[0].valid_until
+    assert second[0].source.source_ref == "https://api.db.nomics.world/v22/series/ECB/FM/D.U2.EUR.4F.KR.DFR.LEV"
     assert second[0].source.source_ref == first[0].source.source_ref
 
 
@@ -381,7 +391,7 @@ def test_adapter_reconstruction_replays_identical_external_data_across_runtime_r
     body = _dbnomics_body("2026-08-22", 4.33, indexed_at="2026-08-23T12:30:00Z")
     first_observed = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
     later_observed = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
-    published = datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
+    published = datetime(2026, 8, 22, tzinfo=UTC)
     first = _ports(ScriptedTransport([body]), clock=FakeClock(first_observed))["fed_funds_effective"].read_facts(
         RUN_SCOPE, first_observed
     )
@@ -392,6 +402,7 @@ def test_adapter_reconstruction_replays_identical_external_data_across_runtime_r
     assert first[0].content_sha256 == second[0].content_sha256
     assert first[0].valid_until == second[0].valid_until == published + timedelta(hours=72)
     assert first[0].valid_until != later_observed + timedelta(hours=72)
+    assert first[0].published_at != datetime(2026, 8, 23, 12, 30, tzinfo=UTC)
     assert first[0].ingested_at == first_observed
     assert second[0].ingested_at == later_observed
     store = WorldMacroStore(tmp_path, clock=lambda: first_observed)
@@ -494,7 +505,7 @@ def test_hydrated_correction_replays_then_extends_chain(tmp_path: Path) -> None:
 
 
 def test_late_fetch_does_not_extend_valid_until_of_already_expired_provider_data() -> None:
-    published = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    published = datetime(2026, 8, 20, tzinfo=UTC)
     observed = datetime(2026, 8, 23, 13, 0, tzinfo=UTC)
     facts = _ports(ScriptedTransport([_dbnomics_body("2026-08-20", 4.33, indexed_at="2026-08-20T12:00:00Z")]))[
         "fed_funds_effective"
