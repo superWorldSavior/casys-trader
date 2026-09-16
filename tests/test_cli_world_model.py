@@ -835,12 +835,41 @@ def test_world_pattern_discover_dry_run_missing_db_does_not_create(tmp_path, mon
     assert payload["candidates"] == []
     assert payload["rejection_counts"].get("missing_db") == 1
     assert payload["eligible_records"] == 0
+    assert payload["group_count"] == 0
+    assert payload["groups"] == []
+    assert payload["groups_omitted"] == 0
+    assert payload["group_rejection_counts"] == {}
+    assert payload["records_without_paths"] == 0
     assert payload["source_evidence_count"] == 0
     assert payload["source_evidence_fingerprint"] == canonical_sha256([])
     assert "source_evidence_ids" not in payload
     _assert_claims(payload)
     assert not _db_path(tmp_path).exists()
     assert list(tmp_path.glob("world_model.db*")) == []
+
+
+def test_world_pattern_discover_pins_ontology_for_readonly_preflight(tmp_path, monkeypatch, capsys) -> None:
+    from tests.state_db.test_world_pattern_formation_query import _seed_labeled
+
+    seeded = _seed_labeled(tmp_path, monkeypatch)
+    revision = seeded["snapshot"].ontology_revision
+    _forbid_pattern_store(monkeypatch)
+    code, matching = _run_json(
+        monkeypatch, capsys, tmp_path, _pattern_discover_argv("--ontology-revision", revision, "--json")
+    )
+    assert code == 0
+    assert matching["request"]["ontology_revision"] == revision
+    assert matching["eligible_records"] == 1
+    assert matching["candidates"] == []
+    assert matching["groups"]
+    assert matching["group_rejection_counts"]["support_below_minimum"] == matching["group_count"]
+    code, foreign = _run_json(
+        monkeypatch, capsys, tmp_path, _pattern_discover_argv("--ontology-revision", "foreign.v1", "--json")
+    )
+    assert code == 0
+    assert foreign["eligible_records"] == 0
+    assert foreign["group_count"] == 0
+    assert foreign["rejection_counts"]["ontology_revision_mismatch"] == 1
 
 
 def test_world_pattern_discover_include_source_evidence_restores_ids(

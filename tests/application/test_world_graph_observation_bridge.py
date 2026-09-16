@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,7 @@ from trader.domain.world_graph import (
     WorldOntologyRevision,
     WorldStructuralRelationRef,
     parse_world_relation_event,
+    world_observation_ref_for_observation_id,
 )
 from trader.domain.world_graph_bridge_lifecycle import UnknownMacroGraphBridgeDrift
 from trader.domain.world_macro import (
@@ -513,7 +515,7 @@ def test_bridge_modules_do_not_import_store_networkx_runtime_or_reporting() -> N
     assert _import_violations(_BRIDGE) == []
 
 
-def test_use_case_cannot_inject_a_migration() -> None:
+def test_use_case_keeps_automatic_migration_out_of_constructor() -> None:
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
 
     assert "migration" not in inspect.signature(RegisterMacroObservationKnowledge.__init__).parameters
@@ -732,6 +734,158 @@ def test_ensure_unknown_drift_blocks_without_activate_and_fails_closed() -> None
     assert bridge.registry.active_run is not None
     assert bridge.registry.active_run.status == "blocked"
     assert bridge.registry.active_run.block_reason == "config_drift"
+    assert scan.reserve_calls == 1
+
+
+def test_explicit_migration_rolls_unknown_plan_drift_with_a_generation_scoped_cursor() -> None:
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    original = _use_case(scan, graph, bridge, collection_plan=_plan(digest="b" * 64))
+    original.ensure(REQUEST_ID)
+    predecessor = bridge.registry.active_run
+    assert predecessor is not None
+
+    # The live incident changed both the plan and the mapping generation.
+    mapping = _mapping()
+    changed_mapping = WorldScopeMapping(
+        mapping_id=mapping.mapping_id,
+        entries=(replace(mapping.entries[0], provider_proofs=("provider:new-listing",)),),
+    )
+    desired_case = _use_case(scan, graph, bridge, changed_mapping, collection_plan=_plan(digest="c" * 64))
+    desired = desired_case._spec()
+    with pytest.raises(UnknownMacroGraphBridgeDrift, match="unknown_config_drift"):
+        desired_case.ensure(REQUEST_ID)
+    assert bridge.registry.active_run is not None
+    assert bridge.registry.active_run.status == "blocked"
+    pre_migration = _envelope()
+    scan.seed(pre_migration, 1)
+
+    from trader.application.world_model.graph_observation_bridge import explicit_migration_request_id
+
+    request_id = explicit_migration_request_id(
+        bridge_key=BRIDGE_KEY,
+        predecessor_run_id=predecessor.run_id,
+        predecessor_epoch=predecessor.epoch,
+        desired_spec=desired,
+    )
+    assert request_id != REQUEST_ID
+    migrated = desired_case.activate_explicit_migration(
+        expected_predecessor_run_id=predecessor.run_id,
+        expected_predecessor_epoch=predecessor.epoch,
+        expected_desired_spec=desired,
+    )
+    assert migrated.active_run is not None
+    assert migrated.active_run.status == "active"
+    assert migrated.active_run.spec == desired
+    assert migrated.active_run.epoch == predecessor.epoch + 1
+    assert migrated.active_run.activation_cursor == _cursor_for(pre_migration, 1)
+    assert scan.reserve_calls == 2
+    assert (BRIDGE_KEY, request_id) in scan.reservations
+
+    post_migration = _envelope(
+        _observation(scope=_scope(kind="country", entity_id="iso-3166:TW"), cutoff_at=CUTOFF.replace(hour=14))
+    )
+    scan.seed(post_migration, 2)
+    reconciled = desired_case.reconcile(limit=8)
+    assert reconciled.active_run is not None
+    asserted = [item for item in graph.knowledge if isinstance(item, KnowledgeWorldRelationAsserted)]
+    assert len(asserted) == 1
+    assert asserted[0].relation.source == world_observation_ref_for_observation_id(
+        post_migration.observation.observation_id
+    )
+
+    retried = desired_case.activate_explicit_migration(
+        expected_predecessor_run_id=predecessor.run_id,
+        expected_predecessor_epoch=predecessor.epoch,
+        expected_desired_spec=desired,
+    )
+    assert retried.events == reconciled.events
+    assert scan.reserve_calls == 2
+
+
+def test_return_to_prior_mapping_reserves_current_head_and_excludes_pre_return_observations() -> None:
+    scan, graph, bridge = _Scan(), _Graph(), _Bridge()
+    mapping = _mapping()
+    changed = WorldScopeMapping(
+        mapping_id=mapping.mapping_id,
+        entries=(replace(mapping.entries[0], provider_proofs=("provider:new-listing",)),),
+    )
+    first = _use_case(scan, graph, bridge, mapping)
+    second = _use_case(scan, graph, bridge, changed)
+    initial = first.ensure(REQUEST_ID)
+    before_second = _envelope()
+    scan.seed(before_second, 1)
+    second.ensure(REQUEST_ID)
+    before_return = _envelope(_observation(cutoff_at=CUTOFF.replace(hour=14)))
+    scan.seed(before_return, 2)
+    returned = first.ensure(REQUEST_ID)
+    assert returned.active_run is not None and initial.active_run is not None
+    assert returned.active_run.spec == initial.active_run.spec
+    assert returned.active_run.epoch == 3
+    assert returned.active_run.activation_cursor == _cursor_for(before_return, 2)
+    assert len(scan.reservations) == 3
+    replayed = first.activate(REQUEST_ID)
+    assert replayed.events == returned.events
+    assert len(scan.reservations) == 3
+    after_return = _envelope(_observation(cutoff_at=CUTOFF.replace(hour=15)))
+    scan.seed(after_return, 3)
+    first.reconcile(limit=8)
+    asserted = [event for event in graph.knowledge if isinstance(event, KnowledgeWorldRelationAsserted)]
+    assert len(asserted) == 1
+    assert asserted[0].relation.source == world_observation_ref_for_observation_id(
+        after_return.observation.observation_id
+    )
+
+
+def test_explicit_migration_requires_a_blocked_predecessor_and_exact_desired_spec() -> None:
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    original = _use_case(scan, graph, bridge, collection_plan=_plan(digest="b" * 64))
+    original.ensure(REQUEST_ID)
+    predecessor = bridge.registry.active_run
+    assert predecessor is not None
+    desired_case = _use_case(scan, graph, bridge, collection_plan=_plan(digest="c" * 64))
+    desired = desired_case._spec()
+
+    with pytest.raises(ValueError, match="blocked"):
+        desired_case.activate_explicit_migration(
+            expected_predecessor_run_id=predecessor.run_id,
+            expected_predecessor_epoch=predecessor.epoch,
+            expected_desired_spec=desired,
+        )
+    assert scan.reserve_calls == 1
+
+    with pytest.raises(UnknownMacroGraphBridgeDrift):
+        desired_case.ensure(REQUEST_ID)
+    wrong_spec = original._spec()
+    with pytest.raises(ValueError, match="expected_desired_spec"):
+        desired_case.activate_explicit_migration(
+            expected_predecessor_run_id=predecessor.run_id,
+            expected_predecessor_epoch=predecessor.epoch,
+            expected_desired_spec=wrong_spec,
+        )
+    assert scan.reserve_calls == 1
+
+
+def test_explicit_migration_rejects_an_unexpected_predecessor_before_reserving() -> None:
+    scan = _Scan()
+    graph = _Graph()
+    bridge = _Bridge()
+    original = _use_case(scan, graph, bridge, collection_plan=_plan(digest="b" * 64))
+    original.ensure(REQUEST_ID)
+    desired_case = _use_case(scan, graph, bridge, collection_plan=_plan(digest="c" * 64))
+    with pytest.raises(UnknownMacroGraphBridgeDrift):
+        desired_case.ensure(REQUEST_ID)
+    before = bridge.registry.events
+    with pytest.raises(ValueError, match="expected predecessor"):
+        desired_case.activate_explicit_migration(
+            expected_predecessor_run_id="macro_graph_bridge_run:v1:" + "0" * 64,
+            expected_predecessor_epoch=1,
+            expected_desired_spec=desired_case._spec(),
+        )
+    assert bridge.registry.events == before
     assert scan.reserve_calls == 1
 
 

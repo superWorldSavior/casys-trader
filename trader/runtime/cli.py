@@ -872,6 +872,10 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     verdicts = decision_bench.parse_verdicts(args.verdicts)
+    try:
+        actions = decision_bench.parse_actions(args.actions)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     include_original = not args.hide_original
     context_kwargs = {}
     if args.reconstruct_context:
@@ -883,12 +887,17 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             verdicts=verdicts,
             symbol=args.symbol,
             include_original=include_original,
+            actions=actions,
         )
         context_symbols = _bench_context_symbols(args.context_symbols, preview_cases)
         context_history, context_metadata = decision_bench.load_reconstruction_history(
             preview_cases,
             symbols=context_symbols,
             interval=args.context_interval,
+            padding_days=args.context_padding_days,
+        )
+        fx_history, fx_metadata = decision_bench.load_fx_history(
+            preview_cases,
             padding_days=args.context_padding_days,
         )
         context_kwargs = {
@@ -898,12 +907,21 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             "context_lookback_bars": args.context_lookback_bars,
             "cockpit_window": args.cockpit_window,
             "context_metadata": context_metadata,
+            "risk_limits": decision_bench.AUDIT_WINDOW_RISK_LIMITS,
+            "fx_history": fx_history,
+            "fx_metadata": fx_metadata,
         }
 
     try:
         contract = decision_bench.parse_contract(args.contract)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    doctrine = None
+    if contract == "production" and not args.no_doctrine:
+        try:
+            doctrine = decision_bench.load_planner_doctrine(daemon.ROOT)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     if args.dry_run:
         payload = decision_bench.dry_run_payload(
             audit,
@@ -914,8 +932,10 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             verdicts=verdicts,
             symbol=args.symbol,
             include_original=include_original,
+            actions=actions,
             contract=contract,
             batch_size=args.batch_size,
+            doctrine=doctrine,
             **context_kwargs,
         )
     else:
@@ -929,8 +949,10 @@ def _cmd_decisions_bench(args: argparse.Namespace) -> int:
             timeout_s=args.timeout_s,
             symbol=args.symbol,
             include_original=include_original,
+            actions=actions,
             contract=contract,
             batch_size=args.batch_size,
+            doctrine=doctrine,
             **context_kwargs,
         )
 
@@ -1156,6 +1178,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_discover.add_argument("--formation-cutoff", required=True)
     pattern_discover.add_argument("--evaluation-start-not-before", required=True)
+    pattern_discover.add_argument("--ontology-revision", help="révision exacte requise pour la formation")
     pattern_discover.add_argument("--horizon", action="append")
     pattern_discover.add_argument("--min-support", type=int, default=20)
     pattern_discover.add_argument("--min-association", type=float, default=0.10)
@@ -1392,6 +1415,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="CSV provider:model, ex. acpx:gpt-5.5,ollama-cloud:glm-5.1:cloud",
     )
     decisions_bench.add_argument("--verdicts", default="good,bad,missed,neutral")
+    decisions_bench.add_argument(
+        "--actions",
+        default="",
+        help="filtre d'actions originales CSV (ex. BUY,SELL) ; vide = toutes",
+    )
     decisions_bench.add_argument("--timeout-s", type=int, default=120)
     decisions_bench.add_argument(
         "--contract",
@@ -1406,6 +1434,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="cas par appel modèle (défaut 1; 0 = un seul prompt pour tout le lot)",
     )
     decisions_bench.add_argument("--hide-original", action="store_true")
+    decisions_bench.add_argument(
+        "--no-doctrine",
+        action="store_true",
+        help="contrat production sans doctrine live (mandat/mémoire/guidance/vocabulaire) : reproduit les prompts historiques",
+    )
     decisions_bench.add_argument("--reconstruct-context", action="store_true")
     decisions_bench.add_argument(
         "--context-symbols",

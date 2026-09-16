@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -133,6 +133,31 @@ class PatternDiscoveryCandidate:
 
 
 @dataclass(frozen=True)
+class PatternDiscoveryGroup:
+    """Bounded, traceable explanation of a group, including failed selection gates."""
+
+    semantic_signature: str
+    horizon_id: str
+    ontology_revision: str
+    steps: tuple[PatternStep, ...]
+    stats: PatternFormationStats
+    rejection_reasons: tuple[str, ...]
+    evidence_samples: tuple[Mapping[str, Any], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "semantic_signature": self.semantic_signature,
+            "horizon_id": self.horizon_id,
+            "ontology_revision": self.ontology_revision,
+            "steps": [step.to_dict() for step in self.steps],
+            "stats": self.stats.to_dict(),
+            "selected": not self.rejection_reasons,
+            "rejection_reasons": list(self.rejection_reasons),
+            "evidence_samples": [dict(item) for item in self.evidence_samples],
+        }
+
+
+@dataclass(frozen=True)
 class PatternDiscoveryResult:
     candidates: tuple[PatternDiscoveryCandidate, ...]
     formation_dataset_fingerprint: str
@@ -140,6 +165,12 @@ class PatternDiscoveryResult:
     rejection_counts: Mapping[str, int]
     source_evidence_ids: tuple[str, ...]
     considered_records: int = 0
+    group_count: int = 0
+    groups: tuple[PatternDiscoveryGroup, ...] = ()
+    group_rejection_counts: Mapping[str, int] = field(default_factory=dict)
+    records_without_paths: int = 0
+    records_with_knowledge_relations: int = 0
+    records_with_driver_state_bindings: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -149,6 +180,13 @@ class PatternDiscoveryResult:
             "considered_records": self.considered_records,
             "rejection_counts": dict(self.rejection_counts),
             "source_evidence_ids": list(self.source_evidence_ids),
+            "group_count": self.group_count,
+            "groups": [item.to_dict() for item in self.groups],
+            "groups_omitted": self.group_count - len(self.groups),
+            "group_rejection_counts": dict(self.group_rejection_counts),
+            "records_without_paths": self.records_without_paths,
+            "records_with_knowledge_relations": self.records_with_knowledge_relations,
+            "records_with_driver_state_bindings": self.records_with_driver_state_bindings,
         }
 
 
@@ -237,8 +275,11 @@ class PatternDiscoveryService:
         populations: dict[tuple[Any, ...], dict[tuple[str, ...], str]] = defaultdict(dict)
         all_payloads: list[dict[str, Any]] = []
         seen_payloads: set[str] = set()
+        records_without_paths = 0
         for record in eligible:
             paths = project_pattern_paths(record)
+            if not paths:
+                records_without_paths += 1
             label = record.outcome.direction
             assert label is not None
             provenance = (
@@ -275,6 +316,7 @@ class PatternDiscoveryService:
                 group.source_refs.add(record.outcome.event_id)
 
         candidates: list[PatternDiscoveryCandidate] = []
+        diagnostics: list[PatternDiscoveryGroup] = []
         for (_signature, horizon_id, *_rest), group in groups.items():
             provenance = (
                 group.horizon_id,
@@ -298,7 +340,23 @@ class PatternDiscoveryService:
                 population_class_counts=population_class_counts,
                 smoothing_alpha=request.smoothing_alpha,
             )
-            if stats.support < request.min_support or stats.association_score < request.min_association:
+            reasons = []
+            if stats.support < request.min_support:
+                reasons.append("support_below_minimum")
+            if stats.association_score < request.min_association:
+                reasons.append("association_below_minimum")
+            diagnostics.append(
+                PatternDiscoveryGroup(
+                    semantic_signature=_signature,
+                    horizon_id=horizon_id,
+                    ontology_revision=group.ontology_revision,
+                    steps=group.steps,
+                    stats=stats,
+                    rejection_reasons=tuple(reasons),
+                    evidence_samples=tuple(sorted(group.payloads, key=canonical_sha256)[:3]),
+                )
+            )
+            if reasons:
                 continue
             spec = PatternHypothesisSpec(
                 evaluation_start_not_before=request.evaluation_start_not_before,
@@ -333,6 +391,24 @@ class PatternDiscoveryService:
             )
         )
         selected = tuple(candidates[: request.max_candidates])
+        selected_keys = {
+            (item.semantic_signature, item.spec.target.horizon_id, item.spec.ontology_revision)
+            for item in selected
+        }
+        diagnostics = [
+            replace(item, rejection_reasons=("candidate_limit",))
+            if not item.rejection_reasons
+            and (item.semantic_signature, item.horizon_id, item.ontology_revision) not in selected_keys
+            else item
+            for item in diagnostics
+        ]
+        group_rejections: dict[str, int] = defaultdict(int)
+        for item in diagnostics:
+            for reason in item.rejection_reasons:
+                group_rejections[reason] += 1
+        diagnostics.sort(
+            key=lambda item: (-item.stats.support, item.semantic_signature, item.horizon_id, item.ontology_revision)
+        )
         return PatternDiscoveryResult(
             candidates=selected,
             formation_dataset_fingerprint=_fingerprint(all_payloads) if all_payloads else canonical_sha256([]),
@@ -340,11 +416,18 @@ class PatternDiscoveryService:
             rejection_counts=dict(sorted(rejection_counts.items())),
             source_evidence_ids=batch.source_evidence_ids,
             considered_records=considered_records,
+            group_count=len(groups),
+            groups=tuple(diagnostics[:20]),
+            group_rejection_counts=dict(sorted(group_rejections.items())),
+            records_without_paths=records_without_paths,
+            records_with_knowledge_relations=sum(bool(record.knowledge_relations) for record in eligible),
+            records_with_driver_state_bindings=sum(bool(record.driver_state_bindings) for record in eligible),
         )
 
 
 __all__ = (
     "PatternDiscoveryCandidate",
+    "PatternDiscoveryGroup",
     "PatternDiscoveryResult",
     "PatternDiscoveryService",
 )

@@ -57,6 +57,141 @@ def test_select_cases_prend_des_decisions_evaluees_du_dernier_audit() -> None:
     assert cases[0]["audit"]["verdict"] == "missed"
 
 
+def test_parse_actions_vide_sans_filtre_et_csv_valide() -> None:
+    assert decision_bench.parse_actions(None) is None
+    assert decision_bench.parse_actions("") is None
+    assert decision_bench.parse_actions("buy,SELL") == {"BUY", "SELL"}
+
+
+def test_parse_actions_refuse_valeur_inconnue() -> None:
+    with pytest.raises(ValueError, match="actions inconnues"):
+        decision_bench.parse_actions("BUY,SOMETHING")
+
+
+def test_fx_rate_asof_usd_et_dernier_connu() -> None:
+    fx_history = {"EUR": [("2026-08-01", 1.10), ("2026-08-04", 1.12)]}
+
+    assert decision_bench.fx_rate_asof(fx_history, "USD", "2026-08-05") == 1.0
+    assert decision_bench.fx_rate_asof(fx_history, "EUR", "2026-08-05") == 1.12
+    assert decision_bench.fx_rate_asof(fx_history, "EUR", "2026-08-02") == 1.10
+    assert decision_bench.fx_rate_asof(fx_history, "EUR", "2026-07-01") is None
+    assert decision_bench.fx_rate_asof({}, "EUR", "2026-08-05") is None
+
+
+def test_audit_window_risk_limits_fenetre_aout() -> None:
+    limits = decision_bench.AUDIT_WINDOW_RISK_LIMITS
+
+    assert (limits.max_position_value, limits.max_gross_exposure, limits.max_order_value, limits.min_equity) == (
+        50000.0,
+        100000.0,
+        50000.0,
+        50000.0,
+    )
+
+
+def _capacity_case(**overrides) -> dict:
+    case = {
+        "symbol": "SPY",
+        "price": 100.0,
+        "portfolio_snapshot": {"equity": 100000.0, "gross_exposure_usd": 0.0, "holdings": []},
+    }
+    case.update(overrides)
+    return case
+
+
+def test_reconstruct_risk_capacity_flat_donne_max_qty() -> None:
+    capacity = decision_bench.reconstruct_risk_capacity(
+        _capacity_case(),
+        "2026-08-03T01:00:00+00:00",
+        {"SPY": 100.0},
+        limits=decision_bench.AUDIT_WINDOW_RISK_LIMITS,
+        fx_history={},
+    )
+
+    per_symbol = capacity["per_symbol"]["SPY"]
+    assert per_symbol["max_buy_qty"] == 500.0
+    assert per_symbol["max_sell_qty"] == 500.0
+    assert per_symbol["ccy"] == "USD"
+    assert capacity["gross_remaining_usd"] == 100000.0
+
+
+def test_reconstruct_risk_capacity_deduit_la_position_existante() -> None:
+    case = _capacity_case(
+        portfolio_snapshot={
+            "equity": 100000.0,
+            "gross_exposure_usd": 20000.0,
+            "holdings": [{"symbol": "SPY", "quantity": 200.0}],
+        }
+    )
+
+    capacity = decision_bench.reconstruct_risk_capacity(
+        case,
+        "2026-08-03T01:00:00+00:00",
+        {"SPY": 100.0},
+        limits=decision_bench.AUDIT_WINDOW_RISK_LIMITS,
+        fx_history={},
+    )
+
+    per_symbol = capacity["per_symbol"]["SPY"]
+    assert per_symbol["current_position_value_usd"] == 20000.0
+    assert per_symbol["max_buy_qty"] == 300.0
+
+
+def test_reconstruct_risk_capacity_sans_prix_ni_equity_zero() -> None:
+    capacity = decision_bench.reconstruct_risk_capacity(
+        {"symbol": "SPY", "portfolio_snapshot": {}},
+        "2026-08-03T01:00:00+00:00",
+        {},
+        limits=decision_bench.AUDIT_WINDOW_RISK_LIMITS,
+        fx_history={},
+    )
+
+    assert capacity["per_symbol"]["SPY"]["max_buy_qty"] == 0.0
+    assert capacity["per_symbol"]["SPY"]["max_sell_qty"] == 0.0
+
+
+def test_reconstruct_case_contexts_injecte_risk_capacity() -> None:
+    audit = {
+        "threshold_pct": 0.5,
+        "horizons": ["4h"],
+        "rows": [_row("d1", action="HOLD", future_return_pct=1.0, verdict="missed")],
+    }
+    cases = decision_bench.select_cases(audit, horizon="4h", limit=1, verdicts={"missed"})
+    store = HistoryStore.from_bars({"SPY": [_bar("2026-06-12T00:00:00+00:00", 100.0)]})
+
+    enriched = decision_bench.reconstruct_case_contexts(
+        cases,
+        history=store,
+        symbols=["SPY"],
+        interval="15m",
+        lookback_bars=4,
+        cockpit_window=3,
+        risk_limits=decision_bench.AUDIT_WINDOW_RISK_LIMITS,
+        fx_history={},
+    )
+
+    context = enriched[0]["case"]["reconstructed_context"]
+    assert context["risk_capacity"]["per_symbol"]["SPY"]["max_buy_qty"] == 500.0
+
+
+def test_select_cases_filtre_par_action_originale() -> None:
+    audit = {
+        "threshold_pct": 0.5,
+        "horizons": ["4h"],
+        "rows": [
+            _row("d1", action="HOLD", future_return_pct=1.0, verdict="missed"),
+            _row("d2", action="BUY", future_return_pct=-1.0, verdict="bad"),
+        ],
+    }
+
+    cases = decision_bench.select_cases(
+        audit, horizon="4h", limit=2, verdicts={"missed", "bad"}, actions={"BUY"}
+    )
+
+    assert [case["decision_id"] for case in cases] == ["d2"]
+    assert cases[0]["original_action"] == "BUY"
+
+
 def test_select_cases_offset_sapplique_apres_filtrage() -> None:
     audit = {
         "threshold_pct": 0.5,
@@ -106,6 +241,249 @@ def test_parse_model_specs_normalise_grok_en_alias_grok_build() -> None:
         ("grok-build", "grok-4.6"),
         ("grok-build", "grok-4.5"),
     ]
+
+
+def test_parse_model_specs_accepte_muse_avec_effort_optionnel() -> None:
+    specs = decision_bench.parse_model_specs("muse:muse-spark-1.3,muse:muse-spark-1.3/low")
+
+    assert [(spec.provider, spec.model) for spec in specs] == [
+        ("muse", "muse-spark-1.3"),
+        ("muse", "muse-spark-1.3/low"),
+    ]
+
+
+def test_parse_model_specs_refuse_effort_muse_invalide() -> None:
+    with pytest.raises(ValueError, match="effort muse"):
+        decision_bench.parse_model_specs("muse:muse-spark-1.3/turbo")
+
+
+def test_complete_model_route_muse_vers_muse_backend(monkeypatch) -> None:
+    from trader.agent import llm
+
+    seen: dict = {}
+
+    class FakeMuseBackend:
+        def __init__(self, **kwargs) -> None:
+            seen.update(kwargs)
+
+        def complete(self, prompt, *, timeout_s):
+            assert prompt == "ping"
+            assert timeout_s == 5
+            return llm.LlmCompletion(provider="muse", model="muse-spark-1.3", text="{}")
+
+    monkeypatch.setattr(llm, "MuseBackend", FakeMuseBackend)
+
+    completion = decision_bench.complete_model(
+        decision_bench.ModelSpec(provider="muse", model="muse-spark-1.3"),
+        "ping",
+        5,
+    )
+
+    assert seen == {"provider": "muse", "model": "muse-spark-1.3"}
+    assert isinstance(completion, decision_bench.ModelCompletion)
+    assert completion.text == "{}"
+
+
+def _doctrine_fixture() -> dict:
+    return {
+        "mandate": "MANDAT-FIXTURE",
+        "memory": "MEMOIRE-FIXTURE",
+        "guidance": "GUIDANCE-FIXTURE",
+        "vocabulary": "VOCABULAIRE-FIXTURE",
+    }
+
+
+def test_prompt_production_sans_doctrine_reste_historique() -> None:
+    prompt = decision_bench.build_prompt([], horizon="4h", threshold_pct=0.5, contract="production")
+
+    assert "# Mandat" not in prompt
+    assert "Détails des règles de sortie" not in prompt
+
+
+def test_prompt_production_doctrine_injecte_sections_live() -> None:
+    prompt = decision_bench.build_prompt(
+        [], horizon="4h", threshold_pct=0.5, contract="production", doctrine=_doctrine_fixture()
+    )
+
+    assert "# Mandat\nMANDAT-FIXTURE" in prompt
+    assert "# Mémoire / stratégie\nMEMOIRE-FIXTURE" in prompt
+    assert "GUIDANCE-FIXTURE" in prompt
+    assert "VOCABULAIRE-FIXTURE" in prompt
+    assert "Détails des règles de sortie" in prompt
+    assert prompt.index("VOCABULAIRE-FIXTURE") < prompt.index("# Contrat de sortie")
+
+
+def test_prompt_production_doctrine_incomplete_fail_fast() -> None:
+    doctrine = _doctrine_fixture()
+    del doctrine["guidance"]
+
+    with pytest.raises(ValueError, match="doctrine incomplète"):
+        decision_bench.build_prompt([], horizon="4h", threshold_pct=0.5, contract="production", doctrine=doctrine)
+
+
+def test_prompt_reviews_ignore_la_doctrine() -> None:
+    assert decision_bench.build_prompt(
+        [], horizon="4h", threshold_pct=0.5, contract="reviews", doctrine=_doctrine_fixture()
+    ) == decision_bench.build_prompt([], horizon="4h", threshold_pct=0.5, contract="reviews")
+
+
+def test_load_planner_doctrine_lit_mandat_et_memoire(tmp_path) -> None:
+    (tmp_path / "mandate").mkdir()
+    (tmp_path / "mandate" / "mandate.md").write_text("mandat live", encoding="utf-8")
+    (tmp_path / "mandate" / "memory.md").write_text("mémoire live", encoding="utf-8")
+
+    doctrine = decision_bench.load_planner_doctrine(tmp_path)
+
+    assert doctrine["mandate"] == "mandat live"
+    assert doctrine["memory"] == "mémoire live"
+    assert "échelle d'engagement" in doctrine["guidance"]
+    assert "Vocabulaire des veilles" in doctrine["vocabulary"]
+
+
+def test_load_planner_doctrine_incomplete_fail_fast(tmp_path) -> None:
+    (tmp_path / "mandate").mkdir()
+    (tmp_path / "mandate" / "mandate.md").write_text("mandat live", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="doctrine incomplète"):
+        decision_bench.load_planner_doctrine(tmp_path)
+
+
+def test_select_cases_assainit_le_runtime_derive_de_la_decision() -> None:
+    row = _row("d1", action="BUY", future_return_pct=-1.0, verdict="bad")
+    row["runtime"] = {
+        "data_source": "ib",
+        "dry_run": False,
+        "armed_plan_order": {"direction": "long", "qty": 10},
+        "tool_calls": [{"tool": "strategy_entry", "args": {"direction": "long"}}],
+        "exit_plan": {"stop": 1.0},
+        "indicator_watch_requested": True,
+    }
+    audit = {"threshold_pct": 0.5, "horizons": ["4h"], "rows": [row]}
+
+    cases = decision_bench.select_cases(audit, horizon="4h", limit=1, verdicts={"bad"})
+
+    assert cases[0]["case"]["runtime"] == {"data_source": "ib", "dry_run": False}
+
+
+def test_score_production_conserve_calls_et_reason_code() -> None:
+    cases = _production_cases()[:2]
+    response = json.dumps(
+        {
+            "decisions": [
+                {
+                    "decision_id": "d1",
+                    "symbol": "SPY",
+                    "confidence": 0.8,
+                    "rationale": "entrée",
+                    "opportunity_side": "long",
+                    "decision_reason_code": "ENTRY_SIGNAL",
+                    "calls": [{"tool": "strategy_entry", "args": {"direction": "long", "qty": 1}}],
+                },
+                {
+                    "decision_id": "d2",
+                    "symbol": "SPY",
+                    "confidence": 0.4,
+                    "rationale": "veille",
+                    "opportunity_side": None,
+                    "decision_reason_code": "WATCH_ARMED",
+                    "calls": [
+                        {
+                            "tool": "propose_indicator_watch",
+                            "args": {"on_trigger": "EXECUTE_ORDER", "order": {"direction": "short"}},
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+
+    reviews, _ = decision_bench.score_model_reviews(cases, response, threshold_pct=0.5)
+
+    assert reviews[0]["candidate_calls"] == [{"tool": "strategy_entry", "args": {"direction": "long", "qty": 1}}]
+    assert reviews[0]["candidate_decision_reason_code"] == "ENTRY_SIGNAL"
+    assert reviews[1]["candidate_calls"][0]["tool"] == "propose_indicator_watch"
+    assert reviews[1]["candidate_decision_reason_code"] == "WATCH_ARMED"
+
+
+def test_score_reviews_sans_calls_laisse_champs_vides() -> None:
+    audit = {
+        "threshold_pct": 0.5,
+        "horizons": ["4h"],
+        "rows": [_row("d1", action="HOLD", future_return_pct=1.0, verdict="missed")],
+    }
+    cases = decision_bench.select_cases(audit, horizon="4h", limit=1, verdicts={"missed"})
+    response = json.dumps(
+        {"reviews": [{"decision_id": "d1", "action": "HOLD", "opportunity_side": None, "rationale": "x"}]}
+    )
+
+    reviews, _ = decision_bench.score_model_reviews(cases, response, threshold_pct=0.5)
+
+    assert reviews[0]["candidate_calls"] is None
+    assert reviews[0]["candidate_decision_reason_code"] is None
+
+
+def test_planner_summary_agrege_outils_veilles_et_codes() -> None:
+    reviews = [
+        {
+            "candidate_calls": [
+                {"tool": "strategy_entry", "args": {"direction": "long"}},
+                {"tool": "set_next_wake", "args": {"minutes": 30}},
+            ],
+            "candidate_decision_reason_code": "ENTRY_SIGNAL",
+        },
+        {
+            "candidate_calls": [
+                {
+                    "tool": "propose_indicator_watch",
+                    "args": {"on_trigger": "EXECUTE_ORDER", "order": {"direction": "short"}},
+                }
+            ],
+            "candidate_decision_reason_code": "ARMED_PLAN",
+        },
+        {
+            "candidate_calls": [{"tool": "propose_indicator_watch", "args": {"on_trigger": "WAKE"}}],
+            "candidate_decision_reason_code": "WATCH_ARMED",
+        },
+        {"candidate_calls": [], "candidate_decision_reason_code": "NO_EDGE"},
+        {"candidate_calls": None, "candidate_decision_reason_code": None},
+    ]
+
+    summary = decision_bench.planner_summary(reviews)
+
+    assert summary["reviews_with_calls"] == 3
+    assert summary["tools"] == {"propose_indicator_watch": 2, "set_next_wake": 1, "strategy_entry": 1}
+    assert summary["watches"] == {"armed": 1, "wake": 1, "other": 0}
+    assert summary["reason_codes"] == {"ARMED_PLAN": 1, "ENTRY_SIGNAL": 1, "NO_EDGE": 1, "WATCH_ARMED": 1}
+
+
+def test_run_bench_trace_la_fidelite_du_prompt() -> None:
+    audit = {
+        "threshold_pct": 0.5,
+        "horizons": ["4h"],
+        "rows": [_row("d1", action="HOLD", future_return_pct=1.0, verdict="missed")],
+    }
+
+    def fake_complete(model, prompt, timeout_s):
+        return decision_bench.ModelCompletion(
+            provider=model.provider,
+            model=model.model,
+            text=json.dumps({"reviews": [{"decision_id": "d1", "action": "HOLD", "rationale": "x"}]}),
+            latency_s=0.01,
+        )
+
+    payload = decision_bench.run_bench(
+        audit,
+        models=[decision_bench.ModelSpec(provider="acpx", model="m")],
+        horizon="4h",
+        limit=1,
+        verdicts={"missed"},
+        timeout_s=5,
+        doctrine=_doctrine_fixture(),
+        complete=fake_complete,
+    )
+
+    assert payload["prompt_fidelity"]["doctrine_sections"] == ["guidance", "mandate", "memory", "vocabulary"]
+    assert payload["prompt_fidelity"]["runtime_allowlist"] == ["data_source", "dry_run"]
 
 
 def test_run_bench_score_une_reponse_modele_sans_exposer_le_futur() -> None:
@@ -651,6 +1029,72 @@ def test_cli_decisions_bench_contract_default_reviews() -> None:
 
     assert args.contract == "reviews"
     assert args.batch_size == 1
+    assert args.no_doctrine is False
+    assert args.actions == ""
+
+
+def test_cli_decisions_bench_production_charge_la_doctrine_par_defaut(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _write_bench_audit(state_dir)
+
+    assert (
+        cli.main(
+            [
+                "decisions",
+                "bench",
+                "--horizon",
+                "4h",
+                "--limit",
+                "1",
+                "--models",
+                "spark:m",
+                "--contract",
+                "production",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["prompt_fidelity"]["doctrine_sections"] == ["guidance", "mandate", "memory", "vocabulary"]
+    assert "# Mandat" in payload["prompt"]
+    assert "Vocabulaire des veilles" in payload["prompt"]
+
+
+def test_cli_decisions_bench_no_doctrine_reproduit_prompts_historiques(monkeypatch, tmp_path, capsys) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(daemon, "STATE_DIR", state_dir)
+    _write_bench_audit(state_dir)
+
+    assert (
+        cli.main(
+            [
+                "decisions",
+                "bench",
+                "--horizon",
+                "4h",
+                "--limit",
+                "1",
+                "--models",
+                "spark:m",
+                "--contract",
+                "production",
+                "--no-doctrine",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["prompt_fidelity"]["doctrine_sections"] == []
+    assert "# Mandat" not in payload["prompt"]
 
 
 def _write_bench_audit(state_dir, *, cycle_ts: str = "2026-06-12T01:00:00+00:00") -> None:

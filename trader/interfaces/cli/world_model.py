@@ -507,6 +507,7 @@ def discover_world_patterns(
     *,
     formation_cutoff: str | datetime,
     evaluation_start_not_before: str | datetime,
+    ontology_revision: str | None = None,
     horizons: Sequence[str] | None = None,
     min_support: int = 20,
     min_association: float = 0.10,
@@ -540,6 +541,7 @@ def discover_world_patterns(
         request_kwargs: dict[str, Any] = {
             "formation_cutoff": formation_cutoff,
             "evaluation_start_not_before": evaluation_start_not_before,
+            "ontology_revision": ontology_revision,
             "min_support": min_support,
             "min_association": min_association,
             "max_candidates": max_candidates,
@@ -840,6 +842,7 @@ def dispatch_world_pattern(args: Any, *, state_dir: str | Path) -> tuple[dict[st
             state_dir,
             formation_cutoff=args.formation_cutoff,
             evaluation_start_not_before=args.evaluation_start_not_before,
+            ontology_revision=getattr(args, "ontology_revision", None),
             horizons=None if not horizons else tuple(horizons),
             min_support=args.min_support,
             min_association=args.min_association,

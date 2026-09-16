@@ -124,6 +124,52 @@ Un pattern n'est déclaré que s'il existe une `PatternHypothesis` persistée et
 des occurrences prospectives liées à leurs outcomes. Une régularité Markov/GRU
 ou un chemin NetworkX seul n'est toujours pas un pattern.
 
+### Diagnostiquer une découverte vide
+
+Faire le préflight sur la révision exacte de la cohorte, avec les horizons de
+son manifeste et un cutoff explicite. La commande reste en lecture seule sans
+`--apply` :
+
+```bash
+uv run casys-trader world pattern discover \
+  --formation-cutoff FORMATION_CUTOFF \
+  --evaluation-start-not-before EVALUATION_START \
+  --ontology-revision ONTOLOGY_REVISION \
+  --horizon elapsed_4h.v1 --horizon elapsed_1d.v1 --horizon elapsed_3d.v1 \
+  --json
+```
+
+Le rapport sépare les exclusions de records (`rejection_counts`) des critères
+de sélection des groupes (`group_rejection_counts`). `groups` montre au plus
+20 groupes, leur chemin, leur DriverState éventuel, leurs distributions et
+trois exemples de preuves par groupe ; `groups_omitted` compte le reste. Un
+groupe peut échouer à plusieurs critères. Les seuils restent support 20 et
+association 0,10. Les groupes exclus par `max_candidates` restent distingués
+des groupes qui échouent aux critères statistiques.
+
+Si support et population sont identiques, l'association vaut zéro : le chemin
+ne distingue aucune situation dans cet échantillon. Vérifier alors
+`records_with_knowledge_relations` et `records_with_driver_state_bindings`,
+puis les membres des snapshots et le registre de la liaison macro. Un total
+élevé de prédictions ne garantit ni des observations indépendantes, ni la
+présence de contexte admis. Les records sans chemin restent dans la population
+de comparaison et sont comptés dans `records_without_paths`.
+
+Un changement de plan macro peut laisser la collecte source-only active tout
+en bloquant la liaison graphe avec `unknown_config_drift`. Le redémarrage seul
+ne résout pas ce cas. L'alignement automatique conserve ce refus ; une
+transition explicite doit nommer la génération bloquée et la spécification
+cible complète, puis réserver un nouveau curseur prospectif. Utiliser le
+mapping réellement chargé par le runtime ; un fichier YAML régénéré pendant
+son exécution ne prouve pas ce mapping. Ne pas réécrire les anciens snapshots.
+
+Après réparation de la capture, attendre des snapshots avec contexte admis et
+des outcomes mûrs, puis refaire ce préflight avant d'ouvrir l'évaluation
+suivante. Une nouvelle cohorte ouverte avec une formation sans contexte peut
+figer légitimement zéro candidat. La fermeture d'une cohorte en dérive est un
+événement ajouté à son historique ; elle ne restaure pas ses voies et ne
+permet pas de réutiliser rétroactivement les données de formation.
+
 ## Distinguer boot, cycle dû, cycle idle
 
 Trois états distincts. Ne pas les fusionner :

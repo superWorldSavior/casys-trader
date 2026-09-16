@@ -78,6 +78,14 @@ casys-trader decisions bench --horizon 4h --limit 10 --dry-run --contract produc
 `--batch-size` vaut **1** : un appel modèle par décision. L'ancien défaut
 (tout le lot dans un seul prompt) se redemande avec `--batch-size 0`.
 
+En contrat `production`, le prompt inclut par défaut la doctrine live
+(mandat, mémoire, guidance planner, vocabulaire des veilles) et le
+`runtime` des cas est assaini (seuls `data_source`/`dry_run` passent :
+les ordres armés et `tool_calls` de la décision originale ne fuitent
+plus). `--no-doctrine` reproduit les prompts historiques minimaux.
+Chaque payload trace sa fidélité (`prompt_fidelity`). Le contrat
+`reviews` reste un avis nu, inchangé.
+
 Le score interne reste BUY/SELL/HOLD. Mapping production : `strategy_entry`
 long→BUY, short→SELL ; `strategy_close`→SELL (exit, y compris couverture) ;
 `calls: []` / `set_next_wake` / `propose_indicator_watch` WAKE→HOLD ;

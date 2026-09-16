@@ -13,13 +13,26 @@ from typing import Any
 
 from trader.agent import llm
 from trader.agent.context import build_market_cockpit
-from trader.agent.protocol.prompts import _SYMBOL_CALLS_FINAL_CONTRACT
-from trader.domain.market import family_regime
+from trader.agent.memory import Memory
+from trader.agent.protocol.prompts import (
+    _SYMBOL_CALLS_FINAL_CONTRACT,
+    _decision_guidance,
+    _indicator_watch_vocabulary,
+    _symbol_calls_exit_details,
+)
+from trader.application.execute import risk_capacity as risk_capacity_mod
+from trader.domain.market import family_regime, fx
+from trader.domain.risk import RiskLimits
 from trader.reporting.audit import decision_quality as decision_audit
 from trader.reporting.bench.protocols import BenchHistory, ModelBenchCompleter
 
 VALID_ACTIONS = {"BUY", "SELL", "HOLD"}
 VALID_CONTRACTS = {"reviews", "production"}
+DOCTRINE_SECTION_NAMES = ("mandate", "memory", "guidance", "vocabulary")
+# Runtime ledger keys which never derive from the original decision. Everything
+# else (armed_plan_order, tool_calls, exit plans, watches, sizing…) is the
+# original decision's own trace and must not reach the candidate model.
+_BENCH_RUNTIME_ALLOWLIST = frozenset({"data_source", "dry_run"})
 DEFAULT_VERDICTS = {"good", "bad", "missed", "neutral"}
 AUDIT_STALE_AFTER_DAYS = 7
 DEFAULT_BENCH_MODELS = [
@@ -88,10 +101,12 @@ def parse_model_specs(raw_specs: list[str] | str | None) -> list[ModelSpec]:
             provider = "ollama-cloud"
         if provider == "grok":
             provider = "grok-build"
-        if provider not in {"acpx", "ollama-cloud", "grok-build"}:
+        if provider not in {"acpx", "ollama-cloud", "grok-build", "muse"}:
             raise ValueError(f"unsupported bench provider: {provider}")
         if not model:
             raise ValueError(f"missing model in spec {item!r}")
+        if provider == "muse":
+            llm.parse_muse_model_spec(model)
         specs.append(ModelSpec(provider=provider, model=model))
     if not specs:
         raise ValueError("at least one model spec is required")
@@ -102,6 +117,18 @@ def parse_verdicts(raw: str | None) -> set[str]:
     if not raw:
         return set(DEFAULT_VERDICTS)
     return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def parse_actions(raw: str | None) -> set[str] | None:
+    """Filtre d'actions originales. Vide = aucun filtre (toutes les actions)."""
+
+    if not raw or not str(raw).strip():
+        return None
+    actions = {item.strip().upper() for item in str(raw).split(",") if item.strip()}
+    unknown = actions - VALID_ACTIONS
+    if unknown:
+        raise ValueError(f"actions inconnues : {sorted(unknown)}, attendues parmi {sorted(VALID_ACTIONS)}")
+    return actions
 
 
 def parse_contract(raw: str | None) -> str:
@@ -151,6 +178,44 @@ def _finite_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _sanitize_runtime(runtime: object) -> dict:
+    if not isinstance(runtime, dict):
+        return {}
+    return {key: value for key, value in runtime.items() if key in _BENCH_RUNTIME_ALLOWLIST}
+
+
+def load_planner_doctrine(root: object) -> dict[str, str]:
+    """Live planner doctrine (mandate, memory, guidance, vocabulary) for bench prompts.
+
+    Same sources as the daemon; guidance and vocabulary match the no-tools bench
+    shape. Fail-closed: a partial doctrine would silently bench a different brain.
+    """
+
+    from pathlib import Path
+
+    repo = Path(str(root))
+    memory = Memory(repo / "mandate" / "mandate.md", repo / "mandate" / "memory.md")
+    doctrine = {
+        "mandate": memory.read_mandate(),
+        "memory": memory.read_memory(),
+        "guidance": _decision_guidance(allow_context_request=False, allow_tool_calls=False),
+        "vocabulary": _indicator_watch_vocabulary(),
+    }
+    missing = [name for name in DOCTRINE_SECTION_NAMES if not str(doctrine[name] or "").strip()]
+    if missing:
+        raise ValueError(f"doctrine incomplète sous {repo}: sections vides : {', '.join(missing)}")
+    return doctrine
+
+
+def _require_doctrine(doctrine: dict[str, str] | None) -> dict[str, str] | None:
+    if doctrine is None:
+        return None
+    missing = [name for name in DOCTRINE_SECTION_NAMES if not str(doctrine.get(name) or "").strip()]
+    if missing:
+        raise ValueError(f"doctrine incomplète : sections vides : {', '.join(missing)}")
+    return doctrine
+
+
 def _bench_case(row: dict, *, include_original: bool) -> dict:
     case = {
         "decision_id": row.get("decision_id"),
@@ -159,7 +224,7 @@ def _bench_case(row: dict, *, include_original: bool) -> dict:
         "price": row.get("price"),
         "portfolio_snapshot": row.get("portfolio_snapshot") or {},
         "market_snapshot": row.get("market_snapshot") or {},
-        "runtime": row.get("runtime") or {},
+        "runtime": _sanitize_runtime(row.get("runtime")),
     }
     if include_original:
         case["original_decision"] = {
@@ -185,6 +250,7 @@ def select_cases(
     verdicts: set[str],
     symbol: str | None = None,
     include_original: bool = True,
+    actions: set[str] | None = None,
 ) -> list[dict]:
     cases: list[dict] = []
     skipped = 0
@@ -193,6 +259,8 @@ def select_cases(
         if not isinstance(row, dict):
             continue
         if symbol and row.get("symbol") != symbol:
+            continue
+        if actions is not None and str(row.get("action") or "").upper() not in actions:
             continue
         audit = _audit_for(row, horizon)
         if audit is None:
@@ -232,11 +300,23 @@ def build_prompt(
     horizon: str,
     threshold_pct: float,
     contract: str = "reviews",
+    doctrine: dict[str, str] | None = None,
 ) -> str:
     contract = parse_contract(contract)
     prompt_cases = [case["case"] for case in cases]
     cases_json = json.dumps(prompt_cases, ensure_ascii=False, sort_keys=True)
     if contract == "production":
+        resolved = _require_doctrine(doctrine)
+        doctrine_block = ""
+        exit_details = ""
+        if resolved is not None:
+            doctrine_block = (
+                f"# Mandat\n{resolved['mandate']}\n\n"
+                f"# Mémoire / stratégie\n{resolved['memory']}\n\n"
+                f"{resolved['guidance']}"
+                f"{resolved['vocabulary']}"
+            )
+            exit_details = _symbol_calls_exit_details()
         return (
             "Tu es un planificateur de trading en bench hors-ligne.\n"
             "Tu reçois des décisions historiques telles qu'elles étaient connues à l'instant T. "
@@ -250,7 +330,8 @@ def build_prompt(
             '"rationale":"court","opportunity_side":"long|short|null",'
             '"decision_reason_code":"<code>","calls":[...] }]}\n'
             "Inclus `decision_id` de chaque cas. `calls: []` = HOLD explicite.\n\n"
-            f"# Contrat de sortie\n{_SYMBOL_CALLS_FINAL_CONTRACT}\n\n"
+            f"{doctrine_block}"
+            f"# Contrat de sortie\n{_SYMBOL_CALLS_FINAL_CONTRACT}{exit_details}\n\n"
             f"# Cas\n{cases_json}\n"
         )
     return (
@@ -278,6 +359,8 @@ def reconstruct_case_contexts(
     interval: str,
     lookback_bars: int,
     cockpit_window: int,
+    risk_limits: RiskLimits | None = None,
+    fx_history: dict[str, list[tuple[str, float]]] | None = None,
 ) -> list[dict]:
     """Injecte un contexte as-of reconstruit, sans barres brutes ni futur."""
     universe_symbols = _unique_symbols(symbols)
@@ -330,6 +413,14 @@ def reconstruct_case_contexts(
                 active_families,
             ),
         }
+        if risk_limits is not None and fx_history is not None:
+            reconstructed_context["risk_capacity"] = reconstruct_risk_capacity(
+                item.get("case", {}),
+                cycle_ts,
+                prices,
+                limits=risk_limits,
+                fx_history=fx_history,
+            )
         item.setdefault("case", {})["reconstructed_context"] = reconstructed_context
         enriched.append(item)
 
@@ -392,6 +483,148 @@ def load_reconstruction_history(
     return HistoryStore.from_bars(bars_by_symbol), metadata
 
 
+# Risk caps served while the audited decisions ran (config/risk.yaml unchanged
+# Jul 11 → Aug 31 2026, git 11e19f3..ef344af ; audit rows are Aug 1–28).
+# Deliberately NOT read from the working tree: current caps (25k) would
+# understate the August sizing room by half.
+AUDIT_WINDOW_RISK_LIMITS = RiskLimits(
+    max_position_value=50000.0,
+    max_gross_exposure=100000.0,
+    max_order_value=50000.0,
+    min_equity=50000.0,
+)
+AUDIT_WINDOW_RISK_LIMITS_SOURCE = "config/risk.yaml Jul 11-Aug 31 2026 (git 11e19f3..ef344af)"
+
+# yfinance ticker per currency, with USD-per-unit conversion. USD needs no ticker.
+_FX_TICKERS: dict[str, tuple[str, bool]] = {
+    "EUR": ("EURUSD=X", False),
+    "GBP": ("GBPUSD=X", False),
+    "TWD": ("USDTWD=X", True),
+    "CHF": ("USDCHF=X", True),
+    "NOK": ("USDNOK=X", True),
+    "SEK": ("USDSEK=X", True),
+    "DKK": ("USDDKK=X", True),
+}
+
+
+def load_fx_history(
+    cases: list[dict],
+    *,
+    padding_days: int,
+) -> tuple[dict[str, list[tuple[str, float]]], dict]:
+    """Charge les taux USD-par-unité as-of, ticker par ticker (trous isolés)."""
+
+    from backtest.data import DataError, HistoryStore
+
+    ccys = sorted(
+        {fx.currency_for(str(case.get("symbol") or "")) for case in cases if case.get("symbol")}
+        - {"USD"}
+    )
+    case_times = [_parse_case_datetime(case.get("cycle_ts")) for case in cases]
+    valid_times = [ts for ts in case_times if ts is not None]
+    metadata = {"tickers": {}, "window": None}
+    if not ccys or not valid_times:
+        return {}, metadata
+    start = (min(valid_times) - timedelta(days=padding_days)).date().isoformat()
+    end = (max(valid_times) + timedelta(days=1)).date().isoformat()
+    metadata["window"] = {"start": start, "end": end, "padding_days": padding_days}
+    rates: dict[str, list[tuple[str, float]]] = {}
+    for ccy in ccys:
+        ticker, invert = _FX_TICKERS.get(ccy, (None, False))
+        if ticker is None:
+            metadata["tickers"][ccy] = {"ticker": None, "status": "unsupported_currency"}
+            continue
+        try:
+            store = HistoryStore.load([ticker], start, end, interval="1d")
+        except DataError as exc:
+            metadata["tickers"][ccy] = {"ticker": ticker, "status": f"unavailable: {exc}"}
+            continue
+        points = []
+        for bar in store._bars_by_symbol.get(ticker, ()):  # noqa: SLF001 - read-only merge.
+            close = _finite_float(bar.close)
+            if close:
+                points.append((str(bar.ts), (1.0 / close) if invert else close))
+        points.sort()
+        rates[ccy] = points
+        metadata["tickers"][ccy] = {"ticker": ticker, "status": "ok", "points": len(points)}
+    return rates, metadata
+
+
+def fx_rate_asof(
+    fx_history: dict[str, list[tuple[str, float]]],
+    currency: str,
+    cycle_ts: str,
+) -> float | None:
+    """Dernier taux USD-par-unité connu à l'instant T (clôture daily)."""
+
+    if currency == "USD":
+        return 1.0
+    best: float | None = None
+    for ts, rate in fx_history.get(currency, []):
+        if ts <= cycle_ts:
+            best = rate
+        else:
+            break
+    return best
+
+
+def reconstruct_risk_capacity(
+    case: dict,
+    cycle_ts: str,
+    prices: dict[str, float],
+    *,
+    limits: RiskLimits,
+    fx_history: dict[str, list[tuple[str, float]]],
+) -> dict:
+    """Rebuild the sizing caps the live brain saw, from persisted snapshots.
+
+    Positions, price, gross and equity are the T-time persisted values; only
+    the FX rate is re-fetched (daily close as-of). Same pure function as live.
+    """
+
+    from types import SimpleNamespace
+
+    symbol = str(case.get("symbol") or "").strip()
+    snapshot = case.get("portfolio_snapshot") or {}
+    holdings = snapshot.get("holdings") if isinstance(snapshot, dict) else None
+    positions: dict[str, object] = {}
+    if isinstance(holdings, list):
+        for holding in holdings:
+            if not isinstance(holding, dict):
+                continue
+            name = str(holding.get("symbol") or "").strip()
+            quantity = _finite_float(holding.get("quantity"))
+            if name and quantity is not None:
+                positions[name] = SimpleNamespace(quantity=quantity)
+    elif isinstance(holdings, dict):
+        for name, holding in holdings.items():
+            quantity = _finite_float(holding.get("quantity") if isinstance(holding, dict) else holding)
+            if str(name).strip() and quantity is not None:
+                positions[str(name).strip()] = SimpleNamespace(quantity=quantity)
+    price = _finite_float(case.get("price"))
+    if price is None:
+        price = _finite_float(prices.get(symbol))
+    broker = SimpleNamespace(positions=lambda: positions)
+    gross = _finite_float(snapshot.get("gross_exposure_usd")) if isinstance(snapshot, dict) else None
+    if gross is None:
+        gross = risk_capacity_mod.gross_exposure(
+            broker,
+            {symbol: price} if price is not None else {},
+            rate_of=lambda sym: fx_rate_asof(fx_history, fx.currency_for(sym), cycle_ts),
+        )
+    equity = _finite_float(snapshot.get("equity")) if isinstance(snapshot, dict) else None
+    return risk_capacity_mod.risk_capacity_context(
+        symbols=[symbol],
+        prices={symbol: price} if price is not None else {},
+        broker=broker,
+        gross_exposure=gross,
+        limits=limits,
+        equity=equity if equity is not None else 0.0,
+        rate_of=lambda sym: fx_rate_asof(fx_history, fx.currency_for(sym), cycle_ts),
+        currency_of=fx.currency_for,
+    )
+
+
 def _maybe_reconstruct_cases(
     cases: list[dict],
     *,
@@ -401,6 +634,9 @@ def _maybe_reconstruct_cases(
     context_lookback_bars: int,
     cockpit_window: int,
     context_metadata: dict | None,
+    risk_limits: RiskLimits | None = None,
+    fx_history: dict[str, list[tuple[str, float]]] | None = None,
+    fx_metadata: dict | None = None,
 ) -> tuple[list[dict], dict]:
     if context_history is None:
         return cases, {"enabled": False}
@@ -414,6 +650,12 @@ def _maybe_reconstruct_cases(
     metadata.setdefault("symbols", symbols)
     metadata["lookback_bars"] = context_lookback_bars
     metadata["cockpit_window"] = cockpit_window
+    capacity_on = risk_limits is not None and fx_history is not None
+    metadata["risk_capacity"] = {
+        "enabled": capacity_on,
+        "limits_source": AUDIT_WINDOW_RISK_LIMITS_SOURCE if capacity_on else None,
+        "fx": fx_metadata or {},
+    }
     return (
         reconstruct_case_contexts(
             cases,
@@ -422,6 +664,8 @@ def _maybe_reconstruct_cases(
             interval=context_interval,
             lookback_bars=context_lookback_bars,
             cockpit_window=cockpit_window,
+            risk_limits=risk_limits,
+            fx_history=fx_history,
         ),
         metadata,
     )
@@ -483,12 +727,15 @@ def _action_from_production_calls(calls: Any) -> str:
 
 
 def _review_from_production_decision(item: dict) -> dict:
+    calls = item.get("calls")
     return {
         "decision_id": item.get("decision_id"),
-        "action": _action_from_production_calls(item.get("calls")),
+        "action": _action_from_production_calls(calls),
         "confidence": item.get("confidence"),
         "opportunity_side": item.get("opportunity_side"),
         "rationale": item.get("rationale"),
+        "calls": list(calls) if isinstance(calls, list) else None,
+        "decision_reason_code": item.get("decision_reason_code"),
     }
 
 
@@ -642,10 +889,52 @@ def score_model_reviews(cases: list[dict], response_text: str, *, threshold_pct:
                 "confidence": confidence,
                 "same_as_original": same,
                 "rationale": review.get("rationale"),
+                "candidate_calls": review.get("calls"),
+                "candidate_decision_reason_code": review.get("decision_reason_code"),
             }
         )
 
     return rows, _summary_from_counts(counts, confidences)
+
+
+def planner_summary(reviews: list[dict]) -> dict:
+    """Aggregate production calls: tool usage, watches, reason codes.
+
+    Reviews contract has no calls: counters stay empty, which is itself the signal.
+    """
+
+    tools: dict[str, int] = {}
+    watches = {"armed": 0, "wake": 0, "other": 0}
+    reason_codes: dict[str, int] = {}
+    with_calls = 0
+    for review in reviews:
+        calls = review.get("candidate_calls")
+        if isinstance(calls, list) and calls:
+            with_calls += 1
+        for call in calls or []:
+            if not isinstance(call, dict):
+                continue
+            tool = str(call.get("tool") or "").strip() or "unknown"
+            tools[tool] = tools.get(tool, 0) + 1
+            if tool == "propose_indicator_watch":
+                args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                trigger = str(args.get("on_trigger") or "").strip().upper()
+                if trigger == "EXECUTE_ORDER":
+                    watches["armed"] += 1
+                elif trigger in {"WAKE", "WAKE_WITH_ORDER_INTENT"}:
+                    watches["wake"] += 1
+                else:
+                    watches["other"] += 1
+        code = review.get("candidate_decision_reason_code")
+        if code is not None:
+            key = str(code).strip() or "unknown"
+            reason_codes[key] = reason_codes.get(key, 0) + 1
+    return {
+        "reviews_with_calls": with_calls,
+        "tools": dict(sorted(tools.items())),
+        "watches": watches,
+        "reason_codes": dict(sorted(reason_codes.items())),
+    }
 
 
 def _summary_from_counts(counts: dict[str, int], confidences: list[float]) -> dict:
@@ -728,6 +1017,11 @@ def complete_model(spec: ModelSpec, prompt: str, timeout_s: int) -> ModelComplet
             agent="grok-build",
             session_label="casys-trader:decision-bench",
         )
+    elif spec.provider == "muse":
+        backend = llm.MuseBackend(
+            provider="muse",
+            model=spec.model,
+        )
     else:
         backend = _ollama_backend(spec)
     if isinstance(backend, ModelBenchFailure):
@@ -763,6 +1057,7 @@ def run_bench(
     timeout_s: int,
     symbol: str | None = None,
     include_original: bool = True,
+    actions: set[str] | None = None,
     contract: str = "reviews",
     batch_size: int | None = None,
     context_history: BenchHistory | None = None,
@@ -773,8 +1068,13 @@ def run_bench(
     context_metadata: dict | None = None,
     complete: CompleteFn = complete_model,
     now: datetime | None = None,
+    doctrine: dict[str, str] | None = None,
+    risk_limits: RiskLimits | None = None,
+    fx_history: dict[str, list[tuple[str, float]]] | None = None,
+    fx_metadata: dict | None = None,
 ) -> dict:
     contract = parse_contract(contract)
+    resolved_doctrine = _require_doctrine(doctrine)
     threshold_pct = float(audit_payload.get("threshold_pct") or 0.5)
     cases = select_cases(
         audit_payload,
@@ -784,6 +1084,7 @@ def run_bench(
         verdicts=verdicts,
         symbol=symbol,
         include_original=include_original,
+        actions=actions,
     )
     cases, context_reconstruction = _maybe_reconstruct_cases(
         cases,
@@ -793,12 +1094,17 @@ def run_bench(
         context_lookback_bars=context_lookback_bars,
         cockpit_window=cockpit_window,
         context_metadata=context_metadata,
+        risk_limits=risk_limits,
+        fx_history=fx_history,
+        fx_metadata=fx_metadata,
     )
     batches = _case_batches(cases, parse_batch_size(batch_size, n_cases=len(cases)))
     first_prompt = (
-        build_prompt(batches[0], horizon=horizon, threshold_pct=threshold_pct, contract=contract)
+        build_prompt(
+            batches[0], horizon=horizon, threshold_pct=threshold_pct, contract=contract, doctrine=resolved_doctrine
+        )
         if batches
-        else build_prompt([], horizon=horizon, threshold_pct=threshold_pct, contract=contract)
+        else build_prompt([], horizon=horizon, threshold_pct=threshold_pct, contract=contract, doctrine=resolved_doctrine)
     )
     results = []
     for spec in models:
@@ -807,7 +1113,9 @@ def run_bench(
         failure: dict[str, str] | None = None
         raw_text = ""
         for chunk in batches or [[]]:
-            prompt = build_prompt(chunk, horizon=horizon, threshold_pct=threshold_pct, contract=contract)
+            prompt = build_prompt(
+                chunk, horizon=horizon, threshold_pct=threshold_pct, contract=contract, doctrine=resolved_doctrine
+            )
             completion = complete(spec, prompt, timeout_s)
             latencies.append(float(completion.latency_s))
             if isinstance(completion, ModelBenchFailure):
@@ -848,6 +1156,7 @@ def run_bench(
             "latency_s": round(sum(latencies), 3),
             "n_calls": len(latencies),
             "summary": summary,
+            "planner": planner_summary(reviews),
             "reviews": reviews,
         }
         if failure is not None:
@@ -862,11 +1171,16 @@ def run_bench(
         "limit": limit,
         "offset": offset,
         "verdicts": sorted(verdicts),
+        "actions": sorted(actions) if actions else [],
         "include_original": include_original,
         "contract": contract,
         "batch_size": parse_batch_size(batch_size, n_cases=len(cases)),
         "n_calls": len(batches),
         "context_reconstruction": context_reconstruction,
+        "prompt_fidelity": {
+            "doctrine_sections": sorted(resolved_doctrine) if resolved_doctrine else [],
+            "runtime_allowlist": sorted(_BENCH_RUNTIME_ALLOWLIST),
+        },
         "cases": cases,
         "prompt": first_prompt,
         "models": results,
@@ -884,6 +1198,7 @@ def dry_run_payload(
     verdicts: set[str],
     symbol: str | None = None,
     include_original: bool = True,
+    actions: set[str] | None = None,
     contract: str = "reviews",
     batch_size: int | None = None,
     context_history: Any | None = None,
@@ -893,8 +1208,13 @@ def dry_run_payload(
     cockpit_window: int = 48,
     context_metadata: dict | None = None,
     now: datetime | None = None,
+    doctrine: dict[str, str] | None = None,
+    risk_limits: RiskLimits | None = None,
+    fx_history: dict[str, list[tuple[str, float]]] | None = None,
+    fx_metadata: dict | None = None,
 ) -> dict:
     contract = parse_contract(contract)
+    resolved_doctrine = _require_doctrine(doctrine)
     threshold_pct = float(audit_payload.get("threshold_pct") or 0.5)
     cases = select_cases(
         audit_payload,
@@ -904,6 +1224,7 @@ def dry_run_payload(
         verdicts=verdicts,
         symbol=symbol,
         include_original=include_original,
+        actions=actions,
     )
     cases, context_reconstruction = _maybe_reconstruct_cases(
         cases,
@@ -913,6 +1234,9 @@ def dry_run_payload(
         context_lookback_bars=context_lookback_bars,
         cockpit_window=cockpit_window,
         context_metadata=context_metadata,
+        risk_limits=risk_limits,
+        fx_history=fx_history,
+        fx_metadata=fx_metadata,
     )
     resolved_batch = parse_batch_size(batch_size, n_cases=len(cases))
     batches = _case_batches(cases, resolved_batch)
@@ -924,14 +1248,21 @@ def dry_run_payload(
         "limit": limit,
         "offset": offset,
         "verdicts": sorted(verdicts),
+        "actions": sorted(actions) if actions else [],
         "include_original": include_original,
         "contract": contract,
         "batch_size": resolved_batch,
         "n_calls": len(batches),
         "context_reconstruction": context_reconstruction,
+        "prompt_fidelity": {
+            "doctrine_sections": sorted(resolved_doctrine) if resolved_doctrine else [],
+            "runtime_allowlist": sorted(_BENCH_RUNTIME_ALLOWLIST),
+        },
         "models": [{"provider": spec.provider, "model": spec.model} for spec in models],
         "cases": cases,
-        "prompt": build_prompt(first, horizon=horizon, threshold_pct=threshold_pct, contract=contract),
+        "prompt": build_prompt(
+            first, horizon=horizon, threshold_pct=threshold_pct, contract=contract, doctrine=resolved_doctrine
+        ),
         **audit_freshness(audit_payload, now=now),
     }
 

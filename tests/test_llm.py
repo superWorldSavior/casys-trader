@@ -8,6 +8,7 @@ import pytest
 
 import trader.agent.llm as llm
 import trader.infrastructure.llm.cursor_backend as cursor_backend
+import trader.infrastructure.llm.muse_backend as muse_backend
 from trader.agent.learnings.consolidator import build_consolidator_router_from_env
 from trader.agent.company_micro.analyzer import build_company_micro_router_from_env
 from trader.agent.news_macro.analyzer import build_news_macro_router_from_env
@@ -32,6 +33,11 @@ from trader.infrastructure.llm.cursor_backend import (
     DEFAULT_CURSOR_WORKSPACE,
     CursorAgentBackend,
     build_cursor_agent_command,
+)
+from trader.infrastructure.llm.muse_backend import (
+    MuseBackend,
+    build_muse_command,
+    parse_muse_model_spec,
 )
 
 
@@ -1552,6 +1558,212 @@ def test_cursor_child_env_ne_substitue_pas_home(monkeypatch, tmp_path) -> None:
     assert env["HOME"] == "/Users/operator"
     assert env["CURSOR_CONFIG_DIR"] == runtime_dir
     assert env["CURSOR_DATA_DIR"] == runtime_dir
+
+
+def _muse_jsonl(*, model_id: str = "muse-spark-1.3", text: str = '{"decision":"HOLD"}', terminal: str = "completed") -> str:
+    return "\n".join(
+        [
+            json.dumps(
+                {
+                    "payload_type": "run.model.configured",
+                    "payload": {"kind": "run_model_configured", "provider_id": "meta", "model_id": model_id},
+                }
+            ),
+            json.dumps({"payload_type": "run.output.delta", "payload": {"kind": "run_output_delta", "text": text}}),
+            json.dumps(
+                {
+                    "payload_type": "run.terminal.completed",
+                    "payload": {"kind": "run_terminal", "terminal": terminal, "text": text, "reason": None},
+                }
+            ),
+        ]
+    )
+
+
+def test_muse_command_one_shot_neutre_et_sans_outils() -> None:
+    command = build_muse_command("/tmp/prompt.txt", muse_bin="muse", muse_model="muse-spark-1.3", reasoning_effort="high")
+
+    assert command == [
+        "muse",
+        "exec",
+        "--json",
+        "--model",
+        "muse-spark-1.3",
+        "--reasoning-effort",
+        "high",
+        "--no-session-log",
+        "--no-foreign-personal-context",
+        "--disable-write",
+        "--disable-shell",
+        "--max-model-steps",
+        "1",
+        "--prompt-file",
+        "/tmp/prompt.txt",
+    ]
+    assert not {"--yolo", "--trust-workspace", "--disable-approval", "--worktree"}.intersection(command)
+
+
+def test_parse_muse_model_spec_defaut_et_effort_explicite() -> None:
+    assert parse_muse_model_spec("muse-spark-1.3") == ("muse-spark-1.3", "high")
+    assert parse_muse_model_spec("muse-spark-1.3/low") == ("muse-spark-1.3", "low")
+    assert parse_muse_model_spec("muse-spark-1.3/XHIGH") == ("muse-spark-1.3", "xhigh")
+
+
+def test_parse_muse_model_spec_refuse_effort_et_modele_invalides() -> None:
+    with pytest.raises(ValueError, match="effort muse"):
+        parse_muse_model_spec("muse-spark-1.3/turbo")
+    with pytest.raises(ValueError, match="modèle muse manquant"):
+        parse_muse_model_spec("/high")
+    with pytest.raises(ValueError, match="modèle muse manquant"):
+        parse_muse_model_spec("")
+
+
+def test_muse_backend_refuse_mauvais_provider_et_effort() -> None:
+    with pytest.raises(ValueError, match="provider transport muse"):
+        MuseBackend(provider="acpx")
+    with pytest.raises(ValueError, match="effort muse"):
+        MuseBackend(model="muse-spark-1.3/turbo")
+
+
+def test_muse_complete_isole_cwd_et_prompt_fichier(monkeypatch) -> None:
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.shutil.which", lambda _bin: "/usr/local/bin/muse")
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.terminate_process_group", lambda _pid: None)
+    calls: list[tuple[list[str], dict]] = []
+    seen_prompt: list[str] = []
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+            prompt_path = command[command.index("--prompt-file") + 1]
+            seen_prompt.append(Path(prompt_path).read_text(encoding="utf-8"))
+
+        def communicate(self, timeout=None):
+            del timeout
+            return _muse_jsonl(), ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.subprocess.Popen", FakePopen)
+
+    result = MuseBackend().complete("décide", timeout_s=12)
+
+    assert isinstance(result, LlmCompletion)
+    assert result.provider == "muse"
+    assert result.model == "muse-spark-1.3"
+    assert result.text == '{"decision":"HOLD"}'
+    assert seen_prompt == ["décide"]
+    assert calls[0][0][0] == "/usr/local/bin/muse"
+    assert "casys-trader-muse-" in calls[0][1]["cwd"]
+    assert calls[0][1]["env"]["PATH"] == os.defpath
+    assert not Path(calls[0][1]["cwd"]).exists()
+
+
+def test_muse_modele_servi_different_refuse_fail_closed(monkeypatch) -> None:
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.shutil.which", lambda _bin: "/usr/local/bin/muse")
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.terminate_process_group", lambda _pid: None)
+    served = {"model_id": "muse-spark-9.9"}
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+
+        def communicate(self, timeout=None):
+            del timeout
+            return _muse_jsonl(model_id=served["model_id"]), ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.subprocess.Popen", FakePopen)
+    backend = MuseBackend()
+
+    refused = backend.complete("décide", timeout_s=12)
+
+    assert isinstance(refused, LlmFailure)
+    assert refused.retryable is False
+    assert refused.code == "muse_model_mismatch"
+    assert "muse-spark-9.9" in refused.message
+
+    served["model_id"] = "muse-spark-1.3"
+    accepted = backend.complete("décide", timeout_s=12)
+
+    assert isinstance(accepted, LlmCompletion)
+    assert accepted.text == '{"decision":"HOLD"}'
+
+
+def test_muse_run_non_complete_est_refuse(monkeypatch) -> None:
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.shutil.which", lambda _bin: "/usr/local/bin/muse")
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.terminate_process_group", lambda _pid: None)
+
+    class FakePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+
+        def communicate(self, timeout=None):
+            del timeout
+            return _muse_jsonl(terminal="cancelled"), ""
+
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.subprocess.Popen", FakePopen)
+
+    result = MuseBackend().complete("décide", timeout_s=12)
+
+    assert isinstance(result, LlmFailure)
+    assert result.code == "bad_output"
+    assert result.retryable is False
+
+
+def test_muse_timeout_termine_le_groupe_et_libere_le_registre(monkeypatch) -> None:
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.shutil.which", lambda _bin: "/usr/local/bin/muse")
+    terminated: list[int] = []
+    monkeypatch.setattr(muse_backend, "terminate_process_group", terminated.append)
+    muse_backend._ACTIVE_MUSE_PROCESS_GROUPS.clear()
+
+    class TimeoutPopen:
+        pid = 4343
+        returncode = None
+
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="muse", timeout=timeout)
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.subprocess.Popen", TimeoutPopen)
+
+    result = MuseBackend().complete("décide", timeout_s=12)
+
+    assert isinstance(result, LlmFailure)
+    assert result.code == "timeout"
+    assert result.retryable is True
+    assert terminated == [4343, 4343]
+    assert muse_backend._ACTIVE_MUSE_PROCESS_GROUPS == set()
+
+
+def test_muse_binaire_manquant_est_retryable(monkeypatch) -> None:
+    monkeypatch.setattr("trader.infrastructure.llm.muse_backend.shutil.which", lambda _bin: None)
+    monkeypatch.delenv("MUSE_BIN", raising=False)
+
+    result = MuseBackend().complete("décide", timeout_s=12)
+
+    assert isinstance(result, LlmFailure)
+    assert result.code == "muse_unavailable"
+    assert result.retryable is True
+
+
+def test_muse_child_env_ne_substitue_pas_home(monkeypatch) -> None:
+    monkeypatch.setenv("HOME", "/Users/operator")
+
+    env = muse_backend._muse_child_env()
+
+    assert env["HOME"] == "/Users/operator"
+    assert env["PATH"] == os.defpath
 
 
 def test_agent_non_cursor_ne_recoit_pas_cursor_config_dir(monkeypatch, tmp_path) -> None:

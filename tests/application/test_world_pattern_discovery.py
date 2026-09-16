@@ -678,6 +678,64 @@ def test_zero_candidates_and_import_boundaries() -> None:
     assert "class PatternDriverStateBinding" in _PORTS.read_text(encoding="utf-8")
 
 
+def test_discovery_explains_common_population_without_inventing_association() -> None:
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+    records = tuple(
+        _record(as_of=when + timedelta(days=index), label=label)
+        for index, label in enumerate(("UP", "DOWN", "FLAT", "UP", "DOWN"))
+    )
+    # Repeated evidence must not inflate the support shown to the operator.
+    result = _discover((*records, records[0]), min_support=3, min_association=0.10)
+    payload = result.to_dict()
+    assert result.candidates == ()
+    assert payload["group_count"] > 0
+    assert payload["groups_omitted"] == 0
+    assert payload["records_with_knowledge_relations"] == 0
+    assert payload["records_with_driver_state_bindings"] == 0
+    assert payload["group_rejection_counts"] == {"association_below_minimum": payload["group_count"]}
+    for group in payload["groups"]:
+        assert group["stats"]["support"] == group["stats"]["population_support"] == 5
+        assert group["stats"]["association_score"] == 0.0
+        assert group["selected"] is False
+        assert group["steps"]
+        assert len(group["evidence_samples"]) == 3
+        assert {sample["episode_id"] for sample in group["evidence_samples"]} <= {
+            record.episode.episode_id for record in records
+        }
+    reversed_result = _discover(tuple(reversed(records)), min_support=3, min_association=0.10)
+    assert payload["groups"] == reversed_result.to_dict()["groups"]
+    assert result.formation_dataset_fingerprint == reversed_result.formation_dataset_fingerprint
+
+
+def test_discovery_diagnostics_separate_pathless_records_and_candidate_limit() -> None:
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+    records = (_record(as_of=when), _record(as_of=when + timedelta(days=1), structural=(), label="DOWN"))
+    result = _discover(records, max_candidates=0)
+    assert result.candidates == ()
+    assert result.records_without_paths == 1
+    assert result.group_rejection_counts == {"candidate_limit": result.group_count}
+    for group in result.groups:
+        assert group.stats.support == 1
+        assert group.stats.population_support == 2
+        assert group.to_dict()["selected"] is False
+
+
+def test_discovery_bounds_diagnostics_but_counts_all_failed_gates() -> None:
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+    records = tuple(_record(as_of=when, ontology_revision=f"revision.{index}") for index in range(21))
+    result = _discover(records, min_support=20, min_association=0.10)
+    assert result.group_count > 20
+    assert len(result.groups) == 20
+    assert result.to_dict()["groups_omitted"] == result.group_count - 20
+    assert result.group_rejection_counts == {
+        "association_below_minimum": result.group_count,
+        "support_below_minimum": result.group_count,
+    }
+    assert result.to_dict()["groups"] == _discover(
+        tuple(reversed(records)), min_support=20, min_association=0.10
+    ).to_dict()["groups"]
+
+
 def test_rising_and_falling_regime_bundles_are_distinct_hypotheses() -> None:
     t1 = datetime(2026, 8, 1, tzinfo=UTC)
     t2 = datetime(2026, 8, 2, tzinfo=UTC)
@@ -694,6 +752,8 @@ def test_rising_and_falling_regime_bundles_are_distinct_hypotheses() -> None:
         driver_state_bindings=(_binding(overlay_two, _regime_driver(rates_regime="falling")),),
     )
     result = _discover((rising, falling))
+    assert result.records_with_knowledge_relations == 2
+    assert result.records_with_driver_state_bindings == 2
     overlays = [
         item
         for item in result.candidates

@@ -9,11 +9,13 @@ from trader.application.world_model.graph_ports import (
     MacroObservationScanPort,
     WorldGraphLedger,
 )
+from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_graph import (
     MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
     KnowledgeWorldRelationAsserted,
     MacroGraphBridgeFence,
     MacroGraphBridgeRegistry,
+    MacroGraphBridgeRun,
     MacroGraphBridgeRunSpec,
     MacroGraphObservationLinked,
     MacroGraphObservationSkipped,
@@ -27,6 +29,8 @@ from trader.domain.world_graph_bridge_lifecycle import (
     classify_macro_graph_bridge,
     same_bridge_schema_family,
 )
+from trader.domain.world_feature_contract import WORLD_SCOPE_MAPPING_ID
+from trader.domain.world_ontology_lifecycle import admits_market_ontology_family
 from trader.domain.world_macro import MACRO_PRODUCER_VERSION, MacroCollectionPlan
 from trader.domain.world_scope import WorldScopeMapping
 
@@ -120,11 +124,78 @@ class RegisterMacroObservationKnowledge:
         )
 
     def activate(self, request_id: str) -> MacroGraphBridgeRegistry:
-        reservation = self._scan.reserve_activation_cursor(self._key(), BridgeRequestId(str(request_id)))
         registry = self._load()
-        updated = registry.activate(reservation=reservation, spec=self._spec(), expected_version=registry.version)
+        desired = self._spec()
+        predecessor = registry.active_run
+        # A retry of this generation uses its original predecessor. A return
+        # A -> B -> A instead names B, so the old A reservation is never reused.
+        if predecessor is not None and predecessor.spec == desired:
+            predecessor = next((run for run in registry.runs if run.epoch == predecessor.epoch - 1), None)
+        reservation = self._scan.reserve_activation_cursor(
+            self._key(), BridgeRequestId(_activation_request_id(request_id, desired, predecessor))
+        )
+        updated = registry.activate(reservation=reservation, spec=desired, expected_version=registry.version)
         if updated.version == registry.version:
             return updated
+        return self._append(updated, fence=None)
+
+    def activate_explicit_migration(
+        self,
+        *,
+        expected_predecessor_run_id: str,
+        expected_predecessor_epoch: int,
+        expected_desired_spec: MacroGraphBridgeRunSpec,
+    ) -> MacroGraphBridgeRegistry:
+        """Start one explicitly approved, prospective generation after unknown drift.
+
+        Automatic ``ensure`` remains fail-closed for this case.  The caller must
+        name the blocked predecessor and the complete desired spec; the cursor
+        reservation is derived from both generations so it cannot reuse an
+        alignment reservation from another run.
+        """
+
+        if not isinstance(expected_desired_spec, MacroGraphBridgeRunSpec):
+            raise TypeError("expected_desired_spec must be MacroGraphBridgeRunSpec")
+        predecessor_run_id = str(expected_predecessor_run_id).strip()
+        if not predecessor_run_id:
+            raise ValueError("expected_predecessor_run_id must be non-empty")
+        if isinstance(expected_predecessor_epoch, bool) or not isinstance(expected_predecessor_epoch, int):
+            raise TypeError("expected_predecessor_epoch must be an int")
+        if expected_predecessor_epoch < 1:
+            raise ValueError("expected_predecessor_epoch must be positive")
+        desired = self._spec()
+        if desired != expected_desired_spec:
+            raise ValueError("expected_desired_spec does not match the configured bridge spec")
+        registry = self._load()
+        run = registry.active_run
+        if (
+            run is not None
+            and run.status == "active"
+            and run.spec == desired
+            and run.epoch == expected_predecessor_epoch + 1
+            and any(
+                item.run_id == predecessor_run_id and item.epoch == expected_predecessor_epoch
+                for item in registry.runs
+            )
+        ):
+            return registry
+        if run is None or run.run_id != predecessor_run_id or run.epoch != expected_predecessor_epoch:
+            raise ValueError("active bridge generation does not match the expected predecessor")
+        if run.status != "blocked":
+            raise ValueError("expected predecessor must be blocked")
+        if not _is_collection_plan_migration(run.spec, desired):
+            raise ValueError("explicit migration only permits a collection-plan change")
+        decision = classify_macro_graph_bridge(registry, desired=desired)
+        if decision.status != "unknown_drift":
+            raise ValueError("explicit migration is only valid for unknown bridge drift")
+        request_id = explicit_migration_request_id(
+            bridge_key=self._bridge_key,
+            predecessor_run_id=predecessor_run_id,
+            predecessor_epoch=expected_predecessor_epoch,
+            desired_spec=desired,
+        )
+        reservation = self._scan.reserve_activation_cursor(self._key(), BridgeRequestId(request_id))
+        updated = registry.activate(reservation=reservation, spec=desired, expected_version=registry.version)
         return self._append(updated, fence=None)
 
     def reconcile(self, *, limit: int = 32) -> MacroGraphBridgeRegistry:
@@ -218,4 +289,70 @@ def _already_terminal(registry: MacroGraphBridgeRegistry, observation_id: str) -
         isinstance(event, (MacroGraphObservationLinked, MacroGraphObservationSkipped))
         and event.observation_id == observation_id
         for event in registry.events
+    )
+
+
+def explicit_migration_request_id(
+    *,
+    bridge_key: str,
+    predecessor_run_id: str,
+    predecessor_epoch: int,
+    desired_spec: MacroGraphBridgeRunSpec,
+) -> str:
+    """Stable retry token scoped to exactly one predecessor → desired migration."""
+
+    if not isinstance(desired_spec, MacroGraphBridgeRunSpec):
+        raise TypeError("desired_spec must be MacroGraphBridgeRunSpec")
+    key = str(bridge_key).strip()
+    run_id = str(predecessor_run_id).strip()
+    if not key or not run_id:
+        raise ValueError("bridge_key and predecessor_run_id must be non-empty")
+    if isinstance(predecessor_epoch, bool) or not isinstance(predecessor_epoch, int) or predecessor_epoch < 1:
+        raise ValueError("predecessor_epoch must be a positive int")
+    return "macro_graph_bridge_request:v1:" + canonical_sha256(
+        {
+            "bridge_key": key,
+            "predecessor_run_id": run_id,
+            "predecessor_epoch": predecessor_epoch,
+            "desired_spec": desired_spec.to_dict(),
+        }
+    )
+
+
+def _activation_request_id(
+    request_id: str, desired_spec: MacroGraphBridgeRunSpec, predecessor: MacroGraphBridgeRun | None
+) -> str:
+    """Scope an operator's stable activation intent to the desired generation."""
+
+    supplied = str(request_id).strip()
+    if not supplied:
+        raise ValueError("request_id must be non-empty")
+    if not isinstance(desired_spec, MacroGraphBridgeRunSpec):
+        raise TypeError("desired_spec must be MacroGraphBridgeRunSpec")
+    return "macro_graph_bridge_request:v1:" + canonical_sha256(
+        {
+            "activation_request_id": supplied,
+            "desired_spec": desired_spec.to_dict(),
+            "predecessor_run_id": None if predecessor is None else predecessor.run_id,
+            "predecessor_epoch": None if predecessor is None else predecessor.epoch,
+        }
+    )
+
+
+def _is_collection_plan_migration(
+    predecessor: MacroGraphBridgeRunSpec,
+    desired: MacroGraphBridgeRunSpec,
+) -> bool:
+    """Allow a plan change within the same producer, schema, and ontology family."""
+
+    return (
+        predecessor.schema_version == desired.schema_version
+        and predecessor.scope_mapping_id == desired.scope_mapping_id == WORLD_SCOPE_MAPPING_ID
+        and admits_market_ontology_family(predecessor.ontology_revision_id)
+        and admits_market_ontology_family(desired.ontology_revision_id)
+        and predecessor.producer_version == desired.producer_version
+        and (
+            predecessor.collection_plan_id != desired.collection_plan_id
+            or predecessor.collection_plan_hash != desired.collection_plan_hash
+        )
     )

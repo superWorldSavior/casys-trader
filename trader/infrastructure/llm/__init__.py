@@ -16,6 +16,11 @@ from trader.infrastructure.llm.cursor_backend import (
     CursorAgentSession,
     build_cursor_agent_command,
 )
+from trader.infrastructure.llm.muse_backend import (
+    MuseBackend,
+    build_muse_command,
+    parse_muse_model_spec,
+)
 from trader.infrastructure.llm.openai_backend import OpenAICompatibleBackend, OpenAIHttpError
 
 __all__ = [
@@ -23,6 +28,7 @@ __all__ = [
     "AcpxSession",
     "CursorAgentBackend",
     "CursorAgentSession",
+    "MuseBackend",
     "OpenAICompatibleBackend",
     "OpenAIHttpError",
     "SessionProviderDown",
@@ -31,6 +37,8 @@ __all__ = [
     "build_acpx_session_new_command",
     "build_acpx_session_prompt_command",
     "build_cursor_agent_command",
+    "build_muse_command",
+    "parse_muse_model_spec",
     "run_with_session_fallback",
     "session_complete_fn",
 ]
