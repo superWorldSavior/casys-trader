@@ -98,6 +98,9 @@ def freshness_bucket(effective_from: datetime, cutoff_at: datetime) -> str:
     return bucket
 
 
+_FAMILY_ENTITY_PREFIX = "taxonomy:"
+
+
 def _pattern_step(
     ordinal: int,
     *,
@@ -107,6 +110,7 @@ def _pattern_step(
     target_kind: str,
     freshness_bucket: str,
     driver_state: DriverState | None = None,
+    family_ref: str | None = None,
 ) -> PatternStep:
     return PatternStep(
         ordinal=ordinal,
@@ -117,7 +121,15 @@ def _pattern_step(
         freshness_bucket=freshness_bucket,
         evidence_rule_version=GRAPH_PATH_RULE_VERSION,
         driver_state=driver_state,
+        family_ref=family_ref,
     )
+
+
+def _family_ref_for_relation(relation: StructuralWorldRelation) -> str | None:
+    if relation.kind != "MEMBER_OF_FAMILY":
+        return None
+    # Prefix guaranteed by WorldEntityRef: kind=family requires 'taxonomy:'.
+    return relation.target.entity_id[len(_FAMILY_ENTITY_PREFIX):]
 
 
 def _structural_step(ordinal: int, relation: StructuralWorldRelation, cutoff_at: datetime) -> PatternStep:
@@ -128,6 +140,7 @@ def _structural_step(ordinal: int, relation: StructuralWorldRelation, cutoff_at:
         direction="forward",
         target_kind=relation.target.kind,
         freshness_bucket=freshness_bucket(relation.effective_from, cutoff_at),
+        family_ref=_family_ref_for_relation(relation),
     )
 
 
@@ -172,6 +185,7 @@ def _matched_from_step(step: PatternStep, evidence_refs: Sequence[str]) -> Patte
         freshness_bucket=step.freshness_bucket,
         evidence_rule_version=step.evidence_rule_version,
         driver_state=step.driver_state,
+        family_ref=step.family_ref,
         evidence_refs=evidence_refs,
     )
 

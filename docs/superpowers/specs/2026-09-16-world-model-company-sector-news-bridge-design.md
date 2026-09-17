@@ -43,6 +43,8 @@ hors scope : coût sans gain prédictif.
 
 ## 2. État vérifié (point de départ, 2026-09-16)
 
+Les numéros de ligne ci-dessous datent du point de départ (pré-chantier).
+
 | Fait | Source |
 |---|---|
 | Bootstrap seul writer structurel ; refuse les sociétés | `trader/application/world_model/ontology_bootstrap.py:117-130,149-150` |
@@ -87,8 +89,10 @@ Le schéma autorise déjà `lei:`, `cik:`, `issuer:`
   disponibilité réelle (`as_of`/`ready_at`), jamais antidatée ;
 - rapprochement multi-cotations/ADR plus tard via identity map
   (`WorldEntityIdentityLink`, liens même-kind, supersede append-only) ;
-- table déterministe `exchange → MIC` requise (point ouvert O1) : sans MIC
-  résolu, pas de nœud instrument cible, donc pas d'`ISSUED_BY` (fail-closed).
+- table déterministe `exchange → MIC` (O1 **tranché à l'implémentation** :
+  `yahoo_exchange_mic.v1`, 18 codes couvrant les 17 MIC du mapping, repli
+  `TWO → XTAI` par convention mapping ; conflit ⇒ exclusion comptée,
+  code inconnu ⇒ résolution `mapping_only`, jamais de devinette).
 
 ### D2. `MEMBER_OF_FAMILY` depuis un catalogue gelé et versionné
 
@@ -101,18 +105,41 @@ catalogue n'obtiennent pas d'arête (pas de fallback silencieux).
 
 ### D3. Writers `ABOUT` : news et société, avec attribution prouvée
 
-Trois garde-fous, non négociables (l'archive contient ~65 % de doublons et
-~50 % de lignes périmées, plus des collisions avérées type 2884.TW/Japon) :
+Trois garde-fous, non négociables (l'archive brute contient ~65 % de doublons
+et ~50 % de lignes périmées, plus des collisions avérées type 2884.TW/Japon) :
 
-1. **Déduplication globale** par `(symbole, UUID)` + fenêtre de fraîcheur
-   stricte (seuil configuré, refus au-delà, pas de dégradé silencieux).
-2. **Points de briefs, pas titres bruts** : chaque `ABOUT` news cite un
-   `SituationPoint` (`sources`, `source_refs`, `severity`, `signal`,
-   `horizon`, `direction`) ; les points `is_operational=true` sont exclus.
-3. **Cibles** : `news_artifact → ABOUT → instrument` en v1 (aucun nœud
+1. **Points de briefs, pas titres bruts** : chaque `ABOUT` news cite un
+   `SituationPoint` issu de `situation_notes` (`sources`, `source_refs`,
+   `severity`, `signal`, `horizon`, `direction`) ; les points
+   `is_operational=true` sont exclus quand le flag existe (le corpus
+   `situation_notes` ne le persiste pas — limitation documentée).
+2. **Déduplication par assertion datée** (amendé) : on ne bridge pas les
+   articles bruts, donc la dédup `(symbole, UUID)` ne s'applique pas. Chaque
+   point de brief est une assertion datée unique (`note_key` = clé naturelle,
+   collision d'id + contenu divergent = conflit dur au store). Les doublons
+   inter-briefs (paraphrases) restent un chantier futur, noté.
+3. **Pas de gate horloge au build** (amendé) : la fenêtre de validité voyage
+   avec l'artifact (`ready_at`/`valid_until` du brief, TTL 30 j pour les
+   sociétés) ; l'expiration est appliquée à l'hydratation par cutoff.
+   (Corrigé en revue backfill : le ledger reste PIT par date
+   d'enregistrement — voir D6. Un artifact backfillé ne rejoint jamais ses
+   cutoffs contemporains ; la fenêtre voyage quand même, pour borner
+   l'hydratation forward.)
+4. **Cibles** : `news_artifact → ABOUT → instrument` en v1 (aucun nœud
    `company` requis) ; `company_intelligence → ABOUT → company` plus
-   `→ instrument` quand le point concerne précisément la cotation
-   (devise, guidance par action…). Qualité d'attribution enregistrée (D4).
+   `→ instrument` **systématiquement** (amendé en revue : chaque entrée du
+   registre est une cotation liée par construction, `mapping_only` inclus —
+   l'ancre mapping est l'autorité ; re-vérifier le hint `exchange` au bridge
+   ne ferait que perdre du rappel sans gain de précision).
+   Qualité d'attribution enregistrée (D4).
+5. **Link step post-persistance** (ajouté en revue) : le bridge construit ses
+   drafts pré-receipt (le receipt n'existe qu'une fois la ligne d'artifact
+   durable) ; `AboutKnowledgeLink.from_persisted` attache ensuite la ref
+   `<receipt_id>/<receipt_sha256>` (format owned par `about_receipt_ref`) à
+   chaque relation, sans jamais re-timbrer `ontology_revision` (désaccord =
+   bug appelant, levé ; mismatch receipt/enveloppe = donnée, `skipped` à
+   raison fermée). Sans ce step, la gate anti-dérive du binder restait
+   dormante sur nos propres écritures.
 
 ### D4. Sémantique pattern : le cœur de la RFC
 
@@ -130,11 +157,17 @@ formation (`world_pattern_formation_query.py`) **et** évaluation
 (`world_pattern_evaluation_query.py`) — sinon les occurrences prospectives ne
 matcheront jamais.
 
-**D4b. Famille visible en signature.** La signature reste ID-free sur les
-entités, mais la valeur taxonomique fermée (`eu_tech`, …) entre dans l'identité
-du step `MEMBER_OF_FAMILY` (référence de vocabulaire, pas identifiant
-d'instance). Bump de `GRAPH_PATH_RULE_VERSION` ; anciennes signatures
-non comparables (cohortes séparées, pas de migration).
+**D4b. Famille visible en signature (amendé à l'implémentation : pas de bump).**
+La signature reste ID-free sur les entités, mais la valeur taxonomique fermée
+(`eu_tech`, …) entre dans l'identité du step `MEMBER_OF_FAMILY` (référence de
+vocabulaire, pas identifiant d'instance), obligatoire sur ces steps, interdite
+ailleurs. **Pas de bump de `GRAPH_PATH_RULE_VERSION`** : la règle est pinnée à
+`traversal_policy_version` du config (`test_world_feature_contract.py:400`), et
+un bump orphelinerait les 5 hypothèses existantes sans gain sémantique — les
+données sans famille projettent à l'identique (`family_ref=None` des deux
+côtés, reconstitution via `from_mapping`), et les futurs steps famille forment
+naturellement de nouvelles signatures. La règle ne sera bumpée que si une même
+signature change de sens.
 
 **D4c. Symboles épinglés : autorisé, sous conditions.** L'utilisateur assume la
 confiance aux symboles Yahoo. Un mode « entity-pinned » (symbole dans
@@ -148,26 +181,121 @@ gate derrière masque/feature-flag, et interdiction de conclure sur < N
 | Phase | Contenu | Sortie testable |
 |---|---|---|
 | P0 | Vocabulaires fermés `news_state.v1`, `company_state.v1`, `family_catalog.v1` (domain seul, stdlib) | tests limites : valeurs hors enum refusées, horizons libres buckettisés, `ABOUT` sans binding ⇒ rejet |
-| P1 | Hydration formation + évaluation depuis briefs ; bump `GRAPH_PATH_RULE_VERSION` | formation sur données existantes : `ABOUT` projette des états non-`unspecified` |
+| P1 | Hydration formation + évaluation depuis briefs (sans bump de règle, cf. D4b) | formation sur données existantes : `ABOUT` projette des états non-`unspecified` |
 | P2 | Dérivation étendue D0 + table exchange→MIC ; writers `company`/`ISSUED_BY`/`MEMBER_OF_FAMILY` | nouvelle révision publiée, invariant scope OK, bootstrap `ready` (pas `drifted`) |
 | P3 | Bridge news `ABOUT` (dédup, fraîcheur, exclusion opérationnelle) | comptage : lignes → artifacts uniques → relations, avec rejets tracés |
-| P4 | Cohortes prospectives « secteur × régime », « event_class × secteur × régime » | hypothèses non génériques, occurrences > 0 |
+| P4 | Cohortes prospectives « secteur × régime », « event_class × secteur × régime » | hypothèses non génériques, occurrences > 0 (prouvé sur données synthétiques ; activation live = décision ops séparée : boot étendu + backfill + cohorte) |
 
 Chaque phase : tests limites d'abord (collisions, doublons, stale, multi-cotations,
-hors-catalogue, `identity_status≠verified`), revue Codex pré-commit, validation
-post-change. Aucune activation hors shadow.
+hors-catalogue, `identity_status≠verified`), auto-revue exhaustive,
+validation post-change. Aucune activation hors shadow.
+
+### D5. Amendements de revue (post-implémentation, pré-activation)
+
+- **Révision admise au bridge** : `ontology_revision` doit appartenir à la
+  famille market ontology (`admits_market_ontology_family`), sinon le backfill
+  verserait des relations silencieusement exclues des snapshots.
+- **Jointures case-foldées** : l'identité ticker est insensible à la casse ;
+  les index de jointure (notes→mapping, briefs→mapping/registre) foldent des
+  deux côtés (`index_briefs_by_symbol` partagé, premier en ordre trié gagne
+  une collision). Le catalogue, lui, normalise déjà (`normalize_symbol`).
+- **Registre mapping-centrique** : on itère les entrées du mapping (autorité
+  cotations) ; chaque entrée est liée ou exclue à raison fermée. Les briefs
+  hors scope ne sont pas des exclusions (jamais revendiqués).
+- **Corruption ≠ crash** : lignes corrompues sautées par les lecteurs
+  (corpus), levées en `ValueError` par le writer (fail-loud, jamais de perte
+  silencieuse) ; `worst_freshness` lève `ValueError` (pas `KeyError`) sur
+  statut non rangé, avec test de contrat épinglant rangs = Literal.
+- **Parseurs receipt intentionnellement miroirs** : le corpus duplique le
+  parseur formation (cycle d'import sinon), en strictement plus fail-closed
+  sur tokens malformés — documenté, pas factorisé.
+
+### D6. Backfill forward-only + PIT record-time (revue backfill)
+
+- Le ledger gate la disponibilité par **date d'enregistrement**
+  (`receipt.ready_at`/`first_seen_at` vs cutoff) : un artifact ou un event
+  écrit aujourd'hui est invisible aux cutoffs historiques, **by design**
+  (garantie anti-lookahead ; les OBSERVES macro vivent déjà ainsi, tamponnés
+  par génération). Conséquence : le backfill ne sert que le forward ; la
+  formation historique ne verra jamais ces signaux ; les patterns se forment
+  après accumulation shadow (semaines), pas sur réécriture du passé.
+- Politique de sélection : **fenêtres live uniquement** (`valid_until`
+  absente/inparseable, ou >= now) — les notes expirées ne pourraient jamais
+  hydrater (fenêtre + receipt). Mesuré : 623/11168 notes, 557 drafts,
+  744 relations ; + 243 briefs société (frais, TTL 30 j) → 486 relations.
+  `--all` force le full (repro/debug).
+- Le script (`scripts/backfill_world_knowledge_about.py`, dry-run par défaut,
+  `--apply` pour écrire) est **le writer forward** : idempotent (no-op à
+  contenu égal, conflit dur sinon), reprise auto via ids déterministes,
+  self-healing (re-`ensure_published` étendu à chaque run, donc safe après
+  édition du mapping), ABOUT sans fence.
+- Activation = publication de la révision étendue : la capture live suit le
+  **tip** (`ontology_revision=None` partout en chemin actif ; le pin YAML
+  `market_ontology.v1` est dormant). Les 5 hypothèses existantes survivent
+  (chemins d'ascendance projetés à l'identique, D4b). Les overlays restent
+  scopés par génération (macro-identique, replay PIT préservé).
+- Câblage requis côté query : `knowledge_root=state/world_knowledge` passé
+  aux 5 constructions de sources (runtime ×2, CLI ×3) — no-op sans données.
+
+### D7. Writers forward : publisher macro étendu + hook daemon (post-backfill)
+
+- **4 publishers convergents, une seule fonction** : boot (`compose_world_ontology_attestation`),
+  capture (`_compose_graph_capture`), bridge macro (`wire_world_macro_runtime`) et hook
+  forward (`AboutForwardRunner`) dérivent tous le tip étendu depuis mapping + registre +
+  catalogue **rechargés frais à chaque sweep**. Deux générations différentes ne peuvent pas
+  coexister : un publisher legacy supersèderait le tip étendu puis se ferait re-superséder
+  (oscillation). Preuve : 2 collects macro → 1 `Published`, 0 `Superseded`, tip == id étendu
+  dérivé (`test_extended_bridge_publishes_one_stable_revision`).
+- **Publisher macro** : `extended=True` + `briefs_root` câblés au daemon ; loads frais par sweep
+  (`_load_extended_inputs`, même dérivation que boot/capture). Échec de load → bridge skippé
+  **ce sweep uniquement** (erreur `stage=graph_bridge` tracée dans le rapport, statut `partial`,
+  faits macro intacts) — jamais de dérivation legacy par défaut. `extended` sans `briefs_root`
+  lève au wiring (fail-closed, comme la capture).
+- **Spec du bridge admettant l'étendu** : `derive_macro_graph_bridge_spec` (et ses wrappers)
+  accepte le legacy seul par défaut, et l'étendu uniquement quand registre + catalogue voyagent
+  avec l'appel (sinon `ValueError`, fail-closed conservé). Le publisher macro les fait suivre.
+- **Hook daemon event-driven** (rythme forward tranché : pas de cron) :
+  `trader/runtime/world_about_runtime.py`, `AboutForwardRunner` chaîné sur `on_briefs_written`
+  (news macro) et `on_brief_written` (company intelligence), après le refresh universe existant.
+  Single-flight + coalescing (dernier trigger gagne), throttle 300 s par défaut
+  (`CASYS_WORLD_ABOUT_FORWARD_MIN_INTERVAL_S`), kill-switch
+  (`CASYS_WORLD_ABOUT_FORWARD_ENABLED`, défaut on), construit uniquement si le graphe est actif.
+  Chaque sweep = recette backfill `--apply` sur inputs frais (notes live + briefs `current`),
+  stores construits puis fermés dans le sweep (zéro partage inter-threads), fail-open
+  (exception → rapport `error`, jamais propagée dans les threads LLM). Notes db absente →
+  côté news skippé explicitement (`notes_source=missing`), côté société inchangé.
+- **Arrêt propre** : `world_about_runner` ajouté aux ressources revendiquées du daemon et à
+  `shutdown_runtime_resources` (best-effort, message `[world_about]`).
 
 ## 5. Points ouverts
 
-- **O1** : table `exchange → MIC` déterministe (sources : briefs `exchange`/`venue`
-  + mapping existant ; conflits ⇒ fail-closed, pas de devinette).
-- **O2** : valeurs fermées de `event_class` et `horizon_bucket` (proposition de
-  départ : earnings, guidance, M&A, régulation, opérationnel, macro-société ;
-  buckets 0-4h / 4-24h / 1-7d / périmé).
+- **O1** : table `exchange → MIC` déterministe — **tranché** : voir D1
+  (18 codes, 17/17 MIC du mapping, `mapping_only` en dégradation).
+- **O2** : valeurs fermées de `event_class` et `horizon_bucket` — **retranché
+  (issue #23)** : l'analyste LLM émet `event_class` (enum fermée, champ requis
+  par point), stocké en colonne `situation_notes.event_class`. Plus de
+  re-dérivation : manquant → exclusion comptée `missing_event_class`,
+  hors-enum → rejet loud (`invalid_event_class` au bridge,
+  `missing_event_class` + `ValueError` au parse LLM). Zéro fallback keywords.
+  Provenance explicite dans le bundle (`event_class_source`: `analyst` |
+  `keywords`, `driver_news_bundle.v2` ; v1 migré en lecture avec `keywords`,
+  fait historique). Table v1 (`news_event_class.v1`) conservée + testée pour
+  documenter les artifacts déjà persistés (~59 % `unknown` mesurés, cause du
+  retranchage).
 - **O3** : seuils de support par palier (générique vs pinned) et N minimal
   d'événements distincts.
 - **O4** : `PART_OF_WORLD` pays/venue→monde et `LOCATED_IN` venue→région direct
   restent schéma-only : élaguer ou justifier (hors scope, noté pour mémoire).
+- **O5** : rythme du writer forward — **tranché** : hook daemon event-driven sur écriture
+  de briefs + throttle (D7), pas de cron. Reste à calibrer en prod : `MIN_INTERVAL_S`
+  (défaut 300 s) face à la cadence réelle des briefs LLM.
+- **O6** : fast-path per-item — **implémenté (issue #24)** : le trigger porte
+  l'identité (symbol / brief_ids), le worker écrit l'item seul sans throttle ;
+  full sweeps throttlés en rattrapage (marqueur boot, intervalle 6 h
+  `CASYS_WORLD_ABOUT_FULL_SWEEP_INTERVAL_S`, upgrade automatique). L'attestation
+  fast-path dérive toujours depuis les inputs FULL (jamais de révision
+  divergente). Nommé-mais-inécrivable → `skipped_symbols`/`skipped_brief_ids`
+  (raisons fermées), jamais silencieux.
 
 ## 6. Non-objectifs
 
@@ -187,3 +315,7 @@ post-change. Aucune activation hors shadow.
    silencieusement absorbés.
 5. Au moins une cohorte P4 produit des hypothèses distinguant secteurs ou
    classes d'événements (pas 5 variantes géo génériques).
+6. Les 4 publishers dérivent le même tip étendu ; répéter un collect macro ne
+   publie aucune révision supplémentaire (0 `Superseded`).
+7. Chaque écriture de brief (news ou société) déclenche un sweep forward
+   coalescé, throttlé, fail-open, sans bloquer les threads LLM.

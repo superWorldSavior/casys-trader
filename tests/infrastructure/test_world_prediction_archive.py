@@ -640,6 +640,30 @@ def test_exporter_still_publishes_unaffected_days_when_another_date_is_canonical
     assert (archive_root / day_24["relative_path"]).is_file()
 
 
+def test_canonical_identity_ignores_reexport_metadata_drift(tmp_path: Path) -> None:
+    db_path = tmp_path / "world_model.db"
+    _two_closed_days(db_path)
+    archive_root = tmp_path / "world_model_archive"
+    source = SQLiteWorldPredictionArchiveSource(db_path)
+    sink = DuckDbWorldPredictionParquetStore(
+        archive_root,
+        clock=lambda: datetime(2026, 8, 28, 3, tzinfo=UTC),
+    )
+    service = WorldPredictionArchiveService(source=source, sink=sink, clock=_closed_day_clock)
+    first = service.execute(before=date(2026, 8, 25), apply=True)
+    day_24 = first["partitions"][0]["manifest"]
+    _activate_canonical_catalog(db_path, day_24)
+    manifest_path = (archive_root / day_24["relative_path"]).parent / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["verified_at"] = "2026-08-29T03:00:00+00:00"
+    payload["producer"] = "re-exporter"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    dry_run = service.execute(before=date(2026, 8, 25), apply=False)
+
+    assert [item["status"] for item in dry_run["partitions"]] == ["canonical_active"]
+
+
 def test_canonical_catalog_accepts_compact_and_spaced_exact_stored_hashes(tmp_path: Path) -> None:
     db_path = tmp_path / "world_model.db"
     _db(db_path)

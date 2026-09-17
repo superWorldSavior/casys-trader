@@ -83,8 +83,8 @@ def _defensive_reject(
         return "record_available_after_as_of"
     if record.recorded_at > as_of:
         return "record_recorded_after_as_of"
-    if snapshot.ontology_revision != spec.ontology_revision:
-        return "ontology_revision_mismatch"
+    # No ontology-revision gate: ID-free steps match soundly across map generations;
+    # the feature contract below is the comparability gate.
     if observation.feature_contract_version != spec.feature_contract_id:
         return "feature_contract_mismatch"
     if not isinstance(snapshot.root_entity, WorldEntityRef) or snapshot.root_entity.kind != spec.target.entity_kind:

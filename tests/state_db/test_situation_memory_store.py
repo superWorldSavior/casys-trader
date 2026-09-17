@@ -43,6 +43,98 @@ def _brief() -> NewsMacroBrief:
     return brief
 
 
+def test_situation_memory_migrates_event_class_sur_base_legacy(tmp_path) -> None:
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE situation_notes ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, note_key TEXT UNIQUE NOT NULL, "
+            "brief_id TEXT NOT NULL, point TEXT, symbols TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO situation_notes (note_key, brief_id, point, symbols) VALUES (?, ?, ?, ?)",
+            ("k1", "b1", "Dividend raised", '["TTE.PA"]'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    store = SituationMemoryStore(db_path)
+    try:
+        columns = {row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(situation_notes)")}
+        assert "event_class" in columns
+    finally:
+        store.close()
+
+
+def test_situation_memory_ingest_persiste_event_class(tmp_path) -> None:
+    from trader.infrastructure.state_db.situation_memory_store import read_situation_notes
+
+    brief = NewsMacroBrief.from_mapping(
+        {
+            "brief_id": "2026-07-09T07:00:00+00:00|EU",
+            "venue": "EU",
+            "as_of": "2026-07-09T07:00:00+00:00",
+            "valid_until": "2026-07-10T07:00:00+00:00",
+            "zones": {
+                "EU": [
+                    {
+                        "point": "Dividend raised",
+                        "source_refs": ["u1"],
+                        "symbols": ["TTE.PA"],
+                        "event_class": "capital",
+                    }
+                ]
+            },
+        }
+    )
+    assert brief is not None
+    store = SituationMemoryStore(tmp_path / "memory.db")
+    try:
+        report = store.ingest_brief(brief)
+        assert report == {"inserted": 1, "skipped": 0}
+    finally:
+        store.close()
+    notes = read_situation_notes(tmp_path / "memory.db")
+    assert len(notes) == 1
+    assert notes[0]["event_class"] == "capital"
+
+
+def test_ensure_notes_schema_migrates_but_never_creates(tmp_path) -> None:
+    from trader.infrastructure.state_db.situation_memory_store import ensure_notes_schema
+
+    assert ensure_notes_schema(tmp_path / "absent.db") is False
+    assert not (tmp_path / "absent.db").exists()
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE situation_notes (id INTEGER PRIMARY KEY, note_key TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+    assert ensure_notes_schema(db_path) is True
+    columns = {row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(situation_notes)")}
+    assert "event_class" in columns
+
+
+def test_read_situation_notes_by_brief_ids_filters(tmp_path) -> None:
+    from trader.infrastructure.state_db.situation_memory_store import (
+        read_situation_notes_by_brief_ids,
+    )
+
+    store = SituationMemoryStore(tmp_path / "memory.db")
+    try:
+        store.ingest_brief(_brief())
+    finally:
+        store.close()
+    notes = read_situation_notes_by_brief_ids(tmp_path / "memory.db", ["2026-07-09T07:00:00+00:00|EU"])
+    assert len(notes) == 2
+    assert read_situation_notes_by_brief_ids(tmp_path / "memory.db", ["nope"]) == []
+    assert read_situation_notes_by_brief_ids(tmp_path / "memory.db", []) == []
+    with pytest.raises(FileNotFoundError):
+        read_situation_notes_by_brief_ids(tmp_path / "absent.db", ["b1"])
+
+
 def test_situation_memory_ingests_brief_idempotently(tmp_path) -> None:
     store = SituationMemoryStore(tmp_path / "situation_memory.db")
     brief = _brief()

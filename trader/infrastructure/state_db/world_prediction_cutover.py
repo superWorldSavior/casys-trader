@@ -524,7 +524,7 @@ def _require_canonical_catalog(
             raise PredictionReadUnavailable(
                 f"canonical partition {manifest.recorded_date.isoformat()} is missing"
             )
-        if existing.to_dict() != manifest.to_dict():
+        if existing.semantic_identity() != manifest.semantic_identity():
             raise PredictionReadUnavailable(
                 f"canonical partition {manifest.recorded_date.isoformat()} does not match the registered manifest"
             )

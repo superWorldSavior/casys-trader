@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_feature_contract import MARKET_ONTOLOGY_REVISION, WORLD_SCOPE_MAPPING_ID
 from trader.domain.world_graph import WorldOntologyRevision
 from trader.domain.world_scope import WorldScopeMapping
@@ -22,6 +23,10 @@ from trader.domain.world_scope import WorldScopeMapping
 ONTOLOGY_PUBLICATION_ACTIONS = frozenset({"ready", "publish", "supersede"})
 MARKET_ONTOLOGY_REVISION_FAMILY = MARKET_ONTOLOGY_REVISION
 MARKET_ONTOLOGY_REVISION_PREFIX = "market_ontology:v1:"
+# Extended derivation scheme. v1 embedded refresh-varying brief refs in derived
+# edges (stable id, drifting content -> unpublishable conflict); v2 derives
+# from identity-stable inputs only. Bump to force one clean supersede.
+MARKET_ONTOLOGY_EXTENDED_DERIVATION_VERSION = "2"
 
 
 def _required_text(value: Any, field_name: str) -> str:
@@ -52,6 +57,29 @@ def market_ontology_revision_id(mapping: WorldScopeMapping) -> str:
     if mapping.mapping_id != WORLD_SCOPE_MAPPING_ID:
         raise ValueError(f"mapping_id must be {WORLD_SCOPE_MAPPING_ID}")
     return market_ontology_revision_id_for_mapping_hash(mapping.content_sha256)
+
+
+def market_ontology_extended_revision_id(
+    mapping: WorldScopeMapping,
+    *,
+    registry_sha256: str,
+    catalog_sha256: str,
+) -> str:
+    """Deterministic revision id for mapping + issuer registry + family catalog."""
+
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("mapping must be WorldScopeMapping")
+    if mapping.mapping_id != WORLD_SCOPE_MAPPING_ID:
+        raise ValueError(f"mapping_id must be {WORLD_SCOPE_MAPPING_ID}")
+    digest = canonical_sha256(
+        {
+            "derivation_version": MARKET_ONTOLOGY_EXTENDED_DERIVATION_VERSION,
+            "mapping_sha256": _sha256_hex(mapping.content_sha256, "mapping_sha256"),
+            "registry_sha256": _sha256_hex(registry_sha256, "registry_sha256"),
+            "catalog_sha256": _sha256_hex(catalog_sha256, "catalog_sha256"),
+        }
+    )
+    return f"{MARKET_ONTOLOGY_REVISION_PREFIX}{digest}"
 
 
 def admits_market_ontology_family(revision_id: str) -> bool:
@@ -193,6 +221,31 @@ def require_committed_ontology_revision(
     return require_mapping_aligned_ontology_revision(revision, mapping)
 
 
+def require_extended_ontology_revision(
+    revision: WorldOntologyRevision,
+    mapping: WorldScopeMapping,
+    *,
+    registry_sha256: str,
+    catalog_sha256: str,
+) -> WorldOntologyRevision:
+    """Fail closed when a revision is not this mapping + registry + catalog generation."""
+
+    if not isinstance(revision, WorldOntologyRevision):
+        raise TypeError("revision must be WorldOntologyRevision")
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("mapping must be WorldScopeMapping")
+    if mapping.mapping_id != WORLD_SCOPE_MAPPING_ID:
+        raise ValueError("committed ontology requires the live mapping id")
+    expected_id = market_ontology_extended_revision_id(
+        mapping, registry_sha256=registry_sha256, catalog_sha256=catalog_sha256
+    )
+    if revision.revision_id != expected_id:
+        raise ValueError("derived ontology revision_id drifted from extended inputs")
+    if revision.scope_mapping_id != mapping.mapping_id or revision.scope_mapping_hash != mapping.content_sha256:
+        raise ValueError("ontology revision mapping identity does not match mapping")
+    return revision
+
+
 def plan_world_ontology_publication(
     *,
     published: WorldOntologyRevision | None,
@@ -265,10 +318,12 @@ __all__ = [
     "WorldOntologyPublicationPlan",
     "admits_market_ontology_family",
     "committed_world_ontology_lifecycle_spec",
+    "market_ontology_extended_revision_id",
     "market_ontology_revision_id",
     "market_ontology_revision_id_for_mapping_hash",
     "plan_world_ontology_publication",
     "require_committed_ontology_revision",
+    "require_extended_ontology_revision",
     "require_mapping_aligned_ontology_revision",
     "world_ontology_lifecycle_spec",
 ]

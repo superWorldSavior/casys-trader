@@ -12,6 +12,7 @@ from trader.domain.world_feature_contract import (
     MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
 )
+from trader.domain.world_issuer_registry import IssuerEntry, IssuerRegistry
 from trader.domain.world_graph import (
     MACRO_GRAPH_BRIDGE_RUN_SPEC_SCHEMA,
     MacroGraphBridgeRegistry,
@@ -371,6 +372,60 @@ def test_bridge_spec_is_derived_from_loaded_mapping_and_ontology() -> None:
     family = _revision(mapping, revision_id=MARKET_ONTOLOGY_REVISION)
     with pytest.raises(ValueError, match="derived from the mapping generation"):
         derive_macro_graph_bridge_spec(mapping=mapping, ontology=family, collection_plan=plan)
+
+
+def _issuer_registry() -> IssuerRegistry:
+    return IssuerRegistry(
+        registry_id="issuer_registry.v1",
+        entries={
+            "instrument:mic:XTAI:symbol:2330": IssuerEntry(
+                instrument_node_id="instrument:mic:XTAI:symbol:2330",
+                market_venue="TW",
+                symbol="2330",
+                mic="XTAI",
+                issuer_entity_id="issuer:yahoo:v1:XTAI:2330",
+                identity_status="verified",
+                brief_as_of="2026-09-05T17:26:49+00:00",
+                source_refs=("company_micro:v1:2330:abc",),
+                resolution_method="mapping_plus_exchange",
+            )
+        },
+    )
+
+
+def test_bridge_spec_admits_extended_revision_only_with_inputs() -> None:
+    from trader.domain.world_family_catalog import FamilyCatalog
+    from trader.domain.world_ontology_lifecycle import market_ontology_extended_revision_id
+
+    mapping = _mapping()
+    plan = _plan()
+    registry = _issuer_registry()
+    catalog = FamilyCatalog.from_grouped("family_catalog.v1", {"v1:semis": ["2330"]})
+    extended_id = market_ontology_extended_revision_id(
+        mapping,
+        registry_sha256=registry.content_sha256,
+        catalog_sha256=catalog.content_sha256,
+    )
+    assert extended_id != market_ontology_revision_id(mapping)
+    revision = _revision(mapping, revision_id=extended_id)
+    with pytest.raises(ValueError, match="derived from the mapping generation"):
+        derive_macro_graph_bridge_spec(mapping=mapping, ontology=revision, collection_plan=plan)
+    with pytest.raises(ValueError, match="provided together"):
+        derive_macro_graph_bridge_spec(
+            mapping=mapping, ontology=revision, collection_plan=plan, issuer_registry=registry
+        )
+    spec = derive_macro_graph_bridge_spec(
+        mapping=mapping,
+        ontology=revision,
+        collection_plan=plan,
+        issuer_registry=registry,
+        family_catalog=catalog,
+    )
+    assert spec.ontology_revision_id == extended_id
+    legacy = derive_macro_graph_bridge_spec(
+        mapping=mapping, ontology=_revision(mapping), collection_plan=plan
+    )
+    assert legacy.ontology_revision_id == market_ontology_revision_id(mapping)
 
 
 def test_blocked_mapping_generation_rolls_and_unknown_plan_stays_closed() -> None:

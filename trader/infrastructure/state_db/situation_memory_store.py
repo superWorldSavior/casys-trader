@@ -7,7 +7,7 @@ import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ from trader.domain.situation import NewsMacroBrief, SituationPoint, SituationSec
 from trader.infrastructure.state_db.fts_query import sanitize_fts5_query
 from trader.infrastructure.state_db.migrations import SITUATION_MEMORY_OUTCOME_COLUMNS
 
-__all__ = ["SituationMemoryStore"]
+__all__ = ["SituationMemoryStore", "read_situation_notes"]
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS situation_notes (
     signal          TEXT,
     direction       TEXT,
     horizon         TEXT,
+    event_class     TEXT,
     outcome_score   REAL,
     q_value         REAL,
     embedding       BLOB
@@ -104,6 +105,77 @@ _NOTE_COLUMNS = """
     direction, horizon, outcome_score, q_value, verdict, horizon_sessions,
     forward_return, evaluated_at, coverage_n
 """
+_BRIDGE_COLUMNS = (
+    "note_key",
+    "brief_id",
+    "as_of",
+    "valid_from",
+    "valid_until",
+    "point",
+    "source_uuids",
+    "source_names",
+    "symbols",
+    "severity",
+    "signal",
+    "direction",
+    "horizon",
+    "event_class",
+)
+_BRIDGE_JSON_COLUMNS = frozenset({"source_uuids", "source_names", "symbols"})
+
+
+def ensure_notes_schema(db_path: str | Path) -> bool:
+    """Run notes migrations on an existing db. Never creates a missing file."""
+
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    store = SituationMemoryStore(path)
+    store.close()
+    return True
+
+
+def read_situation_notes(db_path: str | Path) -> list[dict[str, Any]]:
+    """Read-only notes for the ABOUT bridge. Never creates or migrates files."""
+
+    return _read_situation_notes_where(db_path, brief_ids=None)
+
+
+def read_situation_notes_by_brief_ids(
+    db_path: str | Path, brief_ids: Collection[str]
+) -> list[dict[str, Any]]:
+    """Read-only notes for given briefs. Empty ids read nothing, never all."""
+
+    wanted = [str(item) for item in brief_ids if str(item).strip()]
+    if not wanted:
+        return []
+    return _read_situation_notes_where(db_path, brief_ids=wanted)
+
+
+def _read_situation_notes_where(
+    db_path: str | Path, *, brief_ids: Sequence[str] | None
+) -> list[dict[str, Any]]:
+    path = Path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"situation notes db is missing: {path}")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        query = f"SELECT {', '.join(_BRIDGE_COLUMNS)} FROM situation_notes"
+        params: Sequence[str] = ()
+        if brief_ids is not None:
+            query += f" WHERE brief_id IN ({', '.join('?' * len(brief_ids))})"
+            params = list(brief_ids)
+        rows = conn.execute(query + " ORDER BY id", params).fetchall()
+    finally:
+        conn.close()
+    notes: list[dict[str, Any]] = []
+    for row in rows:
+        note = {column: row[column] for column in _BRIDGE_COLUMNS}
+        for column in _BRIDGE_JSON_COLUMNS:
+            note[column] = [str(item) for item in _json_list(note[column])]
+        notes.append(note)
+    return notes
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -112,6 +184,9 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     if "source_names" not in columns:
         conn.execute("ALTER TABLE situation_notes ADD COLUMN source_names TEXT")
         columns.add("source_names")
+    if "event_class" not in columns:
+        conn.execute("ALTER TABLE situation_notes ADD COLUMN event_class TEXT")
+        columns.add("event_class")
     for name, decl in SITUATION_MEMORY_OUTCOME_COLUMNS:
         if name not in columns:
             conn.execute(f"ALTER TABLE situation_notes ADD COLUMN {name} {decl}")
@@ -176,12 +251,12 @@ class SituationMemoryStore:
                         note_key, brief_id, brief_ref, as_of, valid_from, valid_until,
                         venue, section_type, section_name, point_index, point,
                         source_uuids, source_names, symbols, severity, signal, direction, horizon,
-                        outcome_score, q_value
+                        event_class, outcome_score, q_value
                     ) VALUES (
                         :note_key, :brief_id, :brief_ref, :as_of, :valid_from, :valid_until,
                         :venue, :section_type, :section_name, :point_index, :point,
                         :source_uuids, :source_names, :symbols, :severity, :signal, :direction, :horizon,
-                        :outcome_score, :q_value
+                        :event_class, :outcome_score, :q_value
                     )
                     """,
                     row,
@@ -359,6 +434,7 @@ def _rows_for_brief(brief: NewsMacroBrief) -> list[dict[str, Any]]:
                 "signal": point.signal,
                 "direction": point.direction,
                 "horizon": point.horizon,
+                "event_class": point.event_class,
                 "outcome_score": 0.0,
                 "q_value": None,
             }

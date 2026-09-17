@@ -188,18 +188,26 @@ def _revision_bound_view(
     )
 
 
+def _same_scope_outcome(first: WorldScopeResolution, second: WorldScopeResolution) -> bool:
+    return (
+        first.anchor == second.anchor
+        and first.status == second.status
+        and tuple(first.scopes) == tuple(second.scopes)
+    )
+
+
 def _require_mapping_alignment(request: WorldGraphSnapshotRequest, published: WorldOntologyRevision | None) -> None:
     mapping = request.scope_mapping
     resolution = request.scope_resolution
-    if resolution.mapping_id != mapping.mapping_id or resolution.mapping_sha256 != mapping.content_sha256:
+    if resolution.mapping_id != mapping.mapping_id:
         raise ValueError("scope resolution mapping does not match WorldScopeMapping")
     if request.slot is not None:
         slot_resolution = request.slot.scope_resolution
         if slot_resolution is None:
             raise ValueError("WorldCohortSlot requires scope_resolution")
-        if slot_resolution.mapping_id != mapping.mapping_id or slot_resolution.mapping_sha256 != mapping.content_sha256:
+        if slot_resolution.mapping_id != mapping.mapping_id:
             raise ValueError("WorldCohortSlot scope mapping mismatch")
-        if slot_resolution != resolution:
+        if not _same_scope_outcome(slot_resolution, resolution):
             raise ValueError("WorldCohortSlot scope resolution mismatch")
     computed = mapping.resolve(resolution.anchor)
     if resolution.status != "ambiguous":

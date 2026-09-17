@@ -292,6 +292,7 @@ class _ClaimedDaemonResources:
         self.company_intelligence_runner: object | None = None
         self.universe_intelligence_runner: object | None = None
         self.news_macro_runner: object | None = None
+        self.world_about_runner: object | None = None
         self.decide_pool: object | None = None
         self.execute_pool: object | None = None
         self._shutdown = False
@@ -338,6 +339,7 @@ class _ClaimedDaemonResources:
             company_intelligence_runner=self.company_intelligence_runner,
             universe_intelligence_runner=self.universe_intelligence_runner,
             news_macro_runner=self.news_macro_runner,
+            world_about_runner=self.world_about_runner,
             decide_pool=self.decide_pool,
             execute_pool=self.execute_pool,
             data_source=data_source,
@@ -1288,6 +1290,69 @@ def _trigger_world_macro_source_only(
             "reason": "trigger_error",
             "error": f"{type(exc).__name__}:{exc}",
         }
+
+
+def _trigger_world_about_forward(
+    *,
+    runner: object | None,
+    reason: str,
+    symbols: tuple[str, ...] = (),
+    brief_ids: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Enqueue named ABOUT items (fast path) without blocking LLM worker threads.
+
+    Named items take the unthrottled fast path; an empty call requests a full
+    catch-up sweep.
+    """
+
+    if runner is None:
+        return {"triggered": False, "reason": "disabled"}
+    try:
+        trigger = getattr(runner, "trigger", None)
+        if not callable(trigger):
+            return {"triggered": False, "reason": "disabled"}
+        result = trigger(reason=reason, symbols=symbols, brief_ids=brief_ids)
+        if isinstance(result, Mapping):
+            return dict(result)
+        return {"triggered": True, "reason": reason}
+    except Exception as exc:  # noqa: BLE001 - forward sweep never blocks brief writers
+        log.warning("[world_about_forward] trigger failed: %s", exc)
+        return {
+            "triggered": False,
+            "reason": "trigger_error",
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+
+
+def _about_brief_ids(events: object) -> tuple[str, ...]:
+    """Extract brief ids from news-macro write events. Never raises."""
+
+    try:
+        items = list(events) if isinstance(events, (list, tuple)) else []
+    except Exception:  # noqa: BLE001 - malformed callback payload skips fast items
+        return ()
+    found: list[str] = []
+    for item in items:
+        try:
+            ref = item.get("brief_ref") if isinstance(item, Mapping) else None
+            brief_id = ref.get("brief_id") if isinstance(ref, Mapping) else None
+        except Exception:  # noqa: BLE001 - one malformed event skips itself
+            continue
+        text = str(brief_id or "").strip()
+        if text and text not in found:
+            found.append(text)
+    return tuple(found)
+
+
+def _about_symbol(event: object) -> tuple[str, ...]:
+    """Extract the symbol from a company-brief write event. Never raises."""
+
+    try:
+        symbol = event.get("symbol") if isinstance(event, Mapping) else None
+    except Exception:  # noqa: BLE001 - malformed callback payload skips fast items
+        return ()
+    text = str(symbol or "").strip()
+    return (text,) if text else ()
 
 
 def run_cycle(
@@ -2735,6 +2800,8 @@ def main(
                 state_dir=STATE_DIR,
                 logger=log,
                 graph_enabled=_world_model_graph,
+                extended=True,
+                briefs_root=STATE_DIR / "company_intelligence",
             )
             _world_macro_runner = _world_macro_bundle.runner
             _world_macro_store = _world_macro_bundle.store
@@ -2790,6 +2857,8 @@ def main(
                 _ontology_attestation = compose_world_ontology_attestation(
                     store=_world_model_store,
                     config_dir=ROOT / "config",
+                    extended=True,
+                    briefs_root=STATE_DIR / "company_intelligence",
                 )
                 if _ontology_attestation is not None:
                     _ontology_attestation.ensure_published(now=now())
@@ -2873,6 +2942,8 @@ def main(
                         config_dir=ROOT / "config",
                         study_cohort_id=_pilot_graph_cohort_id,
                         ontology_attestation=_ontology_attestation,
+                        extended=True,
+                        briefs_root=STATE_DIR / "company_intelligence",
                     )
                     extra_predictors.extend(graph_predictors)
                 except Exception as exc:  # noqa: BLE001 - graph composition cannot block market/context
@@ -2889,6 +2960,7 @@ def main(
                         enabled=True,
                         store=_world_model_store,
                         macro_root=STATE_DIR / "world_macro",
+                        knowledge_root=STATE_DIR / "world_knowledge",
                     )
                 except Exception as exc:  # noqa: BLE001 - patterns cannot block graph/market/Trader
                     log.warning(
@@ -2997,6 +3069,23 @@ def main(
     claimed_resources.news_macro_runner = _news_macro_runner
     _universe_intelligence_runner = universe_intelligence_runtime.UniverseIntelligenceRunner()
     claimed_resources.universe_intelligence_runner = _universe_intelligence_runner
+    _world_about_runner: object | None = None
+    if _world_model_graph:
+        try:
+            from trader.runtime import world_about_runtime
+
+            _world_about_runner = world_about_runtime.AboutForwardRunner(
+                config_dir=ROOT / "config",
+                state_dir=STATE_DIR,
+                briefs_root=STATE_DIR / "company_intelligence",
+                logger=log,
+            )
+        except Exception as exc:  # noqa: BLE001 - shadow boot never kills live trading
+            log.warning("[world_about] runner boot failed, forward disabled: %s", exc)
+            _world_about_runner = None
+        else:
+            claimed_resources.world_about_runner = _world_about_runner
+            _trigger_world_about_forward(runner=_world_about_runner, reason="daemon_boot")
 
     def _on_macro_briefs_written(events: tuple[dict, ...]) -> None:
         universe_intelligence_runtime.trigger_regional_brief_refresh(
@@ -3006,6 +3095,11 @@ def main(
             state_dir=STATE_DIR,
             loop_now=datetime.now(timezone.utc),
             logger=log,
+        )
+        _trigger_world_about_forward(
+            runner=_world_about_runner,
+            reason="news_briefs_written",
+            brief_ids=_about_brief_ids(events),
         )
 
     _news_macro_runner.on_briefs_written = _on_macro_briefs_written
@@ -3018,6 +3112,11 @@ def main(
             state_dir=STATE_DIR,
             loop_now=datetime.now(timezone.utc),
             logger=log,
+        )
+        _trigger_world_about_forward(
+            runner=_world_about_runner,
+            reason="company_brief_written",
+            symbols=_about_symbol(event),
         )
 
     _company_intelligence_runner = company_intelligence_runtime.CompanyIntelligenceRuntime(

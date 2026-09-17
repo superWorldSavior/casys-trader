@@ -309,6 +309,72 @@ def test_same_db_publishes_generation_a_then_b_and_preserves_pit(tmp_path: Path)
         store.close()
 
 
+def test_proven_heads_resolves_superseded_pin_at_live_cutoff(tmp_path: Path) -> None:
+    from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
+
+    generation_a = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+        ),
+    )
+    generation_b = WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(
+            _entry(
+                market_venue="TW",
+                instrument="2301.TW",
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            ),
+            _entry(
+                market_venue="US", instrument="GM", venue="mic:XNYS", country="iso-3166:US", region="iso-un-m49:021"
+            ),
+        ),
+    )
+    times = {"now": CUTOFF}
+
+    def clock() -> datetime:
+        return times["now"]
+
+    path = tmp_path / "world_model.db"
+    store = WorldGraphStore(path, clock=clock)
+    try:
+        WorldOntologyBootstrapService(store, generation_a).ensure_published(now=CUTOFF)
+        later = CUTOFF.replace(minute=1)
+        times["now"] = later
+        WorldOntologyBootstrapService(store, generation_b).ensure_published(now=later)
+        revision_a = market_ontology_revision_id(generation_a)
+        attestation = WorldOntologyAttestation(store, generation_b)
+        proof = attestation.proven_heads(
+            revision_id=revision_a,
+            scope_mapping_id=generation_a.mapping_id,
+            scope_mapping_hash=generation_a.content_sha256,
+            at=later,
+        )
+        assert isinstance(proof, WorldOntologyHeadsProof)
+        assert proof.revision_id == revision_a
+        assert (
+            attestation.proven_heads(
+                revision_id="market_ontology:v1:" + "0" * 64,
+                scope_mapping_id=generation_a.mapping_id,
+                scope_mapping_hash=generation_a.content_sha256,
+                at=later,
+            )
+            is None
+        )
+    finally:
+        store.close()
+
+
 def test_same_revision_id_hash_drift_stays_a_conflict_and_next_generation_supersedes(
     tmp_path: Path,
 ) -> None:

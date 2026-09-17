@@ -15,6 +15,7 @@ from tests.state_db.test_world_pattern_formation_query import (
     SNAPSHOT_READY,
     _graph_episode,
     _market_episode,
+    _news_about_triplet,
     _seed_labeled,
     _snapshot,
     _structural,
@@ -25,6 +26,7 @@ from trader.domain.world_episode import GRAPH_FEATURE_CONTRACT_ID, WorldEpisode,
 from trader.domain.world_graph import StructuralWorldRelationAsserted
 from trader.infrastructure.state_db import world_pattern_evaluation_query as evaluation_query
 from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
+from trader.infrastructure.state_db.world_knowledge_store import WorldKnowledgeStore
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
 from trader.infrastructure.state_db.world_pattern_evaluation_query import SqlitePatternEvaluationSource
 
@@ -467,3 +469,28 @@ def test_admitted_episode_in_list_is_chunked_beyond_sqlite_variable_limit(
     assert max(in_widths) == 500
     assert sum(in_widths) == admitted_count
     assert len(in_widths) >= 3
+
+
+def test_about_joins_frozen_news_signal_through_knowledge_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    knowledge_root = tmp_path / "world_knowledge"
+    stamp = datetime(2026, 8, 20, 12, 5, tzinfo=UTC)
+    store = WorldKnowledgeStore(knowledge_root, clock=lambda: stamp)
+    relation, _envelope, signal = _news_about_triplet()
+    store.append_artifact(_envelope, signal)
+    seeded = _seed_labeled(tmp_path / "joined", monkeypatch, as_of=POST, persist_outcome=False, knowledge=relation)
+    _insert_evaluation_slot(
+        seeded["db_path"],  # type: ignore[arg-type]
+        cohort_id=COHORT_ID,
+        episode_id=seeded["episode"].episode_id,  # type: ignore[union-attr]
+        as_of=POST,
+    )
+    batch = SqlitePatternEvaluationSource(
+        seeded["db_path"], knowledge_root=knowledge_root  # type: ignore[arg-type]
+    ).load_evaluation_batch(_scan())
+    assert len(batch.records) == 1
+    bindings = batch.records[0].driver_state_bindings
+    assert len(bindings) == 1
+    assert bindings[0].driver_state.signal_class == "news_state"
+    assert bindings[0].driver_state.news == signal

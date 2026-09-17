@@ -8,11 +8,21 @@ from datetime import datetime, timezone
 import pytest
 
 from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
+from trader.domain.world_company import (
+    COMPANY_PRODUCER_VERSION,
+    COMPANY_TRANSFORM_VERSION,
+    DriverCompanyBundle,
+)
 from trader.domain.world_driver import (
     DRIVER_REGIME_BUNDLE_SCHEMA,
     DRIVER_STATE_SCHEMA,
     DriverRegimeBundle,
     DriverState,
+)
+from trader.domain.world_news import (
+    NEWS_PRODUCER_VERSION,
+    NEWS_TRANSFORM_VERSION,
+    DriverNewsBundle,
 )
 from trader.domain.world_macro import (
     MACRO_COVERAGE_STATUSES,
@@ -276,3 +286,138 @@ def test_world_driver_stays_stdlib_domain() -> None:
                 if root != "trader" and root not in sys.stdlib_module_names:
                     violations.append(alias.name)
     assert violations == []
+
+
+def _news_bundle(**overrides: object) -> DriverNewsBundle:
+    values: dict[str, object] = {
+        "event_class": "earnings",
+        "event_class_source": "analyst",
+        "direction": "bullish",
+        "strength": "strong",
+        "severity": "watch",
+        "horizon_bucket": "quarters",
+        "attribution_quality": "symbol_sourced",
+    }
+    values.update(overrides)
+    return DriverNewsBundle(**values)  # type: ignore[arg-type]
+
+
+def _company_bundle(**overrides: object) -> DriverCompanyBundle:
+    values: dict[str, object] = {
+        "sector": "eu_tech",
+        "thesis_status": "intact",
+        "coverage_status": "full",
+        "freshness_status": "fresh",
+        "catalyst_bucket": "few",
+        "risk_bucket": "few",
+        "depth": "screen",
+    }
+    values.update(overrides)
+    return DriverCompanyBundle(**values)  # type: ignore[arg-type]
+
+
+def _news_state(**overrides: object) -> DriverState:
+    values: dict[str, object] = {
+        "source_family": "knowledge_artifact",
+        "signal_class": "news_state",
+        "regimes": None,
+        "news": _news_bundle(),
+        "company": None,
+        "artifact_kind": "news_macro",
+        "until_bound": "bounded",
+        "producer_version": NEWS_PRODUCER_VERSION,
+        "transform_version": NEWS_TRANSFORM_VERSION,
+        "missingness": "none",
+    }
+    values.update(overrides)
+    return DriverState(**values)  # type: ignore[arg-type]
+
+
+def _company_state(**overrides: object) -> DriverState:
+    values: dict[str, object] = {
+        "source_family": "knowledge_artifact",
+        "signal_class": "company_state",
+        "regimes": None,
+        "news": None,
+        "company": _company_bundle(),
+        "artifact_kind": "company_intelligence",
+        "until_bound": "bounded",
+        "producer_version": COMPANY_PRODUCER_VERSION,
+        "transform_version": COMPANY_TRANSFORM_VERSION,
+        "missingness": "none",
+    }
+    values.update(overrides)
+    return DriverState(**values)  # type: ignore[arg-type]
+
+
+def test_news_state_round_trips_through_constructors_and_mapping() -> None:
+    state = DriverState.from_news_signal(_news_bundle(), until_bound="bounded")
+    assert state == _news_state()
+    assert state.signal_class == "news_state"
+    assert state.artifact_kind == "news_macro"
+    replayed = DriverState.from_mapping(state.to_dict())
+    assert replayed == state
+    assert replayed.identity_tuple()[3] == (
+        "earnings",
+        "analyst",
+        "bullish",
+        "strong",
+        "watch",
+        "quarters",
+        "symbol_sourced",
+    )
+    assert DriverState.from_mapping({**state.to_dict(), "news": _news_bundle().to_dict()}) == state
+
+
+def test_company_state_round_trips_through_constructors_and_mapping() -> None:
+    state = DriverState.from_company_signal(_company_bundle(), until_bound="unbounded")
+    assert state.signal_class == "company_state"
+    assert state.artifact_kind == "company_intelligence"
+    replayed = DriverState.from_mapping(state.to_dict())
+    assert replayed == state
+    assert replayed.identity_tuple()[4] == ("eu_tech", "intact", "full", "fresh", "few", "few", "screen")
+
+
+def test_news_state_matrix_rejects_crossed_bundles_and_versions() -> None:
+    with pytest.raises(ValueError, match="requires a DriverNewsBundle"):
+        _news_state(news=None)
+    with pytest.raises(ValueError, match="cannot carry a regime or company bundle"):
+        _news_state(company=_company_bundle())
+    with pytest.raises(ValueError, match="source_family=knowledge_artifact"):
+        _news_state(source_family="macro_observation")
+    with pytest.raises(ValueError, match="artifact_kind=news_macro"):
+        _news_state(artifact_kind="company_intelligence")
+    with pytest.raises(ValueError, match="producer_version"):
+        _news_state(producer_version="unspecified")
+    with pytest.raises(ValueError, match="transform_version"):
+        _news_state(transform_version="unspecified")
+    with pytest.raises(ValueError, match="missingness=none"):
+        _news_state(missingness="not_applicable")
+
+
+def test_company_state_matrix_rejects_crossed_bundles_and_versions() -> None:
+    with pytest.raises(ValueError, match="requires a DriverCompanyBundle"):
+        _company_state(company=None)
+    with pytest.raises(ValueError, match="cannot carry a regime or news bundle"):
+        _company_state(news=_news_bundle())
+    with pytest.raises(ValueError, match="source_family=knowledge_artifact"):
+        _company_state(source_family="unproven")
+    with pytest.raises(ValueError, match="artifact_kind=company_intelligence"):
+        _company_state(artifact_kind="news_macro")
+    with pytest.raises(ValueError, match="producer_version"):
+        _company_state(producer_version=NEWS_PRODUCER_VERSION)
+    with pytest.raises(ValueError, match="missingness=none"):
+        _company_state(missingness="not_applicable")
+
+
+def test_legacy_signal_classes_cannot_carry_news_or_company_bundles() -> None:
+    with pytest.raises(ValueError, match="cannot carry a news or company bundle"):
+        _regime_state(news=_news_bundle())
+    missing = DriverState.missing(
+        missingness="artifact_unjoined", source_family="knowledge_artifact", until_bound="unknown"
+    )
+    with pytest.raises(ValueError, match="cannot carry a news or company bundle"):
+        DriverState.from_mapping({**missing.to_dict(), "company": _company_bundle().to_dict()})
+    unspecified = DriverState.unspecified()
+    with pytest.raises(ValueError, match="cannot carry a news or company bundle"):
+        DriverState.from_mapping({**unspecified.to_dict(), "news": _news_bundle().to_dict()})

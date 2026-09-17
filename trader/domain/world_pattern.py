@@ -26,6 +26,7 @@ from trader.domain.world_episode import (
     canonical_sha256,
     parse_utc_timestamp,
 )
+from trader.domain.world_family_catalog import normalize_family_id
 from trader.domain.world_graph import (
     GRAPH_PATH_NODE_KINDS,
     GRAPH_TRAVERSAL_V1_DIRECTIONS,
@@ -334,6 +335,7 @@ class _PatternHopIdentity(NamedTuple):
     freshness_bucket: str
     evidence_rule_version: str
     driver_state: tuple[object, ...] | None
+    family_ref: str | None
 
 
 def _resolved_hop_driver_state(relation_kind: str, driver_state: Any) -> DriverState | None:
@@ -360,6 +362,7 @@ def _pattern_hop_validated(
     freshness_bucket: Any,
     evidence_rule_version: Any,
     driver_state: Any = None,
+    family_ref: Any = None,
 ) -> tuple[_PatternHopIdentity, DriverState | None]:
     if isinstance(ordinal, bool) or not isinstance(ordinal, int):
         raise TypeError("ordinal must be an integer")
@@ -372,6 +375,14 @@ def _pattern_hop_validated(
         target_kind=target_kind,
     )
     resolved = _resolved_hop_driver_state(hop.relation_kind, driver_state)
+    if hop.relation_kind == "MEMBER_OF_FAMILY":
+        if family_ref is None:
+            raise ValueError("MEMBER_OF_FAMILY hops require family_ref")
+        resolved_family: str | None = normalize_family_id(family_ref)
+    else:
+        if family_ref is not None:
+            raise ValueError("only MEMBER_OF_FAMILY hops carry family_ref")
+        resolved_family = None
     identity = _PatternHopIdentity(
         ordinal=ordinal,
         source_kind=hop.source_kind,
@@ -381,6 +392,7 @@ def _pattern_hop_validated(
         freshness_bucket=_freshness_bucket(freshness_bucket),
         evidence_rule_version=_required_text(evidence_rule_version, "evidence_rule_version"),
         driver_state=None if resolved is None else resolved.identity_tuple(),
+        family_ref=resolved_family,
     )
     return identity, resolved
 
@@ -395,6 +407,7 @@ def _pattern_hop_identity(
     freshness_bucket: Any,
     evidence_rule_version: Any,
     driver_state: Any = None,
+    family_ref: Any = None,
 ) -> _PatternHopIdentity:
     return _pattern_hop_validated(
         ordinal=ordinal,
@@ -405,6 +418,7 @@ def _pattern_hop_identity(
         freshness_bucket=freshness_bucket,
         evidence_rule_version=evidence_rule_version,
         driver_state=driver_state,
+        family_ref=family_ref,
     )[0]
 
 
@@ -424,6 +438,7 @@ def _pattern_hop_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
         "freshness_bucket": value.get("freshness_bucket"),
         "evidence_rule_version": value.get("evidence_rule_version"),
         "driver_state": value.get("driver_state"),
+        "family_ref": value.get("family_ref"),
     }
 
 
@@ -439,6 +454,7 @@ class PatternStep:
     freshness_bucket: str
     evidence_rule_version: str
     driver_state: DriverState | Mapping[str, Any] | None = None
+    family_ref: str | None = None
 
     def __post_init__(self) -> None:
         hop, resolved = _pattern_hop_validated(
@@ -450,6 +466,7 @@ class PatternStep:
             freshness_bucket=self.freshness_bucket,
             evidence_rule_version=self.evidence_rule_version,
             driver_state=self.driver_state,
+            family_ref=self.family_ref,
         )
         object.__setattr__(self, "ordinal", hop.ordinal)
         object.__setattr__(self, "source_kind", hop.source_kind)
@@ -459,6 +476,7 @@ class PatternStep:
         object.__setattr__(self, "freshness_bucket", hop.freshness_bucket)
         object.__setattr__(self, "evidence_rule_version", hop.evidence_rule_version)
         object.__setattr__(self, "driver_state", resolved)
+        object.__setattr__(self, "family_ref", hop.family_ref)
 
     def identity_tuple(self) -> tuple[object, ...]:
         return _pattern_hop_identity(
@@ -470,6 +488,7 @@ class PatternStep:
             freshness_bucket=self.freshness_bucket,
             evidence_rule_version=self.evidence_rule_version,
             driver_state=self.driver_state,
+            family_ref=self.family_ref,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -482,6 +501,7 @@ class PatternStep:
             "freshness_bucket": self.freshness_bucket,
             "evidence_rule_version": self.evidence_rule_version,
             "driver_state": None if self.driver_state is None else self.driver_state.to_dict(),
+            "family_ref": self.family_ref,
         }
 
     @classmethod
@@ -1216,6 +1236,7 @@ class PatternMatchedHop:
     freshness_bucket: str
     evidence_rule_version: str
     driver_state: DriverState | Mapping[str, Any] | None = None
+    family_ref: str | None = None
     evidence_refs: Sequence[str] = ()
 
     def __post_init__(self) -> None:
@@ -1228,6 +1249,7 @@ class PatternMatchedHop:
             freshness_bucket=self.freshness_bucket,
             evidence_rule_version=self.evidence_rule_version,
             driver_state=self.driver_state,
+            family_ref=self.family_ref,
         )
         object.__setattr__(self, "ordinal", hop.ordinal)
         object.__setattr__(self, "source_kind", hop.source_kind)
@@ -1237,6 +1259,7 @@ class PatternMatchedHop:
         object.__setattr__(self, "freshness_bucket", hop.freshness_bucket)
         object.__setattr__(self, "evidence_rule_version", hop.evidence_rule_version)
         object.__setattr__(self, "driver_state", resolved)
+        object.__setattr__(self, "family_ref", hop.family_ref)
         object.__setattr__(self, "evidence_refs", _unique_text_tuple(self.evidence_refs, "evidence_refs"))
 
     def identity_tuple(self) -> tuple[object, ...]:
@@ -1249,6 +1272,7 @@ class PatternMatchedHop:
             freshness_bucket=self.freshness_bucket,
             evidence_rule_version=self.evidence_rule_version,
             driver_state=self.driver_state,
+            family_ref=self.family_ref,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1261,6 +1285,7 @@ class PatternMatchedHop:
             "freshness_bucket": self.freshness_bucket,
             "evidence_rule_version": self.evidence_rule_version,
             "driver_state": None if self.driver_state is None else self.driver_state.to_dict(),
+            "family_ref": self.family_ref,
             "evidence_refs": list(self.evidence_refs),
         }
 

@@ -477,14 +477,23 @@ def compose_world_ontology_attestation(
     store: object | None,
     config_dir: str | Path | None,
     clock: object | None = None,
+    extended: bool = False,
+    briefs_root: str | Path | None = None,
 ) -> object | None:
-    """Compose the single committed ontology attestation. Fail-open, no fabricated heads."""
+    """Compose the single committed ontology attestation. Fail-open, no fabricated heads.
+
+    ``extended=True`` additionally wires verified company + family heads; it is
+    fail-closed (an explicit extension request must never silently boot legacy).
+    """
 
     if store is None or config_dir is None:
         return None
     try:
+        from trader.application.world_model.issuer_registry import build_issuer_registry
         from trader.application.world_model.ontology_bootstrap import WorldOntologyAttestation
         from trader.application.world_model.world_scope_resolver import WorldScopeResolver
+        from trader.infrastructure.files.company_briefs import load_company_briefs
+        from trader.infrastructure.files.family_catalog_config import load_family_catalog
         from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
 
         path = getattr(store, "path", None)
@@ -496,8 +505,19 @@ def compose_world_ontology_attestation(
             kwargs["clock"] = clock
         graph_store = WorldGraphStore(db if db is not None else path, **kwargs)
         mapping = WorldScopeResolver.load(Path(config_dir)).mapping
-        return WorldOntologyAttestation(graph_store, mapping)
+        if not extended:
+            return WorldOntologyAttestation(graph_store, mapping)
+        if briefs_root is None:
+            raise ValueError("extended ontology requires briefs_root")
+        corpus = load_company_briefs(Path(briefs_root))
+        catalog = load_family_catalog(Path(config_dir))
+        build = build_issuer_registry(corpus.briefs, mapping)
+        return WorldOntologyAttestation(
+            graph_store, mapping, issuer_registry=build.registry, family_catalog=catalog
+        )
     except Exception:  # noqa: BLE001 - missing ontology cannot block market/Trader
+        if extended:
+            raise
         return None
 
 
@@ -548,6 +568,8 @@ def _compose_graph_capture(
     config_dir: str | Path | None,
     study_cohort_id: str | None = None,
     ontology_attestation: object | None = None,
+    extended: bool = False,
+    briefs_root: str | Path | None = None,
 ) -> object | None:
     if store is None or config_dir is None:
         return None
@@ -585,7 +607,25 @@ def _compose_graph_capture(
 
         resolver = WorldScopeResolver.load(Path(config_dir))
         if attestation is None:
-            attestation = WorldOntologyAttestation(graph_store, resolver.mapping)
+            if not extended:
+                attestation = WorldOntologyAttestation(graph_store, resolver.mapping)
+            else:
+                # Same derivation as the boot attestation: every publisher must
+                # derive the same extended id or tips oscillate between
+                # generations. Raises (fail-closed) without briefs_root.
+                from trader.application.world_model.issuer_registry import build_issuer_registry
+                from trader.infrastructure.files.company_briefs import load_company_briefs
+                from trader.infrastructure.files.family_catalog_config import load_family_catalog
+
+                if briefs_root is None:
+                    raise ValueError("extended capture requires briefs_root")
+                briefs = load_company_briefs(Path(briefs_root))
+                attestation = WorldOntologyAttestation(
+                    graph_store,
+                    resolver.mapping,
+                    issuer_registry=build_issuer_registry(briefs.briefs, resolver.mapping).registry,
+                    family_catalog=load_family_catalog(Path(config_dir)),
+                )
         attestation.ensure_published()
         scope_mapping = attestation.mapping
         ontology_revision = None
@@ -637,6 +677,7 @@ def compose_pattern_shadow_workflow(
     enabled: bool,
     store: object | None,
     macro_root: str | Path,
+    knowledge_root: str | Path | None = None,
 ) -> object | None:
     """Compose the automatic graph-pattern lifecycle on the world-model ledger.
 
@@ -674,11 +715,15 @@ def compose_pattern_shadow_workflow(
     return PatternShadowWorkflow(
         cohorts=store,  # type: ignore[arg-type]
         lifecycle=pattern_store,
-        discovery=PatternDiscoveryService(SqlitePatternFormationSource(db_path, macro_root=macro_root)),
+        discovery=PatternDiscoveryService(
+            SqlitePatternFormationSource(db_path, macro_root=macro_root, knowledge_root=knowledge_root)
+        ),
         patterns=patterns,
         evaluation=PatternEvaluationService(
             catalog=catalog,
-            source=SqlitePatternEvaluationSource(db_path, macro_root=macro_root),
+            source=SqlitePatternEvaluationSource(
+                db_path, macro_root=macro_root, knowledge_root=knowledge_root
+            ),
         ),
         predictions=store,  # type: ignore[arg-type]
         outcomes=PatternOutcomeLinkService(
@@ -697,6 +742,8 @@ def compose_local_graph_lanes(
     config_dir: str | Path | None = None,
     study_cohort_id: str | None = None,
     ontology_attestation: object | None = None,
+    extended: bool = False,
+    briefs_root: str | Path | None = None,
 ) -> tuple[tuple[object, ...], WorldGraphEpisodeEnricher | None]:
     """Compose local graph lanes only when the graph flag is on and capture+predictors exist."""
 
@@ -712,6 +759,8 @@ def compose_local_graph_lanes(
                 config_dir=config_dir,
                 study_cohort_id=study_cohort_id,
                 ontology_attestation=ontology_attestation,
+                extended=extended,
+                briefs_root=briefs_root,
             )
         )
         if predictors is None:

@@ -865,6 +865,7 @@ class StructuralWorldRelation:
 
     @property
     def family(self) -> str:
+        """Relation family (structural|knowledge), distinct from the ontology revision family."""
         return "structural"
 
     def effective_at(self, cutoff_at: datetime | str) -> bool:

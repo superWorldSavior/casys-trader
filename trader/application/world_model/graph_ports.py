@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NewType, Protocol
 
-from trader.domain.world_availability import AvailabilityEvidence, PersistedWorldRef
+from trader.domain.world_availability import AvailabilityEvidence, PersistedWorldRef, WorldAvailabilityReceipt
+from trader.domain.world_company import DriverCompanyBundle
+from trader.domain.world_context import KnowledgeArtifact
 from trader.domain.world_graph import (
     GRAPH_TRAVERSAL_POLICY_VERSION,
     KnowledgeWorldRelationEvent,
@@ -27,6 +29,7 @@ from trader.domain.world_graph import (
     WorldRelationEvent,
 )
 from trader.domain.world_macro import MacroObservationEnvelope
+from trader.domain.world_news import DriverNewsBundle
 
 
 WorldEntityEventId = NewType("WorldEntityEventId", str)
@@ -230,12 +233,32 @@ class WorldOntologyBootstrapPort(Protocol):
     def readiness(self, cutoff_at: datetime | str | None = None) -> WorldOntologyReadiness: ...
 
 
+# Attested (envelope, frozen signal, receipt) join keyed by artifact id.
+# Mirrors the infrastructure corpus row with domain-only types.
+KnowledgeArtifactJoinMapping = dict[
+    str, tuple[KnowledgeArtifact, DriverNewsBundle | DriverCompanyBundle, WorldAvailabilityReceipt]
+]
+
+
+class WorldKnowledgeLedger(Protocol):
+    """Append-only knowledge artifacts backing ABOUT overlays."""
+
+    def append_artifact(
+        self,
+        envelope: KnowledgeArtifact,
+        signal: DriverNewsBundle | DriverCompanyBundle,
+    ) -> PersistedWorldRef: ...
+
+    def load_corpus(self) -> KnowledgeArtifactJoinMapping: ...
+
+
 __all__ = [
     "BridgeRequestId",
     "MacroGraphBridgeEventId",
     "MacroGraphBridgeKey",
     "MacroGraphBridgeLedger",
     "MacroObservationScanPort",
+    "KnowledgeArtifactJoinMapping",
     "WorldEntityEventEnvelope",
     "WorldEntityEventId",
     "WorldEntityIdentityEventEnvelope",
@@ -247,6 +270,7 @@ __all__ = [
     "WorldGraphSnapshotId",
     "WorldGraphSnapshotLedger",
     "WorldGraphTraversalPort",
+    "WorldKnowledgeLedger",
     "WorldOntologyBootstrapPort",
     "WorldOntologyReadiness",
     "WorldOntologyReadinessPort",

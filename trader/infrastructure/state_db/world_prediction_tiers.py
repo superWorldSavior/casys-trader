@@ -593,7 +593,7 @@ def _assert_external_manifest(path: Path, expected: WorldPredictionArchiveManife
         actual = WorldPredictionArchiveManifest.from_mapping(payload)
     except (TypeError, ValueError) as exc:
         raise PredictionReadUnavailable(f"canonical partition manifest is invalid: {path}") from exc
-    if actual.to_dict() != expected.to_dict():
+    if actual.semantic_identity() != expected.semantic_identity():
         raise PredictionReadUnavailable(f"canonical partition manifest does not match registry: {path}")
 
 

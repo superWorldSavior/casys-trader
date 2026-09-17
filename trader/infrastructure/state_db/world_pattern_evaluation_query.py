@@ -24,6 +24,7 @@ from trader.application.world_model.pattern_evaluation_request import PatternEva
 from trader.domain.world_cohort import WorldCohortSlot
 from trader.domain.world_episode import GRAPH_FEATURE_CONTRACT_ID, WorldEpisode
 from trader.infrastructure.state_db.sqlite_in import sqlite_in_chunks, sqlite_placeholders
+from trader.infrastructure.state_db.world_knowledge_corpus import load_knowledge_corpus
 from trader.infrastructure.state_db.world_pattern_formation_query import (
     _Ledger,
     _admitted_snapshot,
@@ -68,9 +69,16 @@ def _empty_batch(*reasons: str) -> PatternEvaluationBatch:
 class SqlitePatternEvaluationSource:
     """URI ``mode=ro`` loader of unlabeled graph-companion evaluation records."""
 
-    def __init__(self, db_path: str | Path, *, macro_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        macro_root: str | Path | None = None,
+        knowledge_root: str | Path | None = None,
+    ) -> None:
         self.path = Path(db_path)
         self.macro_root = None if macro_root is None else Path(macro_root)
+        self.knowledge_root = None if knowledge_root is None else Path(knowledge_root)
 
     def load_evaluation_batch(self, request: Any) -> PatternEvaluationBatch:
         if not isinstance(request, PatternEvaluationScanRequest):
@@ -86,12 +94,14 @@ class SqlitePatternEvaluationSource:
                 missing = sorted(_REQUIRED_TABLES.difference(tables))
                 if missing:
                     return _empty_batch("schema_unavailable")
-                return _load_batch(connection, request, self.macro_root)
+                return _load_batch(connection, request, self.macro_root, self.knowledge_root)
         except (PredictionStorageBusyError, OSError, sqlite3.Error):
             return _empty_batch("unavailable")
 
 
-def _preload_evaluation_ledger(connection: sqlite3.Connection, *, macro_root: Path | None) -> _Ledger:
+def _preload_evaluation_ledger(
+    connection: sqlite3.Connection, *, macro_root: Path | None, knowledge_root: Path | None = None
+) -> _Ledger:
     snapshots = {str(row["snapshot_id"]): row for row in connection.execute("SELECT * FROM world_graph_snapshots")}
     receipts: dict[tuple[str, str, str], sqlite3.Row] = {}
     for row in connection.execute(
@@ -130,6 +140,7 @@ def _preload_evaluation_ledger(connection: sqlite3.Connection, *, macro_root: Pa
         relation_events={key: tuple(rows) for key, rows in relation_events.items()},
         outcomes={},
         macro_observations=_load_macro_observation_corpus(macro_root),
+        knowledge_artifacts=load_knowledge_corpus(knowledge_root),
     )
 
 
@@ -137,6 +148,7 @@ def _load_batch(
     connection: sqlite3.Connection,
     request: PatternEvaluationScanRequest,
     macro_root: Path | None,
+    knowledge_root: Path | None = None,
 ) -> PatternEvaluationBatch:
     as_of = request.as_of
     not_before = request.not_before
@@ -166,7 +178,7 @@ def _load_batch(
             rejection_counts={key: rejections[key] for key in sorted(rejections) if rejections[key]},
             source_evidence_ids=tuple(sorted(evidence)),
         )
-    ledger = _preload_evaluation_ledger(connection, macro_root=macro_root)
+    ledger = _preload_evaluation_ledger(connection, macro_root=macro_root, knowledge_root=knowledge_root)
     for episode_row in episode_rows:
         try:
             built = _record_for_episode(ledger, episode_row, request, rejections, evidence)
@@ -360,6 +372,7 @@ def _record_for_episode(
                 snapshot,
                 structural,
                 ledger.macro_observations,
+                ledger.knowledge_artifacts,
             ),
         )
     except (TypeError, ValueError):

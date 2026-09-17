@@ -132,7 +132,14 @@ def build_news_macro_prompt(request: NewsMacroAnalysisRequest) -> str:
         "justifies the section.\n"
         "POINT = {point, source_refs, symbols, severity: info|watch|risk, "
         "signal: weak|strong|event, direction?: bullish|bearish|risk_on|risk_off|neutral|mixed, "
-        "horizon?, is_operational?: bool}. "
+        "horizon?, is_operational?: bool, "
+        "event_class!: earnings|guidance|corporate_action|regulatory|capital|analyst|operations|macro|no_news|unknown}. "
+        "`event_class` is REQUIRED on every point: earnings (results, EPS, beats/misses), "
+        "guidance (outlook, forecasts), corporate_action (M&A, spinoff, IPO, delisting), "
+        "regulatory (lawsuits, fines, antitrust, probes), capital (dividends, buybacks, splits, raises), "
+        "analyst (ratings, price targets), operations (management, layoffs, plants, products, trials, orders), "
+        "macro (rates, central banks, FX, commodities, geopolitics), "
+        "no_news (explicitly no fresh catalyst), unknown (genuinely unclassifiable, last resort). "
         "Set is_operational:true only for pipeline artifacts (ticker collision, stale feed, "
         "empty data stream) — not for genuine market observations. Omit or use false for "
         "market facts. "
@@ -177,6 +184,17 @@ def parse_news_macro_completion(
     brief = NewsMacroBrief.from_mapping(payload)
     if brief is None:
         return None, "invalid_payload"
+    # Fail-loud contract: new analyst output must classify every point. A
+    # missing class rejects the whole brief (history briefs predate the field
+    # and never pass through this gate).
+    for sections in (brief.zones, brief.families, brief.symbols):
+        for section in sections:
+            for point in section.points:
+                if not point.event_class:
+                    return None, "missing_event_class"
+    for point in brief.alerts:
+        if not point.event_class:
+            return None, "missing_event_class"
     return brief, None
 
 

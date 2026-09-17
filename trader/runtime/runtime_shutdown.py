@@ -39,10 +39,16 @@ def shutdown_runtime_resources(
     logger: LoggerLike,
     company_intelligence_runner: Stoppable | None = None,
     learning_sync_runner: Stoppable | None = None,
+    world_about_runner: Stoppable | None = None,
 ) -> None:
     _stop_pool(
         learning_sync_runner,
         message="[learnings_sync] runner arrêté",
+        logger=logger,
+    )
+    _stop_pool(
+        world_about_runner,
+        message="[world_about] runner arrêté",
         logger=logger,
     )
     _stop_pool(

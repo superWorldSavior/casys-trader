@@ -474,7 +474,7 @@ def test_scope_mapping_covers_live_anchors_and_graph_bootstrap_uses_full_mapping
     captured: list[object] = []
 
     class _Bootstrap:
-        def __init__(self, _store: object, mapping_arg: object) -> None:
+        def __init__(self, _store: object, mapping_arg: object, **_kwargs: object) -> None:
             captured.append(mapping_arg)
 
         def ensure_published(self, **_kwargs: object) -> object:
@@ -1171,3 +1171,130 @@ def test_typed_graph_flag_false_does_not_reread_env(tmp_path: Path, monkeypatch:
         if thread.name == MACRO_THREAD_NAME and thread.is_alive() and thread.ident not in live_before
     }
     assert live_after == set()
+
+
+def _stub_macro_graph_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Bridge:
+        def align(self, request_id: str) -> object:
+            del request_id
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="active", block_reason=None),
+                version=2,
+            )
+
+        def reconcile(self, *, limit: int) -> object:
+            del limit
+            return SimpleNamespace(
+                events=(),
+                active_run=SimpleNamespace(status="active", block_reason=None),
+                version=2,
+            )
+
+    monkeypatch.setattr(
+        "trader.application.world_model.graph_observation_bridge.RegisterMacroObservationKnowledge",
+        lambda **_kwargs: _Bridge(),
+    )
+
+
+def test_extended_bridge_publishes_one_stable_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from trader.application.world_model.issuer_registry import build_issuer_registry
+    from trader.application.world_model.ontology_bootstrap import derive_extended_ontology
+    from trader.domain.world_graph import WorldOntologyRevisionPublished, WorldOntologyRevisionSuperseded
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
+    from trader.infrastructure.files.company_briefs import load_company_briefs
+    from trader.infrastructure.files.family_catalog_config import load_family_catalog
+    from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    _stub_macro_graph_bridge(monkeypatch)
+    clock = FakeClock(NOW)
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=clock,
+        sleeper=lambda _seconds: None,
+        graph_enabled=True,
+        extended=True,
+        briefs_root=tmp_path / "company_intelligence",
+    )
+    for reason in ("first", "second"):
+        started = bundle.runner.trigger(now=NOW, reason=reason)
+        assert started["triggered"] is True
+        started["_thread"].join(timeout=15.0)
+        assert started["_thread"].is_alive() is False
+    bundle.runner.stop()
+    status = bundle.runner.status()
+    assert status["graph_bridge"]["status"] == "active"
+
+    mapping = bundle.mapping
+    registry = build_issuer_registry(load_company_briefs(tmp_path / "company_intelligence").briefs, mapping).registry
+    catalog = load_family_catalog(CONFIG_DIR)
+    expected = derive_extended_ontology(mapping, registry, catalog)[2]
+    assert expected.revision_id != market_ontology_revision_id(mapping)
+
+    graph = WorldGraphStore(tmp_path / "world_model.db", clock=lambda: NOW)
+    try:
+        envelopes = graph.list_revision_events_available_through(NOW + timedelta(hours=1))
+    finally:
+        graph.close()
+    published = [item.event for item in envelopes if isinstance(item.event, WorldOntologyRevisionPublished)]
+    superseded = [item.event for item in envelopes if isinstance(item.event, WorldOntologyRevisionSuperseded)]
+    assert superseded == []
+    assert len(published) == 1
+    assert published[0].revision.revision_id == expected.revision_id
+
+
+def test_extended_without_briefs_root_is_fail_closed(tmp_path: Path) -> None:
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    with pytest.raises(ValueError, match="briefs_root"):
+        wire_world_macro_runtime(
+            config_dir=CONFIG_DIR,
+            state_dir=tmp_path,
+            transport=UrlFixtureTransport(),
+            clock=FakeClock(NOW),
+            sleeper=lambda _seconds: None,
+            graph_enabled=True,
+            extended=True,
+        )
+
+
+def test_extended_load_failure_skips_bridge_but_collects_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.runtime.world_macro_runtime import wire_world_macro_runtime
+
+    _stub_macro_graph_bridge(monkeypatch)
+
+    def _boom(_path: object) -> object:
+        raise RuntimeError("catalog boom")
+
+    monkeypatch.setattr(
+        "trader.infrastructure.files.family_catalog_config.load_family_catalog",
+        _boom,
+    )
+    clock = FakeClock(NOW)
+    bundle = wire_world_macro_runtime(
+        config_dir=CONFIG_DIR,
+        state_dir=tmp_path,
+        transport=UrlFixtureTransport(),
+        clock=clock,
+        sleeper=lambda _seconds: None,
+        graph_enabled=True,
+        extended=True,
+        briefs_root=tmp_path / "company_intelligence",
+    )
+    started = bundle.runner.trigger(now=NOW, reason="post_cycle")
+    assert started["triggered"] is True
+    started["_thread"].join(timeout=15.0)
+    assert started["_thread"].is_alive() is False
+    bundle.runner.stop()
+    status = bundle.runner.status()
+    assert status["status"] == "partial"
+    assert "graph_bridge" not in status
+    assert any(
+        isinstance(item, dict) and item.get("stage") == "graph_bridge" for item in status["errors"]
+    )
+    assert len(_ecb_facts(tmp_path, clock)) >= 1

@@ -6,6 +6,11 @@ No issuer/company inference, no causal edges, no silent suffix fallback.
 Fresh state publishes the mapping generation. A new mapping hash appends a
 new revision instance and supersedes the prior active revision. Same
 instance id is never rewritten.
+
+The extended derivation adds verified company nodes + ISSUED_BY edges (from
+an issuer registry) and family nodes + MEMBER_OF_FAMILY edges (from a frozen
+family catalog) under a distinct revision id. Extended inputs must travel
+together; the legacy path stays byte-identical without them.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from trader.application.world_model.ontology_service import (
     WorldOntologyService,
 )
 from trader.domain.world_episode import parse_utc_timestamp
+from trader.domain.world_family_catalog import FamilyCatalog
 from trader.domain.world_feature_contract import MARKET_ONTOLOGY_REVISION
 from trader.domain.world_graph import (
     FORBIDDEN_RELATION_KINDS,
@@ -36,11 +42,14 @@ from trader.domain.world_graph import (
     WorldOntologyRevision,
     WorldStructuralRelationRef,
 )
+from trader.domain.world_issuer_registry import IssuerRegistry
 from trader.domain.world_ontology_lifecycle import (
     WorldOntologyLifecycleSpec,
     WorldOntologyPublicationPlan,
+    market_ontology_extended_revision_id,
     market_ontology_revision_id,
     plan_world_ontology_publication,
+    require_extended_ontology_revision,
     require_mapping_aligned_ontology_revision,
 )
 from trader.domain.world_scope import WorldCanonicalScopeRef, WorldScopeMapping
@@ -129,6 +138,112 @@ def derive_market_ontology(
         add_edge("LOCATED_IN", country, region, extra)
         add_edge("PART_OF_WORLD", region, world, extra)
 
+    ordered_entities, relations = _assemble_heads(mapping, entities, edges, revision_id, when)
+    actual_heads = frozenset(
+        (relation.kind, relation.source.node_id, relation.target.node_id) for relation in relations
+    )
+    if actual_heads != expected_scope_heads(mapping):
+        raise ValueError("published revision topology does not match WorldScopeMapping heads")
+    if any(entity.kind == "company" for entity in ordered_entities):
+        raise ValueError("bootstrap must not infer issuer or company entities")
+    revision = _assemble_revision(mapping, revision_id, ordered_entities, relations)
+    return ordered_entities, relations, revision
+
+
+def derive_extended_ontology(
+    mapping: WorldScopeMapping,
+    issuers: IssuerRegistry,
+    families: FamilyCatalog,
+    *,
+    revision_id: str | None = None,
+    effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
+) -> tuple[tuple[WorldEntityRef, ...], tuple[StructuralWorldRelation, ...], WorldOntologyRevision]:
+    """Pure mapping + registry + catalog → frozen heads with company/family branches.
+
+    Scope geo heads come from the legacy derivation untouched. Company nodes
+    and ISSUED_BY edges come only from verified registry entries; family nodes
+    and MEMBER_OF_FAMILY edges only from catalog membership. Nothing is
+    inferred: unmapped symbols simply get no branch, and empty inputs are
+    rejected (a pointless new revision id must never exist).
+    """
+
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("mapping must be WorldScopeMapping")
+    if not isinstance(issuers, IssuerRegistry):
+        raise TypeError("issuers must be IssuerRegistry")
+    if not isinstance(families, FamilyCatalog):
+        raise TypeError("families must be FamilyCatalog")
+    if not issuers.entries and not families.entries:
+        raise ValueError("extended derivation requires issuer or family inputs")
+    resolved_revision_id = str(revision_id).strip() if revision_id is not None else ""
+    if not resolved_revision_id:
+        resolved_revision_id = market_ontology_extended_revision_id(
+            mapping,
+            registry_sha256=issuers.content_sha256 or "",
+            catalog_sha256=families.content_sha256 or "",
+        )
+    when = _utc(effective_from, "effective_from")
+    base_entities, base_relations, _base_revision = derive_market_ontology(
+        mapping, revision_id=resolved_revision_id, effective_from=when
+    )
+    entities: dict[str, WorldEntityRef] = {entity.node_id: entity for entity in base_entities}
+    edges: dict[tuple[str, str, str], set[str]] = {}
+    for entry in mapping.entries:
+        anchor_proof = f"{mapping.mapping_id}:{entry.anchor.market_venue}:{entry.anchor.instrument}"
+        instrument = _instrument_entity(entry)
+        if instrument.node_id not in entities:
+            raise ValueError(f"instrument {instrument.node_id} is missing from derived scope heads")
+        family = families.family_for_symbol(entry.anchor.instrument)
+        if family is not None:
+            family_ref = WorldEntityRef(kind="family", entity_id=f"taxonomy:{family}")
+            entities.setdefault(family_ref.node_id, family_ref)
+            edges.setdefault(
+                ("MEMBER_OF_FAMILY", instrument.node_id, family_ref.node_id), set()
+            ).update((anchor_proof, f"{families.catalog_id}:{family}"))
+        issuer = issuers.issuer_for_instrument(instrument.node_id)
+        if issuer is not None:
+            company_ref = WorldEntityRef(kind="company", entity_id=issuer.issuer_entity_id)
+            entities.setdefault(company_ref.node_id, company_ref)
+            # Identity-stable proof (mirrors the family branch): refresh-varying
+            # brief refs here would break the id<->content invariant on refresh.
+            company_proof = f"{issuers.registry_id}:{issuer.issuer_entity_id}"
+            edges.setdefault(("ISSUED_BY", instrument.node_id, company_ref.node_id), set()).update(
+                (anchor_proof, company_proof)
+            )
+    for relation in base_relations:
+        key = (relation.kind, relation.source.node_id, relation.target.node_id)
+        edges.setdefault(key, set()).update(relation.source_refs)
+    ordered_entities, relations = _assemble_heads(mapping, entities, edges, resolved_revision_id, when)
+    expected = expected_scope_heads(mapping)
+    actual_heads = frozenset(
+        (relation.kind, relation.source.node_id, relation.target.node_id) for relation in relations
+    )
+    missing = expected - actual_heads
+    if missing:
+        raise ValueError(f"extended derivation dropped scope heads: {sorted(missing)}")
+    for relation in relations:
+        compact = relation.kind.upper().replace("-", "_")
+        if relation.kind in FORBIDDEN_RELATION_KINDS or "CAUS" in compact:
+            raise ValueError("generic CAUSES edges are forbidden; the ontology is not a causal graph")
+    company_nodes = {entity.node_id for entity in ordered_entities if entity.kind == "company"}
+    if company_nodes - {f"company:{entry.issuer_entity_id}" for entry in issuers.entries.values()}:
+        raise ValueError("company nodes must come from the issuer registry")
+    family_nodes = {entity.node_id for entity in ordered_entities if entity.kind == "family"}
+    if family_nodes - {f"family:taxonomy:{name}" for name in families.families}:
+        raise ValueError("family nodes must come from the family catalog")
+    revision = _assemble_revision(mapping, resolved_revision_id, ordered_entities, relations)
+    return ordered_entities, relations, revision
+
+
+def _assemble_heads(
+    mapping: WorldScopeMapping,
+    entities: dict[str, WorldEntityRef],
+    edges: dict[tuple[str, str, str], set[str]],
+    revision_id: str,
+    when: datetime,
+) -> tuple[tuple[WorldEntityRef, ...], tuple[StructuralWorldRelation, ...]]:
+    """Deterministic entities + relations from head dicts. Shared legacy/extended."""
+
     ordered_entities = tuple(sorted(entities.values(), key=lambda item: item.node_id))
     relations = tuple(
         StructuralWorldRelation(
@@ -141,14 +256,18 @@ def derive_market_ontology(
         )
         for (kind, source_id, target_id), edge_proofs in sorted(edges.items())
     )
-    actual_heads = frozenset(
-        (relation.kind, relation.source.node_id, relation.target.node_id) for relation in relations
-    )
-    if actual_heads != expected_scope_heads(mapping):
-        raise ValueError("published revision topology does not match WorldScopeMapping heads")
-    if any(entity.kind == "company" for entity in ordered_entities):
-        raise ValueError("bootstrap must not infer issuer or company entities")
-    revision = WorldOntologyRevision(
+    return ordered_entities, relations
+
+
+def _assemble_revision(
+    mapping: WorldScopeMapping,
+    revision_id: str,
+    ordered_entities: tuple[WorldEntityRef, ...],
+    relations: tuple[StructuralWorldRelation, ...],
+) -> WorldOntologyRevision:
+    """Revision envelope over assembled heads. Shared legacy/extended."""
+
+    return WorldOntologyRevision(
         revision_id=revision_id,
         entities=ordered_entities,
         structural_relation_refs=tuple(WorldStructuralRelationRef.from_relation(item) for item in relations),
@@ -156,7 +275,6 @@ def derive_market_ontology(
         scope_mapping_id=mapping.mapping_id,
         scope_mapping_hash=mapping.content_sha256,
     )
-    return ordered_entities, relations, revision
 
 
 def _readiness(
@@ -197,28 +315,60 @@ class WorldOntologyBootstrapService:
         revision_id: str | None = None,
         effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
         lifecycle_spec: WorldOntologyLifecycleSpec | None = None,
+        issuer_registry: IssuerRegistry | None = None,
+        family_catalog: FamilyCatalog | None = None,
     ) -> None:
         if not isinstance(mapping, WorldScopeMapping):
             raise TypeError("mapping must be WorldScopeMapping")
+        if (issuer_registry is None) != (family_catalog is None):
+            raise ValueError("issuer_registry and family_catalog must be provided together")
+        if lifecycle_spec is not None and issuer_registry is not None:
+            raise ValueError("lifecycle_spec cannot pin an extended derivation")
         self._ledger = ledger
         self._mapping = mapping
         self._lifecycle_spec = None if lifecycle_spec is None else WorldOntologyLifecycleSpec.from_mapping(lifecycle_spec)
+        self._issuer_registry = issuer_registry
+        self._family_catalog = family_catalog
         if revision_id is not None and str(revision_id).strip():
             self._revision_id = str(revision_id).strip()
         elif self._lifecycle_spec is not None:
             self._revision_id = self._lifecycle_spec.revision_id
+        elif self._issuer_registry is not None and self._family_catalog is not None:
+            self._revision_id = market_ontology_extended_revision_id(
+                mapping,
+                registry_sha256=self._issuer_registry.content_sha256 or "",
+                catalog_sha256=self._family_catalog.content_sha256 or "",
+            )
         else:
             self._revision_id = market_ontology_revision_id(mapping)
         self._effective_from = _utc(effective_from, "effective_from")
         self._service = WorldOntologyService(ledger)
 
-    def expected_revision(self) -> WorldOntologyRevision:
-        revision = derive_market_ontology(
+    def _derive(self) -> tuple[tuple[WorldEntityRef, ...], tuple[StructuralWorldRelation, ...], WorldOntologyRevision]:
+        if self._issuer_registry is not None and self._family_catalog is not None:
+            return derive_extended_ontology(
+                self._mapping,
+                self._issuer_registry,
+                self._family_catalog,
+                revision_id=self._revision_id,
+                effective_from=self._effective_from,
+            )
+        return derive_market_ontology(
             self._mapping,
             revision_id=self._revision_id,
             effective_from=self._effective_from,
-        )[2]
+        )
+
+    def expected_revision(self) -> WorldOntologyRevision:
+        revision = self._derive()[2]
         if self._lifecycle_spec is None:
+            if self._issuer_registry is not None and self._family_catalog is not None:
+                return require_extended_ontology_revision(
+                    revision,
+                    self._mapping,
+                    registry_sha256=self._issuer_registry.content_sha256 or "",
+                    catalog_sha256=self._family_catalog.content_sha256 or "",
+                )
             return require_mapping_aligned_ontology_revision(revision, self._mapping)
         return revision
 
@@ -261,11 +411,7 @@ class WorldOntologyBootstrapService:
         expected: WorldOntologyRevision,
         cutoff: datetime,
     ) -> None:
-        entities, relations, derived = derive_market_ontology(
-            self._mapping,
-            revision_id=self._revision_id,
-            effective_from=self._effective_from,
-        )
+        entities, relations, derived = self._derive()
         if derived.content_sha256 != expected.content_sha256:
             raise ValueError("conflict: derived ontology revision drifted during publish")
         view = self._service.ontology.at_cutoff(cutoff)
@@ -324,6 +470,8 @@ class WorldOntologyAttestation:
         revision_id: str | None = None,
         effective_from: datetime | str = MARKET_ONTOLOGY_EFFECTIVE_FROM,
         lifecycle_spec: WorldOntologyLifecycleSpec | None = None,
+        issuer_registry: IssuerRegistry | None = None,
+        family_catalog: FamilyCatalog | None = None,
     ) -> None:
         self._ledger = ledger
         self._mapping = mapping
@@ -333,6 +481,8 @@ class WorldOntologyAttestation:
             revision_id=revision_id,
             effective_from=effective_from,
             lifecycle_spec=lifecycle_spec,
+            issuer_registry=issuer_registry,
+            family_catalog=family_catalog,
         )
         self._proof = WorldOntologyProofService(ledger)
 

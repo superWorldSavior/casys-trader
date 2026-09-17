@@ -24,7 +24,13 @@ from trader.domain.world_macro import (
     MacroCollectionPlan,
     require_committed_macro_collection_plan,
 )
-from trader.domain.world_ontology_lifecycle import admits_market_ontology_family, market_ontology_revision_id
+from trader.domain.world_family_catalog import FamilyCatalog
+from trader.domain.world_issuer_registry import IssuerRegistry
+from trader.domain.world_ontology_lifecycle import (
+    admits_market_ontology_family,
+    market_ontology_extended_revision_id,
+    market_ontology_revision_id,
+)
 from trader.domain.world_scope import WorldScopeMapping
 
 
@@ -67,8 +73,15 @@ def derive_macro_graph_bridge_spec(
     ontology: WorldOntologyRevision,
     collection_plan: MacroCollectionPlan,
     producer_version: str = MACRO_PRODUCER_VERSION,
+    issuer_registry: IssuerRegistry | None = None,
+    family_catalog: FamilyCatalog | None = None,
 ) -> MacroGraphBridgeRunSpec:
-    """Derive the live bridge spec from loaded mapping, ontology, and collection plan."""
+    """Derive the live bridge spec from loaded mapping, ontology, and collection plan.
+
+    The legacy mapping-derived revision is always admitted. The extended
+    revision is admitted only when the registry + catalog it derives from
+    travel with the call.
+    """
 
     if not isinstance(mapping, WorldScopeMapping):
         raise TypeError("mapping must be WorldScopeMapping")
@@ -76,9 +89,24 @@ def derive_macro_graph_bridge_spec(
         raise TypeError("ontology must be WorldOntologyRevision")
     if not isinstance(collection_plan, MacroCollectionPlan):
         raise TypeError("collection_plan must be MacroCollectionPlan")
+    if (issuer_registry is None) != (family_catalog is None):
+        raise ValueError("issuer_registry and family_catalog must be provided together")
+    if issuer_registry is not None and not isinstance(issuer_registry, IssuerRegistry):
+        raise TypeError("issuer_registry must be IssuerRegistry")
+    if family_catalog is not None and not isinstance(family_catalog, FamilyCatalog):
+        raise TypeError("family_catalog must be FamilyCatalog")
     if mapping.mapping_id != WORLD_SCOPE_MAPPING_ID:
         raise ValueError("bridge mapping_id must be world_scope_mapping.v1")
-    if ontology.revision_id != market_ontology_revision_id(mapping):
+    admitted = {market_ontology_revision_id(mapping)}
+    if issuer_registry is not None and family_catalog is not None:
+        admitted.add(
+            market_ontology_extended_revision_id(
+                mapping,
+                registry_sha256=issuer_registry.content_sha256 or "",
+                catalog_sha256=family_catalog.content_sha256 or "",
+            )
+        )
+    if ontology.revision_id not in admitted:
         raise ValueError("bridge ontology revision_id must be derived from the mapping generation")
     if ontology.scope_mapping_id != mapping.mapping_id or ontology.scope_mapping_hash != mapping.content_sha256:
         raise ValueError("bridge ontology mapping identity does not match mapping")
@@ -100,6 +128,8 @@ def committed_macro_graph_bridge_spec(
     ontology: WorldOntologyRevision | None = None,
     collection_plan: MacroCollectionPlan | None = None,
     producer_version: str = MACRO_PRODUCER_VERSION,
+    issuer_registry: IssuerRegistry | None = None,
+    family_catalog: FamilyCatalog | None = None,
 ) -> MacroGraphBridgeRunSpec:
     if mapping is None or ontology is None or collection_plan is None:
         raise TypeError("bridge spec must be derived from mapping, ontology, and collection plan")
@@ -108,6 +138,8 @@ def committed_macro_graph_bridge_spec(
         ontology=ontology,
         collection_plan=collection_plan,
         producer_version=producer_version,
+        issuer_registry=issuer_registry,
+        family_catalog=family_catalog,
     )
 
 
@@ -117,6 +149,8 @@ def require_committed_live_bridge_lineage(
     ontology: WorldOntologyRevision,
     collection_plan: MacroCollectionPlan,
     producer_version: str = MACRO_PRODUCER_VERSION,
+    issuer_registry: IssuerRegistry | None = None,
+    family_catalog: FamilyCatalog | None = None,
 ) -> MacroGraphBridgeRunSpec:
     require_committed_macro_collection_plan(collection_plan)
     return derive_macro_graph_bridge_spec(
@@ -124,6 +158,8 @@ def require_committed_live_bridge_lineage(
         ontology=ontology,
         collection_plan=collection_plan,
         producer_version=producer_version,
+        issuer_registry=issuer_registry,
+        family_catalog=family_catalog,
     )
 
 

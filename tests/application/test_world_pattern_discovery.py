@@ -15,6 +15,7 @@ from trader.application.world_model.pattern_discovery_ports import (
     PatternFormationRecord,
     TimeSpecificMarketAnchor,
 )
+from trader.domain.world_company import DriverCompanyBundle
 from trader.domain.world_driver import DriverRegimeBundle, DriverState
 from trader.application.world_model.pattern_formation_request import PatternFormationRequest
 from trader.domain.world_episode import (
@@ -43,6 +44,7 @@ from trader.domain.world_graph import (
     WorldStructuralRelationRef,
 )
 from trader.domain.world_macro import MACRO_PRODUCER_VERSION, MACRO_TRANSFORM_VERSION
+from trader.domain.world_news import DriverNewsBundle
 from trader.domain.world_pattern import (
     EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY,
     PATTERN_ASSOCIATION_METRIC,
@@ -523,7 +525,7 @@ def test_ranking_is_deterministic() -> None:
                 )
 
 
-def test_provenance_split_keeps_separate_populations() -> None:
+def test_populations_merge_across_revisions_but_groups_split_by_signature() -> None:
     when = datetime(2026, 8, 1, tzinfo=UTC)
     overlay = _observes(_country(), digest="9" * 64, effective_from=when - timedelta(hours=1))
     current = _record(as_of=when, label="UP", knowledge=(overlay,))
@@ -533,18 +535,18 @@ def test_provenance_split_keeps_separate_populations() -> None:
         knowledge=(_observes(_country(), digest="8" * 64, effective_from=when - timedelta(hours=1)),),
         ontology_revision="market_ontology.v2",
     )
-    result = _discover((current, drifted))
+    pin = "market_ontology:v1:" + "a" * 64
+    result = _discover((current, drifted), ontology_revision=pin)
     overlays = [
         item
         for item in result.candidates
         if "country:OBSERVES:reverse:world_observation" in item.semantic_signature
     ]
     assert len(overlays) == 2
-    revisions = {item.spec.ontology_revision for item in overlays}
-    assert revisions == {"market_ontology.v1", "market_ontology.v2"}
+    assert {item.spec.ontology_revision for item in overlays} == {pin}
     for item in overlays:
-        assert item.spec.stats.population_support == 1
         assert item.spec.stats.support == 1
+        assert item.spec.stats.population_support == 2
 
 
 def test_formation_fingerprint_changes_with_evidence() -> None:
@@ -632,23 +634,68 @@ def test_conflicting_anchor_labels_are_rejected_and_identical_evidence_dedupes()
     assert overlay_candidates[0].spec.stats.population_support == 1
 
 
-def test_pinned_ontology_revision_excludes_other_revisions_from_formation() -> None:
+def test_formation_stamp_is_request_pin_and_support_spans_revisions() -> None:
     when = datetime(2026, 8, 1, tzinfo=UTC)
-    pinned = _record(as_of=when, ontology_revision="market_ontology:v1:" + "a" * 64)
-    other = _record(
+    first = _record(as_of=when, ontology_revision="market_ontology:v1:" + "a" * 64)
+    second = _record(
         as_of=when,
         ontology_revision="market_ontology:v1:" + "b" * 64,
         symbol="2454",
         outcome_digest="c" * 64,
     )
-    mixed = _discover((pinned, other), ontology_revision=pinned.snapshot.ontology_revision, min_support=1)
-    assert mixed.considered_records == 1
-    assert mixed.rejection_counts.get("ontology_revision_mismatch") == 1
-    assert {item.spec.ontology_revision for item in mixed.candidates} == {pinned.snapshot.ontology_revision}
-    empty = _discover((other,), ontology_revision=pinned.snapshot.ontology_revision, min_support=1)
-    assert empty.candidates == ()
-    assert empty.considered_records == 0
-    assert empty.eligible_records == 0
+    pin = first.snapshot.ontology_revision
+    mixed = _discover((first, second), ontology_revision=pin, min_support=1)
+    assert mixed.considered_records == 2
+    assert mixed.eligible_records == 2
+    assert "ontology_revision_mismatch" not in mixed.rejection_counts
+    assert mixed.candidates
+    assert {item.spec.ontology_revision for item in mixed.candidates} == {pin}
+    foreign_pin = "market_ontology:v1:" + "f" * 64
+    foreign = _discover((second,), ontology_revision=foreign_pin, min_support=1)
+    assert foreign.considered_records == 1
+    assert foreign.eligible_records == 1
+    assert "ontology_revision_mismatch" not in foreign.rejection_counts
+    assert foreign.candidates
+    assert {item.spec.ontology_revision for item in foreign.candidates} == {foreign_pin}
+
+
+def test_explicit_stale_fingerprint_is_stamped_without_changing_groups() -> None:
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+    records = (
+        _record(as_of=when, outcome_digest="a" * 64),
+        _record(as_of=when + timedelta(hours=1), outcome_digest="b" * 64),
+    )
+    stale_fp = "f" * 64
+    default = _discover(records, min_support=1, min_association=0.0)
+    pinned = _discover(
+        records,
+        feature_contract_fingerprint=stale_fp,
+        feature_mask_fingerprint=stale_fp,
+        min_support=1,
+        min_association=0.0,
+    )
+    assert pinned.candidates
+    assert {item.spec.feature_contract_fingerprint for item in pinned.candidates} == {stale_fp}
+    assert {item.spec.feature_mask_fingerprint for item in pinned.candidates} == {stale_fp}
+    assert {(item.semantic_signature, item.spec.stats.support) for item in pinned.candidates} == {
+        (item.semantic_signature, item.spec.stats.support) for item in default.candidates
+    }
+
+
+def test_support_accumulates_across_revision_churn() -> None:
+    base = datetime(2026, 8, 1, tzinfo=UTC)
+    revisions = ("market_ontology:v1:" + "a" * 64, "market_ontology:v1:" + "b" * 64)
+    records = tuple(
+        _record(as_of=base + timedelta(hours=index), ontology_revision=revisions[index % 2])
+        for index in range(24)
+    )
+    result = _discover(records, ontology_revision=revisions[1], min_support=20, min_association=0.0)
+    assert result.considered_records == 24
+    assert result.eligible_records == 24
+    assert "ontology_revision_mismatch" not in result.rejection_counts
+    assert result.candidates
+    assert max(item.spec.stats.support for item in result.candidates) == 24
+    assert {item.spec.ontology_revision for item in result.candidates} == {revisions[1]}
 
 
 def test_zero_candidates_and_import_boundaries() -> None:
@@ -722,7 +769,28 @@ def test_discovery_diagnostics_separate_pathless_records_and_candidate_limit() -
 
 def test_discovery_bounds_diagnostics_but_counts_all_failed_gates() -> None:
     when = datetime(2026, 8, 1, tzinfo=UTC)
-    records = tuple(_record(as_of=when, ontology_revision=f"revision.{index}") for index in range(21))
+    root = _instrument()
+    base = (
+        _structural("TRADED_ON", root, _venue()),
+        _structural("LOCATED_IN", _venue(), _country()),
+        _structural("LOCATED_IN", _country(), _region()),
+        _structural("PART_OF_WORLD", _region(), _world()),
+        _structural("ISSUED_BY", root, _company()),
+    )
+    records = tuple(
+        _record(
+            as_of=when,
+            structural=base
+            + (
+                _structural(
+                    "MEMBER_OF_FAMILY",
+                    root,
+                    WorldEntityRef(kind="family", entity_id=f"taxonomy:v1:family{index:02d}"),
+                ),
+            ),
+        )
+        for index in range(21)
+    )
     result = _discover(records, min_support=20, min_association=0.10)
     assert result.group_count > 20
     assert len(result.groups) == 20
@@ -859,3 +927,101 @@ def test_missing_or_extra_driver_binding_is_rejected() -> None:
     assert structural_only.driver_state_bindings == ()
     replayed = PatternDriverStateBinding.from_mapping(_binding(overlay, _regime_driver()).to_dict())
     assert replayed.driver_state == _regime_driver()
+
+
+def _family_branch(root: WorldEntityRef, family_id: str) -> StructuralWorldRelation:
+    return _structural(
+        "MEMBER_OF_FAMILY",
+        root,
+        WorldEntityRef(kind="family", entity_id=f"taxonomy:{family_id}"),
+    )
+
+
+def _news_driver(**overrides: object) -> DriverState:
+    values: dict[str, object] = {
+        "event_class": "earnings",
+        "event_class_source": "analyst",
+        "direction": "bullish",
+        "strength": "strong",
+        "severity": "watch",
+        "horizon_bucket": "quarters",
+        "attribution_quality": "symbol_sourced",
+    }
+    values.update(overrides)
+    return DriverState.from_news_signal(DriverNewsBundle(**values), until_bound="bounded")  # type: ignore[arg-type]
+
+
+def _company_driver(**overrides: object) -> DriverState:
+    values: dict[str, object] = {
+        "sector": "v1:semiconductors",
+        "thesis_status": "intact",
+        "coverage_status": "full",
+        "freshness_status": "fresh",
+        "catalyst_bucket": "few",
+        "risk_bucket": "few",
+        "depth": "screen",
+    }
+    values.update(overrides)
+    return DriverState.from_company_signal(DriverCompanyBundle(**values), until_bound="bounded")  # type: ignore[arg-type]
+
+
+def test_distinct_families_are_distinct_hypotheses() -> None:
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+    first_root = _instrument("2330")
+    second_root = _instrument("2331")
+    first_members = tuple(
+        item for item in _ancestry(first_root) if item.kind != "MEMBER_OF_FAMILY"
+    ) + (_family_branch(first_root, "v1:semiconductors"),)
+    second_members = tuple(
+        item for item in _ancestry(second_root) if item.kind != "MEMBER_OF_FAMILY"
+    ) + (_family_branch(second_root, "v1:software"),)
+    first = _record(as_of=when, symbol="2330", structural=first_members)
+    second = _record(as_of=when, symbol="2331", structural=second_members)
+    result = _discover((first, second))
+    branches = [
+        item
+        for item in result.candidates
+        if "instrument:MEMBER_OF_FAMILY:forward:family" in item.semantic_signature
+    ]
+    assert len(branches) == 2
+    families = {item.spec.steps[-1].family_ref for item in branches}
+    assert families == {"v1:semiconductors", "v1:software"}
+    assert len({item.semantic_signature for item in branches}) == 2
+    assert len({item.spec.hypothesis_id for item in branches}) == 2
+
+
+def test_news_and_company_states_are_distinct_overlay_hypotheses() -> None:
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+    news_about = _about(_instrument("2330"), digest="a" * 64, effective_from=when - timedelta(hours=1))
+    company_about = _about(_instrument("2331"), digest="b" * 64, effective_from=when - timedelta(hours=1))
+    news_record = _record(
+        as_of=when,
+        symbol="2330",
+        knowledge=(news_about,),
+        driver_state_bindings=(_binding(news_about, _news_driver()),),
+    )
+    company_record = _record(
+        as_of=when,
+        symbol="2331",
+        knowledge=(company_about,),
+        driver_state_bindings=(_binding(company_about, _company_driver()),),
+    )
+    result = _discover((news_record, company_record))
+    overlays = [
+        item
+        for item in result.candidates
+        if "instrument:ABOUT:reverse:knowledge_artifact" in item.semantic_signature
+    ]
+    assert len(overlays) == 2
+    assert len({item.semantic_signature for item in overlays}) == 2
+    assert len({item.spec.hypothesis_id for item in overlays}) == 2
+    signal_classes = {item.spec.steps[-1].driver_state.signal_class for item in overlays}  # type: ignore[union-attr]
+    assert signal_classes == {"news_state", "company_state"}
+    news_step = next(
+        item.spec.steps[-1]
+        for item in overlays
+        if item.spec.steps[-1].driver_state is not None
+        and item.spec.steps[-1].driver_state.signal_class == "news_state"
+    )
+    assert news_step.driver_state is not None and news_step.driver_state.news is not None
+    assert news_step.driver_state.news.event_class == "earnings"

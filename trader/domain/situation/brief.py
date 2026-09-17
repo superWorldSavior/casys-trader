@@ -24,6 +24,24 @@ _VALID_SEVERITIES = {"info", "watch", "risk"}
 _VALID_SIGNALS = {"weak", "strong", "event"}
 _VALID_DIRECTIONS = {"bullish", "bearish", "risk_on", "risk_off", "neutral", "mixed"}
 
+# Closed news-event classes emitted by the analyst, one per point. Canonical
+# home: the world-model news bundle aliases this set (world_news already
+# depends on this module; the reverse import would be circular).
+SITUATION_EVENT_CLASSES = frozenset(
+    {
+        "earnings",
+        "guidance",
+        "corporate_action",
+        "regulatory",
+        "capital",
+        "analyst",
+        "operations",
+        "macro",
+        "no_news",
+        "unknown",
+    }
+)
+
 
 def _clean_text(value: Any, *, max_chars: int | None = None) -> str:
     text = str(value or "").strip()
@@ -85,6 +103,10 @@ class SituationPoint:
     signal: SignalStrength = "weak"
     horizon: str | None = None
     direction: Direction | None = None
+    # Analyst-emitted closed class. None only for pre-class history (briefs and
+    # notes written before the field existed); new analyst output must set it
+    # (fail-loud gate in parse_news_macro_completion).
+    event_class: str | None = None
     # Marks operational/infrastructure noise (pipeline stalls, data gaps…).
     # Filtered out by read-models before display; never a default True.
     is_operational: bool = False
@@ -104,6 +126,12 @@ class SituationPoint:
         direction = _clean_text(item.get("direction")) or None
         if direction not in _VALID_DIRECTIONS:
             direction = None
+        raw_event_class = _clean_text(item.get("event_class"))
+        if raw_event_class and raw_event_class not in SITUATION_EVENT_CLASSES:
+            raise ValueError(
+                f"event_class must be one of: {', '.join(sorted(SITUATION_EVENT_CLASSES))}"
+            )
+        event_class = raw_event_class or None
         sources, source_refs = _clean_sources(item)
         # Strict bool: only Python True, "true", or "True" map to True.
         raw_op = item.get("is_operational")
@@ -117,6 +145,7 @@ class SituationPoint:
             signal=signal,  # type: ignore[arg-type]
             horizon=horizon,
             direction=direction,  # type: ignore[arg-type]
+            event_class=event_class,
             is_operational=is_operational,
         )
 
@@ -133,6 +162,8 @@ class SituationPoint:
             payload["horizon"] = self.horizon
         if self.direction:
             payload["direction"] = self.direction
+        if self.event_class:
+            payload["event_class"] = self.event_class
         # is_operational only emitted when True — keeps historical payloads compact.
         if self.is_operational:
             payload["is_operational"] = True

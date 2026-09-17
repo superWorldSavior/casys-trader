@@ -315,7 +315,11 @@ class WorldGraphExplorerService:
         for envelope in bound["knowledge"]:
             event = envelope.event
             relation = getattr(event, "relation", None)
-            if isinstance(relation, KnowledgeWorldRelation) and relation.ontology_revision != published.revision_id:
+            if (
+                isinstance(relation, KnowledgeWorldRelation)
+                and relation.kind != "ABOUT"
+                and relation.ontology_revision != published.revision_id
+            ):
                 knowledge_other += 1
         missingness["knowledge_other_revision"] = knowledge_other
         nodes, edges, counts, provenance, truncation = _project_graph(

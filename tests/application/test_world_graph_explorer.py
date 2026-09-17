@@ -26,6 +26,7 @@ from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_graph import (
     FORBIDDEN_RELATION_KINDS,
+    KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
     StructuralWorldRelation,
@@ -381,6 +382,69 @@ def test_current_overview_keeps_revision_bound_heads_parallel_edges_and_provenan
     node_ids = {node["id"] for node in payload["nodes"]}
     assert _entity().node_id in node_ids
     assert f"world_observation:v1:{SHA}" in node_ids
+
+
+def test_family_stamped_about_is_shown_and_not_counted_as_other_revision() -> None:
+    tip = "market_ontology:v1:" + "ab" * 32
+    structural = _structural(ontology_revision=tip)
+    about = _knowledge(
+        kind="ABOUT",
+        source=KnowledgeArtifactRef(artifact_id=f"knowledge_artifact:v1:{SHA}", content_sha256=SHA),
+        target=_entity(),
+        ontology_revision="market_ontology.v1",
+        source_refs=("artifact:seed",),
+    )
+    revision = WorldOntologyRevision(
+        revision_id=tip,
+        entities=(_entity(), _venue(), _country()),
+        structural_relation_refs=(WorldStructuralRelationRef.from_relation(structural),),
+        identity_link_refs=(_link().as_ref(),),
+        scope_mapping_id="world_scope_mapping.v1",
+        scope_mapping_hash=SCOPE_HASH,
+    )
+    records = (
+        _record(
+            WorldEntityAsserted(entity=_entity(), source_refs=("provider:instrument-master:2330",), effective_from=T0),
+            kind="world_entity_event",
+            table="world_entity_events",
+        ),
+        _record(
+            WorldEntityAsserted(entity=_venue(), source_refs=("provider:venue-master:XTAI",), effective_from=T0),
+            kind="world_entity_event",
+            table="world_entity_events",
+        ),
+        _record(
+            WorldEntityAsserted(entity=_country(), source_refs=("provider:iso-3166:TW",), effective_from=T0),
+            kind="world_entity_event",
+            table="world_entity_events",
+        ),
+        _record(
+            WorldEntityIdentityLinked(link=_link()),
+            kind="world_entity_identity_event",
+            table="world_entity_identity_events",
+        ),
+        _record(
+            StructuralWorldRelationAsserted(relation=structural),
+            kind="world_relation_event",
+            table="world_relation_events",
+            family="structural",
+        ),
+        _record(
+            KnowledgeWorldRelationAsserted(relation=about),
+            kind="world_relation_event",
+            table="world_relation_events",
+            family="knowledge",
+        ),
+        _record(
+            WorldOntologyRevisionPublished(revision=revision),
+            kind="world_ontology_revision_event",
+            table="world_ontology_revisions",
+        ),
+    )
+    payload = _service(records).current_published_overview()
+    assert payload["status"] == "loaded"
+    assert payload["missingness"]["knowledge_other_revision"] == 0
+    assert about.relation_id in [edge["relation_id"] for edge in payload["edges"]]
 
 
 def test_unreadable_revision_events_are_unavailable() -> None:

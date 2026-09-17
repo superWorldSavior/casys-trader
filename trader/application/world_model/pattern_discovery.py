@@ -63,8 +63,6 @@ def _defensive_reject(record: PatternFormationRecord, request: PatternFormationR
         return "late_label"
     if outcome.direction not in PREDICTION_CLASSES:
         return "outcome_class_missing"
-    if request.ontology_revision is not None and record.snapshot.ontology_revision != request.ontology_revision:
-        return "ontology_revision_mismatch"
     return None
 
 
@@ -216,14 +214,6 @@ class PatternDiscoveryService:
         for record in batch.records:
             if not isinstance(record, PatternFormationRecord):
                 raise TypeError("batch records must be PatternFormationRecord")
-            if (
-                request.ontology_revision is not None
-                and record.snapshot.ontology_revision != request.ontology_revision
-            ):
-                rejection_counts["ontology_revision_mismatch"] = (
-                    rejection_counts.get("ontology_revision_mismatch", 0) + 1
-                )
-                continue
             reason = _defensive_reject(record, request)
             if reason is not None:
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
@@ -241,7 +231,6 @@ class PatternDiscoveryService:
                 request.feature_contract_fingerprint,
                 request.feature_mask_id,
                 request.feature_mask_fingerprint,
-                record.snapshot.ontology_revision,
                 request.model_identity,
             )
             label = record.outcome.direction
@@ -262,7 +251,6 @@ class PatternDiscoveryService:
                 request.feature_contract_fingerprint,
                 request.feature_mask_id,
                 request.feature_mask_fingerprint,
-                record.snapshot.ontology_revision,
                 request.model_identity,
             )
             if (provenance, record.market_anchor.identity_tuple()) in conflicted:
@@ -284,11 +272,6 @@ class PatternDiscoveryService:
             assert label is not None
             provenance = (
                 record.outcome.horizon.horizon_id,
-                request.feature_contract_id,
-                request.feature_contract_fingerprint,
-                request.feature_mask_id,
-                request.feature_mask_fingerprint,
-                record.snapshot.ontology_revision,
                 request.model_identity,
             )
             populations[provenance][record.market_anchor.identity_tuple()] = label
@@ -297,10 +280,11 @@ class PatternDiscoveryService:
                 key = (signature, *provenance)
                 group = groups.get(key)
                 if group is None:
+                    # Formation stamp: every group shares the request pin; evidence may span revisions.
                     group = _Group(
                         steps=steps,
                         horizon_id=record.outcome.horizon.horizon_id,
-                        ontology_revision=record.snapshot.ontology_revision,
+                        ontology_revision=request.ontology_revision or "",
                     )
                     groups[key] = group
                 group.anchors[record.market_anchor.identity_tuple()] = label
@@ -320,11 +304,6 @@ class PatternDiscoveryService:
         for (_signature, horizon_id, *_rest), group in groups.items():
             provenance = (
                 group.horizon_id,
-                request.feature_contract_id,
-                request.feature_contract_fingerprint,
-                request.feature_mask_id,
-                request.feature_mask_fingerprint,
-                group.ontology_revision,
                 request.model_identity,
             )
             class_counts = _empty_class_counts()

@@ -429,6 +429,35 @@ def test_world_driver_is_stdlib_domain() -> None:
     assert "driver_state" in inspect.signature(PatternStep).parameters
 
 
+def test_world_signal_vocabularies_are_stdlib_domain() -> None:
+    modules = {
+        "world_news": ("DriverNewsBundle", "news_signal_from_point"),
+        "world_company": ("DriverCompanyBundle", "company_signal_from_brief"),
+        "world_family_catalog": ("FamilyCatalog",),
+        "world_knowledge": ("knowledge_artifact_row", "knowledge_artifact_scope"),
+        "world_exchange_mics": ("mic_for_yahoo_exchange",),
+        "world_issuer_registry": ("IssuerRegistry", "issuer_entity_id_for_listing"),
+    }
+    for module, names in modules.items():
+        path = REPO_ROOT / "trader" / "domain" / f"{module}.py"
+        assert path.exists()
+        assert _domain_import_violations([path], REPO_ROOT) == []
+        source = path.read_text(encoding="utf-8")
+        assert "trader.application" not in source
+        assert "trader.infrastructure" not in source
+        assert "trader.runtime" not in source
+        for name in names:
+            assert f"class {name}" in source or f"def {name}" in source
+
+    from trader.domain.world_company import DriverCompanyBundle
+    from trader.domain.world_driver import DriverState
+    from trader.domain.world_news import DriverNewsBundle
+
+    assert DriverNewsBundle.__module__ == "trader.domain.world_news"
+    assert DriverCompanyBundle.__module__ == "trader.domain.world_company"
+    assert DriverState.__module__ == "trader.domain.world_driver"
+
+
 def test_pattern_discovery_driver_binding_stays_application_owned() -> None:
     ports_path = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_discovery_ports.py"
     discovery_path = REPO_ROOT / "trader" / "application" / "world_model" / "pattern_discovery.py"

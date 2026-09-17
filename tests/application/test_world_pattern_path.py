@@ -25,7 +25,12 @@ from trader.application.world_model.pattern_path import (
 )
 from trader.domain.world_driver import DriverState
 from trader.domain.world_feature_contract import GRAPH_PATH_RULE_VERSION
-from trader.domain.world_graph import KnowledgeWorldRelation, StructuralWorldRelation, WorldGraphSnapshot
+from trader.domain.world_graph import (
+    KnowledgeWorldRelation,
+    StructuralWorldRelation,
+    WorldEntityRef,
+    WorldGraphSnapshot,
+)
 
 
 UTC = timezone.utc
@@ -217,3 +222,40 @@ def test_budget_truncated_capture_still_projects_valid_branches_and_overlays() -
     assert (("instrument", "ISSUED_BY", "company"),) in chains
     assert (("instrument", "MEMBER_OF_FAMILY", "family"),) in chains
     assert any(path.steps[-1].relation_kind == "OBSERVES" for path in details)
+
+
+def test_family_branch_projects_taxonomy_ref_into_step_identity() -> None:
+    as_of = datetime(2026, 8, 27, 11, 0, tzinfo=UTC)
+    record = _record(as_of=as_of, structural=_ancestry(_instrument()))
+    details = project_pattern_path_details(record)
+    family_paths = tuple(
+        path for path in details if path.steps and path.steps[-1].relation_kind == "MEMBER_OF_FAMILY"
+    )
+    assert family_paths
+    for path in family_paths:
+        step = path.steps[-1]
+        assert step.family_ref == "v1:semiconductors"
+        assert step.identity_tuple()[-1] == "v1:semiconductors"
+        assert path.hops[-1].family_ref == "v1:semiconductors"
+    others = tuple(
+        step for path in details for step in path.steps if step.relation_kind != "MEMBER_OF_FAMILY"
+    )
+    assert others
+    assert all(step.family_ref is None for step in others)
+
+
+def test_distinct_families_project_distinct_signatures() -> None:
+    as_of = datetime(2026, 8, 27, 11, 0, tzinfo=UTC)
+    first = _record(as_of=as_of, structural=_ancestry(_instrument()))
+    tech = _structural(
+        "MEMBER_OF_FAMILY",
+        _instrument(),
+        WorldEntityRef(kind="family", entity_id="taxonomy:v1:software"),
+    )
+    swapped = tuple(item for item in _ancestry(_instrument()) if item.kind != "MEMBER_OF_FAMILY") + (tech,)
+    second = _record(as_of=as_of, structural=swapped)
+    first_signatures = {pattern_path_signature(path.steps) for path in project_pattern_path_details(first)}
+    second_signatures = {pattern_path_signature(path.steps) for path in project_pattern_path_details(second)}
+    assert any("v1:semiconductors" in signature for signature in first_signatures)
+    assert any("v1:software" in signature for signature in second_signatures)
+    assert first_signatures != second_signatures

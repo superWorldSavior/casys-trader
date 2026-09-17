@@ -79,3 +79,25 @@ def test_shutdown_runtime_resources_best_effort_continues_after_errors() -> None
 
     assert calls == ["universe", "news_macro", "decide", "execute", "disconnect"]
     assert releases == [(Path("daemon.pid"), 4242)]
+
+
+def test_shutdown_runtime_resources_stops_world_about_runner() -> None:
+    calls: list[str] = []
+    logger = FakeLogger()
+
+    runtime_shutdown.shutdown_runtime_resources(
+        universe_intelligence_runner=FakePool(calls, "universe"),
+        news_macro_runner=FakePool(calls, "news_macro"),
+        decide_pool=FakePool(calls, "decide"),
+        execute_pool=FakePool(calls, "execute"),
+        world_about_runner=FakePool(calls, "world_about"),
+        data_source=None,
+        pid_file=Path("daemon.pid"),
+        pid=4242,
+        disconnect_quietly=lambda _resource: calls.append("disconnect"),
+        release_pid_file=lambda *, pid_file, pid: None,
+        logger=logger,
+    )
+
+    assert "world_about" in calls
+    assert ("[world_about] runner arrêté",) in logger.infos

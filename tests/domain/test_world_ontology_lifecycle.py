@@ -8,6 +8,8 @@ from tests.package_layout._helpers import REPO_ROOT, _domain_import_violations
 from trader.domain.world_feature_contract import MARKET_ONTOLOGY_REVISION, WORLD_SCOPE_MAPPING_ID
 from trader.domain.world_graph import WorldEntityRef, WorldOntologyRevision
 from trader.domain.world_ontology_lifecycle import (
+    market_ontology_extended_revision_id,
+    require_extended_ontology_revision,
     ONTOLOGY_PUBLICATION_ACTIONS,
     WorldOntologyLifecycleSpec,
     admits_market_ontology_family,
@@ -189,3 +191,50 @@ def test_require_aligned_revision_rejects_family_id_and_hash_mismatch() -> None:
     assert require_mapping_aligned_ontology_revision(derived, mapping) is derived
     with pytest.raises(FrozenInstanceError):
         derived.revision_id = "other"  # type: ignore[misc]
+
+
+def test_extended_revision_id_commits_to_all_three_inputs() -> None:
+    mapping = _mapping()
+    first = market_ontology_extended_revision_id(mapping, registry_sha256="b" * 64, catalog_sha256="c" * 64)
+    assert first.startswith("market_ontology:v1:")
+    assert first == market_ontology_extended_revision_id(
+        mapping, registry_sha256="b" * 64, catalog_sha256="c" * 64
+    )
+    assert first != market_ontology_revision_id(mapping)
+    assert first != market_ontology_extended_revision_id(
+        mapping, registry_sha256="d" * 64, catalog_sha256="c" * 64
+    )
+    assert first != market_ontology_extended_revision_id(
+        mapping, registry_sha256="b" * 64, catalog_sha256="d" * 64
+    )
+    with pytest.raises(ValueError, match="sha256"):
+        market_ontology_extended_revision_id(mapping, registry_sha256="zz", catalog_sha256="c" * 64)
+
+
+def test_require_extended_revision_rejects_drift() -> None:
+    mapping = _mapping()
+    revision_id = market_ontology_extended_revision_id(
+        mapping, registry_sha256="b" * 64, catalog_sha256="c" * 64
+    )
+    derived = _revision(
+        revision_id=revision_id, mapping_id=WORLD_SCOPE_MAPPING_ID, mapping_hash=mapping.content_sha256
+    )
+    assert (
+        require_extended_ontology_revision(
+            derived, mapping, registry_sha256="b" * 64, catalog_sha256="c" * 64
+        )
+        is derived
+    )
+    with pytest.raises(ValueError, match="drifted from extended inputs"):
+        require_extended_ontology_revision(
+            derived, mapping, registry_sha256="d" * 64, catalog_sha256="c" * 64
+        )
+    legacy = _revision(
+        revision_id=market_ontology_revision_id(mapping),
+        mapping_id=WORLD_SCOPE_MAPPING_ID,
+        mapping_hash=mapping.content_sha256,
+    )
+    with pytest.raises(ValueError, match="drifted from extended inputs"):
+        require_extended_ontology_revision(
+            legacy, mapping, registry_sha256="b" * 64, catalog_sha256="c" * 64
+        )

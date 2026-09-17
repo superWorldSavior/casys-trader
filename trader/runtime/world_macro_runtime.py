@@ -16,6 +16,11 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trader.domain.world_family_catalog import FamilyCatalog
+    from trader.domain.world_issuer_registry import IssuerRegistry
 
 from trader.domain.world_macro import (
     MACRO_LANE_IDENTITY,
@@ -309,11 +314,19 @@ def wire_world_macro_runtime(
     clock: Callable[[], datetime] | None = None,
     sleeper: Callable[[float], None] | None = None,
     graph_enabled: bool = False,
+    extended: bool = False,
+    briefs_root: str | Path | None = None,
 ) -> WorldMacroRuntimeBundle:
     """Build store, ports, pipeline, and coalescing worker. No fetch at wire time.
 
     ``graph_enabled`` is the already-resolved activation bit (env OR pilot YAML).
     This composer does not reread the process environment.
+
+    ``extended`` derives the graph bridge from the same extended ontology id as
+    the boot attestation and the graph capture publisher (fresh issuer registry
+    + family catalog on every sweep). Without it the macro publisher would
+    supersede the extended tip with the legacy revision and back on every
+    sweep. Fail-closed without ``briefs_root``.
     """
 
     from trader.application.world_model.macro_pipeline import MacroWorldPipeline
@@ -325,6 +338,9 @@ def wire_world_macro_runtime(
     )
     from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
 
+    if extended and briefs_root is None:
+        raise ValueError("extended macro bridge requires briefs_root")
+    resolved_briefs_root = None if briefs_root is None else Path(briefs_root)
     operator = load_world_macro_operator_configs(config_dir=Path(config_dir))
     if operator.budgets.fetch_in_run_cycle or operator.budgets.fetch_in_world_capture_worker:
         raise ValueError("source-only macro collection cannot fetch in run_cycle or world capture worker")
@@ -368,7 +384,18 @@ def wire_world_macro_runtime(
         graph_report: dict[str, object] | None = None
         graph_error: dict[str, object] | None = None
         fail_closed = False
-        if graph_store is not None:
+        issuer_registry = None
+        family_catalog = None
+        if graph_store is not None and extended:
+            try:
+                issuer_registry, family_catalog = _load_extended_inputs(
+                    briefs_root=resolved_briefs_root,
+                    config_dir=Path(config_dir),
+                    mapping=operator.scope_mapping,
+                )
+            except Exception as exc:  # noqa: BLE001 - bridge skips, macro facts still flow
+                graph_error = {"stage": "graph_bridge", "error": f"{type(exc).__name__}:{exc}"}
+        if graph_store is not None and graph_error is None:
             try:
                 graph_report = _align_macro_graph_bridge(
                     now=now,
@@ -376,6 +403,8 @@ def wire_world_macro_runtime(
                     graph_store=graph_store,
                     mapping=operator.scope_mapping,
                     collection_plan=plan,
+                    issuer_registry=issuer_registry,
+                    family_catalog=family_catalog,
                 )
             except UnknownMacroGraphBridgeDrift as exc:
                 fail_closed = True
@@ -416,6 +445,8 @@ def wire_world_macro_runtime(
                 mapping=operator.scope_mapping,
                 collection_plan=plan,
                 report=report,
+                issuer_registry=issuer_registry,
+                family_catalog=family_catalog,
             )
         except Exception as exc:  # noqa: BLE001 - graph bridge stays fail-open
             errors = report.get("errors")
@@ -439,6 +470,28 @@ def wire_world_macro_runtime(
     )
 
 
+def _load_extended_inputs(
+    *,
+    briefs_root: Path | None,
+    config_dir: Path,
+    mapping: object,
+) -> tuple[IssuerRegistry, FamilyCatalog]:
+    """Fresh registry + catalog for one sweep. Same derivation as boot/capture."""
+
+    from trader.application.world_model.issuer_registry import build_issuer_registry
+    from trader.domain.world_scope import WorldScopeMapping
+    from trader.infrastructure.files.company_briefs import load_company_briefs
+    from trader.infrastructure.files.family_catalog_config import load_family_catalog
+
+    if briefs_root is None:
+        raise ValueError("extended macro bridge requires briefs_root")
+    if not isinstance(mapping, WorldScopeMapping):
+        raise TypeError("extended macro bridge requires WorldScopeMapping")
+    corpus = load_company_briefs(briefs_root)
+    registry = build_issuer_registry(corpus.briefs, mapping).registry
+    return registry, load_family_catalog(config_dir)
+
+
 def _macro_graph_bridge_use_case(
     *,
     now: datetime,
@@ -446,6 +499,8 @@ def _macro_graph_bridge_use_case(
     graph_store: object,
     mapping: object,
     collection_plan: MacroCollectionPlan,
+    issuer_registry: IssuerRegistry | None = None,
+    family_catalog: FamilyCatalog | None = None,
 ):
     from trader.application.world_model.graph_observation_bridge import RegisterMacroObservationKnowledge
     from trader.application.world_model.ontology_bootstrap import WorldOntologyBootstrapService
@@ -456,13 +511,19 @@ def _macro_graph_bridge_use_case(
         raise TypeError("graph bridge requires WorldScopeMapping")
     if not isinstance(collection_plan, MacroCollectionPlan):
         raise TypeError("graph bridge requires MacroCollectionPlan")
-    bootstrap = WorldOntologyBootstrapService(graph_store, mapping)
+    # Extended inputs must be fresh on every call: a stale registry would
+    # derive a stale id and supersede the tip backwards. Callers reload.
+    bootstrap = WorldOntologyBootstrapService(
+        graph_store, mapping, issuer_registry=issuer_registry, family_catalog=family_catalog
+    )
     bootstrap.ensure_published(now=now)
     revision = bootstrap.expected_revision()
     derive_macro_graph_bridge_spec(
         mapping=mapping,
         ontology=revision,
         collection_plan=collection_plan,
+        issuer_registry=issuer_registry,
+        family_catalog=family_catalog,
     )
     return RegisterMacroObservationKnowledge(
         scan=macro_store,
@@ -482,6 +543,8 @@ def _align_macro_graph_bridge(
     graph_store: object,
     mapping: object,
     collection_plan: MacroCollectionPlan,
+    issuer_registry: IssuerRegistry | None = None,
+    family_catalog: FamilyCatalog | None = None,
 ) -> dict[str, object]:
     from trader.domain.world_episode import canonical_sha256
 
@@ -491,6 +554,8 @@ def _align_macro_graph_bridge(
         graph_store=graph_store,
         mapping=mapping,
         collection_plan=collection_plan,
+        issuer_registry=issuer_registry,
+        family_catalog=family_catalog,
     )
     request_id = "macro_graph_bridge_request:v1:" + canonical_sha256({"bridge_key": _BRIDGE_KEY, "intent": "align"})
     registry = use_case.align(request_id)
@@ -510,6 +575,8 @@ def _reconcile_macro_graph_bridge(
     mapping: object,
     collection_plan: MacroCollectionPlan,
     report: dict[str, object],
+    issuer_registry: IssuerRegistry | None = None,
+    family_catalog: FamilyCatalog | None = None,
 ) -> None:
     use_case = _macro_graph_bridge_use_case(
         now=now,
@@ -517,6 +584,8 @@ def _reconcile_macro_graph_bridge(
         graph_store=graph_store,
         mapping=mapping,
         collection_plan=collection_plan,
+        issuer_registry=issuer_registry,
+        family_catalog=family_catalog,
     )
     registry = use_case.reconcile(limit=32)
     run = getattr(registry, "active_run", None)

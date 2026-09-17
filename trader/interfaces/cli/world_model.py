@@ -554,7 +554,11 @@ def discover_world_patterns(
         return (_error("domain_error", f"{type(exc).__name__}:{exc}"), 1)
 
     result = PatternDiscoveryService(
-        SqlitePatternFormationSource(_db_path(state_dir), macro_root=Path(state_dir) / "world_macro")
+        SqlitePatternFormationSource(
+            _db_path(state_dir),
+            macro_root=Path(state_dir) / "world_macro",
+            knowledge_root=Path(state_dir) / "world_knowledge",
+        )
     ).discover(request)
     payload = _discover_payload(
         state_dir,
@@ -691,7 +695,11 @@ def evaluate_world_patterns(
     db_path = _db_path(state_dir)
     result = PatternEvaluationService(
         catalog=SqlitePatternCatalogQuery(db_path),
-        source=SqlitePatternEvaluationSource(db_path, macro_root=Path(state_dir) / "world_macro"),
+        source=SqlitePatternEvaluationSource(
+            db_path,
+            macro_root=Path(state_dir) / "world_macro",
+            knowledge_root=Path(state_dir) / "world_knowledge",
+        ),
     ).evaluate(request)
     payload: dict[str, Any] = {
         "ok": True,
@@ -723,7 +731,11 @@ def evaluate_world_patterns(
         store = WorldPatternStore(world._db)
         persisted = PatternEvaluationService(
             catalog=store,
-            source=SqlitePatternEvaluationSource(db_path, macro_root=Path(state_dir) / "world_macro"),
+            source=SqlitePatternEvaluationSource(
+                db_path,
+                macro_root=Path(state_dir) / "world_macro",
+                knowledge_root=Path(state_dir) / "world_knowledge",
+            ),
         ).persist(
             result,
             patterns=WorldPatternService(hypotheses=store, occurrences=store, availability=store),

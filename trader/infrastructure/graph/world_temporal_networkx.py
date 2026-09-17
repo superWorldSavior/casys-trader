@@ -212,7 +212,7 @@ def _admit_knowledge(
     admitted: list[KnowledgeWorldRelation] = []
     for relation in relations:
         _reject_forbidden_kind(relation.kind)
-        if published is not None and relation.ontology_revision != published.revision_id:
+        if relation.kind != "ABOUT" and published is not None and relation.ontology_revision != published.revision_id:
             continue
         if relation.effective_at(cutoff):
             admitted.append(relation)

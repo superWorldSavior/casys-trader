@@ -203,3 +203,89 @@ def test_boot_mapping_reconcile_is_idempotent_and_provider_failure_is_fail_open(
         ),
     )
     assert WorldScopeResolver.load(mapping_copy).mapping.content_sha256 == current.content_sha256
+
+
+def test_extended_compose_wires_registry_and_catalog_but_stays_off_by_default(tmp_path: Path) -> None:
+    import json
+
+    import pytest
+    import yaml
+
+    from trader.application.world_model.issuer_registry import build_issuer_registry
+    from trader.domain.world_family_catalog import FamilyCatalog
+    from trader.domain.world_ontology_lifecycle import market_ontology_extended_revision_id
+    from trader.infrastructure.files.company_briefs import load_company_briefs
+    from trader.runtime.world_model_runtime import compose_world_ontology_attestation
+
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: BOOT)
+    legacy = compose_world_ontology_attestation(store=store, config_dir=CONFIG_DIR, clock=lambda: BOOT)
+    assert legacy is not None
+    assert legacy.expected_revision().revision_id == market_ontology_revision_id(
+        WorldScopeResolver.load(CONFIG_DIR).mapping
+    )
+    with pytest.raises(ValueError, match="briefs_root"):
+        compose_world_ontology_attestation(store=store, config_dir=CONFIG_DIR, extended=True)
+
+    briefs_root = tmp_path / "briefs" / "current"
+    briefs_root.mkdir(parents=True)
+    brief = {
+        "brief_id": "company_micro:v1:1301.TW:abc",
+        "symbol": "1301.TW",
+        "as_of": "2026-09-05T17:26:49+00:00",
+        "input_signature": "0" * 64,
+        "depth": "screen",
+        "issuer_identity": {"issuer_name": "Formosa Plastics", "exchange": "TAI", "identity_status": "verified"},
+        "coverage": {"status": "full"},
+        "company_thesis": {"status": "watch"},
+        "source_refs": ["s1"],
+    }
+    (briefs_root / "x.json").write_text(
+        json.dumps({"schema_version": 1, "symbol": "1301.TW", "briefs": {"screen": brief}}), encoding="utf-8"
+    )
+    config_copy = tmp_path / "config"
+    config_copy.mkdir()
+    mapping_doc = yaml.safe_load((CONFIG_DIR / "world_scope_mapping.yaml").read_text(encoding="utf-8"))
+    (config_copy / "world_scope_mapping.yaml").write_text(yaml.safe_dump(mapping_doc), encoding="utf-8")
+    catalog = FamilyCatalog.from_grouped("family_catalog.v1", {"v1:chemicals": ["1301.TW"]})
+    (config_copy / "world_family_catalog.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "family_catalog.v1",
+                "catalog_id": catalog.catalog_id,
+                "content_sha256": catalog.content_sha256,
+                "entries": dict(catalog.entries),
+            }
+        ),
+        encoding="utf-8",
+    )
+    mapping = WorldScopeResolver.load(config_copy).mapping
+    corpus = load_company_briefs(briefs_root)
+    build = build_issuer_registry(corpus.briefs, mapping)
+    assert len(build.registry.entries) == 1
+    attestation = compose_world_ontology_attestation(
+        store=store, config_dir=config_copy, clock=lambda: BOOT, extended=True, briefs_root=briefs_root
+    )
+    assert attestation is not None
+    expected_id = market_ontology_extended_revision_id(
+        mapping,
+        registry_sha256=build.registry.content_sha256 or "",
+        catalog_sha256=catalog.content_sha256 or "",
+    )
+    assert attestation.expected_revision().revision_id == expected_id
+    assert attestation.ensure_published(now=BOOT).status == "ready"
+
+
+def test_daemon_wires_about_forward_and_extended_macro() -> None:
+    from trader.runtime import daemon
+
+    assert daemon.__file__ is not None
+    boot = Path(daemon.__file__).read_text(encoding="utf-8")
+    assert "AboutForwardRunner(" in boot
+    assert "brief_ids=_about_brief_ids(events)" in boot
+    assert "symbols=_about_symbol(event)" in boot
+    assert '_trigger_world_about_forward(runner=_world_about_runner, reason="daemon_boot")' in boot
+    assert "world_about_runner=self.world_about_runner" in boot
+    start = boot.index("wire_world_macro_runtime(")
+    call = boot[start : start + 600]
+    assert "extended=True" in call
+    assert "briefs_root=" in call

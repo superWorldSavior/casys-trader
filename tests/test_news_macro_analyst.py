@@ -50,6 +50,7 @@ def test_news_macro_prompt_contains_bounded_contract() -> None:
     assert "company_brief:TSM:brief-1" in prompt
     assert "confirms, contradicts, or changes" in prompt
     assert "Write every human-readable string in English" in prompt
+    assert "event_class" in prompt
     contract = prompt.split("Input JSON:", 1)[0]
     assert "analytical body" in contract
     assert '"zones":{"<zone>":[POINT]}' in contract
@@ -197,6 +198,7 @@ def test_parse_news_macro_completion_ignore_un_point_terminal_apres_prose() -> N
                     "symbols": [],
                     "severity": "info",
                     "signal": "strong",
+                    "event_class": "macro",
                 }
             ]
         },
@@ -207,6 +209,7 @@ def test_parse_news_macro_completion_ignore_un_point_terminal_apres_prose() -> N
                 "symbols": [],
                 "severity": "watch",
                 "signal": "event",
+                "event_class": "macro",
             }
         ],
     }
@@ -240,6 +243,7 @@ def test_parse_news_macro_completion_enveloppe_symbols_seule_apres_prose() -> No
                     "symbols": ["AIR.PA"],
                     "severity": "info",
                     "signal": "strong",
+                    "event_class": "operations",
                 }
             ]
         }
@@ -261,8 +265,8 @@ def test_parse_news_macro_completion_enveloppe_symbols_seule_apres_prose() -> No
 
 def test_parse_news_macro_completion_uses_last_json_object() -> None:
     payload = {
-        "zones": {"US": [{"point": "Liquidity tightening", "sources": ["u1"]}]},
-        "alerts": [{"point": "Risk-off broadening", "severity": "watch"}],
+        "zones": {"US": [{"point": "Liquidity tightening", "sources": ["u1"], "event_class": "macro"}]},
+        "alerts": [{"point": "Risk-off broadening", "severity": "watch", "event_class": "macro"}],
     }
 
     brief, error = parse_news_macro_completion(
@@ -291,7 +295,7 @@ def test_parse_news_macro_completion_forces_authoritative_envelope() -> None:
                 "as_of": "tomorrow",
                 "valid_until": "forever",
                 "input_refs": {"news_item_count": 0},
-                "zones": {"US": [{"point": "Liquidity tightening"}]},
+                "zones": {"US": [{"point": "Liquidity tightening", "event_class": "macro"}]},
             }
         ),
         as_of="2026-07-09T07:00:00+00:00",
@@ -307,6 +311,35 @@ def test_parse_news_macro_completion_forces_authoritative_envelope() -> None:
     assert brief.as_of == "2026-07-09T07:00:00+00:00"
     assert brief.valid_until == "2026-07-10T07:00:00+00:00"
     assert brief.input_refs == {"news_item_count": 4}
+
+
+def test_parse_news_macro_completion_rejects_point_without_event_class() -> None:
+    brief, error = parse_news_macro_completion(
+        json.dumps({"zones": {"US": [{"point": "Liquidity tightening", "event_class": "macro"}]}}),
+        as_of="2026-07-09T07:00:00+00:00",
+        valid_until="2026-07-10T07:00:00+00:00",
+        venue="US",
+    )
+    assert error is None
+    assert brief is not None
+    assert brief.zones[0].points[0].event_class == "macro"
+
+    brief, error = parse_news_macro_completion(
+        json.dumps({"zones": {"US": [{"point": "Liquidity tightening"}]}}),
+        as_of="2026-07-09T07:00:00+00:00",
+        valid_until="2026-07-10T07:00:00+00:00",
+        venue="US",
+    )
+    assert brief is None
+    assert error == "missing_event_class"
+
+    with pytest.raises(ValueError, match="event_class must be one of"):
+        parse_news_macro_completion(
+            json.dumps({"zones": {"US": [{"point": "Liquidity tightening", "event_class": "vibes"}]}}),
+            as_of="2026-07-09T07:00:00+00:00",
+            valid_until="2026-07-10T07:00:00+00:00",
+            venue="US",
+        )
 
 
 def test_parse_news_macro_completion_rejects_nested_envelope_from_broken_report() -> None:
@@ -338,11 +371,13 @@ def test_llm_news_macro_analyst_returns_parsed_brief() -> None:
                                     "point": "Liquidity tightening",
                                     "source_refs": ["u1"],
                                     "sources": ["Invented Wire"],
+                                    "event_class": "macro",
                                 },
                                 {
                                     "point": "Unsourced model claim",
                                     "source_refs": ["invented-ref"],
                                     "sources": ["Invented Wire"],
+                                    "event_class": "macro",
                                 },
                             ]
                         },
@@ -384,6 +419,7 @@ def test_llm_news_macro_analyst_rejects_brief_empty_after_source_validation() ->
                                 {
                                     "point": "Unsupported claim",
                                     "source_refs": ["invented-ref"],
+                                    "event_class": "macro",
                                 }
                             ]
                         }

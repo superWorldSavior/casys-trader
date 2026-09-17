@@ -12,6 +12,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from trader.domain.world_company import (
+    COMPANY_PRODUCER_VERSION,
+    COMPANY_TRANSFORM_VERSION,
+    DriverCompanyBundle,
+)
 from trader.domain.world_macro import (
     MACRO_COVERAGE_STATUSES,
     MACRO_FEATURE_KEYS,
@@ -21,17 +26,26 @@ from trader.domain.world_macro import (
     MacroWorldObservation,
     require_admitted_macro_producer,
 )
+from trader.domain.world_news import (
+    NEWS_PRODUCER_VERSION,
+    NEWS_TRANSFORM_VERSION,
+    DriverNewsBundle,
+)
 
 
 DRIVER_REGIME_BUNDLE_SCHEMA = "driver_regime_bundle.v1"
 DRIVER_STATE_SCHEMA = "driver_state.v1"
 
 DRIVER_SOURCE_FAMILIES = frozenset({"macro_observation", "knowledge_artifact", "unproven"})
-DRIVER_SIGNAL_CLASSES = frozenset({"regime_bundle", "unspecified", "missing"})
+DRIVER_SIGNAL_CLASSES = frozenset({"regime_bundle", "news_state", "company_state", "unspecified", "missing"})
 DRIVER_ARTIFACT_KINDS = frozenset({"news_macro", "company_intelligence", "macro_world_observation"})
 DRIVER_UNTIL_BOUNDS = frozenset({"bounded", "unbounded", "unknown"})
-DRIVER_PRODUCER_VERSIONS = frozenset({MACRO_PRODUCER_VERSION, "unspecified"})
-DRIVER_TRANSFORM_VERSIONS = frozenset({MACRO_TRANSFORM_VERSION, "unspecified"})
+DRIVER_PRODUCER_VERSIONS = frozenset(
+    {MACRO_PRODUCER_VERSION, NEWS_PRODUCER_VERSION, COMPANY_PRODUCER_VERSION, "unspecified"}
+)
+DRIVER_TRANSFORM_VERSIONS = frozenset(
+    {MACRO_TRANSFORM_VERSION, NEWS_TRANSFORM_VERSION, COMPANY_TRANSFORM_VERSION, "unspecified"}
+)
 DRIVER_MISSINGNESS = frozenset(
     {
         "none",
@@ -64,11 +78,15 @@ _FORBIDDEN_DRIVER_KEYS = frozenset(
         "effective_until",
         "valid_until",
         "selection_view",
+        "posture",
         "driver_key",
         "driverKey",
         "text",
         "report_text",
         "raw_text",
+        "summary",
+        "issuer_name",
+        "point",
     }
 )
 _BUNDLE_KEYS = frozenset(
@@ -80,6 +98,8 @@ _STATE_KEYS = frozenset(
         "source_family",
         "signal_class",
         "regimes",
+        "news",
+        "company",
         "artifact_kind",
         "until_bound",
         "producer_version",
@@ -199,6 +219,26 @@ def _as_regime_bundle(value: Any) -> DriverRegimeBundle | None:
     raise TypeError("regimes must be DriverRegimeBundle or a mapping")
 
 
+def _as_news_bundle(value: Any) -> DriverNewsBundle | None:
+    if value is None:
+        return None
+    if isinstance(value, DriverNewsBundle):
+        return value
+    if isinstance(value, Mapping):
+        return DriverNewsBundle.from_mapping(value)
+    raise TypeError("news must be DriverNewsBundle or a mapping")
+
+
+def _as_company_bundle(value: Any) -> DriverCompanyBundle | None:
+    if value is None:
+        return None
+    if isinstance(value, DriverCompanyBundle):
+        return value
+    if isinstance(value, Mapping):
+        return DriverCompanyBundle.from_mapping(value)
+    raise TypeError("company must be DriverCompanyBundle or a mapping")
+
+
 @dataclass(frozen=True)
 class DriverState:
     """Minimal overlay identity. Evidence ids stay off this object."""
@@ -211,6 +251,8 @@ class DriverState:
     producer_version: str
     transform_version: str
     missingness: str
+    news: DriverNewsBundle | Mapping[str, Any] | None = None
+    company: DriverCompanyBundle | Mapping[str, Any] | None = None
     schema_version: str = DRIVER_STATE_SCHEMA
 
     def __post_init__(self) -> None:
@@ -220,6 +262,8 @@ class DriverState:
         source_family = _closed_member(self.source_family, "source_family", DRIVER_SOURCE_FAMILIES)
         signal_class = _closed_member(self.signal_class, "signal_class", DRIVER_SIGNAL_CLASSES)
         regimes = _as_regime_bundle(self.regimes)
+        news = _as_news_bundle(self.news)
+        company = _as_company_bundle(self.company)
         artifact_kind = _optional_closed(self.artifact_kind, "artifact_kind", DRIVER_ARTIFACT_KINDS)
         until_bound = _closed_member(self.until_bound, "until_bound", DRIVER_UNTIL_BOUNDS)
         producer_version = _closed_member(self.producer_version, "producer_version", DRIVER_PRODUCER_VERSIONS)
@@ -228,6 +272,8 @@ class DriverState:
         if signal_class == "regime_bundle":
             if regimes is None:
                 raise ValueError("signal_class=regime_bundle requires a DriverRegimeBundle")
+            if news is not None or company is not None:
+                raise ValueError("signal_class=regime_bundle cannot carry a news or company bundle")
             if missingness != "none":
                 raise ValueError("signal_class=regime_bundle requires missingness=none")
             if source_family != "macro_observation":
@@ -236,9 +282,41 @@ class DriverState:
                 raise ValueError("regime_bundle requires artifact_kind=macro_world_observation")
             if producer_version == "unspecified" or transform_version == "unspecified":
                 raise ValueError("regime_bundle requires admitted producer and transform versions")
+        elif signal_class == "news_state":
+            if news is None:
+                raise ValueError("signal_class=news_state requires a DriverNewsBundle")
+            if regimes is not None or company is not None:
+                raise ValueError("signal_class=news_state cannot carry a regime or company bundle")
+            if missingness != "none":
+                raise ValueError("signal_class=news_state requires missingness=none")
+            if source_family != "knowledge_artifact":
+                raise ValueError("news_state requires source_family=knowledge_artifact")
+            if artifact_kind != "news_macro":
+                raise ValueError("news_state requires artifact_kind=news_macro")
+            if producer_version != NEWS_PRODUCER_VERSION:
+                raise ValueError(f"news_state requires producer_version={NEWS_PRODUCER_VERSION}")
+            if transform_version != NEWS_TRANSFORM_VERSION:
+                raise ValueError(f"news_state requires transform_version={NEWS_TRANSFORM_VERSION}")
+        elif signal_class == "company_state":
+            if company is None:
+                raise ValueError("signal_class=company_state requires a DriverCompanyBundle")
+            if regimes is not None or news is not None:
+                raise ValueError("signal_class=company_state cannot carry a regime or news bundle")
+            if missingness != "none":
+                raise ValueError("signal_class=company_state requires missingness=none")
+            if source_family != "knowledge_artifact":
+                raise ValueError("company_state requires source_family=knowledge_artifact")
+            if artifact_kind != "company_intelligence":
+                raise ValueError("company_state requires artifact_kind=company_intelligence")
+            if producer_version != COMPANY_PRODUCER_VERSION:
+                raise ValueError(f"company_state requires producer_version={COMPANY_PRODUCER_VERSION}")
+            if transform_version != COMPANY_TRANSFORM_VERSION:
+                raise ValueError(f"company_state requires transform_version={COMPANY_TRANSFORM_VERSION}")
         elif signal_class == "missing":
             if regimes is not None:
                 raise ValueError("signal_class=missing cannot carry a regime bundle")
+            if news is not None or company is not None:
+                raise ValueError("signal_class=missing cannot carry a news or company bundle")
             if missingness in {"none", "not_applicable"}:
                 raise ValueError("signal_class=missing requires an explicit missingness reason")
             if missingness in _OBSERVATION_MISSINGNESS:
@@ -256,6 +334,8 @@ class DriverState:
         else:
             if regimes is not None:
                 raise ValueError("signal_class=unspecified cannot carry a regime bundle")
+            if news is not None or company is not None:
+                raise ValueError("signal_class=unspecified cannot carry a news or company bundle")
             if missingness != "not_applicable":
                 raise ValueError("signal_class=unspecified requires missingness=not_applicable")
             if source_family not in {"knowledge_artifact", "unproven"}:
@@ -266,6 +346,8 @@ class DriverState:
         object.__setattr__(self, "source_family", source_family)
         object.__setattr__(self, "signal_class", signal_class)
         object.__setattr__(self, "regimes", regimes)
+        object.__setattr__(self, "news", news)
+        object.__setattr__(self, "company", company)
         object.__setattr__(self, "artifact_kind", artifact_kind)
         object.__setattr__(self, "until_bound", until_bound)
         object.__setattr__(self, "producer_version", producer_version)
@@ -277,6 +359,8 @@ class DriverState:
             self.source_family,
             self.signal_class,
             None if self.regimes is None else self.regimes.identity_tuple(),
+            None if self.news is None else self.news.identity_tuple(),
+            None if self.company is None else self.company.identity_tuple(),
             self.artifact_kind,
             self.until_bound,
             self.producer_version,
@@ -290,6 +374,8 @@ class DriverState:
             "source_family": self.source_family,
             "signal_class": self.signal_class,
             "regimes": None if self.regimes is None else self.regimes.to_dict(),
+            "news": None if self.news is None else self.news.to_dict(),
+            "company": None if self.company is None else self.company.to_dict(),
             "artifact_kind": self.artifact_kind,
             "until_bound": self.until_bound,
             "producer_version": self.producer_version,
@@ -309,6 +395,8 @@ class DriverState:
             source_family=value.get("source_family"),
             signal_class=value.get("signal_class"),
             regimes=value.get("regimes"),
+            news=value.get("news"),
+            company=value.get("company"),
             artifact_kind=value.get("artifact_kind"),
             until_bound=value.get("until_bound"),
             producer_version=value.get("producer_version"),
@@ -340,6 +428,46 @@ class DriverState:
             until_bound="bounded" if observation.valid_until is not None else "unbounded",
             producer_version=producer_version,
             transform_version=transform_version,
+            missingness="none",
+        )
+
+    @classmethod
+    def from_news_signal(
+        cls,
+        bundle: DriverNewsBundle | Mapping[str, Any],
+        *,
+        until_bound: str,
+    ) -> DriverState:
+        return cls(
+            source_family="knowledge_artifact",
+            signal_class="news_state",
+            regimes=None,
+            news=bundle,
+            company=None,
+            artifact_kind="news_macro",
+            until_bound=until_bound,
+            producer_version=NEWS_PRODUCER_VERSION,
+            transform_version=NEWS_TRANSFORM_VERSION,
+            missingness="none",
+        )
+
+    @classmethod
+    def from_company_signal(
+        cls,
+        bundle: DriverCompanyBundle | Mapping[str, Any],
+        *,
+        until_bound: str,
+    ) -> DriverState:
+        return cls(
+            source_family="knowledge_artifact",
+            signal_class="company_state",
+            regimes=None,
+            news=None,
+            company=bundle,
+            artifact_kind="company_intelligence",
+            until_bound=until_bound,
+            producer_version=COMPANY_PRODUCER_VERSION,
+            transform_version=COMPANY_TRANSFORM_VERSION,
             missingness="none",
         )
 

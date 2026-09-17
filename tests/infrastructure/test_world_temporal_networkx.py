@@ -263,6 +263,23 @@ def test_mismatched_view_cutoffs_and_revision_bindings_are_rejected() -> None:
         WorldTemporalGraph.from_resolved_views(structural, overlay)
 
 
+def test_family_stamped_about_bypasses_tip_binding() -> None:
+    about = _knowledge(
+        kind="ABOUT",
+        source=_artifact(),
+        target=_instrument(),
+        ontology_revision="market_ontology.v1",
+    )
+    structural, overlay = _views(
+        entities=(_instrument(), _venue()),
+        structural_relations=(_structural(),),
+        knowledge_relations=(about,),
+        revision_id="market_ontology:v1:" + "ab" * 32,
+    )
+    graph = WorldTemporalGraph.from_resolved_views(structural, overlay)
+    assert graph.knowledge_edge_count == 1
+
+
 def test_knowledge_and_structural_edges_stay_separate_and_keep_parallel_keys() -> None:
     first, second = _rfc_topology()[1][0], _rfc_topology()[1][-1]
     assert first.kind == second.kind == "TRADED_ON"

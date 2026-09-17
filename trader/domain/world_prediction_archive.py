@@ -206,6 +206,20 @@ class WorldPredictionArchiveManifest:
             source_retained=payload.get("source_retained") is True,
         )
 
+    def semantic_identity(self) -> tuple[object, ...]:
+        return (
+            self.schema_version,
+            self.recorded_date,
+            self.relative_path,
+            self.row_count,
+            self.first_key,
+            self.last_key,
+            self.column_names,
+            self.column_types,
+            self.schema_sha256,
+            self.content_sha256,
+        )
+
 
 @dataclass(frozen=True)
 class WorldPredictionArchiveQuarantine:

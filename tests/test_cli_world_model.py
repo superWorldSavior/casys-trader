@@ -848,7 +848,9 @@ def test_world_pattern_discover_dry_run_missing_db_does_not_create(tmp_path, mon
     assert list(tmp_path.glob("world_model.db*")) == []
 
 
-def test_world_pattern_discover_pins_ontology_for_readonly_preflight(tmp_path, monkeypatch, capsys) -> None:
+def test_world_pattern_discover_stamp_is_request_revision_for_readonly_preflight(
+    tmp_path, monkeypatch, capsys
+) -> None:
     from tests.state_db.test_world_pattern_formation_query import _seed_labeled
 
     seeded = _seed_labeled(tmp_path, monkeypatch)
@@ -867,9 +869,11 @@ def test_world_pattern_discover_pins_ontology_for_readonly_preflight(tmp_path, m
         monkeypatch, capsys, tmp_path, _pattern_discover_argv("--ontology-revision", "foreign.v1", "--json")
     )
     assert code == 0
-    assert foreign["eligible_records"] == 0
-    assert foreign["group_count"] == 0
-    assert foreign["rejection_counts"]["ontology_revision_mismatch"] == 1
+    assert foreign["request"]["ontology_revision"] == "foreign.v1"
+    assert foreign["eligible_records"] == 1
+    assert foreign["group_count"] == matching["group_count"]
+    assert "ontology_revision_mismatch" not in foreign["rejection_counts"]
+    assert all(group["ontology_revision"] == "foreign.v1" for group in foreign["groups"])
 
 
 def test_world_pattern_discover_include_source_evidence_restores_ids(

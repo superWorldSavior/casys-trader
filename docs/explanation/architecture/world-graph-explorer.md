@@ -158,7 +158,7 @@ troncature.
 
 ## Ce qui ne peut pas apparaître
 
-- une relation d'une autre révision ;
+- une relation structurelle ou OBSERVES d'une autre révision (les ABOUT suivent les endpoints, pas le tampon) ;
 - une tête structurelle absente de la révision publiée ;
 - une arête `CAUSES` / `HYPOTHESIZED_INFLUENCE` ;
 - un graphe NetworkX persisté ;

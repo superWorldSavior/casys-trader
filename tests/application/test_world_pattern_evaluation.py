@@ -211,15 +211,26 @@ def test_evaluate_forwards_evaluation_cohort_identity_on_the_scan() -> None:
 
 def test_all_records_incompatible_are_counted_and_not_silent() -> None:
     hypothesis, record = _matched_pair()
-    drifted = _eval_record(as_of=POST, ontology_revision="market_ontology:v1:" + "f" * 64)
-    result = PatternEvaluationService(MemoryCatalog((hypothesis,)), MemorySource((drifted,))).evaluate(_request())
+    early = _eval_record(as_of=PRE)
+    result = PatternEvaluationService(MemoryCatalog((hypothesis,)), MemorySource((early,))).evaluate(_request())
     assert result.considered_records == 1
     assert result.eligible_records == 0
     assert result.matches == ()
-    assert result.rejection_counts.get("ontology_revision_mismatch") == 1
+    assert result.rejection_counts.get("snapshot_not_after_formation_cutoff") == 1
     payload = result.to_dict()
     assert payload["considered_records"] == 1
     assert payload["eligible_records"] == 0
+
+
+def test_cross_revision_record_matches_and_produces_occurrence() -> None:
+    hypothesis, record = _matched_pair()
+    drifted = _eval_record(as_of=POST, ontology_revision="market_ontology:v1:" + "f" * 64)
+    result = PatternEvaluationService(MemoryCatalog((hypothesis,)), MemorySource((drifted,))).evaluate(_request())
+    assert result.considered_records == 1
+    assert result.eligible_records == 1
+    assert len(result.matches) == 1
+    assert result.matches[0].occurrence.cutoff_at == POST
+    assert "ontology_revision_mismatch" not in result.rejection_counts
 
 
 def test_zero_occurrence_evaluating_hypothesis_is_visible() -> None:

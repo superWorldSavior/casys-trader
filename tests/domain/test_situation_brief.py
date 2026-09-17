@@ -23,6 +23,24 @@ def test_situation_point_normalise_et_borne() -> None:
     assert point.direction == "risk_off"
 
 
+def test_situation_point_event_class_valide_rejette_et_omet_historique() -> None:
+    import pytest
+
+    from trader.domain.situation.brief import SITUATION_EVENT_CLASSES
+
+    assert len(SITUATION_EVENT_CLASSES) == 10
+    parsed = SituationPoint.from_mapping({"point": "Dividend raised", "event_class": "capital"})
+    assert parsed is not None
+    assert parsed.event_class == "capital"
+    assert parsed.to_dict()["event_class"] == "capital"
+    legacy = SituationPoint.from_mapping({"point": "Dividend raised"})
+    assert legacy is not None
+    assert legacy.event_class is None
+    assert "event_class" not in legacy.to_dict()
+    with pytest.raises(ValueError, match="event_class must be one of"):
+        SituationPoint.from_mapping({"point": "Dividend raised", "event_class": "vibes"})
+
+
 def test_news_macro_brief_normalise_sections_et_alerts() -> None:
     payload = {
         "as_of": "2026-07-09T00:00:00+00:00",

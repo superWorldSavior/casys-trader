@@ -18,6 +18,7 @@ from trader.domain.world_episode import (
     WorldOutcome,
     canonical_sha256,
 )
+from trader.domain.world_context import EntityRef, KnowledgeArtifact
 from trader.domain.world_driver import DriverState
 from trader.domain.world_graph import (
     KnowledgeArtifactRef,
@@ -33,6 +34,10 @@ from trader.domain.world_graph import (
     reconstruct_macro_observes_provenance,
     world_observation_ref_for_observation_id,
 )
+from trader.domain.world_knowledge import (
+    knowledge_artifact_content_sha256,
+    knowledge_artifact_row,
+)
 from trader.domain.world_macro import (
     MACRO_PRODUCER_VERSION,
     MACRO_SOURCE_REGISTRY_VERSION,
@@ -46,8 +51,11 @@ from trader.domain.world_macro import (
     MacroSourceFact,
     MacroWorldObservation,
 )
+from trader.domain.world_news import DriverNewsBundle
+from trader.application.world_model.pattern_path import project_pattern_path_details
 from trader.infrastructure.state_db import world_pattern_formation_query as formation_query
 from trader.infrastructure.state_db.world_graph_store import WorldGraphStore
+from trader.infrastructure.state_db.world_knowledge_store import WorldKnowledgeStore
 from trader.infrastructure.state_db.world_macro_store import WorldMacroStore
 from trader.infrastructure.state_db.world_model_store import WorldModelStore
 from trader.infrastructure.state_db.world_pattern_formation_query import SqlitePatternFormationSource
@@ -254,6 +262,7 @@ def _seed_labeled(
     status: str = "complete",
     structural: StructuralWorldRelation | None = None,
     knowledge: KnowledgeWorldRelation | None = None,
+    extra_structural: tuple[StructuralWorldRelation, ...] = (),
     knowledge_receipt_override: str | None = None,
     relation_clock: datetime = RELATION_READY,
     snapshot_clock: datetime = SNAPSHOT_READY,
@@ -270,6 +279,8 @@ def _seed_labeled(
     traded = structural or _structural(symbol=symbol)
     about = None if not include_knowledge else (knowledge or _about())
     structural_ref = graph.append_structural_relation_event(StructuralWorldRelationAsserted(relation=traded))
+    for extra_relation in extra_structural:
+        graph.append_structural_relation_event(StructuralWorldRelationAsserted(relation=extra_relation))
     graph._clock = lambda: relation_clock
     knowledge_ref = None
     receipt_id = knowledge_receipt_override
@@ -288,7 +299,7 @@ def _seed_labeled(
         receipt_id = knowledge_receipt_override or knowledge_ref.receipt.receipt_id
     snapshot = _snapshot(
         market,
-        structural=(traded,),
+        structural=(traded, *extra_structural),
         knowledge=() if about is None else (about,),
         knowledge_receipt_id=receipt_id or "",
         status=status,
@@ -830,7 +841,9 @@ def test_about_and_structural_records_get_honest_bindings(
     about_batch = _source(about["db_path"]).load_formation_batch(_request())  # type: ignore[arg-type]
     assert len(about_batch.records) == 1
     binding = _overlay_binding(about_batch.records[0])
-    assert binding.driver_state == DriverState.unspecified(source_family="knowledge_artifact")
+    assert binding.driver_state == DriverState.missing(
+        missingness="artifact_unjoined", source_family="knowledge_artifact"
+    )
     assert about["knowledge"].source.artifact_id in binding.evidence_refs  # type: ignore[union-attr]
     assert "observation_id" not in binding.driver_state.to_dict()
 
@@ -845,6 +858,127 @@ def test_about_and_structural_records_get_honest_bindings(
     assert structural_batch.records[0].knowledge_relations == ()
     assert structural_batch.records[0].driver_state_bindings == ()
     assert structural_batch.records[0].structural_relations
+
+
+def _news_about_triplet(
+    symbol: str = "2330",
+    *,
+    seed: str = "ab",
+    ready_at: datetime = datetime(2026, 8, 20, tzinfo=timezone.utc),
+) -> tuple[KnowledgeWorldRelation, KnowledgeArtifact, DriverNewsBundle]:
+    signal = DriverNewsBundle(
+        event_class="earnings",
+        event_class_source="analyst",
+        direction="bullish",
+        strength="strong",
+        severity="watch",
+        horizon_bucket="quarters",
+        attribution_quality="symbol_sourced",
+    )
+    target = WorldEntityRef(kind="instrument", entity_id=f"mic:XTAI:symbol:{symbol}")
+    placeholder = KnowledgeArtifact(
+        kind="news_macro",
+        artifact_id=f"knowledge_artifact:v1:{seed * 32}",
+        subjects=(EntityRef(kind="instrument", entity_id=target.entity_id),),
+        schema_version="news_brief.v1",
+        content_sha256="00" * 32,
+        ready_at=ready_at,
+        source_refs=("yahoo:uuid-1",),
+    )
+    content = knowledge_artifact_content_sha256(knowledge_artifact_row(placeholder, signal.to_dict()))
+    envelope = KnowledgeArtifact(
+        kind="news_macro",
+        artifact_id=placeholder.artifact_id,
+        subjects=placeholder.subjects,
+        schema_version="news_brief.v1",
+        content_sha256=content,
+        ready_at=ready_at,
+        source_refs=("yahoo:uuid-1",),
+    )
+    ref = KnowledgeArtifactRef(artifact_id=envelope.artifact_id, content_sha256=content)
+    relation = KnowledgeWorldRelation(
+        kind="ABOUT",
+        source=ref,
+        target=target,
+        effective_from=ready_at,
+        ontology_revision="market_ontology.v1",
+        source_refs=(f"artifact:{seed}",),
+    )
+    return relation, envelope, signal
+
+
+def test_about_joins_frozen_news_signal_through_knowledge_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    knowledge_root = tmp_path / "world_knowledge"
+    stamp = datetime(2026, 8, 20, 12, 5, tzinfo=timezone.utc)
+    store = WorldKnowledgeStore(knowledge_root, clock=lambda: stamp)
+    relation, envelope, signal = _news_about_triplet()
+    store.append_artifact(envelope, signal)
+    seeded = _seed_labeled(tmp_path / "joined", monkeypatch, symbol="2330", knowledge=relation)
+    batch = SqlitePatternFormationSource(
+        seeded["db_path"], knowledge_root=knowledge_root  # type: ignore[arg-type]
+    ).load_formation_batch(_request())
+    assert len(batch.records) == 1
+    bindings = batch.records[0].driver_state_bindings
+    assert len(bindings) == 1
+    assert bindings[0].driver_state.signal_class == "news_state"
+    assert bindings[0].driver_state.news == signal
+    assert envelope.artifact_id in bindings[0].evidence_refs
+
+
+def test_extended_heads_and_about_compose_in_formation_and_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    knowledge_root = tmp_path / "world_knowledge"
+    stamp = datetime(2026, 8, 20, 12, 5, tzinfo=timezone.utc)
+    store = WorldKnowledgeStore(knowledge_root, clock=lambda: stamp)
+    relation, _envelope, _signal = _news_about_triplet()
+    store.append_artifact(_envelope, _signal)
+    root = _instrument("2330")
+    issued = StructuralWorldRelation(
+        kind="ISSUED_BY",
+        source=root,
+        target=WorldEntityRef(kind="company", entity_id="issuer:yahoo:v1:XTAI:2330"),
+        effective_from=T0,
+        ontology_revision="market_ontology.v1",
+        source_refs=("company_micro:v1:2330:abc",),
+    )
+    member = StructuralWorldRelation(
+        kind="MEMBER_OF_FAMILY",
+        source=root,
+        target=WorldEntityRef(kind="family", entity_id="taxonomy:v1:semis"),
+        effective_from=T0,
+        ontology_revision="market_ontology.v1",
+        source_refs=("family_catalog.v1:v1:semis",),
+    )
+    seeded = _seed_labeled(
+        tmp_path / "composed",
+        monkeypatch,
+        symbol="2330",
+        knowledge=relation,
+        extra_structural=(issued, member),
+    )
+    batch = SqlitePatternFormationSource(
+        seeded["db_path"], knowledge_root=knowledge_root  # type: ignore[arg-type]
+    ).load_formation_batch(_request())
+    assert len(batch.records) == 1
+    record = batch.records[0]
+    kinds = {item.kind for item in record.structural_relations}
+    assert {"TRADED_ON", "ISSUED_BY", "MEMBER_OF_FAMILY"} <= kinds
+    assert record.driver_state_bindings[0].driver_state.signal_class == "news_state"
+    details = project_pattern_path_details(record)
+    family_branches = tuple(
+        path for path in details if path.steps and path.steps[-1].relation_kind == "MEMBER_OF_FAMILY"
+    )
+    assert len(family_branches) == 1
+    assert family_branches[0].steps[-1].family_ref == "v1:semis"
+    overlays = tuple(
+        path for path in details if path.steps and path.steps[-1].relation_kind == "ABOUT"
+    )
+    assert len(overlays) == 1
+    assert overlays[0].steps[-1].driver_state is not None
+    assert overlays[0].steps[-1].driver_state.signal_class == "news_state"
 
 
 def test_observes_exact_join_and_rising_versus_falling(

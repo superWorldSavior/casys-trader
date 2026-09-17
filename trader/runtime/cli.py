@@ -1178,7 +1178,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_discover.add_argument("--formation-cutoff", required=True)
     pattern_discover.add_argument("--evaluation-start-not-before", required=True)
-    pattern_discover.add_argument("--ontology-revision", help="révision exacte requise pour la formation")
+    pattern_discover.add_argument("--ontology-revision", help="tampon de révision apposé aux hypothèses formées")
     pattern_discover.add_argument("--horizon", action="append")
     pattern_discover.add_argument("--min-support", type=int, default=20)
     pattern_discover.add_argument("--min-association", type=float, default=0.10)

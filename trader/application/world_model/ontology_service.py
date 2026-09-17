@@ -292,11 +292,40 @@ def _fold_knowledge_relations(
         for envelope in ordered
         if isinstance(envelope.event, KnowledgeWorldRelationAsserted)
     }
-    return fold_knowledge_relation_events_at_cutoff(
+    admitted = fold_knowledge_relation_events_at_cutoff(
         tuple(envelope.event for envelope in ordered),
         cutoff_at=cutoff_at,
         evidence_by_relation_id=evidence_by_relation_id,
     )
+    return _dedupe_about_relations(admitted, evidence_by_relation_id)
+
+
+def _dedupe_about_relations(
+    relations: Sequence[KnowledgeWorldRelation],
+    evidence_by_relation_id: Mapping[str, AvailabilityEvidence | None],
+) -> tuple[KnowledgeWorldRelation, ...]:
+    """Latest receipt.ready_at wins per ABOUT (kind, source, target)."""
+
+    def key(relation: KnowledgeWorldRelation) -> tuple[str, str, str]:
+        source = canonical_sha256(relation.source.to_dict())
+        target = canonical_sha256(relation.target.to_dict())
+        return (relation.kind, source, target)
+
+    def rank(relation: KnowledgeWorldRelation) -> tuple[datetime, str]:
+        evidence = evidence_by_relation_id.get(relation.relation_id)
+        ready = evidence.receipt.ready_at if evidence is not None else None
+        if ready is None:
+            raise ValueError("ABOUT dedup requires store-attested evidence")
+        return (ready, relation.relation_id)
+
+    winners: dict[tuple[str, str, str], KnowledgeWorldRelation] = {}
+    rest: list[KnowledgeWorldRelation] = []
+    for relation in relations:
+        if relation.kind != "ABOUT":
+            rest.append(relation)
+        elif (current := winners.get(key(relation))) is None or rank(relation) > rank(current):
+            winners[key(relation)] = relation
+    return tuple(sorted((*rest, *winners.values()), key=lambda item: item.relation_id))
 
 
 def _published_revision_at(
@@ -389,6 +418,14 @@ class WorldOntologyResolver:
         envelopes = _available_envelopes(self._ledger.list_revision_events_available_through(cutoff), cutoff)
         return _published_revision_for_id(envelopes, revision_id)
 
+    def live_head_revision_id(self, *, at: datetime | str) -> str | None:
+        """Current published head id without folding entity/structural views. None when unpublished."""
+
+        cutoff = _as_cutoff(at)
+        envelopes = _available_envelopes(self._ledger.list_revision_events_available_through(cutoff), cutoff)
+        head = _published_revision_at(envelopes)
+        return None if head is None else head.revision_id
+
 
 class WorldKnowledgeResolver:
     """Unique author of the knowledge overlay at a cutoff, bound to one structural revision."""
@@ -405,10 +442,21 @@ class WorldKnowledgeResolver:
         if not isinstance(structural_revision, WorldOntologyRevision):
             raise TypeError("knowledge overlay requires a WorldOntologyRevision")
         envelopes = _available_envelopes(self._ledger.list_knowledge_relation_events_available_through(cutoff), cutoff)
+        # ABOUT binds structurally (target in frozen heads), not by revision stamp.
+        head_nodes = {entity.node_id for entity in structural_revision.entities}
         relations = tuple(
             relation
             for relation in _fold_knowledge_relations(envelopes, cutoff)
-            if relation.ontology_revision == structural_revision.revision_id
+            if (
+                (
+                    relation.kind == "ABOUT"
+                    and relation.target.node_id in head_nodes
+                )
+                or (
+                    relation.kind != "ABOUT"
+                    and relation.ontology_revision == structural_revision.revision_id
+                )
+            )
             and admits_macro_observes_relation(relation)
         )
         return WorldKnowledgeOverlayView(
@@ -433,8 +481,7 @@ class WorldOntologyProofService:
         scope_mapping_hash: str,
         at: datetime | str,
     ) -> WorldOntologyHeadsProof | None:
-        view = self._ontology.at_cutoff(at)
-        published = view.published_revision
+        published = self._ontology.published_revision(revision_id, at=at)
         if published is None:
             return None
         if published.revision_id != revision_id:

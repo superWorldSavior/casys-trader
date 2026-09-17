@@ -148,6 +148,7 @@ def _step(
     direction: str = "forward",
     freshness_bucket: str = "0-4h",
     driver_state: DriverState | None | object = _UNSET,
+    family_ref: str | None = None,
 ) -> PatternStep:
     if driver_state is _UNSET:
         resolved: DriverState | None = (
@@ -168,6 +169,7 @@ def _step(
         freshness_bucket=freshness_bucket,
         evidence_rule_version="macro_path_rule.v1" if ordinal == 0 else "market_ontology.v1",
         driver_state=resolved,
+        family_ref=family_ref,
     )
 
 
@@ -674,6 +676,7 @@ def test_events_round_trip_and_aggregates_stay_stdlib_domain() -> None:
             relation_kind=relation_kind,
             target_kind=target_kind,
             direction=direction,
+            family_ref="v1:test" if relation_kind == "MEMBER_OF_FAMILY" else None,
         )
         assert hop.relation_kind == relation_kind
         assert hop.direction == direction
@@ -711,6 +714,7 @@ def test_events_round_trip_and_aggregates_stay_stdlib_domain() -> None:
         "freshness_bucket",
         "evidence_rule_version",
         "driver_state",
+        "family_ref",
     ]
     assert replayed_step.driver_state is None
     forecast = PatternForecast.from_world_prediction(
@@ -1144,3 +1148,54 @@ def test_pattern_discovery_completed_rejects_invalid_order_hash_id_duplicates_co
         PatternDiscoveryCompleted.from_mapping(
             {**valid.to_dict(), "event_id": f"pattern_discovery_completed:v1:{'0' * 64}"}
         )
+
+
+def test_family_hops_require_normalized_family_ref() -> None:
+    step = _step(
+        0,
+        source_kind="instrument",
+        relation_kind="MEMBER_OF_FAMILY",
+        target_kind="family",
+        family_ref="V1:Software",
+    )
+    assert step.family_ref == "v1:software"
+    assert step.identity_tuple()[-1] == "v1:software"
+    replayed = PatternStep.from_mapping(step.to_dict())
+    assert replayed == step
+    assert replayed.to_dict()["family_ref"] == "v1:software"
+    with pytest.raises(ValueError, match="require family_ref"):
+        _step(0, source_kind="instrument", relation_kind="MEMBER_OF_FAMILY", target_kind="family")
+    with pytest.raises(ValueError, match="bare taxonomy id"):
+        _step(
+            0,
+            source_kind="instrument",
+            relation_kind="MEMBER_OF_FAMILY",
+            target_kind="family",
+            family_ref="not a family!",
+        )
+
+
+def test_family_ref_is_forbidden_outside_family_hops() -> None:
+    with pytest.raises(ValueError, match="only MEMBER_OF_FAMILY"):
+        _step(0, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue", family_ref="v1:tech")
+    legacy = _step(0, source_kind="instrument", relation_kind="TRADED_ON", target_kind="venue")
+    assert legacy.family_ref is None
+    assert PatternStep.from_mapping({k: v for k, v in legacy.to_dict().items() if k != "family_ref"}) == legacy
+
+
+def test_distinct_families_are_distinct_identities() -> None:
+    tech = _step(
+        0,
+        source_kind="instrument",
+        relation_kind="MEMBER_OF_FAMILY",
+        target_kind="family",
+        family_ref="v1:software",
+    )
+    energy = _step(
+        0,
+        source_kind="instrument",
+        relation_kind="MEMBER_OF_FAMILY",
+        target_kind="family",
+        family_ref="v1:oil_gas",
+    )
+    assert tech.identity_tuple() != energy.identity_tuple()

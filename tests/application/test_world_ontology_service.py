@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -25,6 +25,7 @@ from trader.domain.world_availability import (
 from trader.domain.world_context import EntityRef
 from trader.domain.world_episode import canonical_sha256
 from trader.domain.world_graph import (
+    KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
     KnowledgeWorldRelationRetired,
@@ -93,6 +94,10 @@ def _structural(**overrides: object) -> StructuralWorldRelation:
 
 def _observation_ref() -> WorldObservationRef:
     return WorldObservationRef(observation_id=f"world_observation:v1:{SHA}")
+
+
+def _artifact_ref() -> KnowledgeArtifactRef:
+    return KnowledgeArtifactRef(artifact_id=f"knowledge_artifact:v1:{SHA}", content_sha256=SHA)
 
 
 def _knowledge(**overrides: object) -> KnowledgeWorldRelation:
@@ -838,3 +843,74 @@ def test_late_identity_unlink_relink_is_not_visible_at_earlier_cutoff() -> None:
     assert [link.link_id for link in after_old_cutoff.identity_links] == [original.link_id]
     later_view = WorldOntologyResolver(ledger).at_cutoff(LATER)
     assert [link.link_id for link in later_view.identity_links] == [replacement.link_id]
+
+
+def test_about_dedup_keeps_latest_receipt_per_link() -> None:
+    from trader.application.world_model.ontology_service import _fold_knowledge_relations
+
+    ledger = _InMemoryWorldGraphLedger(now=READY)
+    first = _knowledge(kind="ABOUT", source=_artifact_ref(), ontology_revision="market_ontology:v1:gen1")
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=first))
+    ledger.now = LATER
+    second = _knowledge(kind="ABOUT", source=_artifact_ref(), ontology_revision="market_ontology:v1:gen2")
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=second))
+    observes_old = _knowledge(ontology_revision="market_ontology:v1:gen1")
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=observes_old))
+    observes_new = _knowledge(ontology_revision="market_ontology:v1:gen2")
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=observes_new))
+
+    folded = _fold_knowledge_relations(ledger.knowledge_log, LATER + timedelta(hours=1))
+
+    about = [item for item in folded if item.kind == "ABOUT"]
+    assert [item.relation_id for item in about] == [second.relation_id]
+    observes = [item for item in folded if item.kind == "OBSERVES"]
+    assert len(observes) == 2
+
+
+def test_about_dedup_breaks_ready_at_ties_by_relation_id() -> None:
+    from trader.application.world_model.ontology_service import _fold_knowledge_relations
+
+    ledger = _InMemoryWorldGraphLedger(now=READY)
+    first = _knowledge(kind="ABOUT", source=_artifact_ref(), ontology_revision="market_ontology:v1:gen1")
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=first))
+    second = _knowledge(kind="ABOUT", source=_artifact_ref(), ontology_revision="market_ontology:v1:gen2")
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=second))
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=first))
+    assert first.relation_id != second.relation_id
+
+    folded = _fold_knowledge_relations(ledger.knowledge_log, READY + timedelta(hours=1))
+
+    about = [item for item in folded if item.kind == "ABOUT"]
+    assert [item.relation_id for item in about] == [max(first.relation_id, second.relation_id)]
+
+
+def test_overlay_admits_family_stamped_about_by_endpoint() -> None:
+    from trader.application.world_model.ontology_service import WorldKnowledgeResolver
+
+    ledger = _InMemoryWorldGraphLedger(now=READY)
+    about = _knowledge(
+        kind="ABOUT",
+        source=_artifact_ref(),
+        target=_entity(),
+        ontology_revision="market_ontology.v1",
+    )
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=about))
+    revision = _revision(revision_id="market_ontology:v1:" + "ab" * 32)
+    view = WorldKnowledgeResolver(ledger).at_cutoff(CUTOFF, revision)
+    assert [item.relation_id for item in view.relations] == [about.relation_id]
+
+
+def test_overlay_excludes_about_with_foreign_target() -> None:
+    from trader.application.world_model.ontology_service import WorldKnowledgeResolver
+
+    tip = "market_ontology:v1:" + "ab" * 32
+    ledger = _InMemoryWorldGraphLedger(now=READY)
+    dangling = _knowledge(
+        kind="ABOUT",
+        source=_artifact_ref(),
+        ontology_revision=tip,
+    )
+    ledger.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=dangling))
+    revision = _revision(revision_id=tip)
+    view = WorldKnowledgeResolver(ledger).at_cutoff(CUTOFF, revision)
+    assert view.relations == ()

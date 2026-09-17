@@ -75,7 +75,11 @@ _DEFAULT_HORIZONS = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
 
 @dataclass(frozen=True)
 class PatternFormationRequest:
-    """As-of discovery request. Graph content and explicit model identity are frozen."""
+    """As-of discovery request. Graph content and explicit model identity are frozen.
+
+    ontology_revision is the formation stamp applied to formed hypotheses, not a
+    record filter: support accumulates across ontology revisions.
+    """
 
     formation_cutoff: datetime | str
     evaluation_start_not_before: datetime | str
@@ -124,9 +128,9 @@ class PatternFormationRequest:
             if self.feature_mask_fingerprint is None
             else _sha256_hex(self.feature_mask_fingerprint, "feature_mask_fingerprint")
         )
-        if contract_id != contract.contract_id or contract_fp != contract.fingerprint:
+        if contract_id != contract.contract_id:
             raise ValueError("feature contract must be the current graph_feature_contract identity")
-        if mask_id != mask.mask_id or mask_fp != mask.fingerprint:
+        if mask_id != mask.mask_id:
             raise ValueError("feature mask must be the current graph_content_mask identity")
         model_identity = _required_text(self.model_identity, "model_identity")
         if model_identity != EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY:

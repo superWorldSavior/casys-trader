@@ -45,7 +45,6 @@ from trader.domain.world_episode import (
     parse_utc_timestamp,
 )
 from trader.domain.world_graph import (
-    KnowledgeArtifactRef,
     KnowledgeWorldRelation,
     KnowledgeWorldRelationAsserted,
     StructuralWorldRelation,
@@ -67,6 +66,11 @@ from trader.domain.world_macro import (
 from trader.infrastructure.state_db._jsonl_store import read_jsonl_objects
 from trader.infrastructure.state_db.sqlite_in import sqlite_placeholders as _placeholders
 from trader.infrastructure.state_db.availability_receipt import load_receipts, parse_world_availability_receipt
+from trader.infrastructure.state_db.world_knowledge_corpus import (
+    KnowledgeArtifactJoin,
+    bind_about_relation,
+    load_knowledge_corpus,
+)
 from trader.infrastructure.state_db.world_macro_store import WORLD_MACRO_STORE_ID
 from trader.infrastructure.state_db.world_model_store import WORLD_MODEL_STORE_ID
 from trader.infrastructure.state_db.world_prediction_storage_lock import (
@@ -178,6 +182,7 @@ class _Ledger:
         relation_events: Mapping[str, tuple[sqlite3.Row, ...]],
         outcomes: Mapping[str, tuple[sqlite3.Row, ...]],
         macro_observations: Mapping[str, _MacroJoin],
+        knowledge_artifacts: Mapping[str, KnowledgeArtifactJoin],
     ) -> None:
         self.snapshots = snapshots
         self.receipts = receipts
@@ -185,16 +190,24 @@ class _Ledger:
         self.relation_events = relation_events
         self.outcomes = outcomes
         self.macro_observations = macro_observations
-        self._snapshot_eval: dict[tuple[str, str | None], tuple[str, _SnapshotBundle | None]] = {}
+        self.knowledge_artifacts = knowledge_artifacts
+        self._snapshot_eval: dict[str, tuple[str, _SnapshotBundle | None]] = {}
         self._parsed_events: dict[str, Any] = {}
 
 
 class SqlitePatternFormationSource:
     """URI ``mode=ro`` loader of labeled graph-companion formation records."""
 
-    def __init__(self, db_path: str | Path, *, macro_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        macro_root: str | Path | None = None,
+        knowledge_root: str | Path | None = None,
+    ) -> None:
         self.path = Path(db_path)
         self.macro_root = None if macro_root is None else Path(macro_root)
+        self.knowledge_root = None if knowledge_root is None else Path(knowledge_root)
 
     def load_formation_batch(self, request: PatternFormationRequest) -> PatternFormationBatch:
         if not isinstance(request, PatternFormationRequest):
@@ -210,7 +223,7 @@ class SqlitePatternFormationSource:
                 missing = sorted(_REQUIRED_TABLES.difference(tables))
                 if missing:
                     return _empty_batch("schema_unavailable")
-                return _load_batch(connection, request, self.macro_root)
+                return _load_batch(connection, request, self.macro_root, self.knowledge_root)
         except (PredictionStorageBusyError, OSError, sqlite3.Error):
             return _empty_batch("unavailable")
 
@@ -221,6 +234,7 @@ def _preload_ledger(
     horizons: Sequence[str],
     cutoff: datetime,
     macro_root: Path | None,
+    knowledge_root: Path | None = None,
 ) -> _Ledger:
     snapshots = {str(row["snapshot_id"]): row for row in connection.execute("SELECT * FROM world_graph_snapshots")}
     receipts: dict[_ReceiptKey, sqlite3.Row] = {}
@@ -270,6 +284,7 @@ def _preload_ledger(
         relation_events={key: tuple(rows) for key, rows in relation_events.items()},
         outcomes={key: tuple(rows) for key, rows in outcomes.items()},
         macro_observations=_load_macro_observation_corpus(macro_root),
+        knowledge_artifacts=load_knowledge_corpus(knowledge_root),
     )
 
 
@@ -277,6 +292,7 @@ def _load_batch(
     connection: sqlite3.Connection,
     request: PatternFormationRequest,
     macro_root: Path | None,
+    knowledge_root: Path | None = None,
 ) -> PatternFormationBatch:
     cutoff = request.formation_cutoff
     rejections: Counter[str] = Counter()
@@ -299,7 +315,9 @@ def _load_batch(
     ).fetchall()
     if not episode_rows:
         return PatternFormationBatch(records=(), rejection_counts={}, source_evidence_ids=())
-    ledger = _preload_ledger(connection, horizons=request.horizons, cutoff=cutoff, macro_root=macro_root)
+    ledger = _preload_ledger(
+        connection, horizons=request.horizons, cutoff=cutoff, macro_root=macro_root, knowledge_root=knowledge_root
+    )
     for episode_row in episode_rows:
         try:
             built = _record_for_episode(ledger, episode_row, request, rejections, evidence)
@@ -362,9 +380,7 @@ def _record_for_episode(
     except (TypeError, ValueError):
         rejections["embedded_snapshot_id_missing"] += 1
         return ()
-    snapshot_bundle = _admitted_snapshot(
-        ledger, snapshot_id, cutoff, rejections, ontology_revision=request.ontology_revision
-    )
+    snapshot_bundle = _admitted_snapshot(ledger, snapshot_id, cutoff, rejections)
     if snapshot_bundle is None:
         return ()
     snapshot, snapshot_row, snapshot_receipt, snapshot_recorded, snapshot_receipt_recorded = snapshot_bundle
@@ -419,6 +435,7 @@ def _record_for_episode(
                     snapshot,
                     structural,
                     ledger.macro_observations,
+                    ledger.knowledge_artifacts,
                 ),
             )
         except (TypeError, ValueError):
@@ -562,24 +579,6 @@ def _missing_observes_binding(
     )
 
 
-def _bind_about_relation(relation: KnowledgeWorldRelation) -> PatternDriverStateBinding:
-    source = relation.source
-    if isinstance(source, KnowledgeArtifactRef):
-        return PatternDriverStateBinding(
-            relation_id=relation.relation_id,
-            driver_state=DriverState.unspecified(source_family="knowledge_artifact"),
-            evidence_refs=_unique_evidence(source.artifact_id, source.content_sha256, *relation.source_refs),
-        )
-    return PatternDriverStateBinding(
-        relation_id=relation.relation_id,
-        driver_state=DriverState.missing(
-            missingness="artifact_unjoined",
-            source_family="knowledge_artifact",
-        ),
-        evidence_refs=_unique_evidence(*relation.source_refs),
-    )
-
-
 def _bind_observes_relation(
     relation: KnowledgeWorldRelation,
     snapshot: WorldGraphSnapshot,
@@ -652,14 +651,18 @@ def _hydrate_driver_bindings(
     snapshot: WorldGraphSnapshot,
     structural: Sequence[StructuralWorldRelation],
     corpus: Mapping[str, _MacroJoin],
+    knowledge_corpus: Mapping[str, KnowledgeArtifactJoin] | None = None,
 ) -> tuple[PatternDriverStateBinding, ...]:
     admitted = {ref.relation_id for ref in snapshot.knowledge_relation_refs}
+    artifacts = knowledge_corpus or {}
     bindings: list[PatternDriverStateBinding] = []
     for relation in knowledge:
         if relation.kind not in DRIVER_OVERLAY_RELATION_KINDS or relation.relation_id not in admitted:
             continue
         if relation.kind == "ABOUT":
-            bindings.append(_bind_about_relation(relation))
+            bindings.append(
+                bind_about_relation(relation, cutoff=snapshot.cutoff_at, corpus=artifacts)
+            )
             continue
         bindings.append(_bind_observes_relation(relation, snapshot, structural, corpus))
     bindings.sort(key=lambda item: item.relation_id)
@@ -671,14 +674,11 @@ def _admitted_snapshot(
     snapshot_id: str,
     cutoff: datetime,
     rejections: Counter[str],
-    *,
-    ontology_revision: str | None = None,
 ) -> _SnapshotBundle | None:
-    cache_key = (snapshot_id, ontology_revision)
-    cached = ledger._snapshot_eval.get(cache_key)
+    cached = ledger._snapshot_eval.get(snapshot_id)
     if cached is None:
-        cached = _evaluate_snapshot(ledger, snapshot_id, cutoff, ontology_revision=ontology_revision)
-        ledger._snapshot_eval[cache_key] = cached
+        cached = _evaluate_snapshot(ledger, snapshot_id, cutoff)
+        ledger._snapshot_eval[snapshot_id] = cached
     reason, bundle = cached
     if bundle is None:
         rejections[reason] += 1
@@ -690,8 +690,6 @@ def _evaluate_snapshot(
     ledger: _Ledger,
     snapshot_id: str,
     cutoff: datetime,
-    *,
-    ontology_revision: str | None = None,
 ) -> tuple[str, _SnapshotBundle | None]:
     row = ledger.snapshots.get(snapshot_id)
     if row is None:
@@ -711,8 +709,6 @@ def _evaluate_snapshot(
         return "snapshot_payload_mismatch", None
     if snapshot.status not in _ADMITTED_SNAPSHOT_STATUSES:
         return "snapshot_not_admitted", None
-    if ontology_revision is not None and snapshot.ontology_revision != ontology_revision:
-        return "ontology_revision_mismatch", None
     if not _clocks_not_after(cutoff, snapshot.cutoff_at, recorded_at):
         return "snapshot_after_formation_cutoff", None
     payload_digest = str(row["payload_sha256"])

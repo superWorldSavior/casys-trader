@@ -785,6 +785,22 @@ def test_scope_mapping_mismatch_and_contradictory_heads_are_rejected() -> None:
         _service(wrong_country).build(_request(mapping_ok))
 
 
+def test_stale_resolution_hash_with_identical_scopes_is_accepted() -> None:
+    from dataclasses import replace
+
+    mapping_n = _mapping()
+    stale_resolution = _resolution_for(mapping_n)
+    bumped_entry = replace(_mapping_entry(), taxonomy_version="sessions_mic.v2")
+    mapping_n_plus_1 = _mapping(entries=(bumped_entry,))
+    assert mapping_n_plus_1.mapping_id == mapping_n.mapping_id
+    assert mapping_n_plus_1.content_sha256 != mapping_n.content_sha256
+    assert stale_resolution.mapping_sha256 == mapping_n.content_sha256
+    ledger = _InMemoryWorldGraphLedger()
+    _seed_rfc_graph(ledger, mapping_n_plus_1)
+    bundle = _service(ledger).build(_request(mapping_n_plus_1, scope_resolution=stale_resolution))
+    assert bundle.snapshot.status == "complete"
+
+
 def test_path_budget_marks_partial_snapshot_and_does_not_invent_members() -> None:
     mapping = _mapping()
     ledger = _InMemoryWorldGraphLedger()

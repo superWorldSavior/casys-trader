@@ -992,6 +992,8 @@ def test_knowledge_endpoints_are_closed_and_structural_endpoints_are_entities() 
     assert {about.kind, uses.kind, derived.kind, supersedes.kind} <= KNOWLEDGE_RELATION_KINDS
     with pytest.raises(ValueError, match="ABOUT|source"):
         _knowledge(kind="ABOUT", source=_observation_ref(), target=_entity())
+    with pytest.raises(ValueError, match="ABOUT|target"):
+        _knowledge(kind="ABOUT", source=_artifact_ref(), target=_artifact_ref())
     with pytest.raises(ValueError, match="OBSERVES|target"):
         _knowledge(kind="OBSERVES", source=_observation_ref(), target=_artifact_ref())
     with pytest.raises(ValueError, match="LOCATED_IN|source|target"):
