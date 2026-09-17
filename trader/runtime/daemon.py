@@ -2999,6 +2999,7 @@ def main(
                 graph_enricher=graph_enricher,
                 pattern_workflow=pattern_workflow,
                 resource_guard=_world_resource_guard,
+                state_dir=STATE_DIR,
             )
             claimed_resources.world_model_store = _world_model_store
             claimed_resources.world_model_runner = _world_model_runner

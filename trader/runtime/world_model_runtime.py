@@ -11,10 +11,12 @@ from __future__ import annotations
 import copy
 import dataclasses
 import inspect
+import json
 import logging
+import os
 import threading
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from trader.application.world_model.scope_mapping_ports import WorldScopeMappingGenerationQuery
@@ -55,8 +57,11 @@ class WorldModelBackgroundRunner:
         graph_enricher: WorldGraphEpisodeEnricher | None = None,
         pattern_workflow: object | None = None,
         resource_guard: object | None = None,
+        state_dir: str | Path | None = None,
     ) -> None:
         self.runtime = runtime
+        self._status_path = None if state_dir is None else Path(state_dir) / "world_model_runner_status.json"
+        self._started_at = datetime.now(timezone.utc).isoformat()
         self.log = logger or logging.getLogger("casys-trader")
         self.thread_name = str(thread_name).strip() or "world-model-shadow"
         self.context_enricher = context_enricher
@@ -215,9 +220,14 @@ class WorldModelBackgroundRunner:
                 if self._stopping or self._pending is None:
                     if self._thread is threading.current_thread():
                         self._thread = None
-                    return
-                current = self._pending
-                self._pending = None
+                    running = False
+                else:
+                    running = True
+                    current = self._pending
+                    self._pending = None
+            self._write_status_file(running=running)
+            if not running:
+                return
 
     def _apply_resource_budget(self, report: dict[str, object], *, now: datetime) -> bool:
         """Skip capture/training when the last-resort budget is breached. Never raises."""
@@ -302,7 +312,30 @@ class WorldModelBackgroundRunner:
 
     def _record_failure(self, report: dict[str, object]) -> None:
         self._last_report = copy.deepcopy(report)
+        self._write_status_file(running=self._thread is not None)
         self._warn(report)
+
+    def _write_status_file(self, *, running: bool) -> None:
+        """Best-effort runner status for operators. Never raises, never locks."""
+
+        if self._status_path is None:
+            return
+        try:
+            # Lock-free by design: callers may hold the runner lock, and a
+            # torn read only yields a slightly stale file, never a deadlock.
+            snapshot = self._last_report
+            payload = {
+                "pid": os.getpid(),
+                "status": snapshot.get("status", "unknown"),
+                "started_at": self._started_at,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "running": running,
+                "pending": self._pending is not None,
+                "last": snapshot,
+            }
+            self._status_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        except Exception:  # noqa: BLE001 - observability never breaks sweeps
+            pass
 
     def _warn(self, payload: object) -> None:
         try:

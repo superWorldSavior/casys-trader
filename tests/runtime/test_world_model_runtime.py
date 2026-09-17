@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -571,6 +573,26 @@ def test_background_runner_catches_runtime_failure_and_still_captures() -> None:
     status = runner.status()
     assert status["status"] == "partial"
     assert status["errors"][0]["stage"] == "mature"
+
+
+def test_background_runner_writes_status_file_per_iteration(tmp_path: Path) -> None:
+    class OkRuntime:
+        def mature_pending(self, _now: datetime, **_kwargs: object) -> dict[str, object]:
+            return {"status": "ok"}
+
+        def capture_and_predict(self, _episodes: object) -> dict[str, object]:
+            return {"status": "ok"}
+
+    runner = WorldModelBackgroundRunner(runtime=OkRuntime(), state_dir=tmp_path)  # type: ignore[arg-type]
+    triggered = runner.trigger(episodes=[_episode("e-status")], now=NOW)
+    triggered["_thread"].join(timeout=5)  # type: ignore[index,union-attr]
+
+    payload = json.loads((tmp_path / "world_model_runner_status.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+    assert payload["running"] is False
+    assert payload["pending"] is False
+    assert payload["pid"] == os.getpid()
+    assert payload["last"]["reason"] == "shadow"
 
 
 def test_background_runner_preserves_the_snapshot_clock_for_delayed_prediction() -> None:
