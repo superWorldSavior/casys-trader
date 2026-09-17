@@ -911,7 +911,9 @@ def test_daemon_pilot_activation_does_not_write_episodes_on_boot_wiring(tmp_path
             now=NOW,
             environ={},
         )
-        assert report.status == "started"
+        # No attestation pin on this wiring path: the graph cohort stays
+        # loudly blocked while C1 collects, and nothing writes episodes.
+        assert report.status == "blocked"
         assert report.episodes_appended == 0
         assert store.counts()["episodes"] == 0
         assert store.list_collecting_cohort_ids()

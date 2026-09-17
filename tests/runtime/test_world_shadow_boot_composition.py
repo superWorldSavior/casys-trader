@@ -27,7 +27,14 @@ BOOT = datetime(2026, 8, 24, 2, 0, tzinfo=UTC)
 CONFIG_DIR = REPO_ROOT / "config"
 
 
-def _activate(store: WorldModelStore, *, ontology_proof=None):
+_PIN_DEFAULT = object()
+
+
+def _activate(store: WorldModelStore, *, ontology_proof=None, ontology_revision=_PIN_DEFAULT):
+    live = WorldScopeResolver.load(CONFIG_DIR).mapping
+    # Default stand-in pin: the committed id for the mapping under test
+    # (production passes ensure_published().revision_id, extended).
+    pin = market_ontology_revision_id(live) if ontology_revision is _PIN_DEFAULT else ontology_revision
     return activate_world_shadow_pilot(
         cohort_service=WorldCohortService(repository=store, query=store),
         config_dir=CONFIG_DIR,
@@ -35,12 +42,49 @@ def _activate(store: WorldModelStore, *, ontology_proof=None):
         environ={},
         runtime_identity=_FixedIdentity(IDENTITY_A),
         ontology_proof=ontology_proof,
+        ontology_revision=pin,
         mapping_generations=store,
     )
 
 
 def _phases(store: WorldModelStore, report) -> dict[str, CohortPhase]:
     return {item["key"]: store.load(WorldCohortId(item["cohort_id"])).phase for item in report.cohorts}
+
+
+def test_boot_composition_extended_pin_starts_graph_cohort(tmp_path: Path) -> None:
+    """Exact production path: extended attestation pin starts the graph cohort.
+
+    Regression for 2026-09-17, when the pilot pinned a legacy id while the
+    attestation published extended ids, leaving the graph cohort registered
+    forever and pattern discovery parked.
+    """
+    from trader.runtime.world_model_runtime import compose_world_ontology_attestation
+
+    briefs_root = tmp_path / "briefs"
+    briefs_root.mkdir()
+    store = WorldModelStore(tmp_path / "world_model.db", clock=lambda: BOOT)
+    try:
+        attestation = compose_world_ontology_attestation(
+            store=store,
+            config_dir=CONFIG_DIR,
+            clock=lambda: BOOT,
+            extended=True,
+            briefs_root=briefs_root,
+        )
+        assert attestation is not None
+        published = attestation.ensure_published(now=BOOT)
+        assert published.status == "ready"
+        mapping = WorldScopeResolver.load(CONFIG_DIR).mapping
+        assert published.revision_id is not None
+        assert published.revision_id != market_ontology_revision_id(mapping)
+        report = _activate(store, ontology_proof=attestation, ontology_revision=published.revision_id)
+        phases = _phases(store, report)
+        assert phases["technical_c1"] is CohortPhase.COLLECTING
+        assert phases["graph"] is CohortPhase.COLLECTING
+        assert report.status == "started"
+        assert report.graph_cohort_id is not None
+    finally:
+        store.close()
 
 
 def test_boot_composition_collects_graph_only_after_exact_bootstrap_proof(tmp_path: Path) -> None:

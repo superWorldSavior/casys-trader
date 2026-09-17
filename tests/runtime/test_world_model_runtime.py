@@ -1527,6 +1527,7 @@ def test_compose_graph_capture_uses_pinned_generation_not_live_mapping(tmp_path)
             environ={},
             runtime_identity=_FixedIdentity(IDENTITY_A),
             ontology_proof=_FixedOntologyProof(_matching_graph_proof(mapping_b)),
+            ontology_revision=market_ontology_revision_id(mapping_b),
             mapping=mapping_b,
             mapping_generations=store,
         )
@@ -1580,6 +1581,7 @@ def test_compose_pinned_capture_does_not_require_live_yaml(tmp_path) -> None:
             environ={},
             runtime_identity=_FixedIdentity(IDENTITY_A),
             ontology_proof=_FixedOntologyProof(_matching_graph_proof(mapping_b)),
+            ontology_revision=market_ontology_revision_id(mapping_b),
             mapping=mapping_b,
             mapping_generations=store,
         )

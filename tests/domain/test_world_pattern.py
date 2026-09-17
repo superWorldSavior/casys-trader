@@ -705,6 +705,8 @@ def test_events_round_trip_and_aggregates_stay_stdlib_domain() -> None:
             PatternStep.from_mapping({**legal_payload, legacy_key: legacy_value})
     replayed_step = PatternStep.from_mapping(_default_steps()[0].to_dict())
     assert replayed_step == _default_steps()[0]
+    # Canonical bytes stay stable: later-added fields are omitted when None
+    # so stored hypotheses keep rehydrating (2026-08-28 ledger compat).
     assert list(replayed_step.to_dict()) == [
         "ordinal",
         "source_kind",
@@ -714,8 +716,15 @@ def test_events_round_trip_and_aggregates_stay_stdlib_domain() -> None:
         "freshness_bucket",
         "evidence_rule_version",
         "driver_state",
-        "family_ref",
     ]
+    family_step = _step(
+        0,
+        source_kind="instrument",
+        relation_kind="MEMBER_OF_FAMILY",
+        target_kind="family",
+        family_ref="v1:test",
+    )
+    assert family_step.to_dict()["family_ref"] == "v1:test"
     assert replayed_step.driver_state is None
     forecast = PatternForecast.from_world_prediction(
         _prediction(),
@@ -1199,3 +1208,48 @@ def test_distinct_families_are_distinct_identities() -> None:
         family_ref="v1:oil_gas",
     )
     assert tech.identity_tuple() != energy.identity_tuple()
+
+
+def test_matched_hop_omits_family_ref_when_none() -> None:
+    hop = _hop(_default_steps()[0])
+    assert list(hop.to_dict()) == [
+        "ordinal",
+        "source_kind",
+        "relation_kind",
+        "direction",
+        "target_kind",
+        "freshness_bucket",
+        "evidence_rule_version",
+        "driver_state",
+        "evidence_refs",
+    ]
+    family = PatternMatchedHop(
+        ordinal=0,
+        source_kind="instrument",
+        relation_kind="MEMBER_OF_FAMILY",
+        direction="forward",
+        target_kind="family",
+        freshness_bucket="0-4h",
+        evidence_rule_version="macro_path_rule.v1",
+        family_ref="v1:test",
+    )
+    assert family.to_dict()["family_ref"] == "v1:test"
+
+
+def test_stored_2026_08_28_hypothesis_still_rehydrates_with_stable_ids() -> None:
+    """Golden guard: canonical bytes must never break the stored ledger.
+
+    Regression for 2026-09-17, when ``family_ref``/``news``/``company``
+    serialization broke every 2026-08-28 hypothesis (``tamper: existing
+    event cannot be rehydrated`` on each pattern tick).
+    """
+    stored = json.loads(
+        (REPO_ROOT / "tests" / "fixtures" / "world_pattern_hypothesis_2026-08-28.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "family_ref" not in json.dumps(stored["steps"])
+    assert "news" not in json.dumps(stored["steps"][4]["driver_state"])
+    spec = PatternHypothesisSpec.from_mapping(stored)
+    assert spec.hypothesis_id == stored["hypothesis_id"]
+    assert spec.content_sha256 == stored["content_sha256"]

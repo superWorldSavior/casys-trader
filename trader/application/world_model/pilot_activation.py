@@ -9,6 +9,12 @@ is not an implicit runtime default.
 No backfill. No trade decision effect. Idle cycles may still write no episode.
 Fail-open if the config is missing or invalid. ``CASYS_WORLD_SHADOW_PILOT_ACTIVATION=0``
 skips register/arm/start while leaving market shadow.
+
+The pilot never derives the graph ontology revision itself: the caller passes
+the revision the ontology attestation committed (``ensure_published``), and
+the pilot pins exactly that. A missing pin blocks the graph cohort loudly
+(``graph_ontology_unpinned``) instead of registering a cohort that can never
+prove its heads.
 """
 
 from __future__ import annotations
@@ -66,7 +72,7 @@ from trader.domain.world_feature_contract import (
 )
 from trader.domain.world_ontology_lifecycle import (
     admits_market_ontology_family,
-    market_ontology_revision_id,
+    is_market_ontology_revision_instance,
 )
 from trader.domain.world_scope import WorldScopeMapping
 from trader.domain.world_macro import (
@@ -460,6 +466,7 @@ def _materialize_manifest(
     stop_at: datetime,
     runtime_identity: WorldRuntimeIdentity,
     mapping: WorldScopeMapping,
+    committed_ontology_revision: str | None = None,
 ) -> WorldCohortManifest:
     key = _required_text(spec.get("key"), "cohorts[].key")
     families = tuple(_required_text(item, "families[]") for item in spec.get("families") or ())
@@ -485,7 +492,11 @@ def _materialize_manifest(
         )
         if declared != MARKET_ONTOLOGY_REVISION and not admits_market_ontology_family(declared):
             raise ValueError(f"graph cohort ontology_revision must be {MARKET_ONTOLOGY_REVISION}")
-        ontology_revision = market_ontology_revision_id(mapping)
+        if committed_ontology_revision is None or not str(committed_ontology_revision).strip():
+            raise ValueError("graph cohort requires the committed ontology revision")
+        ontology_revision = _required_text(committed_ontology_revision, "committed_ontology_revision")
+        if not is_market_ontology_revision_instance(ontology_revision):
+            raise ValueError("graph cohort ontology_revision must be a market ontology revision instance")
     else:
         ontology_revision = _required_text(
             spec.get("ontology_revision") or config.payload.get("ontology_revision"),
@@ -802,6 +813,26 @@ def _cohort_id_after_closed_predecessors(
     return cohort_id
 
 
+def _unpinned_graph_report(*, key: str) -> dict[str, Any]:
+    """Blocked report when the attestation committed nothing to pin. No cohort exists."""
+
+    return {
+        "key": key,
+        "cohort_id": None,
+        "phase": None,
+        "manifest_sha256": None,
+        "planned_start_not_before": None,
+        "collection_stop_at": None,
+        "ontology_revision": None,
+        "registered_event_id": None,
+        "armed_event_id": None,
+        "started_event_id": None,
+        "already_present": False,
+        "reason": "graph_ontology_unpinned",
+        "blocked_reason": "graph_ontology_unpinned",
+    }
+
+
 def _activate_one(
     service: WorldCohortService,
     config: WorldShadowPilotConfig,
@@ -810,16 +841,38 @@ def _activate_one(
     now: datetime,
     measured: WorldRuntimeIdentity,
     ontology_proof: WorldOntologyProofQuery | None,
+    ontology_revision: str | None,
     mapping: WorldScopeMapping,
 ) -> dict[str, Any]:
     key = _required_text(spec.get("key"), "cohorts[].key")
     logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
     graph = "graph" in logicals
-    ontology_pin = market_ontology_revision_id(mapping) if graph else None
+    if graph:
+        if ontology_revision is None or not str(ontology_revision).strip():
+            return _unpinned_graph_report(key=key)
+        ontology_pin: str | None = _required_text(ontology_revision, "ontology_revision")
+        if not is_market_ontology_revision_instance(ontology_pin):
+            raise ValueError("graph cohort ontology_revision must be a market ontology revision instance")
+    else:
+        ontology_pin = None
     _close_expired_same_shape_cohorts(
         service, config, spec, mapping=mapping, ontology_pin=ontology_pin, now=now
     )
     reusable = _reusable_same_shape_cohort(service, config, spec, mapping=mapping, now=now)
+    if (
+        reusable is not None
+        and graph
+        and reusable.phase is not CohortPhase.COLLECTING
+        and (
+            reusable.manifest.scope_mapping is None
+            or reusable.manifest.scope_mapping.mapping_sha256 != mapping.content_sha256
+            or reusable.manifest.ontology_revision != ontology_pin
+        )
+    ):
+        # A never-started graph cohort pinned to a stale generation must not
+        # shadow a fresh one: reusing it would re-hit an unprovable pin
+        # forever. Only COLLECTING cohorts stay pinned to their generation.
+        reusable = None
     if reusable is not None:
         cohort_id = reusable.cohort_id
         existing = reusable
@@ -856,6 +909,7 @@ def _activate_one(
             stop_at=stop_at,
             runtime_identity=measured,
             mapping=mapping,
+            committed_ontology_revision=ontology_pin,
         )
     registered = service.register(RegisterWorldCohort(manifest=manifest))
     loaded = service.repository.load(WorldCohortId(manifest.cohort_id))
@@ -1010,10 +1064,16 @@ def activate_world_shadow_pilot(
     environ: Mapping[str, str] | None = None,
     runtime_identity: WorldRuntimeIdentityPort | None = None,
     ontology_proof: WorldOntologyProofQuery | None = None,
+    ontology_revision: str | None = None,
     mapping: WorldScopeMapping | None = None,
     mapping_generations: WorldScopeMappingGenerationRepository | None = None,
 ) -> WorldShadowPilotActivation:
-    """Idempotently register/arm/start approved shadow cohorts. Never backfills."""
+    """Idempotently register/arm/start approved shadow cohorts. Never backfills.
+
+    ``ontology_revision`` is the revision the ontology attestation committed;
+    graph cohorts pin exactly that. ``None`` blocks the graph cohort loudly
+    while other cohorts still activate.
+    """
 
     try:
         clock = _utc(now if isinstance(now, datetime) else parse_utc_timestamp(now, "now"))
@@ -1067,6 +1127,7 @@ def activate_world_shadow_pilot(
                     now=clock,
                     measured=measured,
                     ontology_proof=ontology_proof,
+                    ontology_revision=ontology_revision,
                     mapping=live_mapping,
                 )
             )
@@ -1080,8 +1141,9 @@ def activate_world_shadow_pilot(
             )
         graph_id = next((item["cohort_id"] for item in reports if item["key"] == "graph"), None)
         already = bool(reports) and all(item["already_present"] for item in reports)
+        blocked = any(item.get("blocked_reason") for item in reports)
         return WorldShadowPilotActivation(
-            status="already_collecting" if already else "started",
+            status="blocked" if blocked else ("already_collecting" if already else "started"),
             reason="operator_authorized_on_boot",
             config_sha256=config.content_sha256,
             window=window,

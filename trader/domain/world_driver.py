@@ -369,19 +369,25 @@ class DriverState:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        # Canonical bytes feed pattern hypothesis ids: fields added later
+        # stay absent when None, otherwise every stored hypothesis becomes
+        # unreadable (2026-09-17: news/company broke the 2026-08-28 ledger).
+        payload = {
             "schema_version": self.schema_version,
             "source_family": self.source_family,
             "signal_class": self.signal_class,
             "regimes": None if self.regimes is None else self.regimes.to_dict(),
-            "news": None if self.news is None else self.news.to_dict(),
-            "company": None if self.company is None else self.company.to_dict(),
             "artifact_kind": self.artifact_kind,
             "until_bound": self.until_bound,
             "producer_version": self.producer_version,
             "transform_version": self.transform_version,
             "missingness": self.missingness,
         }
+        if self.news is not None:
+            payload["news"] = self.news.to_dict()
+        if self.company is not None:
+            payload["company"] = self.company.to_dict()
+        return payload
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | DriverState) -> DriverState:

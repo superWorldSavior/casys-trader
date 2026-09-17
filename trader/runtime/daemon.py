@@ -2853,6 +2853,7 @@ def main(
             )
             _pilot_graph_cohort_id = None
             _ontology_attestation = None
+            _ontology_revision = None
             try:
                 _ontology_attestation = compose_world_ontology_attestation(
                     store=_world_model_store,
@@ -2861,7 +2862,7 @@ def main(
                     briefs_root=STATE_DIR / "company_intelligence",
                 )
                 if _ontology_attestation is not None:
-                    _ontology_attestation.ensure_published(now=now())
+                    _ontology_revision = _ontology_attestation.ensure_published(now=now()).revision_id
             except Exception as exc:  # noqa: BLE001 - unpublished ontology cannot block market/Trader
                 log.warning(
                     "[world_shadow_pilot] ontology attestation skipped: %s:%s",
@@ -2869,6 +2870,7 @@ def main(
                     exc,
                 )
                 _ontology_attestation = None
+                _ontology_revision = None
             if _world_shadow_pilot_activation:
                 try:
                     from trader.application.world_model.pilot_activation import (
@@ -2881,6 +2883,7 @@ def main(
                         now=now(),
                         environ=os.environ,
                         ontology_proof=_ontology_attestation,
+                        ontology_revision=_ontology_revision,
                         mapping_generations=_world_model_store,
                     )
                     if _pilot_report.status != "skipped":

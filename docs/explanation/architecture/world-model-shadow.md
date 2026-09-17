@@ -148,12 +148,26 @@ traverser ; aucun objet NetworkX n'est persisté ; aucune arête `CAUSES`.
 injecté au compose depuis l'activation pilote.
 
 La révision dérivée de `world_scope_mapping.v1` est
-`market_ontology:v1:<mapping_sha256>`, vérifiée contre le mapping chargé.
-Un store vide publie. Une nouvelle génération append puis supersede
+`market_ontology:v1:<mapping_sha256>` en schéma historique, ou
+`market_ontology:v1:<canonical(mapping, registre, catalogue)>` en schéma
+étendu (prod). Le pilote pine la révision commitée par l'attestation, il
+ne la recalcule jamais (un pin legacy face à un ledger étendu bloque la
+cohorte graphe en `registered` — incident 2026-09-17). Un store vide
+publie. Une nouvelle génération append puis supersede
 l'active dans le même ledger ; les têtes déjà collectées restent
 lisibles au cutoff PIT. Les cohortes pilotes encore `COLLECTING` de la
 même forme restent pinées sur leur génération de mapping ; le graphe
-live publie B, les ancres nouvelles attendent la successeure.
+live publie B, les ancres nouvelles attendent la successeure. Une
+cohorte graphe jamais démarrée sur un pin périmé ne fait plus écran :
+le boot crée une cohorte fraîche au lieu de la réutiliser.
+
+Les octets canoniques alimentent les ids (`hypothesis_id`,
+`content_sha256`, `event_id`) : un champ ajouté plus tard à une
+structure canonisée (`PatternStep`, `DriverState`) **doit rester absent
+quand il est `None`**, sinon tout le ledger stocké devient illisible
+(2026-09-17 : `family_ref`/`news`/`company` ont cassé les hypothèses du
+28/08). Le test golden `test_stored_2026_08_28_hypothesis_still_rehydrates_with_stable_ids`
+fige cette compatibilité.
 Snapshot `unmapped`/`ambiguous` : `world_graph_snapshot.v1` avec
 `root_entity=null`, zéro membre. Une relation `OBSERVES` porte le
 producteur et le scope natif ; la distance d'ancestry se reconstruit

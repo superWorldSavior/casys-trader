@@ -417,8 +417,13 @@ def test_same_revision_id_hash_drift_stays_a_conflict_and_next_generation_supers
         )
         WorldOntologyBootstrapService(store, first_mapping, lifecycle_spec=first_spec).ensure_published(now=CUTOFF)
         drifted_service = WorldOntologyBootstrapService(store, drifted, lifecycle_spec=first_spec)
-        assert drifted_service.readiness(CUTOFF).status == "drifted"
-        with pytest.raises(ValueError, match="conflict"):
+        drifted_readiness = drifted_service.readiness(CUTOFF)
+        assert drifted_readiness.status == "drifted"
+        # The drift reason carries the underlying cause instead of
+        # swallowing it: a boot warning must name the real conflict.
+        assert drifted_readiness.reason.startswith("revision_drift:")
+        assert len(drifted_readiness.reason) > len("revision_drift:")
+        with pytest.raises(ValueError, match="revision_drift"):
             drifted_service.ensure_published(now=CUTOFF)
         next_revision = derive_market_ontology(drifted)[2]
         next_spec = WorldOntologyLifecycleSpec(
@@ -560,3 +565,35 @@ def test_crash_between_supersede_and_publish_recovers_on_next_sweep(tmp_path: Pa
         assert len(view.entities) > 0
     finally:
         store.close()
+
+
+def test_republish_after_blind_first_read_stays_idempotent(tmp_path: Path) -> None:
+    """A blind first read must never duplicate the ledger.
+
+    ``first_seen_at`` is reader-local: with a cutoff captured before the
+    first read, a committed revision looks absent (``unpublished``). The
+    deterministic event ids make the follow-up publish a no-op, so every
+    boot converges without writing duplicate generation rows.
+    """
+    from datetime import timedelta
+
+    mapping = _generation("2301.TW")
+    path = tmp_path / "world_model.db"
+    writer = WorldGraphStore(path, clock=lambda: CUTOFF)
+    try:
+        held = WorldOntologyBootstrapService(writer, mapping).ensure_published(now=CUTOFF)
+        assert held.status == "ready"
+    finally:
+        writer.close()
+    reader = WorldGraphStore(path, clock=lambda: CUTOFF + timedelta(hours=1))
+    try:
+        service = WorldOntologyBootstrapService(reader, mapping)
+        assert service.readiness(CUTOFF).status == "unpublished"
+        confirmed = service.ensure_published(now=CUTOFF)
+        assert confirmed.status == "ready"
+        assert confirmed.revision_id == held.revision_id
+        envelopes = reader.list_revision_events_available_through(datetime.now(timezone.utc))
+        published = [item for item in envelopes if item.event.event_type.endswith("published")]
+        assert len(published) == 1
+    finally:
+        reader.close()

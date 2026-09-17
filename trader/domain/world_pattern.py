@@ -492,7 +492,10 @@ class PatternStep:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        # Canonical bytes feed hypothesis_id: a field added later must stay
+        # absent when None, otherwise every stored hypothesis becomes
+        # unreadable (2026-09-17: family_ref broke the 2026-08-28 ledger).
+        payload = {
             "ordinal": self.ordinal,
             "source_kind": self.source_kind,
             "relation_kind": self.relation_kind,
@@ -501,8 +504,10 @@ class PatternStep:
             "freshness_bucket": self.freshness_bucket,
             "evidence_rule_version": self.evidence_rule_version,
             "driver_state": None if self.driver_state is None else self.driver_state.to_dict(),
-            "family_ref": self.family_ref,
         }
+        if self.family_ref is not None:
+            payload["family_ref"] = self.family_ref
+        return payload
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | PatternStep) -> PatternStep:
@@ -1276,7 +1281,9 @@ class PatternMatchedHop:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        # Same canonical-bytes rule as PatternStep: later-added fields stay
+        # absent when None so stored occurrences keep rehydrating.
+        payload = {
             "ordinal": self.ordinal,
             "source_kind": self.source_kind,
             "relation_kind": self.relation_kind,
@@ -1285,9 +1292,11 @@ class PatternMatchedHop:
             "freshness_bucket": self.freshness_bucket,
             "evidence_rule_version": self.evidence_rule_version,
             "driver_state": None if self.driver_state is None else self.driver_state.to_dict(),
-            "family_ref": self.family_ref,
             "evidence_refs": list(self.evidence_refs),
         }
+        if self.family_ref is not None:
+            payload["family_ref"] = self.family_ref
+        return payload
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | PatternMatchedHop) -> PatternMatchedHop:

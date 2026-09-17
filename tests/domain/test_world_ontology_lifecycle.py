@@ -14,6 +14,7 @@ from trader.domain.world_ontology_lifecycle import (
     WorldOntologyLifecycleSpec,
     admits_market_ontology_family,
     committed_world_ontology_lifecycle_spec,
+    is_market_ontology_revision_instance,
     market_ontology_revision_id,
     market_ontology_revision_id_for_mapping_hash,
     plan_world_ontology_publication,
@@ -238,3 +239,12 @@ def test_require_extended_revision_rejects_drift() -> None:
         require_extended_ontology_revision(
             legacy, mapping, registry_sha256="b" * 64, catalog_sha256="c" * 64
         )
+
+
+def test_revision_instance_predicate_rejects_family_tag_and_malformed_ids() -> None:
+    assert is_market_ontology_revision_instance(f"market_ontology:v1:{'ab' * 32}") is True
+    assert is_market_ontology_revision_instance(MARKET_ONTOLOGY_REVISION) is False
+    assert is_market_ontology_revision_instance("market_ontology:v1:abc") is False
+    assert is_market_ontology_revision_instance("market_ontology:v1:" + "zz" * 32) is False
+    with pytest.raises((TypeError, ValueError)):
+        is_market_ontology_revision_instance("  ")

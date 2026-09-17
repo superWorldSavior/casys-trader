@@ -302,6 +302,7 @@ def test_future_mapping_reconcile_does_not_require_dependent_hash_edits() -> Non
         environ={},
         runtime_identity=_FixedIdentity(IDENTITY_A),
         ontology_proof=_FixedOntologyProof(_matching_graph_proof(result.mapping)),
+        ontology_revision=market_ontology_revision_id(result.mapping),
         mapping=result.mapping,
     )
     assert report.cohorts, report

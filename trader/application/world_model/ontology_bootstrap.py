@@ -397,8 +397,13 @@ class WorldOntologyBootstrapService:
                 expected=expected,
                 spec=self._lifecycle_spec,
             )
-        except ValueError:
-            return _readiness(status="drifted", mapping=self._mapping, revision=published, reason="revision_drift")
+        except ValueError as exc:
+            return _readiness(
+                status="drifted",
+                mapping=self._mapping,
+                revision=published,
+                reason=f"revision_drift:{exc}",
+            )
         if plan.action == "ready":
             return _readiness(status="ready", mapping=self._mapping, revision=published, reason="attested")
         if plan.action == "supersede":
@@ -440,7 +445,10 @@ class WorldOntologyBootstrapService:
         if current.status == "ready":
             return current
         if current.status == "drifted":
-            raise ValueError("conflict: committed ontology heads do not match the published revision")
+            raise ValueError(
+                "conflict: committed ontology heads do not match the published revision"
+                f" ({current.reason})"
+            )
         plan, published, revision = self._plan(cutoff)
         if plan.action == "publish":
             self._append_generation(expected=revision, cutoff=cutoff)

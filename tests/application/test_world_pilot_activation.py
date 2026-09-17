@@ -57,6 +57,10 @@ def _activate(**kwargs):
     if "cohort_service" not in values:
         service, _store = _service()
         values["cohort_service"] = service
+    if "ontology_revision" not in values:
+        # Default stand-in pin: the committed id for the mapping under test
+        # (production passes ensure_published().revision_id, extended).
+        values["ontology_revision"] = market_ontology_revision_id(values["mapping"])
     return activate_world_shadow_pilot(**values)
 
 
@@ -171,7 +175,9 @@ def test_activation_module_documents_rfc_exception_and_stays_application_owned()
 def test_boot_materializes_a_usable_seven_day_window_from_start_not_an_expired_date() -> None:
     service, store = _service()
     report = _activate(cohort_service=service, now=BOOT)
-    assert report.status == "started"
+    # No ontology proof: the graph cohort is blocked, and the status says so
+    # instead of masking it behind "started".
+    assert report.status == "blocked"
     assert report.authority == "shadow_only"
     assert report.decision_effect == "none"
     assert report.recommendation == "NO_GO"
@@ -205,7 +211,7 @@ def test_second_boot_is_idempotent_repairs_receipts_and_never_moves_the_window()
     first = _activate(cohort_service=service, now=BOOT)
     assert any(item.availability_status == "availability_unproven" for item in store.envelopes.values())
     second = _activate(cohort_service=service, now=LATER_BOOT)
-    assert second.status in {"started", "already_collecting"}
+    assert second.status == "blocked"
     assert {item["cohort_id"] for item in first.cohorts} == {item["cohort_id"] for item in second.cohorts}
     assert second.window["planned_start_not_before"] == BOOT
     assert second.window["collection_stop_at"] == BOOT + timedelta(days=7)
@@ -283,7 +289,7 @@ def test_next_cohort_can_add_three_day_metric_while_one_day_stays_primary(tmp_pa
         runtime_identity=_FixedIdentity(_identity()),
     )
 
-    assert report.status == "started"
+    assert report.status == "blocked"
     for item in report.cohorts:
         cohort = store.load(WorldCohortId(item["cohort_id"]))
         assert cohort.manifest.horizons == ("elapsed_4h.v1", "elapsed_1d.v1", "elapsed_3d.v1")

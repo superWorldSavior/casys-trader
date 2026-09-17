@@ -87,6 +87,16 @@ def admits_market_ontology_family(revision_id: str) -> bool:
     return text == MARKET_ONTOLOGY_REVISION_FAMILY or text.startswith(MARKET_ONTOLOGY_REVISION_PREFIX)
 
 
+def is_market_ontology_revision_instance(revision_id: str) -> bool:
+    """True only for a pinned instance id, never the family tag."""
+
+    text = _required_text(revision_id, "revision_id")
+    if not text.startswith(MARKET_ONTOLOGY_REVISION_PREFIX):
+        return False
+    digest = text[len(MARKET_ONTOLOGY_REVISION_PREFIX) :]
+    return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+
+
 @dataclass(frozen=True)
 class WorldOntologyLifecycleSpec:
     """One mapping generation's ontology identities."""
@@ -317,6 +327,7 @@ __all__ = [
     "WorldOntologyLifecycleSpec",
     "WorldOntologyPublicationPlan",
     "admits_market_ontology_family",
+    "is_market_ontology_revision_instance",
     "committed_world_ontology_lifecycle_spec",
     "market_ontology_extended_revision_id",
     "market_ontology_revision_id",

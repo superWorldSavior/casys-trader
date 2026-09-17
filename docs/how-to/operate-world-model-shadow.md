@@ -170,6 +170,27 @@ figer légitimement zéro candidat. La fermeture d'une cohorte en dérive est un
 événement ajouté à son historique ; elle ne restaure pas ses voies et ne
 permet pas de réutiliser rétroactivement les données de formation.
 
+### Cohorte graphe bloquée au boot
+
+Le log `[world_shadow_pilot]` donne le statut d'activation. `blocked`
+signifie qu'au moins une cohorte n'a pas démarré (le détail est dans le
+rapport par cohorte, champ `blocked_reason`) ; `technical_c1` continue
+pendant ce temps. Pour la clé `graph` :
+
+| `blocked_reason` | Sens | Action |
+|---|---|---|
+| `graph_ontology_unpinned` | l'attestation n'a rien commité (warning `ontology attestation skipped` juste avant) : aucune cohorte graphe n'est enregistrée | lire la cause dans le warning, pas de cohorte à nettoyer |
+| `graph_ontology_unpublished` | la révision pinée n'est pas prouvée dans le ledger (cohorte `registered`, jamais `collecting`) | vérifier que le pin égale la révision publiée (`world graph status`) |
+| `runtime_identity_drift` | le code du boot diffère de celui de la cohorte existante : voies gelées, fail-closed | rotation de cohorte (nouvelle génération), jamais de mutation |
+
+Un warning `conflict: committed ontology heads do not match the published
+revision (revision_drift:<cause>)` nomme la cause exacte (dérivation,
+mapping, registre). Une cohorte graphe `registered` pinée sur une ancienne
+génération ne bloque plus les suivantes : le boot la saute et crée une
+cohorte fraîche sur le pin live. L'ancienne reste listée (le pilot ne ferme
+que les `collecting` expirées et n'invalide jamais seul) mais inerte :
+fenêtre dépassée, jamais réutilisée, aucun slot admis.
+
 ## Distinguer boot, cycle dû, cycle idle
 
 Trois états distincts. Ne pas les fusionner :
@@ -270,7 +291,11 @@ Table exacte `(market_venue, instrument)`, **aucun** fallback runtime
 
 `mapping_id` / la famille `market_ontology.v1` sont le contrat. Le **hash
 de contenu** est la génération. L'instance d'ontologie est
-`market_ontology:v1:<mapping_sha256>`. Une rotation d'univers réconcilie
+`market_ontology:v1:<mapping_sha256>` en dérivation historique, ou
+`market_ontology:v1:<canonical(mapping, registre, catalogue)>` en dérivation
+étendue (attestation `extended=True` au boot, cas de la prod). Le pilote ne
+dérive jamais cet id lui-même : il pine exactement la révision commitée par
+l'attestation (`ensure_published`). Une rotation d'univers réconcilie
 les symboles manquants depuis les métadonnées provider (MIC explicite,
 XNYS vs XNAS) ; les lignes déjà mappées ne sont pas réécrites. Un
 contenu nouveau produit un nouveau `content_sha256` et une nouvelle

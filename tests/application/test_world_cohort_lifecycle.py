@@ -111,12 +111,12 @@ def _live_mapping():
     return WorldScopeResolver.load(CONFIG_DIR).mapping
 
 
-def _matching_graph_proof(mapping=None):
+def _heads_proof(revision_id, mapping=None):
     from trader.application.world_model.cohort_ports import WorldOntologyHeadsProof
 
     resolved = mapping if mapping is not None else _live_mapping()
     return WorldOntologyHeadsProof(
-        revision_id=market_ontology_revision_id(resolved),
+        revision_id=revision_id,
         content_sha256="d" * 64,
         scope_mapping_id=resolved.mapping_id,
         scope_mapping_hash=resolved.content_sha256,
@@ -125,11 +125,20 @@ def _matching_graph_proof(mapping=None):
     )
 
 
+def _matching_graph_proof(mapping=None):
+    resolved = mapping if mapping is not None else _live_mapping()
+    return _heads_proof(market_ontology_revision_id(resolved), resolved)
+
+
+_PIN_DEFAULT = object()
+
+
 def _activate(
     *,
     cohort_service,
     identity=IDENTITY_A,
     ontology_proof=None,
+    ontology_revision=_PIN_DEFAULT,
     now=BOOT,
     environ=None,
     mapping=None,
@@ -139,6 +148,11 @@ def _activate(
     from trader.application.world_model.pilot_activation import activate_world_shadow_pilot
 
     live = mapping if mapping is not None else _live_mapping()
+    # Default stand-in pin: the committed id for the mapping under test
+    # (production passes ensure_published().revision_id, extended). Tests
+    # probing pin behavior pass explicit values (including None for the
+    # unpinned path).
+    pin = market_ontology_revision_id(live) if ontology_revision is _PIN_DEFAULT else ontology_revision
     return activate_world_shadow_pilot(
         cohort_service=cohort_service,
         config_dir=config_dir,
@@ -146,6 +160,7 @@ def _activate(
         environ={} if environ is None else environ,
         runtime_identity=_FixedIdentity(identity),
         ontology_proof=_FixedOntologyProof(ontology_proof),
+        ontology_revision=pin,
         mapping=live,
         mapping_generations=mapping_generations,
     )
@@ -224,6 +239,91 @@ def test_graph_unavailable_stays_registered_and_never_collecting() -> None:
     assert report.authority == "shadow_only"
     assert report.decision_effect == "none"
     assert report.recommendation == "NO_GO"
+
+
+def test_graph_without_pin_is_blocked_loudly_and_registers_nothing() -> None:
+    service, store = _service()
+    report = _activate(cohort_service=service, ontology_proof=None, ontology_revision=None)
+    by_key = {item["key"]: item for item in report.cohorts}
+    assert report.status == "blocked"
+    graph_report = by_key["graph"]
+    assert graph_report["blocked_reason"] == "graph_ontology_unpinned"
+    assert graph_report["reason"] == "graph_ontology_unpinned"
+    assert graph_report["cohort_id"] is None
+    c1 = store.load(WorldCohortId(by_key["technical_c1"]["cohort_id"]))
+    assert c1.phase is CohortPhase.COLLECTING
+    assert len(store.manifests) == 1
+
+
+def test_family_tag_pin_fails_activation_loudly_without_graph_cohort() -> None:
+    service, store = _service()
+    report = _activate(cohort_service=service, ontology_revision=MARKET_ONTOLOGY_REVISION)
+    assert report.status == "skipped"
+    assert report.reason == "activation_error"
+    for manifest in store.manifests.values():
+        assert not any(lane.lane_id.endswith(".graph") for lane in manifest.lanes)
+
+
+def test_graph_pins_attestation_revision_verbatim_not_derived_legacy() -> None:
+    service, store = _service()
+    mapping = _live_mapping()
+    # Stand-in for an extended attestation revision: admitted to the family
+    # but not derivable from the mapping alone.
+    committed = f"market_ontology:v1:{'ab' * 32}"
+    assert committed != market_ontology_revision_id(mapping)
+    proof = _heads_proof(committed, mapping)
+    report = _activate(cohort_service=service, ontology_proof=proof, ontology_revision=committed)
+    by_key = {item["key"]: item for item in report.cohorts}
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
+    assert graph.phase is CohortPhase.COLLECTING
+    assert graph.manifest.ontology_revision == committed
+    assert by_key["graph"].get("blocked_reason") in {None, ""}
+    assert report.status == "started"
+
+
+def test_same_mapping_legacy_pin_does_not_shadow_extended_pin() -> None:
+    """Exact 2026-09-17 incident: same mapping, legacy vs extended pin."""
+    service, store = _service()
+    mapping = _live_mapping()
+    legacy = market_ontology_revision_id(mapping)
+    stale = _activate(cohort_service=service, mapping=mapping, ontology_proof=None, ontology_revision=legacy)
+    stale_graph_id = {item["key"]: item for item in stale.cohorts}["graph"]["cohort_id"]
+    assert store.load(WorldCohortId(stale_graph_id)).phase is CohortPhase.REGISTERED
+    extended = f"market_ontology:v1:{'cd' * 32}"
+    fresh = _activate(
+        cohort_service=service,
+        mapping=mapping,
+        ontology_proof=_heads_proof(extended, mapping),
+        ontology_revision=extended,
+        now=BOOT + timedelta(hours=1),
+    )
+    by_key = {item["key"]: item for item in fresh.cohorts}
+    assert by_key["graph"]["cohort_id"] != stale_graph_id
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
+    assert graph.phase is CohortPhase.COLLECTING
+    assert graph.manifest.ontology_revision == extended
+    assert graph.manifest.scope_mapping.mapping_sha256 == mapping.content_sha256
+    assert store.load(WorldCohortId(stale_graph_id)).phase is CohortPhase.REGISTERED
+
+
+def test_stale_never_started_graph_cohort_does_not_shadow_fresh_pin() -> None:
+    mapping_a, mapping_b = _mapping_generation_b()
+    service, store = _service()
+    stale = _activate(cohort_service=service, mapping=mapping_a, ontology_proof=None)
+    stale_graph_id = {item["key"]: item for item in stale.cohorts}["graph"]["cohort_id"]
+    assert store.load(WorldCohortId(stale_graph_id)).phase is CohortPhase.REGISTERED
+    fresh = _activate(
+        cohort_service=service,
+        mapping=mapping_b,
+        ontology_proof=_matching_graph_proof(mapping_b),
+        now=BOOT + timedelta(hours=1),
+    )
+    by_key = {item["key"]: item for item in fresh.cohorts}
+    assert by_key["graph"]["cohort_id"] != stale_graph_id
+    graph = store.load(WorldCohortId(by_key["graph"]["cohort_id"]))
+    assert graph.phase is CohortPhase.COLLECTING
+    assert graph.manifest.ontology_revision == market_ontology_revision_id(mapping_b)
+    assert store.load(WorldCohortId(stale_graph_id)).phase is CohortPhase.REGISTERED
 
 
 def test_exact_graph_ontology_proof_starts_graph_cohort() -> None:
