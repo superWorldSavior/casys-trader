@@ -481,3 +481,82 @@ def test_committed_bootstrap_derives_generation_and_refuses_v2_contract(tmp_path
             WorldOntologyBootstrapService(drifted_store, synthetic).ensure_published(now=CUTOFF)
     finally:
         drifted_store.close()
+
+
+def _generation(*instruments: str) -> WorldScopeMapping:
+    return WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=tuple(
+            _entry(
+                market_venue="TW",
+                instrument=instrument,
+                venue="mic:XTAI",
+                country="iso-3166:TW",
+                region="iso-un-m49:030",
+            )
+            for instrument in instruments
+        ),
+    )
+
+
+def test_supersede_is_recorded_before_the_successor_publish(tmp_path: Path) -> None:
+    from trader.domain.world_graph import (
+        WorldOntologyRevisionPublished,
+        WorldOntologyRevisionSuperseded,
+    )
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
+
+    first, second = _generation("2301.TW"), _generation("2301.TW", "2330.TW")
+    old_id = market_ontology_revision_id(first)
+    new_id = market_ontology_revision_id(second)
+    assert old_id != new_id
+    store = WorldGraphStore(tmp_path / "world_model.db", clock=lambda: CUTOFF)
+    try:
+        assert WorldOntologyBootstrapService(store, first).ensure_published(now=CUTOFF).status == "ready"
+        ready = WorldOntologyBootstrapService(store, second).ensure_published(now=CUTOFF)
+        assert ready.status == "ready"
+        assert ready.reason == "superseded"
+        assert ready.revision_id == new_id
+        events = [envelope.event for envelope in store.list_revision_events_available_through(CUTOFF)]
+        assert [type(event).__name__ for event in events] == [
+            "WorldOntologyRevisionPublished",
+            "WorldOntologyRevisionSuperseded",
+            "WorldOntologyRevisionPublished",
+        ]
+        superseded = events[1]
+        assert isinstance(superseded, WorldOntologyRevisionSuperseded)
+        assert superseded.revision_id == old_id
+        assert superseded.successor_revision_id == new_id
+        assert isinstance(events[2], WorldOntologyRevisionPublished)
+        assert events[2].revision.revision_id == new_id
+        head = WorldOntologyService(store).ontology.at_cutoff(CUTOFF).published_revision
+        assert head is not None
+        assert head.revision_id == new_id
+    finally:
+        store.close()
+
+
+def test_crash_between_supersede_and_publish_recovers_on_next_sweep(tmp_path: Path) -> None:
+    from trader.application.world_model.ontology_service import SupersedeWorldOntologyRevision
+    from trader.domain.world_ontology_lifecycle import market_ontology_revision_id
+
+    first, second = _generation("2301.TW"), _generation("2301.TW", "2330.TW")
+    old_id = market_ontology_revision_id(first)
+    new_id = market_ontology_revision_id(second)
+    store = WorldGraphStore(tmp_path / "world_model.db", clock=lambda: CUTOFF)
+    try:
+        assert WorldOntologyBootstrapService(store, first).ensure_published(now=CUTOFF).status == "ready"
+        # Simulate a crash after the supersede write, before the publish.
+        WorldOntologyService(store).supersede_revision(
+            SupersedeWorldOntologyRevision(revision_id=old_id, successor_revision_id=new_id)
+        )
+        assert WorldOntologyService(store).ontology.live_head_revision_id(at=CUTOFF) is None
+        ready = WorldOntologyBootstrapService(store, second).ensure_published(now=CUTOFF)
+        assert ready.status == "ready"
+        assert ready.revision_id == new_id
+        view = WorldOntologyService(store).ontology.at_cutoff(CUTOFF)
+        assert view.published_revision is not None
+        assert view.published_revision.revision_id == new_id
+        assert len(view.entities) > 0
+    finally:
+        store.close()

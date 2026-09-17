@@ -448,13 +448,16 @@ class WorldOntologyBootstrapService:
         if plan.action == "supersede":
             if published is None:
                 raise ValueError("conflict: supersede requires a published predecessor")
-            self._append_generation(expected=revision, cutoff=cutoff)
+            # Supersede BEFORE publishing: the successor id is deterministic,
+            # so a crash between the two leaves no active head (the next
+            # sweep takes the publish path) instead of two active heads.
             self._service.supersede_revision(
                 SupersedeWorldOntologyRevision(
                     revision_id=published.revision_id,
                     successor_revision_id=revision.revision_id,
                 )
             )
+            self._append_generation(expected=revision, cutoff=cutoff)
             return _readiness(status="ready", mapping=self._mapping, revision=revision, reason="superseded")
         raise ValueError("conflict: committed ontology heads do not match the published revision")
 
