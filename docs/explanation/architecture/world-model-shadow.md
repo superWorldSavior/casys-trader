@@ -297,6 +297,16 @@ du producteur macro ou du graphe est rapportée dans le résultat shadow,
 sans faire échouer le cycle métier. L'enrichissement contexte/graphe se fait dans
 le worker background **après** que le cycle n'ait gelé que la cohorte marché.
 
+`state/world_model_snapshot.json` n'est pas un journal : c'est un cache de
+l'état appris (poids GRU, compteurs Dirichlet, lignage), reconstruit depuis
+le ledger à chaque fois qu'il est absent ou périmé. Les épisodes n'y figurent
+jamais ; ils sont relus depuis `world_model.db` à chaque boot. Le snapshot
+n'est restauré que si les empreintes du ledger (épisodes éligibles + feuilles
+actives), les identités/contrats des prédicteurs, les horizons et le cutoff
+causal correspondent ; tout écart rejoue le ledger, en le disant dans le
+rapport (`model_snapshot.reason`). Chaque état prédicteur est checksummé
+(`state_sha256`) : un fichier altéré ne restaure jamais silencieusement.
+
 ## Flags
 
 Lus uniquement au boot (`trader/runtime/daemon.py`) :

@@ -16,11 +16,19 @@ import logging
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
+from pathlib import Path
 
 from trader.application.world_model.encoding import (
     common_training_replay_key,
     feature_contract_version_of,
     observation_market_anchor,
+)
+from trader.application.world_model.hydration_snapshot import (
+    SNAPSHOT_FORMAT_VERSION,
+    SnapshotError,
+    read_snapshot,
+    snapshot_gate_mismatch,
+    write_snapshot,
 )
 from trader.application.world_model.protocols import (
     WorldBarProvider,
@@ -432,6 +440,7 @@ class WorldModelService:
         cohort_service: object | None = None,
         scope_resolver: object | None = None,
         mapping_generations: WorldScopeMappingGenerationQuery | None = None,
+        snapshot_path: str | Path | None = None,
     ) -> None:
         normalized = _normalise_horizons(horizons)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
@@ -454,6 +463,8 @@ class WorldModelService:
         self.cohort_service = cohort_service
         self.scope_resolver = scope_resolver
         self.mapping_generations = mapping_generations
+        self._snapshot_path = None if snapshot_path is None else Path(snapshot_path)
+        self._snapshot_warned: set[str] = set()
         self.log = logger or logging.getLogger("casys-trader")
         self._lock = threading.Lock()
         self._running: str | None = None
@@ -614,6 +625,8 @@ class WorldModelService:
             "model_reconcile_skipped_unresettable": 0,
             "model_updates_by_model": {},
             "model_replayed_by_model": {},
+            "model_snapshot": {},
+            "model_snapshot_save": {},
             "cohort_slots_deferred_to_next_generation": 0,
             "errors": [],
         }
@@ -978,6 +991,253 @@ class WorldModelService:
                 )
         return completed
 
+    def _snapshot_scoped_predictors(self) -> list[object]:
+        """Predictors whose state hydrate can touch (observe or apply)."""
+
+        return [
+            predictor
+            for predictor in self.predictors
+            if callable(getattr(predictor, "observe_episode", None))
+            or callable(getattr(predictor, "apply_outcome", None))
+        ]
+
+    def _snapshot_unsupported_reason(self) -> str | None:
+        """Why snapshots cannot cover hydrate-touched state, or None when fully supported.
+
+        A single legacy predictor without the snapshot protocol (or without
+        ``reset_for_replay``) disables snapshots: a partial restore could
+        silently diverge from a replay.
+        """
+
+        for predictor in self._snapshot_scoped_predictors():
+            if not callable(getattr(predictor, "reset_for_replay", None)):
+                break
+            if not isinstance(getattr(predictor, "snapshot_contract", None), dict):
+                break
+            if not callable(getattr(predictor, "snapshot_learned_state", None)):
+                break
+            if not callable(getattr(predictor, "restore_learned_state", None)):
+                break
+        else:
+            return None
+        model_id, model_version = self._predictor_identities[id(predictor)]
+        return f"snapshot_predictor_unsupported:{model_id}:{model_version}"
+
+    def _warn_snapshot_once(self, key: str, message: str) -> None:
+        """Warn about an abnormal snapshot cause, once per reason per process."""
+
+        if key in self._snapshot_warned:
+            return
+        self._snapshot_warned.add(key)
+        try:
+            warning = getattr(self.log, "warning", None)
+            if callable(warning):
+                warning("[world_model_shadow] %s", message)
+        except Exception:  # noqa: BLE001 - observability never breaks sweeps
+            pass
+
+    def _replay_observations(
+        self,
+        stored_episodes: list[object],
+        report: dict[str, object],
+        replay_predictors: list[object],
+        observed_predictors: dict[str, set[int]],
+    ) -> bool | None:
+        """Re-run the observe pass over canonical episodes.
+
+        Shared by full replay and snapshot restore (registries rebuild from
+        the ledger in both cases).  Returns None when the pass aborted on an
+        unexpected error, else whether every episode observed cleanly.
+        """
+
+        if not any(callable(getattr(predictor, "observe_episode", None)) for predictor in replay_predictors):
+            return True
+        try:
+            completed = True
+            for row in stored_episodes:
+                episode = _clone(_episode_payload(row))
+                if self._observe_predictors(
+                    episode,
+                    report,
+                    predictors=replay_predictors,
+                ):
+                    identifier = _episode_id(row)
+                    if identifier is not None:
+                        observed_predictors[identifier] = {
+                            id(predictor)
+                            for predictor in replay_predictors
+                            if callable(getattr(predictor, "observe_episode", None))
+                        }
+                    report["model_observations_replayed"] = int(report["model_observations_replayed"]) + 1
+                else:
+                    completed = False
+        except Exception as exc:  # noqa: BLE001
+            self._error(report, stage="model_hydrate_observations", error=exc)
+            return None
+        return completed
+
+    def _try_restore_snapshot(
+        self,
+        report: dict[str, object],
+        now: datetime | None,
+        *,
+        active_fingerprint: str,
+        eligible_fingerprint: str | None,
+        eligible_signatures: dict[str, str] | None,
+        stored_episodes: list[object],
+    ) -> dict[str, set[int]] | None:
+        """Restore learned state from disk when the ledger is unchanged.
+
+        Returns the observed-predictors map on success, None when a full
+        replay must run instead.  Every skip records its reason in
+        ``report["model_snapshot"]``; abnormal causes also warn once.
+        Fingerprints and signatures stay recomputed, never trusted from
+        the file: only learned state crosses the trust boundary.
+        """
+
+        if self._snapshot_path is None:
+            return None
+        reason = self._snapshot_unsupported_reason()
+        if reason is not None:
+            self._warn_snapshot_once(reason, f"snapshot restore skipped ({reason}); replaying from the ledger")
+            report["model_snapshot"] = {"restored": False, "reason": reason}
+            return None
+        try:
+            payload = read_snapshot(self._snapshot_path)
+        except SnapshotError as exc:
+            if exc.reason != "snapshot_missing":
+                self._warn_snapshot_once(
+                    exc.reason, f"snapshot restore skipped ({exc.reason}); replaying from the ledger"
+                )
+            report["model_snapshot"] = {"restored": False, "reason": exc.reason}
+            return None
+        scoped = self._snapshot_scoped_predictors()
+        contracts: dict[tuple[str, str], dict[str, object]] = {}
+        try:
+            for predictor in scoped:
+                identity = self._predictor_identities[id(predictor)]
+                contract = predictor.snapshot_contract
+                if not isinstance(contract, dict):
+                    raise SnapshotError(f"snapshot_predictor_unsupported:{identity[0]}:{identity[1]}")
+                contracts[identity] = contract
+        except SnapshotError as exc:
+            self._warn_snapshot_once(exc.reason, f"snapshot restore skipped ({exc.reason}); replaying from the ledger")
+            report["model_snapshot"] = {"restored": False, "reason": exc.reason}
+            return None
+        except Exception as exc:  # noqa: BLE001 - a broken contract never breaks hydration
+            reason = f"snapshot_contract_failed:{type(exc).__name__}:{exc}"
+            self._warn_snapshot_once(reason, f"snapshot restore skipped ({reason}); replaying from the ledger")
+            report["model_snapshot"] = {"restored": False, "reason": reason}
+            return None
+        mismatch = snapshot_gate_mismatch(
+            payload,
+            eligible_episode_fingerprint=eligible_fingerprint,
+            active_outcome_fingerprint=active_fingerprint,
+            predictor_contracts=contracts,
+            horizons=list(self.horizons),
+            now=now,
+        )
+        if mismatch is not None:
+            report["model_snapshot"] = {"restored": False, "reason": mismatch}
+            return None
+        by_identity = {self._predictor_identities[id(predictor)]: predictor for predictor in scoped}
+        try:
+            entries = payload["predictors"]
+            assert isinstance(entries, list)
+            for entry in entries:
+                identity = (str(entry["model_id"]), str(entry["model_version"]))
+                by_identity[identity].restore_learned_state(entry["state"])
+        except SnapshotError as exc:
+            self._warn_snapshot_once(exc.reason, f"snapshot restore skipped ({exc.reason}); replaying from the ledger")
+            report["model_snapshot"] = {"restored": False, "reason": exc.reason}
+            return None
+        except Exception as exc:  # noqa: BLE001 - a broken restore never breaks hydration
+            reason = f"snapshot_restore_failed:{type(exc).__name__}:{exc}"
+            self._warn_snapshot_once(reason, f"snapshot restore skipped ({reason}); replaying from the ledger")
+            report["model_snapshot"] = {"restored": False, "reason": reason}
+            return None
+        observed_predictors: dict[str, set[int]] = {}
+        # Every scoped predictor is resettable here (see
+        # _snapshot_unsupported_reason), so observing all predictors matches
+        # the replay set; predict-only predictors are skipped by _observe_predictors.
+        observations_completed = self._replay_observations(stored_episodes, report, list(self.predictors), observed_predictors)
+        if not observations_completed:
+            # Restored weights plus partial registries must never survive:
+            # fall through to a full replay, which resets every predictor
+            # before re-observing and re-applying from the ledger.
+            self._warn_snapshot_once(
+                "snapshot_observe_failed",
+                "snapshot restore observed incompletely (snapshot_observe_failed); replaying from the ledger",
+            )
+            report["model_snapshot"] = {"restored": False, "reason": "snapshot_observe_failed"}
+            return None
+        self._active_outcome_fingerprint = active_fingerprint
+        self._eligible_episode_fingerprint = eligible_fingerprint
+        self._eligible_episode_signatures = eligible_signatures
+        self._model_hydrated_through = now
+        self._baseline_hydrated = True
+        report["model_snapshot"] = {
+            "restored": True,
+            "predictors": sorted(f"{model_id}:{model_version}" for model_id, model_version in by_identity),
+        }
+        return observed_predictors
+
+    def _maybe_save_snapshot(
+        self,
+        report: dict[str, object],
+        now: datetime | None,
+        *,
+        active_fingerprint: str,
+        eligible_fingerprint: str | None,
+    ) -> None:
+        """Persist learned state after a completed replay or extension.
+
+        Best-effort: a save failure is recorded loudly but never breaks an
+        otherwise successful hydration.
+        """
+
+        if self._snapshot_path is None:
+            return
+        reason = self._snapshot_unsupported_reason()
+        if reason is not None:
+            report["model_snapshot_save"] = {"saved": False, "reason": reason}
+            return
+        try:
+            entries = []
+            for predictor in self._snapshot_scoped_predictors():
+                model_id, model_version = self._predictor_identities[id(predictor)]
+                entries.append(
+                    {
+                        "model_id": model_id,
+                        "model_version": model_version,
+                        "contract": predictor.snapshot_contract,
+                        "state": predictor.snapshot_learned_state(),
+                    }
+                )
+            cutoff = _utc(now).isoformat() if now is not None else None
+            write_snapshot(
+                self._snapshot_path,
+                {
+                    "snapshot_format": SNAPSHOT_FORMAT_VERSION,
+                    "saved_at": cutoff or datetime.now(timezone.utc).isoformat(),
+                    "horizons": sorted(self.horizons),
+                    "eligible_episode_fingerprint": eligible_fingerprint,
+                    "active_outcome_fingerprint": active_fingerprint,
+                    "model_hydrated_through": cutoff,
+                    "predictors": entries,
+                },
+            )
+        except SnapshotError as exc:
+            self._warn_snapshot_once(exc.reason, f"snapshot save skipped ({exc.reason})")
+            report["model_snapshot_save"] = {"saved": False, "reason": exc.reason}
+            return
+        except Exception as exc:  # noqa: BLE001 - a broken save never breaks hydration
+            reason = f"snapshot_save_failed:{type(exc).__name__}:{exc}"
+            self._warn_snapshot_once(reason, f"snapshot save skipped ({reason})")
+            report["model_snapshot_save"] = {"saved": False, "reason": reason}
+            return
+        report["model_snapshot_save"] = {"saved": True, "predictors": len(entries)}
+
     def _hydrate_baseline(self, report: dict[str, object], now: datetime | None) -> dict[str, set[int]]:
         """Reconcile predictors with the canonical active outcome leaves.
 
@@ -1047,6 +1307,18 @@ class WorldModelService:
         if self._baseline_hydrated and not active_changed and not eligible_changed and causal_cutoff_is_current:
             return observed_predictors
 
+        if not self._baseline_hydrated:
+            restored = self._try_restore_snapshot(
+                report,
+                now,
+                active_fingerprint=active_fingerprint,
+                eligible_fingerprint=eligible_fingerprint,
+                eligible_signatures=eligible_signatures,
+                stored_episodes=stored_episodes,
+            )
+            if restored is not None:
+                return restored
+
         episode_change_requires_reset = False
         new_episode_rows: list[object] = []
         if eligible_changed and self._eligible_episode_signatures is not None:
@@ -1094,6 +1366,9 @@ class WorldModelService:
             self._eligible_episode_fingerprint = eligible_fingerprint
             self._eligible_episode_signatures = eligible_signatures
             self._model_hydrated_through = now
+            self._maybe_save_snapshot(
+                report, now, active_fingerprint=active_fingerprint, eligible_fingerprint=eligible_fingerprint
+            )
             return observed_predictors
 
         needs_authoritative_reset = (
@@ -1135,29 +1410,13 @@ class WorldModelService:
             self._baseline_hydrated = False
             return observed_predictors
 
-        if any(callable(getattr(predictor, "observe_episode", None)) for predictor in replay_predictors):
-            try:
-                for row in stored_episodes:
-                    episode = _clone(_episode_payload(row))
-                    if self._observe_predictors(
-                        episode,
-                        report,
-                        predictors=replay_predictors,
-                    ):
-                        identifier = _episode_id(row)
-                        if identifier is not None:
-                            observed_predictors[identifier] = {
-                                id(predictor)
-                                for predictor in replay_predictors
-                                if callable(getattr(predictor, "observe_episode", None))
-                            }
-                        report["model_observations_replayed"] = int(report["model_observations_replayed"]) + 1
-                    else:
-                        completed = False
-            except Exception as exc:  # noqa: BLE001
-                self._error(report, stage="model_hydrate_observations", error=exc)
-                self._baseline_hydrated = False
-                return observed_predictors
+        observations_completed = self._replay_observations(
+            stored_episodes, report, replay_predictors, observed_predictors
+        )
+        if observations_completed is None:
+            self._baseline_hydrated = False
+            return observed_predictors
+        completed = observations_completed
 
         apply_predictors = [
             predictor for predictor in replay_predictors if callable(getattr(predictor, "apply_outcome", None))
@@ -1230,6 +1489,9 @@ class WorldModelService:
             self._eligible_episode_fingerprint = eligible_fingerprint
             self._eligible_episode_signatures = eligible_signatures
             self._model_hydrated_through = now
+            self._maybe_save_snapshot(
+                report, now, active_fingerprint=active_fingerprint, eligible_fingerprint=eligible_fingerprint
+            )
         return observed_predictors
 
     def _mature_horizons(

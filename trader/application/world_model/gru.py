@@ -26,13 +26,14 @@ order through :meth:`apply_outcome` (or :meth:`replay`).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import math
 from types import MappingProxyType
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -66,6 +67,7 @@ from trader.application.world_model.encoding import (
     training_event_signature,
     world_lane_encoder_profile,
 )
+from trader.application.world_model.hydration_snapshot import SnapshotError, to_jsonable
 from trader.domain.world_cohort import ModelFamily, WorldLaneDefinition
 from trader.domain.world_episode import (
     SUPPORTED_WORLD_HORIZONS,
@@ -176,6 +178,35 @@ class _HorizonState:
     training_cutoff: datetime | None = None
 
 
+def _restore_parameters(raw: object) -> dict[str, np.ndarray]:
+    # A horizon state without parameters is never valid: first-party saves
+    # always carry the full weight set, and names/shapes beyond that are
+    # covered by the state checksum plus fingerprint round-trip tests.
+    if not isinstance(raw, dict) or not raw:
+        raise SnapshotError("snapshot_state_invalid:parameters")
+    restored: dict[str, np.ndarray] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            raise SnapshotError("snapshot_state_invalid:parameters")
+        shape = entry.get("shape")
+        data = entry.get("data")
+        if (
+            not isinstance(shape, list)
+            or not all(type(dim) is int for dim in shape)
+            or data is None
+            or isinstance(data, (str, bytes, dict))
+        ):
+            raise SnapshotError("snapshot_state_invalid:parameters")
+        try:
+            matrix = np.asarray(data, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise SnapshotError("snapshot_state_invalid:parameters") from exc
+        if tuple(matrix.shape) != tuple(shape):
+            raise SnapshotError("snapshot_state_invalid:parameters")
+        restored[name] = matrix
+    return restored
+
+
 @dataclass(frozen=True)
 class SequenceMetadata:
     """Audit metadata for one encoded causal sequence.
@@ -269,6 +300,24 @@ def _episode_time(episode: WorldEpisode) -> datetime:
 
 def _episode_sort_key(episode: WorldEpisode) -> tuple[datetime, datetime, str]:
     return (_episode_time(episode), episode.observation.as_of_bar_ts, episode.episode_id)
+
+
+_T = TypeVar("_T")
+
+
+def _append_preserving_order(items: list[_T], item: _T, key: Callable[[_T], Any]) -> None:
+    """Append to a sorted list, re-sorting only when order would break.
+
+    Series arrive in causal order, so the common case is a no-op check;
+    out-of-order arrivals (corrections, ad-hoc predicts) fall back to a
+    full sort. Same order either way; ties append last, matching a
+    stable full sort.
+    """
+    if items and key(items[-1]) > key(item):
+        items.append(item)
+        items.sort(key=key)
+    else:
+        items.append(item)
 
 
 def _series_key(episode: WorldEpisode) -> tuple[str, str, str, str, str]:
@@ -425,6 +474,110 @@ class OnlineGRUWorldChallenger:
         self._episodes.clear()
         self._series.clear()
 
+    @property
+    def snapshot_contract(self) -> dict[str, object]:
+        """JSON-stable config the learned weights interpretation depends on.
+
+        Any change forces a replay instead of a restore.  The payload must
+        survive a JSON round trip unchanged (lists, never tuples).
+        """
+
+        return {
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "encoder_version": self.encoder_version,
+            "feature_contract_fingerprint": self._feature_contract_fingerprint,
+            "sequence_len": self.sequence_len,
+            "hidden_size": self.hidden_size,
+            "input_size": self.input_size,
+            "categorical_hash_buckets": self.categorical_hash_buckets,
+            "categorical_keys": sorted(self._categorical_keys),
+            "learning_rate": self.learning_rate,
+            "gradient_clip": self.gradient_clip,
+            "minimum_global_support": self.minimum_global_support,
+            "seed": self.seed,
+            "include_context": self._include_context,
+            "allowed_horizons": None if self._allowed_horizons is None else sorted(self._allowed_horizons),
+            "accepted_feature_contracts": None
+            if self._accepted_feature_contracts is None
+            else sorted(self._accepted_feature_contracts),
+            "lane_identity": None
+            if self.lane_identity is None
+            else to_jsonable(asdict(self.lane_identity)),
+        }
+
+    def snapshot_learned_state(self) -> dict[str, object]:
+        """Export learned weights and lineage as JSON-native structures.
+
+        The episode/sequence registries are NOT exported: they rebuild from
+        the canonical ledger by re-observing after a restore.
+        """
+
+        return {
+            horizon: {
+                "parameters": {
+                    name: {"shape": list(matrix.shape), "data": matrix.tolist()}
+                    for name, matrix in sorted(state.parameters.items())
+                },
+                "applied_events": dict(state.applied_events),
+                "comparison_event_signatures": list(state.comparison_event_signatures),
+                "support": state.support,
+                "training_steps": state.training_steps,
+                "training_cutoff": _iso(state.training_cutoff),
+            }
+            for horizon, state in sorted(self._states.items())
+        }
+
+    def restore_learned_state(self, state: dict[str, object]) -> None:
+        """Replace learned weights with a snapshot payload.  Strict, no merge.
+
+        Raises :class:`SnapshotError` on any shape mismatch.  The previous
+        state is kept when validation fails: the reset happens only after
+        the whole payload validated.  Sequence registries are untouched;
+        the caller re-observes episodes after restoring.
+        """
+
+        if not isinstance(state, dict):
+            raise SnapshotError("snapshot_state_invalid:root")
+        restored: dict[str, _HorizonState] = {}
+        for horizon, raw in state.items():
+            if not isinstance(horizon, str) or not isinstance(raw, dict):
+                raise SnapshotError("snapshot_state_invalid:horizon")
+            support = raw.get("support")
+            training_steps = raw.get("training_steps")
+            if type(support) is not int or type(training_steps) is not int:
+                raise SnapshotError("snapshot_state_invalid:support")
+            cutoff = raw.get("training_cutoff")
+            if cutoff is not None:
+                if not isinstance(cutoff, str):
+                    raise SnapshotError("snapshot_state_invalid:training_cutoff")
+                try:
+                    parsed_cutoff = datetime.fromisoformat(cutoff)
+                except ValueError as exc:
+                    raise SnapshotError("snapshot_state_invalid:training_cutoff") from exc
+                if parsed_cutoff.tzinfo is None:
+                    raise SnapshotError("snapshot_state_invalid:training_cutoff")
+            else:
+                parsed_cutoff = None
+            applied = raw.get("applied_events")
+            if not isinstance(applied, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in applied.items()
+            ):
+                raise SnapshotError("snapshot_state_invalid:applied_events")
+            signatures = raw.get("comparison_event_signatures")
+            if not isinstance(signatures, list) or not all(isinstance(item, str) for item in signatures):
+                raise SnapshotError("snapshot_state_invalid:comparison_event_signatures")
+            restored[horizon] = _HorizonState(
+                parameters=_restore_parameters(raw.get("parameters")),
+                applied_events=dict(applied),
+                comparison_event_signatures=list(signatures),
+                support=support,
+                training_steps=training_steps,
+                training_cutoff=parsed_cutoff,
+            )
+        self.reset_for_replay()
+        self._states.update(restored)
+
     def accepts_episode(self, episode: object) -> bool:
         version = feature_contract_version_of(episode)
         if self._accepted_feature_contracts is not None:
@@ -494,14 +647,11 @@ class OnlineGRUWorldChallenger:
         self._episodes[canonical.episode_id] = canonical
         key = _series_key(canonical)
         members = self._series.setdefault(key, [])
-        # Series stay sorted: replay observes arrive in causal order, so the
-        # common case is a no-op check; out-of-order arrivals (corrections)
-        # fall back to a full sort. Same order either way.
-        if members and _episode_sort_key(self._episodes[members[-1]]) > _episode_sort_key(canonical):
-            members.append(canonical.episode_id)
-            members.sort(key=lambda identifier: _episode_sort_key(self._episodes[identifier]))
-        else:
-            members.append(canonical.episode_id)
+        _append_preserving_order(
+            members,
+            canonical.episode_id,
+            lambda identifier: _episode_sort_key(self._episodes[identifier]),
+        )
         return canonical.episode_id
 
     def observe_episodes(self, episodes: Iterable[WorldEpisode | WorldObservation | Mapping[str, object]]) -> int:
@@ -906,16 +1056,8 @@ class OnlineGRUWorldChallenger:
         # A target can be predictably represented even before it has an
         # outcome, but an explicitly non-trainable target must not enter a
         # trainable sequence later by accident.
-        # Series stay sorted (see observe_episode) and filtering preserves
-        # order, so the common case skips the re-sort; an out-of-order
-        # target (ad-hoc predict) falls back to it. Same order either way
-        # (stable sort would also keep an appended target last among ties).
         if target.training_eligible and target.episode_id not in {item.episode_id for item in candidates}:
-            if candidates and _episode_sort_key(candidates[-1]) > _episode_sort_key(target):
-                candidates.append(target)
-                candidates.sort(key=_episode_sort_key)
-            else:
-                candidates.append(target)
+            _append_preserving_order(candidates, target, _episode_sort_key)
         selected = candidates[-self.sequence_len :]
 
         matrix = np.zeros((self.sequence_len, self.input_size), dtype=np.float64)

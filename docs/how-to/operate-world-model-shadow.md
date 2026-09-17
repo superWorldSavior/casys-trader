@@ -199,6 +199,36 @@ Vérifier ensuite, dans cet ordre :
 3. logs `[world_model_shadow]`, `[world_shadow_pilot]`,
    `[world_macro_source_only]` dans `state/daemon_console.log`.
 
+## Snapshot d'hydratation (restart sans replay)
+
+Au premier boot (ou après invalidation), le worker rejoue tout le ledger
+pour entraîner les prédicteurs, puis écrit `state/world_model_snapshot.json`
+(état appris seul, quelques Mo). Au boot suivant, si le ledger n'a pas
+bougé, les poids sont restaurés au lieu d'être réentraînés : le restart
+passe de ~35 s à ~15 s sur le ledger courant (23 k épisodes, 7 k labels,
+2 prédicteurs ; le reliquat est la re-observation des épisodes et le
+fingerprinting de la gate).
+
+Lire le rapport `mature_pending` :
+
+| Champ | Lecture honnête |
+|---|---|
+| `model_snapshot.restored=true` | poids restaurés ; `model_replayed=0` attendu, `model_observations_replayed=N` (registres reconstruits) |
+| `model_snapshot.reason=snapshot_missing` | premier boot normal, pas une erreur |
+| `reason=snapshot_*_changed` | nouvelles données ou nouvelle config : replay réel, normal |
+| `reason=snapshot_corrupt*` / `snapshot_state_checksum_mismatch` / `snapshot_*_failed` | anomalie : replay quand même, warning une fois par process |
+| `model_snapshot_save.saved=false` | sauvegarde échouée (ex: `snapshot_predictor_unsupported`, `snapshot_unwritable`) ; l'hydratation mémoire reste correcte |
+
+Règles d'invalidation (tout écart force un replay) : empreintes ledger,
+identités `model_id:model_version`, contrats prédicteurs (hyperparamètres,
+contrats de features, lane identity), horizons configurés, cutoff causal
+reculé ou inconnu. Un prédicteur legacy sans protocole snapshot désactive le
+snapshot
+bruyamment plutôt que de restaurer partiellement.
+
+Trappe de secours : supprimer le fichier force exactement un replay au
+prochain boot. Ne jamais l'éditer à la main (checksums).
+
 ## Fenêtre d'une semaine
 
 La fenêtre n'est **pas** une date ISO pré-expirée dans le YAML. Le calendrier

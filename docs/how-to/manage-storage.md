@@ -191,3 +191,14 @@ pas la sauvegarde. Après swap, un marqueur de génération ne suffit pas :
 intégrité, catalogue froid/archives canoniques et parité attendue avant
 d'effacer le journal. Le LaunchAgent de rétention agents n'exporte pas et ne
 compacte pas le World Model.
+
+## Snapshot d'hydratation World Model
+
+`state/world_model_snapshot.json` (quelques Mo, JSON indenté) porte l'état
+appris des prédicteurs shadow après un replay complet : poids GRU, compteurs
+Dirichlet, lignage d'entraînement, plus les empreintes ledger qui prouvent sa
+fraîcheur. Écriture atomique (tmp + rename) ; jamais de mkdir implicite.
+Fichier purement dérivé : il peut être supprimé à tout moment (prochain boot
+= un replay complet), il ne se sauvegarde pas, ne s'édite pas (checksums
+`state_sha256` par prédicteur) et ne se restaure pas depuis une sauvegarde
+(sauf même ledger à l'octet, ce que la gate vérifie de toute façon).

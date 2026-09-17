@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from hashlib import sha256
 import json
@@ -19,6 +19,7 @@ from types import MappingProxyType
 from typing import Any
 
 from trader.application.world_model import encoding as world_encoding
+from trader.application.world_model.hydration_snapshot import SnapshotError, to_jsonable
 from trader.application.world_model.encoding import (
     ALLOWED_CATEGORICAL_FEATURES,
     ALLOWED_NUMERIC_FEATURES,
@@ -116,6 +117,39 @@ class _HorizonCounts:
     training_cutoff: datetime | None = None
     applied_events: dict[str, str] = field(default_factory=dict)
     comparison_event_signatures: list[str] = field(default_factory=list)
+
+
+def _snapshot_state_counts(counts: Mapping[_StateKey, Counter[str]]) -> list[dict[str, object]]:
+    """Serialize state counts verbatim (every label, not just the fingerprint projection)."""
+
+    return [
+        {"state": [list(pair) for pair in state], "counts": dict(counter)}
+        for state, counter in sorted(counts.items(), key=repr)
+    ]
+
+
+def _restore_state_counts(raw: object, *, field_name: str) -> dict[_StateKey, Counter[str]]:
+    if not isinstance(raw, list):
+        raise SnapshotError(f"snapshot_state_invalid:{field_name}")
+    restored: dict[_StateKey, Counter[str]] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise SnapshotError(f"snapshot_state_invalid:{field_name}")
+        state = entry.get("state")
+        counts = entry.get("counts")
+        if (
+            not isinstance(state, list)
+            or not all(isinstance(pair, list) and len(pair) == 2 for pair in state)
+            or not all(isinstance(item, str) for pair in state for item in pair)
+        ):
+            raise SnapshotError(f"snapshot_state_invalid:{field_name}.state")
+        if (
+            not isinstance(counts, dict)
+            or not all(isinstance(label, str) and type(total) is int for label, total in counts.items())
+        ):
+            raise SnapshotError(f"snapshot_state_invalid:{field_name}.counts")
+        restored[tuple((pair[0], pair[1]) for pair in state)] = Counter(counts)
+    return restored
 
 
 def _as_status(value: object) -> str:
@@ -282,6 +316,98 @@ class HierarchicalDirichletWorldBaseline:
         """Clear learned counts before an authoritative active-leaf replay."""
 
         self._horizons.clear()
+
+    @property
+    def snapshot_contract(self) -> dict[str, object]:
+        """JSON-stable config the learned counts interpretation depends on.
+
+        Any change forces a replay instead of a restore.  The payload must
+        survive a JSON round trip unchanged (lists, never tuples).
+        """
+
+        return {
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "feature_contract_fingerprint": self._feature_contract_fingerprint,
+            "alpha": self.alpha,
+            "minimum_global_support": self.minimum_global_support,
+            "minimum_coarse_support": self.minimum_coarse_support,
+            "minimum_exact_support": self.minimum_exact_support,
+            "seed": self.seed,
+            "include_context": self._include_context,
+            "allowed_horizons": None if self._allowed_horizons is None else sorted(self._allowed_horizons),
+            "accepted_feature_contracts": None
+            if self._accepted_feature_contracts is None
+            else sorted(self._accepted_feature_contracts),
+            "lane_identity": None
+            if self.lane_identity is None
+            else to_jsonable(asdict(self.lane_identity)),
+        }
+
+    def snapshot_learned_state(self) -> dict[str, object]:
+        """Export learned counts as JSON-native structures (verbatim)."""
+
+        return {
+            horizon: {
+                "exact": _snapshot_state_counts(counts.exact),
+                "coarse": _snapshot_state_counts(counts.coarse),
+                "global": dict(counts.global_counts),
+                "training_cutoff": iso_utc(counts.training_cutoff),
+                "applied_events": dict(counts.applied_events),
+                "comparison_event_signatures": list(counts.comparison_event_signatures),
+            }
+            for horizon, counts in sorted(self._horizons.items())
+        }
+
+    def restore_learned_state(self, state: dict[str, object]) -> None:
+        """Replace learned counts with a snapshot payload.  Strict, no merge.
+
+        Raises :class:`SnapshotError` on any shape mismatch.  The previous
+        state is kept when validation fails: the reset happens only after
+        the whole payload validated.
+        """
+
+        if not isinstance(state, dict):
+            raise SnapshotError("snapshot_state_invalid:root")
+        restored: dict[str, _HorizonCounts] = {}
+        for horizon, raw in state.items():
+            if not isinstance(horizon, str) or not isinstance(raw, dict):
+                raise SnapshotError("snapshot_state_invalid:horizon")
+            counts = raw.get("global")
+            if not isinstance(counts, dict) or not all(
+                isinstance(label, str) and type(total) is int for label, total in counts.items()
+            ):
+                raise SnapshotError("snapshot_state_invalid:global")
+            cutoff = raw.get("training_cutoff")
+            if cutoff is not None:
+                if not isinstance(cutoff, str):
+                    raise SnapshotError("snapshot_state_invalid:training_cutoff")
+                try:
+                    parsed_cutoff = datetime.fromisoformat(cutoff)
+                except ValueError as exc:
+                    raise SnapshotError("snapshot_state_invalid:training_cutoff") from exc
+                if parsed_cutoff.tzinfo is None:
+                    raise SnapshotError("snapshot_state_invalid:training_cutoff")
+            else:
+                parsed_cutoff = None
+            applied = raw.get("applied_events")
+            if not isinstance(applied, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in applied.items()
+            ):
+                raise SnapshotError("snapshot_state_invalid:applied_events")
+            signatures = raw.get("comparison_event_signatures")
+            if not isinstance(signatures, list) or not all(isinstance(item, str) for item in signatures):
+                raise SnapshotError("snapshot_state_invalid:comparison_event_signatures")
+            restored[horizon] = _HorizonCounts(
+                exact=_restore_state_counts(raw.get("exact"), field_name="exact"),
+                coarse=_restore_state_counts(raw.get("coarse"), field_name="coarse"),
+                global_counts=Counter(counts),
+                training_cutoff=parsed_cutoff,
+                applied_events=dict(applied),
+                comparison_event_signatures=list(signatures),
+            )
+        self.reset_for_replay()
+        self._horizons.update(restored)
 
     def predict(
         self,

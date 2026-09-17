@@ -1002,6 +1002,7 @@ class WorldModelRuntime(WorldModelService):
         cohort_service: object | None = None,
         scope_resolver: object | None = None,
         mapping_generations: WorldScopeMappingGenerationQuery | None = None,
+        snapshot_path: str | Path | None = None,
     ) -> None:
         resolved = _wire_cohort_service(store, cohort_service)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
@@ -1026,6 +1027,7 @@ class WorldModelRuntime(WorldModelService):
             cohort_service=resolved,
             scope_resolver=scope_resolver if scope_resolver is not None else _default_scope_resolver(),
             mapping_generations=_wire_mapping_generations(store, mapping_generations),
+            snapshot_path=snapshot_path,
         )
 
 

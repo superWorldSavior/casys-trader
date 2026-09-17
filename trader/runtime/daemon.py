@@ -2979,6 +2979,7 @@ def main(
                 cohort_service=_world_cohort_service,
                 horizons=_world_model_horizons or DEFAULT_HORIZONS,
                 mapping_generations=_world_model_store,
+                snapshot_path=STATE_DIR / "world_model_snapshot.json",
             )
             _world_resource_guard = None
             try:
