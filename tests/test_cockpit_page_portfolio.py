@@ -916,6 +916,11 @@ def _patch_app(monkeypatch, tmp_path: Path, pid: int = 4242) -> None:
     # Simulate alive daemon → no FirstRunScreen overlay
     alive = DaemonVitalState(status="alive", since_seconds=5.0, battement_old=False)
     monkeypatch.setattr(cockpit_module, "daemon_vital_state", lambda _path: alive)
+    # No threaded state refresh: the worker would reload the (empty) tmp state
+    # and overwrite the test-driven page content mid-assert (flaky race).
+    monkeypatch.setattr(
+        cockpit_module.CockpitApp, "_schedule_refresh_state", lambda self: None
+    )
 
 
 @pytest.mark.asyncio
