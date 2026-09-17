@@ -857,21 +857,29 @@ class WorldObservation:
 
     @property
     def episode_id(self) -> str:
-        context_snapshot_id = None
-        if isinstance(self.context, Mapping):
-            raw_id = self.context.get("context_id")
-            if isinstance(raw_id, str) and raw_id.strip():
-                context_snapshot_id = raw_id.strip()
-        return world_episode_id(
-            venue=self.venue,
-            symbol=self.symbol,
-            bar_interval=self.bar_interval,
-            as_of_bar_ts=self.as_of_bar_ts,
-            feature_contract_version=self.feature_contract_version,
-            sampling_policy_version=self.sampling_policy_version,
-            context_snapshot_id=context_snapshot_id,
-            graph_snapshot_id=_graph_snapshot_id(self.graph, self.graph_features),
-        )
+        # Memoized: frozen record, the id is a pure function of normalized
+        # fields. Replay touches it ~1M times; recomputing hashes each time
+        # dominated profiles. Non-field attr: kept out of eq/asdict/pickle
+        # shape on purpose (same value a re-derive would produce).
+        cached = self.__dict__.get("_episode_id_cache")
+        if cached is None:
+            context_snapshot_id = None
+            if isinstance(self.context, Mapping):
+                raw_id = self.context.get("context_id")
+                if isinstance(raw_id, str) and raw_id.strip():
+                    context_snapshot_id = raw_id.strip()
+            cached = world_episode_id(
+                venue=self.venue,
+                symbol=self.symbol,
+                bar_interval=self.bar_interval,
+                as_of_bar_ts=self.as_of_bar_ts,
+                feature_contract_version=self.feature_contract_version,
+                sampling_policy_version=self.sampling_policy_version,
+                context_snapshot_id=context_snapshot_id,
+                graph_snapshot_id=_graph_snapshot_id(self.graph, self.graph_features),
+            )
+            object.__setattr__(self, "_episode_id_cache", cached)
+        return cached
 
     @property
     def feature_hash(self) -> str:
@@ -1004,7 +1012,13 @@ class WorldEpisode:
 
     @property
     def payload_hash(self) -> str:
-        return canonical_sha256(self.to_dict())
+        # Memoized like episode_id: to_dict + canonical hash per access
+        # dominated replay profiles; the record is frozen.
+        cached = self.__dict__.get("_payload_hash_cache")
+        if cached is None:
+            cached = canonical_sha256(self.to_dict())
+            object.__setattr__(self, "_payload_hash_cache", cached)
+        return cached
 
     def to_dict(self) -> dict[str, Any]:
         return {

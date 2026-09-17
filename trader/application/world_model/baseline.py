@@ -479,7 +479,10 @@ class HierarchicalDirichletWorldBaseline:
             horizon_id=horizon_key,
             global_support=self._support(counts.global_counts),
             training_cutoff=iso_utc(counts.training_cutoff),
-            model_fingerprint=self.model_fingerprint(horizon_key),
+            # No per-update fingerprint: hashing full horizon state per row
+            # is O(history^2) over a replay and no consumer reads this
+            # field (fingerprints stay available via model_fingerprint()).
+            model_fingerprint=None,
         )
 
     def training_cutoff(self, horizon_id: str) -> str | None:
@@ -608,7 +611,8 @@ class HierarchicalDirichletWorldBaseline:
             horizon_id=horizon_id,
             global_support=self._support(counts.global_counts),
             training_cutoff=iso_utc(counts.training_cutoff),
-            model_fingerprint=self.model_fingerprint(horizon_id),
+            # Same as apply path: per-update fingerprints are never read.
+            model_fingerprint=None,
         )
 
     @staticmethod

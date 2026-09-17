@@ -494,8 +494,14 @@ class OnlineGRUWorldChallenger:
         self._episodes[canonical.episode_id] = canonical
         key = _series_key(canonical)
         members = self._series.setdefault(key, [])
-        members.append(canonical.episode_id)
-        members.sort(key=lambda identifier: _episode_sort_key(self._episodes[identifier]))
+        # Series stay sorted: replay observes arrive in causal order, so the
+        # common case is a no-op check; out-of-order arrivals (corrections)
+        # fall back to a full sort. Same order either way.
+        if members and _episode_sort_key(self._episodes[members[-1]]) > _episode_sort_key(canonical):
+            members.append(canonical.episode_id)
+            members.sort(key=lambda identifier: _episode_sort_key(self._episodes[identifier]))
+        else:
+            members.append(canonical.episode_id)
         return canonical.episode_id
 
     def observe_episodes(self, episodes: Iterable[WorldEpisode | WorldObservation | Mapping[str, object]]) -> int:
@@ -687,7 +693,10 @@ class OnlineGRUWorldChallenger:
             horizon_id=horizon_key,
             global_support=state.support,
             training_cutoff=_iso(state.training_cutoff),
-            model_fingerprint=self.model_fingerprint(horizon_key),
+            # No per-update fingerprint: hashing full horizon state per row
+            # is O(history^2) over a replay and no consumer reads this
+            # field (fingerprints stay available via model_fingerprint()).
+            model_fingerprint=None,
         )
 
     # Keep the incremental predictor contract familiar to the baseline/runtime.
@@ -885,7 +894,8 @@ class OnlineGRUWorldChallenger:
         """Encode at most ``sequence_len`` causally available episodes for target."""
 
         target_time = _episode_time(target)
-        identifiers = self._series.get(_series_key(target), [])
+        series_key = _series_key(target)
+        identifiers = self._series.get(series_key, [])
         candidates = [
             self._episodes[identifier]
             for identifier in identifiers
@@ -896,9 +906,16 @@ class OnlineGRUWorldChallenger:
         # A target can be predictably represented even before it has an
         # outcome, but an explicitly non-trainable target must not enter a
         # trainable sequence later by accident.
+        # Series stay sorted (see observe_episode) and filtering preserves
+        # order, so the common case skips the re-sort; an out-of-order
+        # target (ad-hoc predict) falls back to it. Same order either way
+        # (stable sort would also keep an appended target last among ties).
         if target.training_eligible and target.episode_id not in {item.episode_id for item in candidates}:
-            candidates.append(target)
-        candidates.sort(key=_episode_sort_key)
+            if candidates and _episode_sort_key(candidates[-1]) > _episode_sort_key(target):
+                candidates.append(target)
+                candidates.sort(key=_episode_sort_key)
+            else:
+                candidates.append(target)
         selected = candidates[-self.sequence_len :]
 
         matrix = np.zeros((self.sequence_len, self.input_size), dtype=np.float64)
@@ -1094,7 +1111,8 @@ class OnlineGRUWorldChallenger:
             horizon_id=horizon_id,
             global_support=state.support,
             training_cutoff=_iso(state.training_cutoff),
-            model_fingerprint=self.model_fingerprint(horizon_id),
+            # Same as apply path: per-update fingerprints are never read.
+            model_fingerprint=None,
         )
 
 

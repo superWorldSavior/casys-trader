@@ -1162,6 +1162,11 @@ class WorldModelService:
         apply_predictors = [
             predictor for predictor in replay_predictors if callable(getattr(predictor, "apply_outcome", None))
         ]
+        # One detached episode payload per unique id per pass: outcomes share
+        # episodes across horizons (~2.7x), and every consumer below is
+        # read-only (baseline/GRU apply, accepts/sees gates), so sharing one
+        # private clone is value-identical to cloning per row.
+        detached_episodes: dict[str, object] = {}
         for row in ordered:
             label = self._outcome_label(row)
             if not self._is_sealed_observed(label, now):
@@ -1179,10 +1184,13 @@ class WorldModelService:
                 )
                 continue
             try:
-                stored_episode = self.store.get_episode(identifier)
-                if stored_episode is None:
-                    raise ValueError("episode_not_found")
-                episode = _clone(_episode_payload(stored_episode))
+                episode = detached_episodes.get(identifier)
+                if episode is None:
+                    stored_episode = self.store.get_episode(identifier)
+                    if stored_episode is None:
+                        raise ValueError("episode_not_found")
+                    episode = _clone(_episode_payload(stored_episode))
+                    detached_episodes[identifier] = episode
             except Exception as exc:  # noqa: BLE001
                 completed = False
                 self._error(
