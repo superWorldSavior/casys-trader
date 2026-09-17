@@ -2808,7 +2808,8 @@ class WorldModelStore:
         if isinstance(episode, Mapping):
             for key, value in episode.items():
                 result.setdefault(key, value)
-        result["source_evidence"] = _json_load(result["source_evidence_json"])
+        # NOTE: source_evidence_json stays unparsed on purpose (raw column
+        # remains available). No reader needs the parsed projection.
         return result
 
     @staticmethod

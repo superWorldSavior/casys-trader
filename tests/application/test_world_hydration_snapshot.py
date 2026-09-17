@@ -16,7 +16,7 @@ from trader.application.world_model.hydration_snapshot import (
     snapshot_gate_mismatch,
     write_snapshot,
 )
-from trader.application.world_model.service import WorldModelService
+from trader.application.world_model.service import WorldModelService, _row_content_hash, _stable_id
 from trader.domain.world_episode import (
     MARKET_FEATURE_CONTRACT_ID,
     AnchorBar,
@@ -608,3 +608,28 @@ def test_gate_rejects_unbounded_restore() -> None:
     assert snapshot_gate_mismatch(payload, now=None, **gate) == "snapshot_cutoff_unknown"
     payload["model_hydrated_through"] = None
     assert snapshot_gate_mismatch(payload, now=NOW, **gate) == "snapshot_cutoff_unknown"
+
+
+def test_row_content_hash_prefers_valid_stored_digest() -> None:
+    built: list[str] = []
+
+    def _payload():
+        built.append("x")
+        return {"a": 1}
+
+    for stored in ("sha256:" + "ab" * 32, "AB" * 32):
+        assert _row_content_hash({"payload_sha256": stored}, _payload, prefix="world-test") == stored
+    assert built == []
+
+
+@pytest.mark.parametrize("stored", [None, "", "  ", "not-a-sha", "sha256:xyz", "ab" * 31 + "!", 123, ["x"]])
+def test_row_content_hash_falls_back_to_content(stored) -> None:
+    assert _row_content_hash({"payload_sha256": stored}, lambda: {"a": 1}, prefix="world-test") == _stable_id(
+        "world-test", {"a": 1}
+    )
+
+
+def test_row_content_hash_falls_back_when_digest_missing() -> None:
+    assert _row_content_hash({"episode_id": "e1"}, lambda: {"a": 1}, prefix="world-test") == _stable_id(
+        "world-test", {"a": 1}
+    )

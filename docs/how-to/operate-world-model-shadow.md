@@ -205,9 +205,9 @@ Au premier boot (ou après invalidation), le worker rejoue tout le ledger
 pour entraîner les prédicteurs, puis écrit `state/world_model_snapshot.json`
 (état appris seul, quelques Mo). Au boot suivant, si le ledger n'a pas
 bougé, les poids sont restaurés au lieu d'être réentraînés : le restart
-passe de ~35 s à ~15 s sur le ledger courant (23 k épisodes, 7 k labels,
-2 prédicteurs ; le reliquat est la re-observation des épisodes et le
-fingerprinting de la gate).
+passe de ~21 s à ~6 s CPU sur le ledger courant (23 k épisodes, 7 k labels,
+2 prédicteurs ; le reliquat est le chargement/parse des lignes et la
+re-observation des épisodes).
 
 Lire le rapport `mature_pending` :
 

@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
@@ -309,6 +310,39 @@ def _canonical_digest_hex(value: object, *, field: str) -> str | None:
 def _stable_id(prefix: str, payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
     return f"{prefix}:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _hashable_payload(value: object) -> Mapping[str, object]:
+    """Return row content for fingerprinting without copying plain dicts.
+
+    Hashing only reads, and ``json.dumps`` renders a dict identically with
+    or without a defensive copy, so only non-dict rows (domain records,
+    proxies) pay the normalization copy.
+    """
+
+    if isinstance(value, dict):
+        return value
+    return _mapping_copy(value)
+
+
+_STORED_SHA_RE = re.compile(r"(?:sha256:)?[0-9a-fA-F]{64}\Z")
+
+
+def _row_content_hash(row: object, payload: Callable[[], Mapping[str, object]], *, prefix: str) -> str:
+    """Stable content mark for one ledger row.
+
+    Real store rows carry a write-time canonical digest of the same dict a
+    content hash would cover, so reuse it instead of re-serializing. Rows
+    without a digest (memory fakes) or with a malformed one fall back to
+    hashing content. Values differ between the two paths, but the gate only
+    ever compares marks computed from one store. The payload thunk keeps the
+    fallback lazy: building it is the cost being avoided.
+    """
+
+    stored = _field(row, "payload_sha256")
+    if isinstance(stored, str) and _STORED_SHA_RE.fullmatch(stored.strip()):
+        return stored.strip()
+    return _stable_id(prefix, payload())
 
 
 def _canonical_outcome(value: object) -> object:
@@ -966,7 +1000,10 @@ class WorldModelService:
         *,
         predictors: Iterable[object] | None = None,
     ) -> bool:
-        """Give sequence models one immutable episode without coupling the runtime to GRU."""
+        """Give sequence models one immutable episode without coupling the runtime to GRU.
+
+        Each model gets a private clone; the passed episode itself is only read.
+        """
 
         completed = True
         selected = self.predictors if predictors is None else tuple(predictors)
@@ -1055,7 +1092,9 @@ class WorldModelService:
         try:
             completed = True
             for row in stored_episodes:
-                episode = _clone(_episode_payload(row))
+                # No clone here: the row is only read below, and each
+                # predictor receives a private clone in _observe_predictors.
+                episode = _episode_payload(row)
                 if self._observe_predictors(
                     episode,
                     report,
@@ -1264,18 +1303,21 @@ class WorldModelService:
             try:
                 stored_episodes = list(self.store.list_eligible_episodes() or [])
                 stored_episodes.sort(key=_episode_replay_key)
-                episode_payloads = [_mapping_copy(_episode_payload(row)) for row in stored_episodes]
-                eligible_signatures = {
-                    str(_episode_id(row) or ""): _stable_id(
-                        "world-eligible-episode",
-                        payload,
+                eligible_signatures = {}
+                episode_marks = []
+                for row in stored_episodes:
+                    mark = _row_content_hash(
+                        row,
+                        lambda row=row: _hashable_payload(_episode_payload(row)),
+                        prefix="world-eligible-episode",
                     )
-                    for row, payload in zip(stored_episodes, episode_payloads, strict=True)
-                    if _episode_id(row) is not None
-                }
+                    episode_marks.append(mark)
+                    identifier = _episode_id(row)
+                    if identifier is not None:
+                        eligible_signatures[str(identifier)] = mark
                 eligible_fingerprint = _stable_id(
                     "world-eligible-episodes",
-                    {"episodes": episode_payloads},
+                    {"episodes": sorted(episode_marks)},
                 )
             except Exception as exc:  # noqa: BLE001
                 self._error(report, stage="model_hydrate_observations", error=exc)
@@ -1293,7 +1335,16 @@ class WorldModelService:
             ordered = sorted(list(rows or []), key=_outcome_replay_key)
             active_fingerprint = _stable_id(
                 "world-active-outcomes",
-                {"labels": [self._outcome_label(row) for row in ordered]},
+                {
+                    "labels": sorted(
+                        _row_content_hash(
+                            row,
+                            lambda row=row: self._outcome_label(row),
+                            prefix="world-active-outcome",
+                        )
+                        for row in ordered
+                    )
+                },
             )
         except Exception as exc:  # noqa: BLE001
             self._error(report, stage="model_hydrate_labels", error=exc)
@@ -1353,7 +1404,9 @@ class WorldModelService:
             # training example can change, so extend caches online without an
             # O(history) replay.
             for row in sorted(new_episode_rows, key=_episode_replay_key):
-                if not self._observe_predictors(_clone(_episode_payload(row)), report):
+                # No clone: the row is only read, each predictor gets a
+                # private clone in _observe_predictors (same as replay).
+                if not self._observe_predictors(_episode_payload(row), report):
                     self._baseline_hydrated = False
                     return observed_predictors
                 identifier = _episode_id(row)
@@ -1421,11 +1474,11 @@ class WorldModelService:
         apply_predictors = [
             predictor for predictor in replay_predictors if callable(getattr(predictor, "apply_outcome", None))
         ]
-        # One detached episode payload per unique id per pass: outcomes share
-        # episodes across horizons (~2.7x), and every consumer below is
-        # read-only (baseline/GRU apply, accepts/sees gates), so sharing one
-        # private clone is value-identical to cloning per row.
-        detached_episodes: dict[str, object] = {}
+        # One shared episode view per unique id per pass: outcomes share
+        # episodes across horizons (~2.7x). Views alias store rows and are
+        # only read here (accepts/sees gates); each predictor apply receives
+        # a private clone in _call_baseline_apply, so sharing is safe.
+        episode_by_id: dict[str, object] = {}
         for row in ordered:
             label = self._outcome_label(row)
             if not self._is_sealed_observed(label, now):
@@ -1443,13 +1496,13 @@ class WorldModelService:
                 )
                 continue
             try:
-                episode = detached_episodes.get(identifier)
+                episode = episode_by_id.get(identifier)
                 if episode is None:
                     stored_episode = self.store.get_episode(identifier)
                     if stored_episode is None:
                         raise ValueError("episode_not_found")
-                    episode = _clone(_episode_payload(stored_episode))
-                    detached_episodes[identifier] = episode
+                    episode = _episode_payload(stored_episode)
+                    episode_by_id[identifier] = episode
             except Exception as exc:  # noqa: BLE001
                 completed = False
                 self._error(
@@ -1766,6 +1819,8 @@ class WorldModelService:
         episode: object,
         now: datetime | None,
     ) -> bool | None:
+        """Apply with private clones; the passed outcome/episode are only read."""
+
         result = fn(_clone(outcome), _clone(episode), available_through=now)
         if isinstance(result, Mapping):
             return result.get("applied") is not False
