@@ -56,8 +56,8 @@ batch d'écriture shadow serait sauté, pas que le Trader s'est arrêté.
 Le CLI n'a pas de `list`. Les `cohort_id` stables sont dérivés du YAML
 (`pilot_id` + `schema_version` + `cohort_key` + `activation_policy` +
 `lifecycle_generation` + `content_sha256`) et apparaissent dans le log
-`[world_shadow_pilot]` au boot. Le YAML committe `lifecycle_generation: 4` :
-cela **frappe de nouveaux** `cohort_id` ; les IDs de génération 3 ne sont pas
+`[world_shadow_pilot]` au boot. Le YAML committe `lifecycle_generation: 5` :
+cela **frappe de nouveaux** `cohort_id` ; les IDs de génération 4 ne sont pas
 réutilisés. Le lot actif déclare `elapsed_4h.v1`, `elapsed_1d.v1` (primaire)
 et `elapsed_3d.v1`. Deux clés :
 
@@ -397,7 +397,7 @@ Tous les flags sont lus **uniquement au boot**. Défauts runtime :
 Le YAML `config/world_shadow_pilot.yaml` est l'**autorisation opérateur**, pas
 un défaut RFC. Le lot committe actif porte `horizons:
 [elapsed_4h.v1, elapsed_1d.v1, elapsed_3d.v1]`, `primary_horizon:
-elapsed_1d.v1`, et `lifecycle_generation: 4` (nouveaux `cohort_id`). Si
+elapsed_1d.v1`, et `lifecycle_generation: 5` (nouveaux `cohort_id`). Si
 `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1` **et** `enabled: true`, le boot
 fait un **OU** avec `workers.*` :
 

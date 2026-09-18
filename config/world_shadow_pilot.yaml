@@ -1,7 +1,7 @@
 schema_version: world_shadow_pilot.v1
-content_sha256: "440804c94033d4435330fb33fd88a4f987c486afaf5f82aaab9abcd90f7baaa9"
+content_sha256: "0f019a465b4d798eda0f0b9288ecbd7636c89b961a17f4ba0da34f237f2b0a18"
 pilot_id: world_shadow_pilot.v1
-lifecycle_generation: 4
+lifecycle_generation: 5
 authority: shadow_only
 decision_effect: none
 recommendation: NO_GO
