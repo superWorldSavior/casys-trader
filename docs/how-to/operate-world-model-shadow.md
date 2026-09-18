@@ -174,14 +174,28 @@ permet pas de réutiliser rétroactivement les données de formation.
 
 Le log `[world_shadow_pilot]` donne le statut d'activation. `blocked`
 signifie qu'au moins une cohorte n'a pas démarré (le détail est dans le
-rapport par cohorte, champ `blocked_reason`) ; `technical_c1` continue
-pendant ce temps. Pour la clé `graph` :
+rapport par cohorte, champ `blocked_reason`) ; sur un blocage ontologie,
+`technical_c1` continue pendant ce temps. Pour la clé `graph` :
 
 | `blocked_reason` | Sens | Action |
 |---|---|---|
 | `graph_ontology_unpinned` | l'attestation n'a rien commité (warning `ontology attestation skipped` juste avant) : aucune cohorte graphe n'est enregistrée | lire la cause dans le warning, pas de cohorte à nettoyer |
 | `graph_ontology_unpublished` | la révision pinée n'est pas prouvée dans le ledger (cohorte `registered`, jamais `collecting`) | vérifier que le pin égale la révision publiée (`world graph status`) |
-| `runtime_identity_drift` | le code du boot diffère de celui de la cohorte existante : voies gelées, fail-closed | rotation de cohorte (nouvelle génération), jamais de mutation |
+| `runtime_identity_drift` | le code du boot diffère de celui de la cohorte existante : voies gelées, fail-closed | rotation manuelle ci-dessous, jamais de mutation |
+
+Contrairement aux deux lignes ontologie, `runtime_identity_drift` concerne
+n'importe quelle clé (`technical_c1` incluse) : le boot gèle les voies des
+cohortes dérivées **sans créer de successeur**. La capture continue (les
+épisodes s'accumulent) mais les voies gelées n'apprennent plus. Rotation,
+par cohorte dérivée :
+
+```bash
+uv run casys-trader world cohort invalidate COHORT_ID --reason accepted_drift --json
+```
+
+puis redémarrage volontaire : le boot crée des cohortes fraîches (nouveaux
+fingerprints). Les épisodes déjà stockés restent en base ; les liens
+outcomes à cheval sur la rotation sont refusés fail-closed.
 
 Un warning `conflict: committed ontology heads do not match the published
 revision (revision_drift:<cause>)` nomme la cause exacte (dérivation,

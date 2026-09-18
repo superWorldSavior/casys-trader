@@ -108,6 +108,12 @@ cutoffs.
 Un slot antérieur au start est `pre_start_episode` (invalidation). Pas de
 backfill.
 
+Une cohorte réutilisable dont l'identité runtime a dérivé (code du boot ≠
+code de création) voit ses voies gelées **sans successeur** : mélanger
+deux versions de code dans une même fenêtre fausserait les comparaisons
+prospectives. La rotation est un acte opérateur (invalidate + reboot),
+jamais une décision du pilote.
+
 ### Macro source-only
 
 `MacroSourceFact` → `MacroWorldObservation` → envelope + reçu. Plan de
@@ -237,6 +243,12 @@ L'observation est construite par whitelist à partir des seules barres et
 métadonnées de marché disponibles à T0. Le cutoff commun est pris après la
 fin des I/O du snapshot, jamais à l'heure antérieure de début du cycle.
 Sans ancre OHLCV valide, **aucun épisode** n'est émis.
+
+Seules 14 clés sont admises au stockage (`asset_family`/`venue` + 12
+numériques OHLCV : voir la référence). Buckets et `data_age_*` sont
+dérivés à l'encodage, jamais stockés : le vocabulaire de projection des
+modèles n'est pas la whitelist d'admission, et toute clé hors admission
+échoue à la construction de l'observation.
 
 Elle exclut action, intent, quantité, confiance, prompt, outils, tâche,
 scheduler, portefeuille, risque, fills, PnL, et toute mémoire
