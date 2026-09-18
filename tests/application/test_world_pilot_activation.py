@@ -72,12 +72,13 @@ class _FixedIdentity:
         return self._identity
 
 
-def _identity(git_commit: str = "b" * 40) -> WorldRuntimeIdentity:
+def _identity(git_commit: str = "b" * 40, lane_code_hash: str = "d" * 64) -> WorldRuntimeIdentity:
     return WorldRuntimeIdentity(
         git_commit=git_commit,
         python_version="3.11.9",
         numpy_version="1.26.4",
         application_build_id="casys-trader.world.shadow_pilot.v1",
+        lane_code_hash=lane_code_hash,
     )
 
 
@@ -335,7 +336,7 @@ def test_lifecycle_generation_bump_mints_new_ids_and_does_not_revive_terminal_co
 ) -> None:
     service, store = _service()
     identity = _identity()
-    drifted = _identity("c" * 40)
+    drifted = _identity("c" * 40, "e" * 64)
     first = _activate(cohort_service=service, runtime_identity=_FixedIdentity(identity))
     second = _activate(
         cohort_service=service,

@@ -181,11 +181,16 @@ rapport par cohorte, champ `blocked_reason`) ; sur un blocage ontologie,
 |---|---|---|
 | `graph_ontology_unpinned` | l'attestation n'a rien commité (warning `ontology attestation skipped` juste avant) : aucune cohorte graphe n'est enregistrée | lire la cause dans le warning, pas de cohorte à nettoyer |
 | `graph_ontology_unpublished` | la révision pinée n'est pas prouvée dans le ledger (cohorte `registered`, jamais `collecting`) | vérifier que le pin égale la révision publiée (`world graph status`) |
-| `runtime_identity_drift` | le code du boot diffère de celui de la cohorte existante : voies gelées, fail-closed | rotation manuelle ci-dessous, jamais de mutation |
+| `runtime_identity_drift` | le code lanes du boot diffère de celui de la cohorte existante : voies gelées, fail-closed | rotation manuelle ci-dessous, jamais de mutation |
 
-Contrairement aux deux lignes ontologie, `runtime_identity_drift` concerne
-n'importe quelle clé (`technical_c1` incluse) : le boot gèle les voies des
-cohortes dérivées **sans créer de successeur**. La capture continue (les
+L'identité est à deux niveaux : `git_commit` est audit-only, seul
+`lane_code_hash` (contenu des `trader/**/*.py` moins la denylist des
+modules prouvés hors-lanes : agents, collecteurs, reporting, interfaces…)
+déclenche la dérive. Un commit hors-lanes ne bloque plus ; un changement
+de code lanes bloque toujours, fail-closed. Contrairement aux deux lignes
+ontologie, `runtime_identity_drift` concerne n'importe quelle clé
+(`technical_c1` incluse) : le boot gèle les voies des cohortes dérivées
+**sans créer de successeur**. La capture continue (les
 épisodes s'accumulent) mais les voies gelées n'apprennent plus. Rotation,
 par cohorte dérivée :
 

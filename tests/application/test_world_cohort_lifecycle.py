@@ -45,12 +45,14 @@ IDENTITY_A = WorldRuntimeIdentity(
     python_version="3.11.9",
     numpy_version="1.26.4",
     application_build_id="casys-trader.world.shadow_pilot.v1",
+    lane_code_hash="d" * 64,
 )
 IDENTITY_B = WorldRuntimeIdentity(
     git_commit="c" * 40,
     python_version="3.11.9",
     numpy_version="1.26.4",
     application_build_id="casys-trader.world.shadow_pilot.v1",
+    lane_code_hash="e" * 64,
 )
 
 
@@ -381,6 +383,24 @@ def test_measured_runtime_drift_blocks_and_does_not_rewrite_manifest() -> None:
         assert item["reason"] == "runtime_identity_drift"
         if cohort.phase is CohortPhase.COLLECTING:
             assert all(state.status is LaneOperationalStatus.BLOCKED for state in cohort.lane_states.values())
+
+
+def test_commit_only_change_without_lane_change_keeps_collecting() -> None:
+    service, store = _service()
+    first = _activate(cohort_service=service, identity=IDENTITY_A, ontology_proof=_matching_graph_proof())
+    relabeled = WorldRuntimeIdentity(
+        git_commit="f" * 40,
+        python_version="3.11.9",
+        numpy_version="1.26.4",
+        application_build_id="casys-trader.world.shadow_pilot.v1",
+        lane_code_hash="d" * 64,
+    )
+    second = _activate(cohort_service=service, identity=relabeled, ontology_proof=_matching_graph_proof())
+    assert {item["cohort_id"] for item in second.cohorts} == {item["cohort_id"] for item in first.cohorts}
+    for item in second.cohorts:
+        assert item["reason"] == "operator_authorized_on_boot"
+        cohort = store.load(WorldCohortId(item["cohort_id"]))
+        assert cohort.phase is CohortPhase.COLLECTING
 
 
 def test_restart_with_exact_measured_identity_keeps_window_and_fingerprints() -> None:

@@ -7,7 +7,7 @@ the aggregate. Authority is always ``shadow_only`` with ``decision_effect=none``
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from types import MappingProxyType
@@ -226,6 +226,15 @@ def _git_commit(value: Any) -> str:
     return text
 
 
+def _lane_code_hash(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = _required_text(value, "lane_code_hash").lower()
+    if len(text) != 64 or any(char not in _HEX for char in text):
+        raise ValueError("lane_code_hash must be a 64-hex digest")
+    return text
+
+
 def _lane_logical_name(lane_id: str) -> str:
     return lane_id.rsplit(".", 1)[-1]
 
@@ -282,11 +291,20 @@ class WorldCollectionStopRule:
 
 @dataclass(frozen=True)
 class WorldRuntimeIdentity:
-    git_commit: str
-    python_version: str
-    numpy_version: str
-    application_build_id: str
+    """Two-tier identity: commit is audit-only, lane_code_hash drives drift.
+
+    Equality (the drift comparator everywhere) covers lane_code_hash plus the
+    pinned versions, never git_commit: unrelated commits keep lanes learning
+    while any lane-protocol code change still fails closed. None means a
+    legacy manifest whose lane code is unknown — it matches nothing.
+    """
+
+    git_commit: str = field(compare=False)
+    python_version: str = field()
+    numpy_version: str = field()
+    application_build_id: str = field()
     schema_version: str = WORLD_RUNTIME_IDENTITY_SCHEMA
+    lane_code_hash: str | None = None
 
     def __post_init__(self) -> None:
         schema_version = _required_text(self.schema_version, "schema_version")
@@ -301,14 +319,16 @@ class WorldRuntimeIdentity:
             "application_build_id",
             _reject_latest(self.application_build_id, "application_build_id"),
         )
+        object.__setattr__(self, "lane_code_hash", _lane_code_hash(self.lane_code_hash))
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "git_commit": self.git_commit,
             "python_version": self.python_version,
             "numpy_version": self.numpy_version,
             "application_build_id": self.application_build_id,
+            "lane_code_hash": self.lane_code_hash,
         }
 
     @classmethod
@@ -323,6 +343,7 @@ class WorldRuntimeIdentity:
             numpy_version=value.get("numpy_version"),
             application_build_id=value.get("application_build_id"),
             schema_version=value.get("schema_version", WORLD_RUNTIME_IDENTITY_SCHEMA),
+            lane_code_hash=value.get("lane_code_hash"),
         )
 
 
