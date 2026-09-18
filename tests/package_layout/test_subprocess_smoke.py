@@ -54,7 +54,6 @@ def test_legacy_virtual_packages_support_from_trader_and_python_m() -> None:
         "trader.rotation.bench",
         "trader.rotation.collectors",
         "trader.rotation.core",
-        "trader.rotation.daemon",
         "trader.rotation.ledger",
         "trader.rotation.override",
         "trader.rotation.schedule",

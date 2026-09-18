@@ -1,14 +1,11 @@
 import pytest
-import json
 import math
 
 from trader.market.radar import (
-    build_radar_snapshot,
     daily_components,
     is_eligible,
     scan_and_rank,
     score_symbol,
-    write_snapshot,
 )
 from trader.market.radar_config import RadarParams
 from trader.market.market_data import Bar
@@ -325,35 +322,3 @@ def test_partial_data_none_ret_is_ineligible_missing_data() -> None:
     assert not any(row["symbol"] == "BAD_DATA" for row in result["ranked"])
     # GOOD reste ranked
     assert any(row["symbol"] == "GOOD" for row in result["ranked"])
-
-
-def test_build_radar_snapshot_and_write_snapshot(tmp_path) -> None:
-    ranked = [
-        {
-            "symbol": "SPY",
-            "directional_score": 1.2,
-            "attractiveness": 1.2,
-            "bias": "long",
-        }
-    ]
-    ineligible = [{"symbol": "CL=F", "reason": "hard_exclusion"}]
-    components_by_symbol = {
-        "SPY": {"efficiency_ratio": 0.8, "ret": 0.03, "amplitude": 0.02},
-        "CL=F": {"efficiency_ratio": 0.7, "ret": 0.04, "amplitude": 0.05},
-    }
-
-    snapshot = build_radar_snapshot(
-        ranked,
-        ineligible,
-        as_of="2026-06-15",
-        components_by_symbol=components_by_symbol,
-    )
-
-    assert snapshot["as_of"] == "2026-06-15"
-    assert snapshot["ranked"] == ranked
-    assert snapshot["ineligible"] == ineligible
-    assert snapshot["components_by_symbol"] == components_by_symbol
-
-    write_snapshot(tmp_path, snapshot)
-
-    assert json.loads((tmp_path / "radar_snapshot.json").read_text()) == snapshot

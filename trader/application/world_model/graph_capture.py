@@ -9,15 +9,9 @@ topology. A builder failure skips the graph companion (fail-open).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
 
-from trader.application.world_model.capture import (
-    FEATURE_CONTRACT_VERSION,
-    SAMPLING_POLICY_VERSION,
-    capture_world_episodes,
-)
 from trader.application.world_model.graph_features import encode_world_graph_features
 from trader.application.world_model.graph_snapshot import WorldGraphSnapshotRequest
 from trader.domain.world_episode import (
@@ -72,39 +66,6 @@ def attach_world_graph(
         if companion is not None:
             attached.append(companion)
     return tuple(attached)
-
-
-def capture_world_episodes_with_graph(
-    active_symbols: Sequence[object],
-    tradable_symbols: Sequence[object] | None,
-    bars_by_symbol: Mapping[object, Sequence[object]],
-    market_metadata_by_symbol: Mapping[object, Mapping[str, object]] | None,
-    config: WorldGraphCaptureConfig,
-    *,
-    source: str | None = None,
-    interval: str | None = None,
-    timestamp_semantics: str | None = None,
-    captured_at: datetime | str | None = None,
-) -> tuple[tuple[WorldEpisode, ...], tuple[WorldEpisode, ...]]:
-    """Return ``(market_episodes, graph_episodes)`` from one frozen market cohort."""
-
-    market_episodes = capture_world_episodes(
-        active_symbols,
-        tradable_symbols,
-        bars_by_symbol,
-        market_metadata_by_symbol,
-        source=source,
-        interval=interval,
-        timestamp_semantics=timestamp_semantics,
-        captured_at=captured_at,
-        feature_contract_version=FEATURE_CONTRACT_VERSION,
-        sampling_policy_version=SAMPLING_POLICY_VERSION,
-    )
-    try:
-        graph_episodes = attach_world_graph(market_episodes, config)
-    except Exception:
-        graph_episodes = ()
-    return market_episodes, graph_episodes
 
 
 def _attach_one(episode: WorldEpisode, config: WorldGraphCaptureConfig) -> WorldEpisode | None:
@@ -177,5 +138,4 @@ def _persist_snapshot(service: object, snapshot: WorldGraphSnapshot) -> None:
 __all__ = [
     "WorldGraphCaptureConfig",
     "attach_world_graph",
-    "capture_world_episodes_with_graph",
 ]

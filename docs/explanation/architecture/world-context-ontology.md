@@ -174,9 +174,9 @@ Markov/GRU marché ; la voie graphe encode un vecteur borné (`topology_status_o
 vs `graph_content`), pas un GNN.
 
 Relations structurelles : `PART_OF_WORLD`, `LOCATED_IN`, `TRADED_ON`,
-`ISSUED_BY`, `MEMBER_OF_FAMILY`. Connaissance : `ABOUT`, `OBSERVES`,
-`DERIVED_FROM`, `SUPERSEDES`, `USES`. Interdites : `CAUSES`, `CAUSE`,
-`CAUSED_BY`, `CAUSAL`, `HYPOTHESIZED_INFLUENCE`.
+`ISSUED_BY`, `MEMBER_OF_FAMILY`. Connaissance : `ABOUT`, `OBSERVES`.
+Interdites : `CAUSES`, `CAUSE`, `CAUSED_BY`, `CAUSAL`,
+`HYPOTHESIZED_INFLUENCE`.
 
 Budgets de traversée (YAML + overlay status) : profondeur 4, 32 chemins
 par racine, cycles interdits. Un snapshot `missing` / `stale` / budget
@@ -200,7 +200,7 @@ inventée. Un cycle idle ou un replay exact restent un no-op.
 
 | Voie | Contrat | Identité typique |
 |---|---|---|
-| Markov / GRU marché | `world_feature.market.v1` | baseline / challenger historiques |
+| Markov / GRU marché | `world_feature.market.v2` | baseline / challenger historiques |
 | Markov / GRU contexte | `world_feature.context.v1` | `context.v1` si le store macro est câblé |
 | Lanes C1 | masques market / status / company / macro / joint | GRU froid `sequence_length=4` |
 | Markov / GRU graphe | `world_feature.graph.v1` | `topology_status_only` vs `graph_content` |

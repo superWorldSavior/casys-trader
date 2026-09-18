@@ -152,17 +152,6 @@ def _about(**overrides: object) -> KnowledgeWorldRelation:
     return KnowledgeWorldRelation(**values)  # type: ignore[arg-type]
 
 
-def _derived() -> KnowledgeWorldRelation:
-    return KnowledgeWorldRelation(
-        kind="DERIVED_FROM",
-        source=_artifact(),
-        target=_artifact(digest="b" * 64),
-        effective_from=T0,
-        ontology_revision="market_ontology.v1",
-        source_refs=("artifact:derived",),
-    )
-
-
 def _link(**overrides: object) -> WorldEntityIdentityLink:
     values: dict[str, object] = {
         "context_ref": EntityRef(kind="instrument", entity_id="2330"),
@@ -899,7 +888,6 @@ def test_observes_writes_require_the_active_fence_and_generic_knowledge_does_not
         store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=_knowledge()))
     about = KnowledgeWorldRelationAsserted(relation=_about())
     store.append_knowledge_relation_event(about)
-    store.append_knowledge_relation_event(KnowledgeWorldRelationAsserted(relation=_derived()))
     observes = KnowledgeWorldRelationAsserted(relation=_knowledge())
     persisted = store.append_knowledge_relation_event(
         observes,
@@ -910,7 +898,6 @@ def test_observes_writes_require_the_active_fence_and_generic_knowledge_does_not
     visible = store.list_knowledge_relation_events_available_through(LATER)
     assert {item.event.relation.kind for item in visible if hasattr(item.event, "relation")} >= {
         "ABOUT",
-        "DERIVED_FROM",
         "OBSERVES",
     }
     stale = MacroGraphBridgeFence(bridge_key=BRIDGE_KEY, run_id=fence.run_id, epoch=fence.epoch + 1)

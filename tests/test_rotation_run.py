@@ -340,54 +340,11 @@ def test_sticky_absent_current_hot_set_last_valid_contains_sticky(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test D — run() écrit radar_snapshot.json si rank_fn fournit ineligible/components
-# ---------------------------------------------------------------------------
-
-def test_run_writes_radar_snapshot(tmp_path):
-    """rank_fn fournit ranked + ineligible + components_by_symbol →
-    state/radar_snapshot.json est créé.
-    """
-    config_dir = tmp_path / "config"
-    state_dir = tmp_path / "state"
-    config_dir.mkdir()
-    state_dir.mkdir()
-
-    def _full_rank_fn():
-        return {
-            "ranked": [{"symbol": "A", "attractiveness": 0.9}],
-            "ineligible": [{"symbol": "B", "reason": "not_eligible"}],
-            "components_by_symbol": {"A": {"ret": 0.05, "efficiency_ratio": 0.8}},
-        }
-
-    result = run(
-        config_dir=str(config_dir),
-        state_dir=str(state_dir),
-        as_of="2026-06-15",
-        rank_fn=_full_rank_fn,
-        sticky_fn=_sticky_fn(set()),
-        override_fn=_override_fn_noop(),
-        pool={"A", "B"},
-        cap_m=2,
-        delta=0.1,
-        dwell_days=2,
-        emergency_floor=0.0,
-    )
-
-    assert result["written"] is True
-    snapshot_path = state_dir / "radar_snapshot.json"
-    assert snapshot_path.exists(), "radar_snapshot.json doit être écrit"
-    snapshot = json.loads(snapshot_path.read_text())
-    assert snapshot["as_of"] == "2026-06-15"
-    assert len(snapshot["ranked"]) == 1
-
-
-# ---------------------------------------------------------------------------
-# Test D bis — run() ne plante pas si ineligible/components absents de rank_fn
+# Test D bis — run() tolère un rank_fn minimal sans clés annexes
 # ---------------------------------------------------------------------------
 
 def test_run_no_crash_if_no_ineligible_in_rank(tmp_path):
-    """rank_fn renvoie uniquement {'ranked': [...]} sans ineligible →
-    pas de crash, radar_snapshot.json non créé.
+    """rank_fn renvoie uniquement {'ranked': [...]} sans clés annexes → pas de crash.
     """
     config_dir = tmp_path / "config"
     state_dir = tmp_path / "state"
@@ -409,8 +366,7 @@ def test_run_no_crash_if_no_ineligible_in_rank(tmp_path):
     )
 
     assert result["written"] is True
-    # Pas de crash = test réussi; radar_snapshot.json peut ou non exister
-    # (on vérifie juste qu'il n'y a pas d'exception)
+    # Pas de crash = test réussi (on vérifie juste qu'il n'y a pas d'exception)
 
 
 # ---------------------------------------------------------------------------

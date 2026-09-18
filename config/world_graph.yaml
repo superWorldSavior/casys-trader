@@ -27,7 +27,7 @@ traversal:
   tie_break: relation_id_lexical
   reverse_structural_allowed: [LOCATED_IN, TRADED_ON]
   forward_structural: [PART_OF_WORLD, LOCATED_IN, TRADED_ON, ISSUED_BY, MEMBER_OF_FAMILY]
-  knowledge: [ABOUT, OBSERVES, DERIVED_FROM, SUPERSEDES, USES]
+  knowledge: [ABOUT, OBSERVES]
   forbidden_factual: [CAUSES, HYPOTHESIZED_INFLUENCE]
   freshness_buckets: ["0-4h", "4-24h", "1-7d", older]
   path_signature: [kinds, relation, direction, freshness_bucket]

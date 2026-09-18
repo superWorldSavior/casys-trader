@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Callable
-from pathlib import Path
 
 from .features import compute_indicator_values
 from .radar_config import RadarParams
@@ -137,29 +135,3 @@ def scan_and_rank(
 
     ranked.sort(key=lambda row: (-row["attractiveness"], row["symbol"]))
     return {"ranked": ranked, "ineligible": ineligible}
-
-
-def build_radar_snapshot(
-    ranked: list[dict],
-    ineligible: list[dict],
-    *,
-    as_of: str,
-    components_by_symbol: dict[str, dict],
-) -> dict:
-    """Construit un snapshot machine-readable du scan radar."""
-    return {
-        "as_of": as_of,
-        "ranked": list(ranked),
-        "ineligible": list(ineligible),
-        "components_by_symbol": dict(components_by_symbol),
-    }
-
-
-def write_snapshot(state_dir: Path, snapshot: dict) -> None:
-    """Ecrit le dernier snapshot radar dans state/radar_snapshot.json."""
-    state_dir.mkdir(parents=True, exist_ok=True)
-    path = state_dir / "radar_snapshot.json"
-    path.write_text(
-        json.dumps(snapshot, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )

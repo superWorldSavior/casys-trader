@@ -665,9 +665,6 @@ def test_events_round_trip_and_aggregates_stay_stdlib_domain() -> None:
         ("country", "ABOUT", "knowledge_artifact", "reverse"),
         ("world_observation", "OBSERVES", "country", "forward"),
         ("country", "OBSERVES", "world_observation", "reverse"),
-        ("knowledge_artifact", "DERIVED_FROM", "macro_source_fact_version", "forward"),
-        ("world_graph_snapshot", "USES", "knowledge_artifact", "forward"),
-        ("knowledge_artifact", "SUPERSEDES", "knowledge_artifact", "forward"),
     )
     for source_kind, relation_kind, target_kind, direction in legal_hops:
         hop = _step(
@@ -693,7 +690,9 @@ def test_events_round_trip_and_aggregates_stay_stdlib_domain() -> None:
     with pytest.raises(ValueError, match="direction|ISSUED_BY|graph_traversal"):
         _step(0, source_kind="company", relation_kind="ISSUED_BY", target_kind="instrument", direction="reverse")
     with pytest.raises(ValueError, match="CAUSES|forbidden|causal"):
-        _step(0, source_kind="macro_indicator", relation_kind="HypothesizedInfluence", target_kind="country")
+        _step(0, source_kind="instrument", relation_kind="HypothesizedInfluence", target_kind="country")
+    with pytest.raises(ValueError, match="source_kind|path"):
+        _step(0, source_kind="macro_indicator", relation_kind="OBSERVES", target_kind="country")
     legal_payload = _default_steps()[0].to_dict()
     for legacy_key, legacy_value in (
         ("predicate", "TRADED_ON"),
@@ -965,13 +964,13 @@ def test_overlay_hops_require_driver_state_and_structural_hops_forbid_it() -> No
     about = _step(0, source_kind="knowledge_artifact", relation_kind="ABOUT", target_kind="country")
     assert observes.driver_state is not None
     assert about.driver_state is not None
-    derived = _step(
-        0,
-        source_kind="knowledge_artifact",
-        relation_kind="DERIVED_FROM",
-        target_kind="macro_source_fact_version",
-    )
-    assert derived.driver_state is None
+    with pytest.raises(ValueError, match="relation_kind|DERIVED_FROM"):
+        _step(
+            0,
+            source_kind="knowledge_artifact",
+            relation_kind="DERIVED_FROM",
+            target_kind="macro_source_fact_version",
+        )
 
 
 def test_old_overlay_mappings_without_driver_state_are_rejected() -> None:

@@ -77,12 +77,11 @@ def _make_config_dir(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 def test_run_cli_writes_expected_artifacts(tmp_path):
-    """run_cli avec fetch_fn injecté écrit universe.yaml, radar_snapshot.json et rotation_state.json.
+    """run_cli avec fetch_fn injecté écrit universe.yaml et rotation_state.json.
 
     Vérifie :
     - result["written"] is True
     - config_dir/universe.yaml existe et contient des symboles
-    - state_dir/radar_snapshot.json existe
     - state_dir/rotation_state.json existe
     """
     from trader.market.rotation.wiring import run_cli
@@ -111,13 +110,7 @@ def test_run_cli_writes_expected_artifacts(tmp_path):
     assert "symbols" in universe_content, "universe.yaml doit contenir 'symbols'"
     assert len(universe_content["symbols"]) > 0, "symbols ne doit pas être vide"
 
-    # 3. radar_snapshot.json écrit
-    snapshot_path = state_dir / "radar_snapshot.json"
-    assert snapshot_path.exists(), "state_dir/radar_snapshot.json doit exister"
-    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    assert "as_of" in snapshot, "snapshot doit contenir 'as_of'"
-
-    # 4. rotation_state.json écrit
+    # 3. rotation_state.json écrit
     state_path = state_dir / "rotation_state.json"
     assert state_path.exists(), "state_dir/rotation_state.json doit exister"
     state = json.loads(state_path.read_text(encoding="utf-8"))

@@ -176,12 +176,3 @@ def closed_sessions_since(
         day += timedelta(days=1)
 
     return sorted(hits)
-
-
-def rotation_due(
-    now_iso: str,
-    last_rotation_iso: str | None,
-    sessions: dict[str, SessionHours],
-) -> bool:
-    """Retourne True si au moins une session a clôturé depuis last_rotation."""
-    return bool(closed_sessions_since(now_iso, last_rotation_iso, sessions))

@@ -615,10 +615,7 @@ def test_snapshot_ledger_is_canonical_first_write_and_conflicts_on_payload_drift
 
 
 def test_graph_builder_failure_is_fail_open_and_does_not_drop_v1() -> None:
-    from trader.application.world_model.graph_capture import (
-        WorldGraphCaptureConfig,
-        capture_world_episodes_with_graph,
-    )
+    from trader.application.world_model.graph_capture import WorldGraphCaptureConfig
 
     class BoomService:
         def build(self, request):
@@ -632,45 +629,6 @@ def test_graph_builder_failure_is_fail_open_and_does_not_drop_v1() -> None:
     )
     assert _attach((v1,), config) == ()
     assert v1.episode_id == V1_EPISODE_ID
-    v1_again, v3 = capture_world_episodes_with_graph(
-        active_symbols=("AAA",),
-        tradable_symbols=("AAA",),
-        bars_by_symbol={
-            "AAA": [
-                {
-                    "ts": "2026-08-22T10:00:00+00:00",
-                    "open": 100.0,
-                    "high": 104.0,
-                    "low": 99.0,
-                    "close": 102.0,
-                    "volume": 1000.0,
-                    "available_at": "2026-08-22T10:05:00+00:00",
-                    "source": "unit-market-bars",
-                    "interval": "1h",
-                    "timestamp_semantics": "bar_close",
-                }
-            ]
-        },
-        market_metadata_by_symbol={
-            "AAA": {
-                "venue": "XTAI",
-                "asset_family": "equity",
-                "session_phase": "regular",
-                "market_regime": "trending_up",
-                "family_regime": "risk_on",
-                "freshness": {"status": "fresh", "data_age_minutes": 5.0},
-                "available_at": "2026-08-22T10:05:00+00:00",
-            }
-        },
-        config=config,
-        source="unit-market-bars",
-        interval="1h",
-        timestamp_semantics="bar_close",
-        captured_at="2026-08-22T10:30:00+00:00",
-    )
-    assert len(v1_again) == 1
-    assert v1_again[0].episode_id == V1_EPISODE_ID
-    assert v3 == ()
 
 
 def test_injected_study_cohort_id_does_not_invent_a_scope_mapping() -> None:

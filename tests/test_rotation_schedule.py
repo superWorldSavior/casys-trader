@@ -2,7 +2,7 @@
 
 
 import trader.market.rotation.schedule as rotation_schedule
-from trader.market.rotation.schedule import closed_sessions_since, load_sessions, rotation_due
+from trader.market.rotation.schedule import closed_sessions_since, load_sessions
 
 _STANDARD_SESSIONS = {
     "TW": {"open": "01:00", "close": "05:30"},
@@ -186,45 +186,6 @@ class TestOpenVenues:
             _STANDARD_SESSIONS,
         )
         assert result == []
-
-
-# ---------------------------------------------------------------------------
-# rotation_due
-# ---------------------------------------------------------------------------
-
-
-class TestRotationDue:
-    def test_due_quand_sessions_fermees(self):
-        """EU fermée dans la fenêtre → rotation_due=True."""
-        assert rotation_due(
-            "2026-06-15T16:00:00+00:00",
-            "2026-06-15T06:00:00+00:00",
-            _STANDARD_SESSIONS,
-        ) is True
-
-    def test_pas_due_sans_session(self):
-        """Aucune session fermée → rotation_due=False."""
-        assert rotation_due(
-            "2026-06-15T10:00:00+00:00",
-            "2026-06-15T06:00:00+00:00",
-            _STANDARD_SESSIONS,
-        ) is False
-
-    def test_due_bootstrap_last_none(self):
-        """Bootstrap last=None avec clôtures passées → rotation_due=True."""
-        assert rotation_due(
-            "2026-06-15T16:00:00+00:00",
-            None,
-            _STANDARD_SESSIONS,
-        ) is True
-
-    def test_pas_due_bootstrap_aucune_cloture(self):
-        """Bootstrap last=None mais aucune clôture du jour encore passée → False."""
-        assert rotation_due(
-            "2026-06-15T04:00:00+00:00",
-            None,
-            _STANDARD_SESSIONS,
-        ) is False
 
 
 # ---------------------------------------------------------------------------

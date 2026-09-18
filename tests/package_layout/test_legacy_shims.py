@@ -265,15 +265,15 @@ def test_rotation_legacy_package_is_virtual() -> None:
     import trader.rotation as legacy_rotation
     import trader.rotation.schedule as legacy_schedule
     from trader.market.rotation import run
-    from trader.market.rotation.schedule import rotation_due
+    from trader.market.rotation.schedule import closed_sessions_since
     from trader.rotation import run as legacy_run
-    from trader.rotation.schedule import rotation_due as legacy_rotation_due
+    from trader.rotation.schedule import closed_sessions_since as legacy_closed_sessions_since
 
     assert getattr(legacy_rotation, "__file__", None) is None
     assert getattr(legacy_rotation, "__path__", None) == []
     assert legacy_run is run
-    assert legacy_schedule.rotation_due is rotation_due
-    assert legacy_rotation_due is rotation_due
+    assert legacy_schedule.closed_sessions_since is closed_sessions_since
+    assert legacy_closed_sessions_since is closed_sessions_since
 
     namespace: dict[str, object] = {}
     exec("from trader.rotation import *", namespace)

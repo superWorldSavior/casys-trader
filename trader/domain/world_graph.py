@@ -47,8 +47,6 @@ WORLD_ENTITY_KINDS = frozenset(
         "family",
         "company",
         "instrument",
-        "macro_indicator",
-        "event",
     }
 )
 STRUCTURAL_RELATION_KINDS = frozenset(
@@ -64,9 +62,6 @@ KNOWLEDGE_RELATION_KINDS = frozenset(
     {
         "ABOUT",
         "OBSERVES",
-        "DERIVED_FROM",
-        "SUPERSEDES",
-        "USES",
     }
 )
 FORBIDDEN_RELATION_KINDS = frozenset(
@@ -112,9 +107,6 @@ GRAPH_TRAVERSAL_V1_DIRECTIONS = MappingProxyType(
         "MEMBER_OF_FAMILY": frozenset({"forward"}),
         "ABOUT": frozenset({"forward", "reverse"}),
         "OBSERVES": frozenset({"forward", "reverse"}),
-        "DERIVED_FROM": frozenset({"forward"}),
-        "SUPERSEDES": frozenset({"forward"}),
-        "USES": frozenset({"forward"}),
     }
 )
 # Canonical instrument → world backbone and root branches. Direction is part of
@@ -144,23 +136,6 @@ _KNOWLEDGE_ENDPOINT_KINDS = MappingProxyType(
     {
         "ABOUT": (frozenset({"knowledge_artifact"}), WORLD_ENTITY_KINDS),
         "OBSERVES": (frozenset({"world_observation"}), WORLD_ENTITY_KINDS),
-        "DERIVED_FROM": (
-            frozenset({"knowledge_artifact", "world_observation"}),
-            frozenset({"knowledge_artifact", "macro_source_fact_version"}),
-        ),
-        "USES": (
-            frozenset({"world_graph_snapshot", "pattern_hypothesis"}),
-            frozenset({"knowledge_artifact", "world_observation"}),
-        ),
-    }
-)
-_SUPERSEDES_KINDS = frozenset(
-    {
-        "knowledge_artifact",
-        "world_observation",
-        "macro_source_fact_version",
-        "world_graph_snapshot",
-        "pattern_hypothesis",
     }
 )
 _TRAVERSAL_DIRECTIONS = frozenset({"forward", "reverse"})
@@ -407,9 +382,6 @@ class WorldEntityRef:
                 raise ValueError("ISIN identifies an instrument, never a company")
             if not entity_id.startswith(_COMPANY_PREFIXES):
                 raise ValueError("company entity_id must start with lei:, cik:, or issuer:")
-        elif kind in {"macro_indicator", "event"}:
-            if ":" not in entity_id:
-                raise ValueError(f"{kind} entity_id must be namespaced")
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "entity_id", entity_id)
 
@@ -660,27 +632,6 @@ def _validate_knowledge_endpoints(kind: str, source: WorldGraphNodeRef, target: 
         _require_node_types(source, (WorldObservationRef,), role="source", kind=kind)
         _require_node_types(target, (WorldEntityRef,), role="target", kind=kind)
         return
-    if kind == "DERIVED_FROM":
-        _require_node_types(source, (KnowledgeArtifactRef, WorldObservationRef), role="source", kind=kind)
-        _require_node_types(target, (KnowledgeArtifactRef, MacroSourceFactVersionRef), role="target", kind=kind)
-        return
-    if kind == "USES":
-        _require_node_types(source, (WorldGraphSnapshotRef, PatternHypothesisRef), role="source", kind=kind)
-        _require_node_types(target, (KnowledgeArtifactRef, WorldObservationRef), role="target", kind=kind)
-        return
-    if kind == "SUPERSEDES":
-        version_types = (
-            KnowledgeArtifactRef,
-            WorldObservationRef,
-            MacroSourceFactVersionRef,
-            WorldGraphSnapshotRef,
-            PatternHypothesisRef,
-        )
-        _require_node_types(source, version_types, role="source", kind=kind)
-        _require_node_types(target, version_types, role="target", kind=kind)
-        if type(source) is not type(target):
-            raise ValueError("SUPERSEDES source and target must be the same version ref type")
-        return
     raise ValueError(f"unsupported knowledge relation kind: {kind}")
 
 
@@ -724,8 +675,6 @@ def _canonical_structural_kinds_allowed(kind: str, source_kind: str, target_kind
 
 
 def _canonical_knowledge_kinds_allowed(kind: str, source_kind: str, target_kind: str) -> bool:
-    if kind == "SUPERSEDES":
-        return source_kind in _SUPERSEDES_KINDS and source_kind == target_kind
     allowed = _KNOWLEDGE_ENDPOINT_KINDS.get(kind)
     if allowed is None:
         return False

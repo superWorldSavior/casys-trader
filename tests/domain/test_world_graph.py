@@ -382,7 +382,7 @@ def test_identity_map_links_context_to_graph_and_rejects_ambiguity() -> None:
     with pytest.raises(ValueError, match="sensor"):
         _link(
             context_ref=EntityRef(kind="sensor", entity_id="news_macro"),
-            graph_ref=_entity(kind="event", entity_id="provider:evt-1"),
+            graph_ref=_entity(),
         )
 
 
@@ -949,7 +949,8 @@ def test_context_entity_refs_remain_locally_scoped_and_unrelated_to_graph_ids() 
     assert "country" in ENTITY_KINDS
     assert "region" in ENTITY_KINDS
     assert "sensor" not in WORLD_ENTITY_KINDS
-    assert "macro_indicator" in WORLD_ENTITY_KINDS
+    assert "macro_indicator" not in WORLD_ENTITY_KINDS
+    assert "event" not in WORLD_ENTITY_KINDS
     country_link = _link(
         context_ref=EntityRef(kind="country", entity_id="iso-3166:TW"),
         graph_ref=WorldEntityRef(kind="country", entity_id="iso-3166:TW"),
@@ -971,25 +972,16 @@ def test_context_entity_refs_remain_locally_scoped_and_unrelated_to_graph_ids() 
 def test_knowledge_endpoints_are_closed_and_structural_endpoints_are_entities() -> None:
     about = _knowledge(kind="ABOUT", source=_artifact_ref(), target=_entity(), source_refs=("artifact:news:1",))
     assert about.source.node_kind == "knowledge_artifact"
-    uses = _knowledge(
-        kind="USES",
-        source=WorldGraphSnapshotRef(snapshot_id=f"world_graph_snapshot:v1:{SHA}"),
-        target=_observation_ref(),
-        source_refs=("world_graph_snapshot:v1:" + SHA,),
-    )
-    derived = _knowledge(
-        kind="DERIVED_FROM",
+    observes = _knowledge(
+        kind="OBSERVES",
         source=_observation_ref(),
-        target=MacroSourceFactVersionRef(fact_version_id=f"macro_source_fact_version:v1:{SHA}"),
+        target=_entity(),
         source_refs=("macro_world_observation:v1:" + SHA,),
     )
-    supersedes = _knowledge(
-        kind="SUPERSEDES",
-        source=_artifact_ref(),
-        target=KnowledgeArtifactRef(artifact_id=f"knowledge_artifact:v1:{'b' * 64}", content_sha256="b" * 64),
-        source_refs=("artifact:news:2",),
-    )
-    assert {about.kind, uses.kind, derived.kind, supersedes.kind} <= KNOWLEDGE_RELATION_KINDS
+    assert {about.kind, observes.kind} == KNOWLEDGE_RELATION_KINDS
+    for phantom in ("DERIVED_FROM", "SUPERSEDES", "USES"):
+        with pytest.raises(ValueError, match="knowledge relation kind"):
+            _knowledge(kind=phantom, source=_artifact_ref(), target=_entity())
     with pytest.raises(ValueError, match="ABOUT|source"):
         _knowledge(kind="ABOUT", source=_observation_ref(), target=_entity())
     with pytest.raises(ValueError, match="ABOUT|target"):
@@ -1594,7 +1586,8 @@ def test_historical_handoff_is_archived_and_never_parsed() -> None:
 def test_observes_ownership_is_a_typed_domain_rule() -> None:
     assert knowledge_write_requires_macro_bridge_fence("OBSERVES") is True
     assert knowledge_write_requires_macro_bridge_fence("ABOUT") is False
-    assert knowledge_write_requires_macro_bridge_fence("DERIVED_FROM") is False
+    with pytest.raises(ValueError, match="knowledge relation kind"):
+        knowledge_write_requires_macro_bridge_fence("DERIVED_FROM")
     assert knowledge_write_requires_macro_bridge_fence(None) is True
     require_macro_observes_bridge_fence(kind="ABOUT", fence=None, active_fence=None, run_status=None)
     with pytest.raises(ValueError, match="OBSERVES|fence"):

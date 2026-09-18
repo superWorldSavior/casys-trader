@@ -68,7 +68,7 @@ La projection visible suit cette grammaire :
 | `domain` | groupe de comparaison transverse, par exemple technologie ou énergie |
 | `family` | famille métier locale à un market, plus granulaire que le domain |
 | `company` | entreprise affichée ; symbole et instrument sont repliés, identité/géographie liées au World Graph |
-| `driver` | facteur typé `macro_indicator`, `event` ou `observed_signal` |
+| `driver` | facteur typé par `signal_class` (`regime_bundle`, `news_state`, `company_state`, `unspecified`, `missing`) et `source_family` (`macro_observation`, `knowledge_artifact`, `unproven`) |
 
 Un rapport reste une source et un panneau de lecture, **pas un nœud**. Une
 observation reste une assertion datée portée par l'association dirigée entre
@@ -101,7 +101,7 @@ un seam de présentation alimenté aujourd'hui par la fraîcheur du brief, pas u
 résultat appris.
 
 La future capacité shadow devra apprendre une persistance par driver canonique
-(`macro_indicator` ou `event`) et cible, à partir d'un onset point-in-time et des
+(`signal_class` + `source_family`) et cible, à partir d'un onset point-in-time et des
 `WorldOutcome` arrivés ensuite. Le `valid_until` d'une observation restera une
 borne de censure/fraîcheur, jamais une preuve que l'influence s'est arrêtée. Le
 read model de cette capacité pourra alors alimenter `activity` et réguler

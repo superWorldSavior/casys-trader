@@ -21,7 +21,6 @@ from trader.infrastructure.files.universe_config import (
     load_user_overrides,
     write_universe_atomic as write_universe_atomic,
 )
-from trader.market.radar import build_radar_snapshot, write_snapshot
 from trader.market.radar_data import CoverageError
 from trader.market.rotation.ledger import log_rotation
 from trader.market.rotation.state import advance_state, load_rotation_state, save_rotation_state, seed_state
@@ -167,18 +166,6 @@ def run(
             "alerts": alerts,
             "written": False,
         }
-
-    # D. Snapshot radar — si rank_fn fournit ineligible + components_by_symbol
-    _ineligible = rank_result.get("ineligible")
-    _components = rank_result.get("components_by_symbol")
-    if _ineligible is not None and _components is not None:
-        snapshot = build_radar_snapshot(
-            ranked,
-            _ineligible,
-            as_of=as_of,
-            components_by_symbol=_components,
-        )
-        write_snapshot(Path(state_dir), snapshot)
 
     # 7. écriture atomique + état + ledger
     # C. advance_state avec last_valid=final (hot non-sticky uniquement dans current_hot_set)
