@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from trader.application.world_model.capture import capture_world_episodes, is_eligible_completed_bar
+from trader.domain.market.features import compute_indicator_values
 from trader.domain.world_episode import is_eligible_completed_bar as domain_is_eligible_completed_bar
 
 
@@ -317,6 +320,168 @@ def test_capture_and_labeler_bind_the_same_eligible_completed_bar_rule() -> None
 
     assert is_eligible_completed_bar is domain_is_eligible_completed_bar
     assert labeler_rule is domain_is_eligible_completed_bar
+
+
+PORTED_OHLCV_KEYS = (
+    "volatility",
+    "z_score",
+    "efficiency_ratio",
+    "trend_slope",
+    "ohlc_volatility",
+    "atr_pct",
+    "range_position",
+)
+
+_TREND_BARS = (
+    # (ts, open, high, low, close, volume)
+    ("2026-08-22T05:00:00+00:00", 100.0, 102.0, 99.0, 101.0, 800.0),
+    ("2026-08-22T06:00:00+00:00", 101.0, 103.0, 100.0, 102.5, 900.0),
+    ("2026-08-22T07:00:00+00:00", 102.5, 105.0, 101.0, 104.0, 1_100.0),
+    ("2026-08-22T08:00:00+00:00", 104.0, 104.5, 102.0, 103.0, 950.0),
+    ("2026-08-22T09:00:00+00:00", 103.0, 106.0, 102.5, 105.5, 1_200.0),
+    ("2026-08-22T10:00:00+00:00", 105.5, 107.0, 104.0, 106.0, 1_050.0),
+)
+
+
+def _trend_history(*, available_at: str = "2026-08-22T10:05:00+00:00") -> list[dict[str, object]]:
+    return [
+        _bar(ts, open_=open_, high=high, low=low, close=close, volume=volume, available_at=available_at)
+        for ts, open_, high, low, close, volume in _TREND_BARS
+    ]
+
+
+def test_ported_ohlcv_formulas_match_domain_indicators() -> None:
+    bars = _trend_history()
+    episode = _capture(bars_by_symbol={"AAA": bars})[0]
+    numeric = episode.observation.numeric_features
+
+    assert episode.observation.anchor.ts.isoformat() == "2026-08-22T10:00:00+00:00"
+    expected = compute_indicator_values(
+        [
+            {"open": open_, "high": high, "low": low, "close": close, "volume": volume}
+            for _, open_, high, low, close, volume in _TREND_BARS
+        ],
+        names=list(PORTED_OHLCV_KEYS),
+        window=len(_TREND_BARS),
+    )
+    for key in PORTED_OHLCV_KEYS:
+        assert expected[key] is not None
+        assert numeric[key] == pytest.approx(expected[key], abs=1e-6)
+
+    # One hand-computed anchor so the cross-check cannot share a wrong formula.
+    closes = [close for _, _, _, _, close, _ in _TREND_BARS]
+    path = sum(abs(closes[index] - closes[index - 1]) for index in range(1, len(closes)))
+    assert numeric["efficiency_ratio"] == pytest.approx(abs(closes[-1] - closes[0]) / path)
+
+
+@pytest.mark.parametrize("key", PORTED_OHLCV_KEYS)
+def test_ported_key_ignores_bars_completing_after_the_anchor(key: str) -> None:
+    baseline = _capture(bars_by_symbol={"AAA": _trend_history()})[0]
+    future_bar = _bar(
+        "2026-08-22T11:00:00+00:00",
+        open_=106.0,
+        high=120.0,
+        low=90.0,
+        close=115.0,
+        volume=50_000.0,
+        available_at="2026-08-22T11:05:00+00:00",
+    )
+    with_future = _capture(bars_by_symbol={"AAA": [*_trend_history(), future_bar]})[0]
+
+    assert with_future.observation.anchor.ts == baseline.observation.anchor.ts
+    assert with_future.observation.numeric_features[key] == baseline.observation.numeric_features[key]
+
+
+@pytest.mark.parametrize("key", PORTED_OHLCV_KEYS)
+def test_ported_key_ignores_bars_beyond_the_twenty_bar_window(key: str) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    bars = [
+        _bar(
+            (start + timedelta(hours=index)).isoformat(),
+            open_=100.0 + index,
+            high=101.0 + index,
+            low=99.0 + index,
+            close=100.5 + index,
+            volume=1_000.0,
+            available_at="2026-08-22T10:05:00+00:00",
+        )
+        for index in range(25)
+    ]
+    outlier = dict(bars[0])
+    outlier.update({"high": 10_000.0, "low": 0.5, "close": 5_000.0, "volume": 99_000_000.0})
+    with_outlier = _capture(bars_by_symbol={"AAA": [outlier, *bars[1:]]})[0]
+    without_outlier = _capture(bars_by_symbol={"AAA": bars[5:]})[0]
+
+    assert with_outlier.observation.anchor.ts == without_outlier.observation.anchor.ts
+    assert with_outlier.observation.numeric_features[key] == pytest.approx(
+        without_outlier.observation.numeric_features[key]
+    )
+    # Pin the exact bound from below too: the 20th bar back still counts.
+    twenty_one = _capture(bars_by_symbol={"AAA": [outlier, *bars[4:]]})[0]
+    twenty = _capture(bars_by_symbol={"AAA": bars[5:]})[0]
+    assert twenty_one.observation.numeric_features[key] == pytest.approx(
+        twenty.observation.numeric_features[key]
+    )
+
+
+def test_ported_keys_ignore_history_available_only_after_the_anchor() -> None:
+    baseline = _capture(bars_by_symbol={"AAA": _trend_history()})[0]
+    intruder = _bar(
+        "2026-08-22T09:30:00+00:00",
+        open_=103.0,
+        high=110.0,
+        low=95.0,
+        close=108.0,
+        volume=25_000.0,
+        available_at="2026-08-22T10:45:00+00:00",
+    )
+    with_intruder = _capture(
+        bars_by_symbol={"AAA": [*_trend_history(), intruder]},
+        captured_at="2026-08-22T11:00:00+00:00",
+    )[0]
+    rebased = _capture(
+        bars_by_symbol={"AAA": _trend_history()},
+        captured_at="2026-08-22T11:00:00+00:00",
+    )[0]
+
+    assert with_intruder.observation.anchor.ts == baseline.observation.anchor.ts
+    assert with_intruder.observation.numeric_features == rebased.observation.numeric_features
+    for key in PORTED_OHLCV_KEYS:
+        assert key in with_intruder.observation.numeric_features
+
+
+def test_ported_formula_guards_on_degenerate_histories() -> None:
+    single = _capture(bars_by_symbol={"AAA": [_bar("2026-08-22T10:00:00+00:00")]})[0]
+    single_numeric = single.observation.numeric_features
+    for key in ("volatility", "z_score", "efficiency_ratio", "trend_slope"):
+        assert key not in single_numeric
+    for key in ("ohlc_volatility", "atr_pct", "range_position"):
+        assert key in single_numeric
+
+    flat = _capture(
+        bars_by_symbol={
+            "AAA": [
+                _bar(
+                    f"2026-08-22T0{hour}:00:00+00:00",
+                    open_=100.0,
+                    high=100.0,
+                    low=100.0,
+                    close=100.0,
+                    volume=1_000.0,
+                )
+                for hour in (7, 8, 9, 10)
+            ]
+        }
+    )[0]
+    flat_numeric = flat.observation.numeric_features
+    for key in ("z_score", "efficiency_ratio", "range_position"):
+        assert key not in flat_numeric
+    assert flat_numeric["volatility"] == pytest.approx(0.0)
+    assert flat_numeric["trend_slope"] == pytest.approx(0.0)
+    assert flat_numeric["ohlc_volatility"] == pytest.approx(0.0)
+    assert flat_numeric["atr_pct"] == pytest.approx(0.0)
 
 
 def _contains_forbidden_key(value: object) -> bool:

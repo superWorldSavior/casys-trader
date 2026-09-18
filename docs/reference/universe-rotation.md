@@ -123,6 +123,12 @@ Le bench refuse de recommander automatiquement une bascule. Moins de 60
 snapshots uniques reste `insufficient_history`; les rendements sont des proxies
 close-to-close bruts, sans coûts ni sizing.
 
+Propriétaire : mainteneur du pipeline univers/radar. Cadence : manuelle, à la
+demande — relancer après accumulation de nouveaux jours dans
+`state/radar_cache` et avant toute revue shadow-vs-production. Rien n'écrit
+`state/radar_score_bench.json` automatiquement ; la commande de rafraîchissement
+opérateur est celle du bloc ci-dessus.
+
 ## 2. Scout fresh-news — challengers hors top 40
 
 Le scout lit les news locales récentes au pré-open, donc aussi celles publiées

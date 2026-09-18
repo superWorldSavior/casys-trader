@@ -18,6 +18,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
+from statistics import mean, pstdev
 
 from trader.domain.world_episode import (
     AnchorBar,
@@ -391,7 +392,10 @@ def _numeric_features(
 
     The history is bounded, ordered by completed-bar time, and excludes a bar
     whose explicit availability is later than the anchor's availability.  No
-    provider metadata is used in a numeric feature.
+    provider metadata is used in a numeric feature.  Besides the anchor-local
+    keys, the seven ported formulas (volatility, z_score, efficiency_ratio,
+    trend_slope, ohlc_volatility, atr_pct, range_position) read the held
+    history only — a bar completing after the anchor can never move them.
     """
 
     anchor_end = anchor.end_at or anchor.ts
@@ -439,7 +443,89 @@ def _numeric_features(
         mean_volume = sum(prior_volumes) / len(prior_volumes)
         if mean_volume > 0.0:
             _set_finite(features, "relative_volume", latest.volume / mean_volume)
+
+    # Ported OHLCV formulas (source: trader/domain/market/features.py).
+    # Every input below is the held causal `history` only — never a bar that
+    # completes after the anchor or becomes available after it.
+    if len(simple_returns) >= 2:
+        _set_finite(features, "volatility", pstdev(simple_returns))
+    if len(closes) >= 2:
+        closes_sigma = pstdev(closes)
+        if closes_sigma != 0.0:
+            _set_finite(features, "z_score", (closes[-1] - mean(closes)) / closes_sigma)
+        path_length = sum(abs(closes[index] - closes[index - 1]) for index in range(1, len(closes)))
+        if path_length != 0.0:
+            _set_finite(features, "efficiency_ratio", abs(closes[-1] - closes[0]) / path_length)
+        slope = _causal_trend_slope(closes)
+        if slope is not None:
+            _set_finite(features, "trend_slope", slope)
+    ohlc_volatility = _causal_ohlc_volatility(history)
+    if ohlc_volatility is not None:
+        _set_finite(features, "ohlc_volatility", ohlc_volatility)
+    atr_pct = _causal_atr_pct(history)
+    if atr_pct is not None:
+        _set_finite(features, "atr_pct", atr_pct)
+    highest = max(bar.high for bar in history)
+    lowest = min(bar.low for bar in history)
+    if highest > lowest:
+        _set_finite(features, "range_position", (latest.close - lowest) / (highest - lowest))
     return features, ambiguous
+
+
+def _causal_trend_slope(closes: Sequence[float]) -> float | None:
+    """OLS slope of closes normalised by the absolute mean (needs >= 2 closes)."""
+
+    if len(closes) < 2:
+        return None
+    count = len(closes)
+    xs = list(range(count))
+    mean_x = mean(xs)
+    mean_close = mean(closes)
+    denominator = sum((x - mean_x) ** 2 for x in xs)
+    if denominator == 0.0 or mean_close == 0.0:
+        return None
+    slope = sum((x - mean_x) * (price - mean_close) for x, price in zip(xs, closes)) / denominator
+    return slope / abs(mean_close)
+
+
+def _causal_ohlc_volatility(history: Sequence[_MarketBar]) -> float | None:
+    """Garman-Klass per-bar estimate averaged over the held history only."""
+
+    if not history:
+        return None
+    estimates: list[float] = []
+    for bar in history:
+        if min(bar.open, bar.high, bar.low, bar.close) <= 0.0:
+            continue
+        high_low = math.log(bar.high / bar.low)
+        close_open = math.log(bar.close / bar.open)
+        estimate = 0.5 * high_low * high_low - (2.0 * math.log(2.0) - 1.0) * close_open * close_open
+        estimates.append(max(0.0, estimate))
+    if not estimates:
+        return None
+    return math.sqrt(mean(estimates))
+
+
+def _causal_atr_pct(history: Sequence[_MarketBar]) -> float | None:
+    """Mean true range over the held history, normalised by the latest close."""
+
+    if not history:
+        return None
+    true_ranges: list[float] = []
+    previous_close: float | None = None
+    for bar in history:
+        if not all(math.isfinite(value) for value in (bar.high, bar.low, bar.close)) or bar.high < bar.low:
+            previous_close = bar.close if math.isfinite(bar.close) else previous_close
+            continue
+        candidates = [bar.high - bar.low]
+        if previous_close is not None and math.isfinite(previous_close):
+            candidates.extend((abs(bar.high - previous_close), abs(bar.low - previous_close)))
+        true_ranges.append(max(candidates))
+        previous_close = bar.close
+    latest_close = history[-1].close
+    if not true_ranges or not math.isfinite(latest_close) or latest_close <= 0.0:
+        return None
+    return mean(true_ranges) / latest_close
 
 
 def _categorical_features(metadata: Mapping[str, object]) -> dict[str, str]:

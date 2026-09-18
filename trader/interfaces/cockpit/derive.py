@@ -104,6 +104,30 @@ def equity_snapshot(state: dict) -> EquitySnapshot:
 
 
 # ---------------------------------------------------------------------------
+# Provenance badges (live vs report fallback labels)
+# ---------------------------------------------------------------------------
+
+
+_PROVENANCE_BADGE_LABELS = {
+    "report": "from report",
+    "empty": "unavailable",
+}
+
+
+def provenance_badge(state: dict, key: str) -> str | None:
+    """Short badge label when ``key`` did not come from the live read model.
+
+    Returns None when the value is live or the provenance is unknown
+    (fail-open: no badge, no noise). Only ``"kpis"`` and ``"attribution"``
+    carry a provenance field; anything else fails loud.
+    """
+    if key not in ("kpis", "attribution"):
+        raise ValueError(f"unknown provenance key: {key!r}")
+    suffix = _PROVENANCE_BADGE_LABELS.get(state.get(f"{key}_source"))
+    return f"{key} {suffix}" if suffix is not None else None
+
+
+# ---------------------------------------------------------------------------
 # Cycle / workers
 # ---------------------------------------------------------------------------
 

@@ -1,4 +1,20 @@
-"""Walk-forward bench for production and shadow radar rankings."""
+"""Walk-forward bench for production and shadow radar rankings.
+
+Owner: universe/radar pipeline maintainer (repo maintainer).
+Cadence: manual, on demand — rerun after new days accumulate in
+``state/radar_cache`` (one file per day) and before any shadow-vs-production
+review. Nothing writes ``state/radar_score_bench.json`` automatically; the
+operator refresh command is::
+
+    uv run python -m trader.reporting.bench.radar_score \
+      --config-dir config \
+      --cache-dir state/radar_cache \
+      --output state/radar_score_bench.json
+
+Readers (``runtime_state.load_runtime_state`` + cockpit universe page) only
+require ``status`` and ``coverage.unique_snapshot_count``; the rest of the
+payload is observability detail.
+"""
 
 from __future__ import annotations
 

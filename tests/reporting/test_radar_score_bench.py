@@ -6,7 +6,10 @@ from trader.domain.market_data import Bar
 from trader.reporting.bench.radar_score import (
     evaluate_forward_performance,
     evaluate_selection_stability,
+    run_cache_bench,
+    write_bench,
 )
+from trader.reporting.read_models.runtime_state import load_state
 
 
 def _bar(day: int, close: float) -> Bar:
@@ -94,3 +97,26 @@ def test_selection_stability_measures_turnover_and_family_concentration() -> Non
     assert result["production"]["US"]["mean_largest_family_share"] == pytest.approx(
         0.75
     )
+
+
+def test_bench_payload_schema_matches_runtime_state_reader(tmp_path) -> None:
+    """The keys runtime_state/cockpit consume survive a write→load round trip."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "pool.yaml").write_text("symbols: [AAPL]\n", encoding="utf-8")
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    payload = run_cache_bench(config_dir=config_dir, cache_dir=cache_dir)
+
+    assert payload["schema_version"] == 1
+    assert payload["status"] == "insufficient_history"
+    assert payload["production_switch_recommended"] is False
+    assert payload["coverage"]["unique_snapshot_count"] == 0
+
+    output = tmp_path / "bench.json"
+    write_bench(output, payload)
+    reloaded = load_state(output)
+    assert isinstance(reloaded, dict)
+    assert reloaded["status"] == "insufficient_history"
+    assert reloaded["coverage"]["unique_snapshot_count"] == 0

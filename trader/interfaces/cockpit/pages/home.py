@@ -22,6 +22,7 @@ from trader.interfaces.cockpit.derive import (
     ledger_total,
     next_to_fire,
     positions_by_pnl,
+    provenance_badge,
 )
 from trader.interfaces.cockpit.pages._shared import ResizeRefresh, PANEL_CSS, build_equity_chart, rows_available
 from trader.interfaces.cockpit.renderers.meters import confidence_meter
@@ -34,6 +35,7 @@ from trader.interfaces.ui.palette import (
     CASYS_HAIRLINE,
     CASYS_MUTED,
     CASYS_SUCCESS,
+    CASYS_WARNING,
 )
 from trader.support.coercion import dict_list, finite_float
 
@@ -110,6 +112,9 @@ def build_equity_summary(state: dict, *, width: int = 40) -> RenderableType:
         f" · cash free {f.fmt_pct(snap.cash_pct, decimals=0, signed=False)}",
         style=CASYS_FAINT,
     )
+    badge = provenance_badge(state, "kpis")
+    if badge is not None:
+        headline.append(f" · {badge}", style=CASYS_WARNING)
     return Group(
         headline, build_equity_chart(f.equity_curve(state), width=max(20, width), height=5)
     )

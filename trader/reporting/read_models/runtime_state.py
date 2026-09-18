@@ -511,6 +511,20 @@ def _load_starting_cash_safe(config_dir: str | Path) -> float | None:
         return None
 
 
+def _resolve_with_source(live: dict, fallback: Any) -> tuple[dict, str]:
+    """Return (value, provenance) without changing the fail-open selection.
+
+    Provenance is ``"live"`` when the freshly computed read model is
+    non-empty, ``"report"`` when the last daemon report supplies the value,
+    and ``"empty"`` when neither has anything to show.
+    """
+    if live:
+        return live, "live"
+    if isinstance(fallback, dict):
+        return fallback, "report" if fallback else "empty"
+    return {}, "empty"
+
+
 def load_runtime_state(
     *,
     state_dir: str | Path = _STATE_DIR,
@@ -567,15 +581,17 @@ def load_runtime_state(
     )
     universe_symbols = _load_universe_symbols_safe(_effective_config_dir)
     company_map = _load_company_names(_effective_config_dir)
+    kpis_value, kpis_source = _resolve_with_source(kpis, raw.get("kpis"))
+    attribution_value, attribution_source = _resolve_with_source(attribution, raw.get("attribution"))
     return {
         **raw,
         "source": source,
         "starting_cash": starting_cash,
         "daemon_status": status if isinstance(status, dict) else {},
-        "kpis": kpis if kpis else (raw.get("kpis") if isinstance(raw.get("kpis"), dict) else {}),
-        "attribution": attribution
-        if attribution
-        else (raw.get("attribution") if isinstance(raw.get("attribution"), dict) else {}),
+        "kpis": kpis_value,
+        "kpis_source": kpis_source,
+        "attribution": attribution_value,
+        "attribution_source": attribution_source,
         "equity_curve": equity_curve,
         "learnings": learnings,
         "trade_plans": trade_plans,

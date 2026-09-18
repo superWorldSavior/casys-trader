@@ -21,7 +21,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static
 
 from trader.interfaces.cockpit import format as f
-from trader.interfaces.cockpit.derive import equity_snapshot, exposure
+from trader.interfaces.cockpit.derive import equity_snapshot, exposure, provenance_badge
 from trader.interfaces.cockpit.pages._shared import PANEL_CSS, ResizeRefresh, SymbolTable, preserve_cursor, rows_available
 from trader.interfaces.cockpit.projections.portfolio import (
     build_positions_rows,  # noqa: F401 - historical page export
@@ -366,6 +366,9 @@ def build_closed_trades(
             style=CASYS_DIM,
         )
     footer.append(f" · {n_closed} trips", style=CASYS_DIM)
+    badge = provenance_badge(state, "attribution")
+    if badge is not None:
+        footer.append(f" · {badge}", style=CASYS_WARNING)
 
     return Group(grid, sep, footer)
 
