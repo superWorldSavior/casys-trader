@@ -322,14 +322,18 @@ class WorldRuntimeIdentity:
         object.__setattr__(self, "lane_code_hash", _lane_code_hash(self.lane_code_hash))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "git_commit": self.git_commit,
             "python_version": self.python_version,
             "numpy_version": self.numpy_version,
             "application_build_id": self.application_build_id,
-            "lane_code_hash": self.lane_code_hash,
         }
+        # Legacy-stable bytes: pre-hash manifests must re-serialize identically
+        # so their stored manifest_sha256 still verifies.
+        if self.lane_code_hash is not None:
+            payload["lane_code_hash"] = self.lane_code_hash
+        return payload
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | WorldRuntimeIdentity) -> WorldRuntimeIdentity:

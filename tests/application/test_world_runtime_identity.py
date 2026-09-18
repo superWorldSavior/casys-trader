@@ -54,6 +54,7 @@ def test_from_mapping_accepts_legacy_payload_without_lane_hash() -> None:
     )
     assert legacy.lane_code_hash is None
     assert legacy != _identity()
+    assert "lane_code_hash" not in legacy.to_dict()
     assert WorldRuntimeIdentity.from_mapping(_identity().to_dict()) == _identity()
 
 
