@@ -103,7 +103,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v1"
     assert payload["pilot_id"] == "world_shadow_pilot.v1"
     assert "supersedes_pilot_id" not in payload
-    assert payload["lifecycle_generation"] == 3
+    assert payload["lifecycle_generation"] == 4
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -277,7 +277,7 @@ def test_env_and_config_disable_skip_register_without_raising() -> None:
 
 def test_next_cohort_can_add_three_day_metric_while_one_day_stays_primary(tmp_path: Path) -> None:
     payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
-    assert payload["lifecycle_generation"] == 3
+    assert payload["lifecycle_generation"] == 4
     assert payload["horizons"] == ["elapsed_4h.v1", "elapsed_1d.v1", "elapsed_3d.v1"]
     assert payload["primary_horizon"] == "elapsed_1d.v1"
     config_dir = _write_hashed_pilot_config(tmp_path / "next", payload)

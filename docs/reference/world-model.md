@@ -82,8 +82,8 @@ Horizons **fixes**, sans fallback silencieux :
 | 3 j | `timedelta(days=3)` | `elapsed_3d.v1` |
 
 Le pilote committe actif déclare `elapsed_4h.v1`, `elapsed_1d.v1` (primaire)
-et `elapsed_3d.v1`. `lifecycle_generation: 3` frappe de nouveaux `cohort_id` ;
-les IDs de génération 2 ne sont pas réutilisés. Les prédicteurs liés à une
+et `elapsed_3d.v1`. `lifecycle_generation: 4` frappe de nouveaux `cohort_id` ;
+les IDs de génération 3 ne sont pas réutilisés. Les prédicteurs liés à une
 cohorte ne calculent que les horizons de leur propre manifeste, ce qui permet
 aux cohortes de se chevaucher sans fuite de protocole.
 

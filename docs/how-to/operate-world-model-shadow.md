@@ -56,8 +56,8 @@ batch d'écriture shadow serait sauté, pas que le Trader s'est arrêté.
 Le CLI n'a pas de `list`. Les `cohort_id` stables sont dérivés du YAML
 (`pilot_id` + `schema_version` + `cohort_key` + `activation_policy` +
 `lifecycle_generation` + `content_sha256`) et apparaissent dans le log
-`[world_shadow_pilot]` au boot. Le YAML committe `lifecycle_generation: 3` :
-cela **frappe de nouveaux** `cohort_id` ; les IDs de génération 2 ne sont pas
+`[world_shadow_pilot]` au boot. Le YAML committe `lifecycle_generation: 4` :
+cela **frappe de nouveaux** `cohort_id` ; les IDs de génération 3 ne sont pas
 réutilisés. Le lot actif déclare `elapsed_4h.v1`, `elapsed_1d.v1` (primaire)
 et `elapsed_3d.v1`. Deux clés :
 
@@ -193,9 +193,14 @@ par cohorte dérivée :
 uv run casys-trader world cohort invalidate COHORT_ID --reason accepted_drift --json
 ```
 
-puis redémarrage volontaire : le boot crée des cohortes fraîches (nouveaux
-fingerprints). Les épisodes déjà stockés restent en base ; les liens
-outcomes à cheval sur la rotation sont refusés fail-closed.
+L'invalidation seule ne suffit pas : le curseur d'activation n'avance que
+si le mapping, la révision ontologie, le hash config ou la génération
+bougent — sinon le boot retrouve la cohorte invalidée et reste bloqué sur
+le même `runtime_identity_drift`. Frapper une génération
+(`lifecycle_generation` + 1, rehash `content_sha256`), puis redémarrage
+volontaire : le boot crée des cohortes fraîches (nouveaux fingerprints).
+Les épisodes déjà stockés restent en base ; les liens outcomes à cheval
+sur la rotation sont refusés fail-closed.
 
 Un warning `conflict: committed ontology heads do not match the published
 revision (revision_drift:<cause>)` nomme la cause exacte (dérivation,
@@ -387,7 +392,7 @@ Tous les flags sont lus **uniquement au boot**. Défauts runtime :
 Le YAML `config/world_shadow_pilot.yaml` est l'**autorisation opérateur**, pas
 un défaut RFC. Le lot committe actif porte `horizons:
 [elapsed_4h.v1, elapsed_1d.v1, elapsed_3d.v1]`, `primary_horizon:
-elapsed_1d.v1`, et `lifecycle_generation: 3` (nouveaux `cohort_id`). Si
+elapsed_1d.v1`, et `lifecycle_generation: 4` (nouveaux `cohort_id`). Si
 `CASYS_WORLD_SHADOW_PILOT_ACTIVATION=1` **et** `enabled: true`, le boot
 fait un **OU** avec `workers.*` :
 
