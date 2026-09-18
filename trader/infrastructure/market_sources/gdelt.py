@@ -1,231 +1,281 @@
-"""gdelt — collecte quotidienne d'événements géopolitiques via GDELT DOC 2.0.
+"""Collecteur GDELT best-effort via bulk download (l'API DOC est throttlée).
 
-Source internationale gratuite et sans clé API. Zéro dépendance nouvelle : GET via
-urllib, seam ``get_json`` injectable pour les tests (même pattern que
-``macro_series``). GDELT limite à 1 requête / 5 s ; une seule collecte par jour suffit,
-donc pas de logique de backoff ici. Fail-soft total : aucune exception ne remonte au
-cycle.
+L'API DOC 2.0 répond HTTP 429 persistant depuis ~2026-08-24 (throttle par IP
+côté GDELT, indépendant de notre volume d'1 req/jour). Ce collecteur
+télécharge à la place les exports bruts GKG 15-min (data.gdeltproject.org,
+sans clé ni quota) : 8 slots étalés sur 24h, filtrés sur les thèmes.
 
-Le mode ``artlist`` renvoie ``{"articles": [{url, title, seendate, domain,
-sourcecountry, language, ...}]}`` — pas de champ ``tone`` (réservé aux modes
-timeline/tonechart). On collecte donc titre + provenance ; le tone pourra être ajouté
-plus tard via un mode dédié si besoin.
+Même contrat que l'ancien collecteur : append-only vers
+state/gdelt/events.jsonl, dédup par URL (idempotent même si un export est
+retraité), cooldown 20h, fail-soft total. Les lignes bulk portent
+themes+tone au lieu d'un titre (le bulk ne fournit pas les titres en
+clair) ; le lecteur briefs les consomme telles quelles.
+
+Note : GDELT sert le bulk en HTTP plain (pas de HTTPS). Acceptable pour
+des briefs best-effort ; les chunks sont bornés en taille et parsés en
+positionnel strict (lignes courtes ignorées).
 """
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import threading
 import urllib.error
-import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from urllib.parse import urlparse
 
-log = logging.getLogger(__name__)
-
-GDELT_BASE = "https://api.gdeltproject.org/api/v2/doc/doc"
-DEFAULT_TIMEOUT_S = 15
-DEFAULT_MAX_RECORDS = 75
-DEFAULT_TIMESPAN = "1d"
-COLLECT_COOLDOWN_H = 20
+GDELT_DIR = "gdelt"
+EVENTS_FILE = "events.jsonl"
 MARKER_FILE = ".last_collect"
-_MAX_TITLE_CHARS = 300
+DEFAULT_COOLDOWN_H = 20.0
+DEFAULT_TIMEOUT_S = 25
 
-_collect_lock = threading.Lock()
-_collect_in_progress: bool = False
+BULK_BASE = "http://data.gdeltproject.org/gdeltv2"
+CHUNK_STEP_H = 3
+CHUNK_COUNT = 8
+MAX_CHUNK_BYTES = 15_000_000
+MAX_NEW_ROWS = 400
 
-# Query GDELT cadrée géopolitique / macro internationale. Paramétrable via l'argument
-# ``query`` de collect_daily ; cette constante reste la valeur versionnée v1.
-DEFAULT_QUERY = (
-    '(sanctions OR tariffs OR "trade war" OR embargo OR conflict OR war OR '
-    'geopolitical OR election OR "central bank" OR "interest rate") '
-    "sourcelang:english"
+# Sous-chaînes (minuscules) matched against the ";"-joined GKG themes blob.
+THEME_KEYWORDS = (
+    "sanctions",
+    "tariffs",
+    "trade war",
+    "embargo",
+    "conflict",
+    "war",
+    "geopolitical",
+    "election",
+    "central bank",
+    "interest rate",
 )
 
+# GKG 2.0 fixed column indexes (headerless file, verified 2026-09-18 against
+# a live chunk: 27 columns, tone at 15, 13-14 empty in this file version).
+_GKG_DATE = 1
+_GKG_SOURCE = 3
+_GKG_URL = 4
+_GKG_THEMES = 7
+_GKG_TONE = 15
+_GKG_MIN_COLS = 16
 
-def _get_json(url: str, *, timeout_s: int = DEFAULT_TIMEOUT_S) -> dict:
-    """GET → JSON dict. Lève urllib.error.URLError en cas d'erreur HTTP ou réseau."""
+__all__ = ["collect_daily", "maybe_collect", "THEME_KEYWORDS"]
+
+
+def _chunk_stamps(now: datetime) -> list[str]:
+    """8 slots 15-min alignés, étalés sur 24h (now, now-3h, ..., now-21h)."""
+    base = now.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    base -= timedelta(minutes=base.minute % 15)
+    stamps: list[str] = []
+    for step in range(CHUNK_COUNT):
+        stamp = (base - timedelta(hours=step * CHUNK_STEP_H)).strftime("%Y%m%d%H%M00")
+        if stamp not in stamps:
+            stamps.append(stamp)
+    return stamps
+
+
+def _chunk_url(stamp: str) -> str:
+    return f"{BULK_BASE}/{stamp}.gkg.csv.zip"
+
+
+def _fetch_bytes(url: str, timeout_s: int) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "casys-trader/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout_s) as response:
+        data = response.read(MAX_CHUNK_BYTES + 1)
+    if len(data) > MAX_CHUNK_BYTES:
+        raise ValueError(f"chunk trop gros (>{MAX_CHUNK_BYTES} octets)")
+    if not data:
+        raise ValueError("chunk vide")
+    return data
+
+
+def _parse_tone(raw: str) -> float | None:
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise urllib.error.URLError(f"HTTP {exc.code}: {body[:200]}") from exc
-
-
-def _doc_url(query: str, *, maxrecords: int, timespan: str) -> str:
-    params = {
-        "query": query,
-        "mode": "artlist",
-        "format": "json",
-        "maxrecords": int(maxrecords),
-        "timespan": timespan,
-        "sort": "hybridrel",
-    }
-    return f"{GDELT_BASE}?{urllib.parse.urlencode(params)}"
-
-
-def _normalise_article(raw: dict) -> dict | None:
-    """Projette un article GDELT en ligne bornée, ou None si l'URL manque."""
-    url = str(raw.get("url") or "").strip()
-    if not url:
+        return float(raw.split(",", 1)[0])
+    except (ValueError, IndexError):
         return None
-    return {
-        "url": url,
-        "title": str(raw.get("title") or "").strip()[:_MAX_TITLE_CHARS],
-        "seendate": str(raw.get("seendate") or "").strip(),
-        "domain": str(raw.get("domain") or "").strip(),
-        "sourcecountry": str(raw.get("sourcecountry") or "").strip(),
-        "language": str(raw.get("language") or "").strip(),
-    }
 
 
-def _seen_urls(path: Path) -> set[str]:
-    """URLs déjà collectées (dédup). Best-effort, jamais d'exception."""
-    if not path.exists():
-        return set()
-    seen: set[str] = set()
+def _normalise_seendate(raw: str) -> str:
+    digits = "".join(ch for ch in raw.strip() if ch.isdigit())
+    if len(digits) >= 14:
+        return f"{digits[0:8]}T{digits[8:14]}Z"
+    return raw.strip()
+
+
+def _parse_gkg(data: bytes) -> list[dict]:
+    """Extrait les lignes (url, themes, tone) d'un export GKG. Jamais partiel."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        members = [name for name in archive.namelist() if name.endswith(".csv")]
+        if not members:
+            raise ValueError("zip sans membre .csv")
+        text = archive.read(members[0]).decode("utf-8", errors="replace")
+    rows: list[dict] = []
+    for line in text.splitlines():
+        cols = line.split("\t")
+        if len(cols) < _GKG_MIN_COLS:
+            continue
+        url = cols[_GKG_URL].strip()
+        if not url:
+            continue
+        themes = [theme for theme in (part.strip() for part in cols[_GKG_THEMES].split(";")) if theme]
+        padded = " " + " ".join(themes).lower().replace("_", " ") + " "
+        if not any(f" {keyword} " in padded for keyword in THEME_KEYWORDS):
+            continue
+        hostname = (urlparse(url).hostname or "").removeprefix("www.")
+        rows.append(
+            {
+                "url": url,
+                "seendate": _normalise_seendate(cols[_GKG_DATE]),
+                "domain": hostname or cols[_GKG_SOURCE].strip(),
+                "themes": themes[:25],
+                "tone": _parse_tone(cols[_GKG_TONE]),
+            }
+        )
+    return rows
+
+
+def _load_existing(events_path: Path) -> dict:
+    if not events_path.exists():
+        return {}
     try:
-        for line in path.read_text("utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            url = json.loads(line).get("url")
-            if url:
-                seen.add(str(url))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return seen
-    return seen
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    existing: dict = {}
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("url"):
+            existing[str(row["url"])] = row
+    return existing
 
 
 def collect_daily(
     state_dir: Path,
     now: datetime,
     *,
-    get_json: Callable[[str], dict] | None = None,
+    get_bytes=None,
+    log: logging.Logger | None = None,
     timeout_s: int = DEFAULT_TIMEOUT_S,
-    query: str = DEFAULT_QUERY,
-    maxrecords: int = DEFAULT_MAX_RECORDS,
-    timespan: str = DEFAULT_TIMESPAN,
 ) -> dict:
-    """Collecte les événements géopolitiques GDELT récents et les append en JSONL.
+    """Télécharge les chunks GKG, filtre, dédup par URL, append. Fail-soft.
 
-    Une seule requête bornée (maxrecords, timespan) → normalisation → dédup par ``url``
-    contre ``state/gdelt/events.jsonl`` → append. Toute erreur réseau/format est avalée
-    (fail-soft) : retourne ``{"collected", "skipped", "errors"}``.
-
-      get_json — injectable pour les tests (fn(url) → dict) ; None = _get_json.
+    Retourne {"collected": int, "skipped": int, "errors": int}.
+    Idempotent : retraiter les mêmes chunks ne rajoute aucune ligne.
     """
-    _fetch = get_json if get_json is not None else lambda url: _get_json(url, timeout_s=timeout_s)
-
-    gdelt_dir = Path(state_dir) / "gdelt"
+    logger = log or logging.getLogger(__name__)
+    fetch = get_bytes or (lambda url: _fetch_bytes(url, timeout_s))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    ts_collected = now.astimezone(timezone.utc).isoformat()
+    gdelt_dir = Path(state_dir) / GDELT_DIR
     gdelt_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_path = gdelt_dir / "events.jsonl"
+    events_path = gdelt_dir / EVENTS_FILE
 
-    now_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    ts_collected = now_utc.isoformat()
-
-    try:
-        data = _fetch(_doc_url(query, maxrecords=maxrecords, timespan=timespan))
-    except Exception as exc:  # noqa: BLE001 — fail-soft total, jamais de remontée
-        log.warning("gdelt: fetch échoué : %s", exc)
-        return {"collected": 0, "skipped": 0, "errors": 1}
-
-    articles = data.get("articles") if isinstance(data, dict) else None
-    if not isinstance(articles, list):
-        log.warning("gdelt: réponse sans liste 'articles'")
-        return {"collected": 0, "skipped": 0, "errors": 1}
-
-    seen = _seen_urls(jsonl_path)
-    collected = skipped = 0
-    with jsonl_path.open("a", encoding="utf-8") as fh:
-        for raw in articles[: int(maxrecords)]:
-            if not isinstance(raw, dict):
-                continue
-            item = _normalise_article(raw)
-            if item is None:
-                continue
-            if item["url"] in seen:
+    existing = _load_existing(events_path)
+    collected = 0
+    skipped = 0
+    errors = 0
+    for stamp in _chunk_stamps(now):
+        try:
+            rows = _parse_gkg(fetch(_chunk_url(stamp)))
+        except Exception as exc:  # noqa: BLE001 — best-effort par chunk
+            errors += 1
+            logger.warning("gdelt: chunk %s ignoré : %s", stamp, str(exc)[:160])
+            continue
+        for row in rows:
+            url = row["url"]
+            if url in existing:
                 skipped += 1
                 continue
-            seen.add(item["url"])
-            fh.write(json.dumps({"ts_collected": ts_collected, **item}) + "\n")
+            if collected >= MAX_NEW_ROWS:
+                skipped += 1
+                continue
+            existing[url] = {"ts_collected": ts_collected, "source": "gdelt_bulk", **row}
             collected += 1
-
-    log.info("gdelt: +%d événements (skip %d)", collected, skipped)
-    return {"collected": collected, "skipped": skipped, "errors": 0}
-
-
-# ---------------------------------------------------------------------------
-# Déclenchement best-effort — thread daemon fire-and-forget (pattern macro_series)
-# ---------------------------------------------------------------------------
-
-
-def _read_last_collect(marker: Path) -> datetime | None:
     try:
-        raw = marker.read_text("utf-8").strip()
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except (OSError, ValueError):
-        return None
-
-
-def _write_last_collect(marker: Path, now_utc: datetime) -> None:
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(now_utc.isoformat(), encoding="utf-8")
+        with events_path.open("w", encoding="utf-8") as handle:
+            for row in existing.values():
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError as exc:
-        log.warning("gdelt: écriture marqueur échouée : %s", exc)
+        logger.warning("gdelt: écriture events.jsonl impossible : %s", exc)
+        return {"collected": 0, "skipped": skipped, "errors": errors + 1}
+    return {"collected": collected, "skipped": skipped, "errors": errors}
+
+
+_collect_lock = threading.Lock()
+_collect_in_progress = False
 
 
 def maybe_collect(
     state_dir: Path,
     now: datetime,
     *,
-    get_json: Callable[[str], dict] | None = None,
+    force: bool = False,
+    get_bytes=None,
+    log: logging.Logger | None = None,
     timeout_s: int = DEFAULT_TIMEOUT_S,
-    cooldown_h: float = COLLECT_COOLDOWN_H,
+    cooldown_h: float = DEFAULT_COOLDOWN_H,
 ) -> dict:
-    """Lance collect_daily dans un thread daemon fire-and-forget si cooldown dépassé.
+    """Déclenche collect_daily dans un thread daemon fire-and-forget si cooldown dépassé.
 
-    Retourne immédiatement — le cycle n'est jamais bloqué. Marqueur posé au lancement
-    du thread ; verrou module pour un seul thread à la fois. Best-effort total.
+    Retourne immédiatement — le cycle n'est jamais bloqué.
+
+    Le marqueur .last_collect est posé AU LANCEMENT du thread (convention
+    partagée avec les autres collecteurs : anti-double-départ, pas une
+    preuve de succès). Un verrou module garantit un seul thread à la fois.
+
+    Retourne :
+      {"triggered": False, "reason": "cooldown",     "elapsed_h": float}
+      {"triggered": False, "reason": "in_progress"}
+      {"triggered": True,  "_thread": threading.Thread}
     """
     global _collect_in_progress
-
-    gdelt_dir = Path(state_dir) / "gdelt"
+    logger = log or logging.getLogger(__name__)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    gdelt_dir = Path(state_dir) / GDELT_DIR
+    gdelt_dir.mkdir(parents=True, exist_ok=True)
     marker = gdelt_dir / MARKER_FILE
-    now_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
-
-    last = _read_last_collect(marker)
-    if last is not None:
-        elapsed_h = (now_utc - last).total_seconds() / 3600.0
-        if elapsed_h < cooldown_h:
-            return {"triggered": False, "reason": "cooldown", "elapsed_h": round(elapsed_h, 2)}
-
+    if not force and marker.exists():
+        try:
+            last = datetime.fromisoformat(marker.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            last = None
+        if last is not None:
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            elapsed_h = (now.astimezone(timezone.utc) - last).total_seconds() / 3600.0
+            if elapsed_h < cooldown_h:
+                return {"triggered": False, "reason": "cooldown", "elapsed_h": elapsed_h}
     with _collect_lock:
         if _collect_in_progress:
             return {"triggered": False, "reason": "in_progress"}
         _collect_in_progress = True
-
-    _write_last_collect(marker, now_utc)
+    try:
+        marker.write_text(now.astimezone(timezone.utc).isoformat(), encoding="utf-8")
+    except OSError:
+        pass
 
     def _run() -> None:
         global _collect_in_progress
         try:
-            collect_daily(state_dir, now, get_json=get_json, timeout_s=timeout_s)
-        except Exception as exc:  # noqa: BLE001 — best-effort total, jamais de remontée
-            log.warning("gdelt: échec inattendu collect_daily : %s", exc)
+            collect_daily(state_dir, now, get_bytes=get_bytes, log=logger, timeout_s=timeout_s)
         finally:
             with _collect_lock:
                 _collect_in_progress = False
 
-    thread = threading.Thread(target=_run, daemon=True, name="gdelt-collect")
+    thread = threading.Thread(target=_run, name="gdelt-collect", daemon=True)
     thread.start()
     return {"triggered": True, "_thread": thread}
-
-
-__all__ = ["collect_daily", "maybe_collect", "DEFAULT_QUERY", "GDELT_BASE"]
