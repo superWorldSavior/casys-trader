@@ -50,7 +50,9 @@ from trader.domain.world_scope_lifecycle import (
     decide_cohort_anchor_admission,
 )
 from trader.domain.world_episode import (
+    CONTEXT_FEATURE_CONTRACT_ID,
     DEFAULT_WORLD_HORIZONS,
+    GRAPH_FEATURE_CONTRACT_ID,
     SamplingSlotCapture,
     SamplingSlotCaptureKind,
     WorldEpisode,
@@ -61,10 +63,6 @@ from trader.domain.world_episode import (
     canonical_sha256,
     completed_bar_cutoff,
 )
-
-
-_CONTEXT_FEATURE_CONTRACT = "world_feature.context.v1"
-_GRAPH_FEATURE_CONTRACT = "world_feature.graph.v1"
 
 
 DEFAULT_HORIZONS: tuple[str, ...] = tuple(item.horizon_id for item in DEFAULT_WORLD_HORIZONS)
@@ -227,11 +225,11 @@ def _iso_slot_text(value: object) -> str | None:
 
 
 def _context_market_slot(episode: object) -> dict[str, str] | None:
-    return _market_slot_for_contract(episode, _CONTEXT_FEATURE_CONTRACT)
+    return _market_slot_for_contract(episode, CONTEXT_FEATURE_CONTRACT_ID)
 
 
 def _graph_market_slot(episode: object) -> dict[str, str] | None:
-    return _market_slot_for_contract(episode, _GRAPH_FEATURE_CONTRACT)
+    return _market_slot_for_contract(episode, GRAPH_FEATURE_CONTRACT_ID)
 
 
 def _market_slot_for_contract(episode: object, contract: str) -> dict[str, str] | None:

@@ -45,6 +45,11 @@ Contrat d'une page : widget avec `update_state(state: dict) -> None` (pull pur,
 jamais d'exception) + **builders purs** `(state, now) → renderable` testables
 sans UI (`format.py` pour le formatage, `derive.py` pour les dérivés d'état).
 
+Badges de provenance (`provenance_badge`, `derive.py`) : quand `kpis` (home,
+bandeau EQUITY) ou `attribution` (portfolio, pied de page) vient du dernier
+rapport au lieu du read model live, un badge `from report` / `unavailable`
+s'affiche ; rien quand la valeur est live (fail-open, pas de bruit).
+
 Drill-down symbole : `enter` sur toute table → `SymbolDetailScreen`
 (`pages/symbol_detail.py`), `esc` ferme.
 

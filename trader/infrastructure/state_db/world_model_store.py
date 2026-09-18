@@ -79,10 +79,6 @@ from trader.infrastructure.state_db.world_prediction_tiers import (
     read_prediction_rows,
 )
 
-_MARKET_FEATURE_CONTRACT = MARKET_FEATURE_CONTRACT_ID
-_CONTEXT_FEATURE_CONTRACT = CONTEXT_FEATURE_CONTRACT_ID
-_GRAPH_FEATURE_CONTRACT = GRAPH_FEATURE_CONTRACT_ID
-_CURRENT_FEATURE_CONTRACTS = frozenset(CURRENT_FEATURE_CONTRACT_IDS)
 
 __all__ = [
     "WORLD_MODEL_MIGRATIONS",
@@ -1608,9 +1604,9 @@ class WorldModelStore:
         payload = canonical.to_dict()
         observation = _mapping_or_empty(payload.get("observation"), name="episode.observation")
         contract = canonical.observation.feature_contract_version
-        if contract not in _CURRENT_FEATURE_CONTRACTS:
+        if contract not in CURRENT_FEATURE_CONTRACT_IDS:
             raise ValueError(
-                "feature_contract_version must be one of: " + ", ".join(sorted(_CURRENT_FEATURE_CONTRACTS))
+                "feature_contract_version must be one of: " + ", ".join(sorted(CURRENT_FEATURE_CONTRACT_IDS))
             )
         source_evidence = _first(
             payload,
@@ -1672,9 +1668,9 @@ class WorldModelStore:
             "source_evidence_sha256": _canonical_sha256(source),
         }
         capability = {
-            _MARKET_FEATURE_CONTRACT: "market",
-            _CONTEXT_FEATURE_CONTRACT: "context",
-            _GRAPH_FEATURE_CONTRACT: "graph",
+            MARKET_FEATURE_CONTRACT_ID: "market",
+            CONTEXT_FEATURE_CONTRACT_ID: "context",
+            GRAPH_FEATURE_CONTRACT_ID: "graph",
         }[contract]
         slot_fields = (
             values["venue"],
@@ -1685,7 +1681,7 @@ class WorldModelStore:
         )
         if any(item is None or item == "" for item in slot_fields):
             raise ValueError(f"{capability} episode requires a complete market slot identity")
-        if contract == _GRAPH_FEATURE_CONTRACT:
+        if contract == GRAPH_FEATURE_CONTRACT_ID:
             snapshot = None
             graph_features = observation.get("graph_features")
             if isinstance(graph_features, Mapping):
@@ -2005,7 +2001,7 @@ class WorldModelStore:
     ) -> dict[str, Any] | None:
         """Return the first canonical episode for one market slot and capability."""
 
-        if feature_contract_version not in _CURRENT_FEATURE_CONTRACTS:
+        if feature_contract_version not in CURRENT_FEATURE_CONTRACT_IDS:
             return None
         incoming = parse_utc_timestamp(as_of_bar_ts, "as_of_bar_ts")
         rows = self._db.query_all(
@@ -2045,7 +2041,7 @@ class WorldModelStore:
         feature_contract_version: str,
         sampling_policy_version: str,
     ) -> dict[str, Any] | None:
-        if feature_contract_version != _CONTEXT_FEATURE_CONTRACT:
+        if feature_contract_version != CONTEXT_FEATURE_CONTRACT_ID:
             return None
         return self.get_episode_by_capability_slot(
             venue=venue,
@@ -2068,7 +2064,7 @@ class WorldModelStore:
     ) -> dict[str, Any] | None:
         """Return the first canonical graph episode for one market slot, if any."""
 
-        if feature_contract_version != _GRAPH_FEATURE_CONTRACT:
+        if feature_contract_version != GRAPH_FEATURE_CONTRACT_ID:
             return None
         return self.get_episode_by_capability_slot(
             venue=venue,
@@ -2138,7 +2134,7 @@ class WorldModelStore:
         return True
 
     def list_eligible_episodes(self, *, limit: int | None = None) -> list[dict[str, Any]]:
-        contracts = sorted(_CURRENT_FEATURE_CONTRACTS)
+        contracts = sorted(CURRENT_FEATURE_CONTRACT_IDS)
         placeholders = ", ".join("?" for _ in contracts)
         sql = (
             "SELECT * FROM world_episodes WHERE training_eligible=1 "

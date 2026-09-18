@@ -322,7 +322,7 @@ def test_capture_and_labeler_bind_the_same_eligible_completed_bar_rule() -> None
     assert labeler_rule is domain_is_eligible_completed_bar
 
 
-PORTED_OHLCV_KEYS = (
+OHLCV_KEYS = (
     "volatility",
     "z_score",
     "efficiency_ratio",
@@ -350,7 +350,7 @@ def _trend_history(*, available_at: str = "2026-08-22T10:05:00+00:00") -> list[d
     ]
 
 
-def test_ported_ohlcv_formulas_match_domain_indicators() -> None:
+def test_ohlcv_formulas_match_domain_indicators() -> None:
     bars = _trend_history()
     episode = _capture(bars_by_symbol={"AAA": bars})[0]
     numeric = episode.observation.numeric_features
@@ -361,10 +361,10 @@ def test_ported_ohlcv_formulas_match_domain_indicators() -> None:
             {"open": open_, "high": high, "low": low, "close": close, "volume": volume}
             for _, open_, high, low, close, volume in _TREND_BARS
         ],
-        names=list(PORTED_OHLCV_KEYS),
+        names=list(OHLCV_KEYS),
         window=len(_TREND_BARS),
     )
-    for key in PORTED_OHLCV_KEYS:
+    for key in OHLCV_KEYS:
         assert expected[key] is not None
         assert numeric[key] == pytest.approx(expected[key], abs=1e-6)
 
@@ -374,8 +374,8 @@ def test_ported_ohlcv_formulas_match_domain_indicators() -> None:
     assert numeric["efficiency_ratio"] == pytest.approx(abs(closes[-1] - closes[0]) / path)
 
 
-@pytest.mark.parametrize("key", PORTED_OHLCV_KEYS)
-def test_ported_key_ignores_bars_completing_after_the_anchor(key: str) -> None:
+@pytest.mark.parametrize("key", OHLCV_KEYS)
+def test_ohlcv_key_ignores_bars_completing_after_the_anchor(key: str) -> None:
     baseline = _capture(bars_by_symbol={"AAA": _trend_history()})[0]
     future_bar = _bar(
         "2026-08-22T11:00:00+00:00",
@@ -392,8 +392,8 @@ def test_ported_key_ignores_bars_completing_after_the_anchor(key: str) -> None:
     assert with_future.observation.numeric_features[key] == baseline.observation.numeric_features[key]
 
 
-@pytest.mark.parametrize("key", PORTED_OHLCV_KEYS)
-def test_ported_key_ignores_bars_beyond_the_twenty_bar_window(key: str) -> None:
+@pytest.mark.parametrize("key", OHLCV_KEYS)
+def test_ohlcv_key_ignores_bars_beyond_the_twenty_bar_window(key: str) -> None:
     from datetime import datetime, timedelta, timezone
 
     start = datetime(2026, 8, 1, tzinfo=timezone.utc)
@@ -426,7 +426,7 @@ def test_ported_key_ignores_bars_beyond_the_twenty_bar_window(key: str) -> None:
     )
 
 
-def test_ported_keys_ignore_history_available_only_after_the_anchor() -> None:
+def test_ohlcv_keys_ignore_history_available_only_after_the_anchor() -> None:
     baseline = _capture(bars_by_symbol={"AAA": _trend_history()})[0]
     intruder = _bar(
         "2026-08-22T09:30:00+00:00",
@@ -448,11 +448,11 @@ def test_ported_keys_ignore_history_available_only_after_the_anchor() -> None:
 
     assert with_intruder.observation.anchor.ts == baseline.observation.anchor.ts
     assert with_intruder.observation.numeric_features == rebased.observation.numeric_features
-    for key in PORTED_OHLCV_KEYS:
+    for key in OHLCV_KEYS:
         assert key in with_intruder.observation.numeric_features
 
 
-def test_ported_formula_guards_on_degenerate_histories() -> None:
+def test_ohlcv_formula_guards_on_degenerate_histories() -> None:
     single = _capture(bars_by_symbol={"AAA": [_bar("2026-08-22T10:00:00+00:00")]})[0]
     single_numeric = single.observation.numeric_features
     for key in ("volatility", "z_score", "efficiency_ratio", "trend_slope"):
@@ -482,6 +482,18 @@ def test_ported_formula_guards_on_degenerate_histories() -> None:
     assert flat_numeric["trend_slope"] == pytest.approx(0.0)
     assert flat_numeric["ohlc_volatility"] == pytest.approx(0.0)
     assert flat_numeric["atr_pct"] == pytest.approx(0.0)
+
+    nonpositive = _capture(
+        bars_by_symbol={
+            "AAA": [
+                _bar("2026-08-22T09:00:00+00:00", close=0.0),
+                _bar("2026-08-22T10:00:00+00:00", close=102.0),
+            ]
+        }
+    )[0]
+    nonpositive_numeric = nonpositive.observation.numeric_features
+    for key in ("return", "volatility"):
+        assert key not in nonpositive_numeric
 
 
 def _contains_forbidden_key(value: object) -> bool:

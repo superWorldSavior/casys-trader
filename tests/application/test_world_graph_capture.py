@@ -516,8 +516,7 @@ def test_exact_known_anchor_still_emits_normal_graph() -> None:
 
 
 def test_graph_cutoff_is_completed_bar_clock_and_unknown_semantics_fail_closed() -> None:
-    from trader.application.world_model.capture import FEATURE_CONTRACT_VERSION
-    from trader.domain.world_episode import AnchorBar, WorldObservation
+    from trader.domain.world_episode import AnchorBar, MARKET_FEATURE_CONTRACT_ID, WorldObservation
 
     v1 = _graph6_market_episode()
     v3 = _attach((v1,), _complete_config())[0]
@@ -532,7 +531,7 @@ def test_graph_cutoff_is_completed_bar_clock_and_unknown_semantics_fail_closed()
             symbol="2330",
             bar_interval="1h",
             as_of_bar_ts="2026-08-23T13:00:00+00:00",
-            feature_contract_version=FEATURE_CONTRACT_VERSION,
+            feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
             sampling_policy_version="active_tradable_completed_bar.v1",
             anchor=AnchorBar(
                 ts="2026-08-23T13:00:00+00:00",

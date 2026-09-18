@@ -104,42 +104,42 @@ def _contract(**overrides: object) -> WorldFeatureContract:
 
 
 def test_market_and_context_profiles_are_frozen_and_compatible_with_existing_episode_contracts() -> None:
-    v1 = market_feature_contract()
-    v2 = context_feature_contract()
-    assert type(v1) is WorldFeatureContract
-    assert type(v2) is WorldFeatureContract
-    assert v1.contract_id == MARKET_FEATURE_CONTRACT_ID
-    assert v1.accepted_episode_contract == MARKET_FEATURE_CONTRACT_ID
-    assert v1.projection_version == MARKET_FEATURE_CONTRACT_ID
-    assert v1.encoder_identity == MARKET_ENCODER_IDENTITY == "world_feature_encoder.market.v2"
-    assert v1.vocabulary_version == MARKET_FEATURE_CONTRACT_ID
-    assert v2.contract_id == CONTEXT_FEATURE_CONTRACT_ID
-    assert v2.accepted_episode_contract == CONTEXT_FEATURE_CONTRACT_ID
-    assert v2.projection_version == CONTEXT_FEATURE_CONTRACT_ID
-    assert v2.encoder_identity == CONTEXT_ENCODER_IDENTITY == "world_feature_encoder.context.v1"
-    assert v2.vocabulary_version == CONTEXT_FEATURE_CONTRACT_ID
-    assert v1.schema_version == WORLD_FEATURE_CONTRACT_SCHEMA
-    assert v2.ontology_revision == ONTOLOGY_REVISION
-    assert v1.allowed_feature_groups == frozenset({"market"})
-    assert v2.allowed_feature_groups == frozenset({"market", "status", "company", "macro"})
-    assert v1.group("market").categorical_features == ALLOWED_CATEGORICAL_FEATURES
-    assert v1.group("market").numeric_features == ALLOWED_NUMERIC_FEATURES
-    assert v2.group("market").categorical_features == ALLOWED_CATEGORICAL_FEATURES
-    assert v2.group("market").numeric_features == ALLOWED_NUMERIC_FEATURES
-    assert v2.group("status").categorical_features == STATUS_CATEGORICAL
-    assert v2.group("company").categorical_features == COMPANY_CATEGORICAL
-    assert v2.group("macro").categorical_features == MACRO_CATEGORICAL
-    assert v2.group("macro").numeric_features == ALLOWED_CONTEXT_NUMERIC_FEATURES
+    market = market_feature_contract()
+    context = context_feature_contract()
+    assert type(market) is WorldFeatureContract
+    assert type(context) is WorldFeatureContract
+    assert market.contract_id == MARKET_FEATURE_CONTRACT_ID
+    assert market.accepted_episode_contract == MARKET_FEATURE_CONTRACT_ID
+    assert market.projection_version == MARKET_FEATURE_CONTRACT_ID
+    assert market.encoder_identity == MARKET_ENCODER_IDENTITY == "world_feature_encoder.market.v2"
+    assert market.vocabulary_version == MARKET_FEATURE_CONTRACT_ID
+    assert context.contract_id == CONTEXT_FEATURE_CONTRACT_ID
+    assert context.accepted_episode_contract == CONTEXT_FEATURE_CONTRACT_ID
+    assert context.projection_version == CONTEXT_FEATURE_CONTRACT_ID
+    assert context.encoder_identity == CONTEXT_ENCODER_IDENTITY == "world_feature_encoder.context.v1"
+    assert context.vocabulary_version == CONTEXT_FEATURE_CONTRACT_ID
+    assert market.schema_version == WORLD_FEATURE_CONTRACT_SCHEMA
+    assert context.ontology_revision == ONTOLOGY_REVISION
+    assert market.allowed_feature_groups == frozenset({"market"})
+    assert context.allowed_feature_groups == frozenset({"market", "status", "company", "macro"})
+    assert market.group("market").categorical_features == ALLOWED_CATEGORICAL_FEATURES
+    assert market.group("market").numeric_features == ALLOWED_NUMERIC_FEATURES
+    assert context.group("market").categorical_features == ALLOWED_CATEGORICAL_FEATURES
+    assert context.group("market").numeric_features == ALLOWED_NUMERIC_FEATURES
+    assert context.group("status").categorical_features == STATUS_CATEGORICAL
+    assert context.group("company").categorical_features == COMPANY_CATEGORICAL
+    assert context.group("macro").categorical_features == MACRO_CATEGORICAL
+    assert context.group("macro").numeric_features == ALLOWED_CONTEXT_NUMERIC_FEATURES
     assert STATUS_CATEGORICAL | COMPANY_CATEGORICAL | MACRO_CATEGORICAL == ALLOWED_CONTEXT_CATEGORICAL_FEATURES
-    assert v1.fingerprint != v2.fingerprint
-    assert v1.vocabulary_fingerprint != v2.vocabulary_fingerprint
-    assert v1.path_rule_version is None
-    assert v1.windows_and_decay is None
-    assert v2.path_rule_version is None
-    replayed = WorldFeatureContract.from_mapping(v1.to_dict())
-    assert replayed == v1
+    assert market.fingerprint != context.fingerprint
+    assert market.vocabulary_fingerprint != context.vocabulary_fingerprint
+    assert market.path_rule_version is None
+    assert market.windows_and_decay is None
+    assert context.path_rule_version is None
+    replayed = WorldFeatureContract.from_mapping(market.to_dict())
+    assert replayed == market
     with pytest.raises(FrozenInstanceError):
-        v1.contract_id = "mutated"  # type: ignore[misc]
+        market.contract_id = "mutated"  # type: ignore[misc]
 
 
 def test_include_context_is_not_a_contract_field() -> None:

@@ -61,6 +61,10 @@ PnL, ni de mémoire Brain/Univers.
 - L'identité combine place, symbole, intervalle, barre T0 et versions de
   contrats features/sampling. Un replay exact est un no-op ; un même id avec
   un contenu différent est un conflit.
+- Les 7 clés OHLCV câblées au contrat market v2 : `volatility`, `z_score`,
+  `efficiency_ratio`, `trend_slope`, `ohlc_volatility`, `atr_pct`,
+  `range_position` — calculées sur l'historique causal tenu (≤ 20 barres
+  terminées à l'ancre, jamais une barre future).
 
 ## Horizons et labels
 

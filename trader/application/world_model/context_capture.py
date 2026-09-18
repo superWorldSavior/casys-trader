@@ -14,11 +14,11 @@ from datetime import datetime
 from typing import Protocol
 
 from trader.application.world_model.capture import (
-    FEATURE_CONTRACT_VERSION,
     SAMPLING_POLICY_VERSION,
     capture_world_episodes,
 )
 from trader.domain.company import CompanyIntelligenceBrief
+from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_ID
 from trader.domain.world_context import (
     CONTEXT_FEATURE_CONTRACT_ID,
     EntityRef,
@@ -131,7 +131,7 @@ def capture_world_episodes_with_context(
         interval=interval,
         timestamp_semantics=timestamp_semantics,
         captured_at=captured_at,
-        feature_contract_version=FEATURE_CONTRACT_VERSION,
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
         sampling_policy_version=SAMPLING_POLICY_VERSION,
     )
     v2_episodes = attach_world_context(v1_episodes, context_source)

@@ -282,7 +282,7 @@ Le YAML committe un seul **contrat de schéma** : mapping
 `world_macro_source.v1`, lane `world.context.macro`, registre
 `world_macro_sources.v1`, adapters `world_dbnomics_series.v1` /
 `world_yahoo_commodity.v1`, plan `WORLD_MACRO_COLLECTION_PLAN_ID` /
-`7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83`.
+`656391e83bd0f70729666f4474247a5af2e74e62fca16f1c2811ccb1363a39df`.
 Les schémas payload restent `macro_source_fact.v1`,
 `macro_world_observation.v1`, `macro_source_registry.v1`,
 `macro_collection_plan.v1` et `macro_graph_bridge_run_spec.v1`.

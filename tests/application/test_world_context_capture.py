@@ -6,7 +6,7 @@ import pytest
 
 from pathlib import Path
 
-from trader.application.world_model.capture import FEATURE_CONTRACT_VERSION, capture_world_episodes
+from trader.application.world_model.capture import capture_world_episodes
 from trader.application.world_model.context_capture import attach_world_context, build_world_context_snapshot
 from trader.application.world_model.encoding import FEATURE_CONTRACT_FINGERPRINT
 from trader.domain.world_context import (
@@ -17,7 +17,7 @@ from trader.domain.world_context import (
     KnowledgeArtifact,
     SensorEvidence,
 )
-from trader.domain.world_episode import WorldEpisode
+from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_ID, WorldEpisode
 
 
 CUTOFF = datetime(2026, 8, 22, 10, 5, tzinfo=timezone.utc)
@@ -80,7 +80,7 @@ def _market_episode() -> WorldEpisode:
 def test_market_fingerprint_and_capture_identity_remain_frozen() -> None:
     episode = _market_episode()
     assert FEATURE_CONTRACT_FINGERPRINT == FROZEN_V1_FINGERPRINT
-    assert episode.observation.feature_contract_version == FEATURE_CONTRACT_VERSION
+    assert episode.observation.feature_contract_version == MARKET_FEATURE_CONTRACT_ID
     assert episode.episode_id == V1_EPISODE_ID
     assert "context" not in episode.observation.to_dict()
 
@@ -168,7 +168,7 @@ def test_unknown_timestamp_semantics_fail_closed_without_v2() -> None:
         symbol="AAA",
         bar_interval="1h",
         as_of_bar_ts="2026-08-22T10:00:00+00:00",
-        feature_contract_version=FEATURE_CONTRACT_VERSION,
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
         sampling_policy_version="active_tradable_completed_bar.v1",
         anchor=AnchorBar(
             ts="2026-08-22T10:00:00+00:00",
@@ -538,7 +538,7 @@ def test_absent_frozen_asset_family_omits_member_of_family_edge() -> None:
         symbol="AAPL",
         bar_interval="1h",
         as_of_bar_ts="2026-08-22T10:00:00+00:00",
-        feature_contract_version=FEATURE_CONTRACT_VERSION,
+        feature_contract_version=MARKET_FEATURE_CONTRACT_ID,
         sampling_policy_version="active_tradable_completed_bar.v1",
         anchor=AnchorBar(
             ts="2026-08-22T10:00:00+00:00",

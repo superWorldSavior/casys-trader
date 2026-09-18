@@ -34,7 +34,6 @@ from trader.domain.world_episode import (
 
 
 UTC = timezone.utc
-FEATURE_CONTRACT_VERSION = MARKET_FEATURE_CONTRACT_ID
 SAMPLING_POLICY_VERSION = "active_tradable_completed_bar.v1"
 
 _CATEGORICAL_METADATA_ALIASES: tuple[tuple[str, str], ...] = (
@@ -116,7 +115,7 @@ def capture_world_episodes(
     interval: str | None = None,
     timestamp_semantics: str | None = None,
     captured_at: datetime | str | None = None,
-    feature_contract_version: str = FEATURE_CONTRACT_VERSION,
+    feature_contract_version: str = MARKET_FEATURE_CONTRACT_ID,
     sampling_policy_version: str = SAMPLING_POLICY_VERSION,
 ) -> tuple[WorldEpisode, ...]:
     """Project one deterministic episode for each active/tradable symbol.
@@ -146,7 +145,7 @@ def capture_world_episodes(
     default_source = _text(source)
     default_interval = _text(interval)
     default_semantics = _text(timestamp_semantics)
-    feature_version = _text(feature_contract_version) or FEATURE_CONTRACT_VERSION
+    feature_version = _text(feature_contract_version) or MARKET_FEATURE_CONTRACT_ID
     sampling_version = _text(sampling_policy_version) or SAMPLING_POLICY_VERSION
 
     episodes: list[WorldEpisode] = []
@@ -683,7 +682,6 @@ def _set_finite(features: dict[str, float], key: str, value: float) -> None:
 
 
 __all__ = [
-    "FEATURE_CONTRACT_VERSION",
     "SAMPLING_POLICY_VERSION",
     "capture_world_episodes",
 ]

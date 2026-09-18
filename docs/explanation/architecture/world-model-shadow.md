@@ -116,7 +116,7 @@ par `canonical_scope` du registre ; un run n'invoque que les sources de
 sa cible. Le plan live est `committed_macro_collection_plan` : le
 dérivé runtime doit égaler `WORLD_MACRO_COLLECTION_PLAN_ID` /
 `SHA256`
-(`7b9d842b4aca42c016fec58c13f1e1f8de305a7432da1183bea391728acecb83`),
+(`656391e83bd0f70729666f4474247a5af2e74e62fca16f1c2811ccb1363a39df`),
 sinon fail-closed. Le registre live est `world_macro_sources.v1`
 (`world_dbnomics_series.v1` / `world_yahoo_commodity.v1`). Le producteur
 live est `world_macro_source.v1` / lane `world.context.macro`. Un store
