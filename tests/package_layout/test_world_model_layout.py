@@ -299,8 +299,8 @@ def test_world_feature_contract_is_stdlib_domain_single_capability_type() -> Non
         FEATURE_CONTRACT_FINGERPRINT_CONTEXT,
     )
 
-    assert FEATURE_CONTRACT_FINGERPRINT == "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
-    assert FEATURE_CONTRACT_FINGERPRINT_CONTEXT == "a66a8a399f0ee6562366def6f9a231a0f0871137e9c838692f3e4c20ee6d9700"
+    assert FEATURE_CONTRACT_FINGERPRINT == "4f00c35f1989b02ac504e9cf2c102c9b045f3eff74da22b5a4d31fb0e03738b6"
+    assert FEATURE_CONTRACT_FINGERPRINT_CONTEXT == "dffb9f7da3d2e4340e73fc52ebd31cb22707a7e6de97b5ffb33c2870e31aaa2e"
     assert "FEATURE_CONTRACT_FINGERPRINT" not in source
     assert "trader.application.world_model.encoding" not in source
 

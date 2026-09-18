@@ -38,9 +38,9 @@ from trader.domain.world_feature_contract import (
 from tests.application.test_world_context_capture import _FakeSource, _market_episode
 from tests.application.test_world_gru import HORIZON_4H, _episode, _outcome
 
-FROZEN_MARKET_ENCODER_FINGERPRINT = "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
-FROZEN_CONTEXT_ENCODER_FINGERPRINT = "a66a8a399f0ee6562366def6f9a231a0f0871137e9c838692f3e4c20ee6d9700"
-FROZEN_GRAPH_ENCODER_FINGERPRINT = "36177bc807404e0ae8eabb2f1a6b91ddf4e0ff2fecab287372b0d35ddaa2fff4"
+FROZEN_MARKET_ENCODER_FINGERPRINT = "4f00c35f1989b02ac504e9cf2c102c9b045f3eff74da22b5a4d31fb0e03738b6"
+FROZEN_CONTEXT_ENCODER_FINGERPRINT = "dffb9f7da3d2e4340e73fc52ebd31cb22707a7e6de97b5ffb33c2870e31aaa2e"
+FROZEN_GRAPH_ENCODER_FINGERPRINT = "72166c9a97fba8e872dd9ab12fb87e904da07df6545253a38054924f30dae399"
 _STATUS_CONTENT = frozenset(
     {
         "context_status",
@@ -145,7 +145,7 @@ def test_explicit_accepted_feature_contracts_select_among_current_capabilities()
     assert gru.accepts_episode(market) is False
     markov.predict(context, HORIZON_4H)
     gru.observe_episode(context)
-    assert MARKET_FEATURE_CONTRACT_ID == "world_feature.market.v1"
+    assert MARKET_FEATURE_CONTRACT_ID == "world_feature.market.v2"
     assert CONTEXT_FEATURE_CONTRACT_ID == "world_feature.context.v1"
 
 
@@ -351,7 +351,7 @@ def test_mismatched_gru_historical_windows_fail_ablation_training_cohort() -> No
                     "symbol": second.observation.symbol,
                     "bar_interval": second.observation.bar_interval,
                     "as_of_bar_ts": second.observation.as_of_bar_ts.isoformat(),
-                    "feature_contract_version": "world_feature.market.v1",
+                    "feature_contract_version": "world_feature.market.v2",
                 },
             },
             {
@@ -424,7 +424,6 @@ def _rich_context_observation() -> dict[str, object]:
             "session_phase": "regular",
             "market_regime": "trend_up",
             "volatility_state": "normal",
-            "macro_regime": "quiet",
         },
         "numeric_features": {"return": 0.006, "atr_pct": 0.01, "range_position": 0.72},
         "context": {
@@ -545,7 +544,6 @@ def test_market_mask_matches_market_facade_and_ignores_context_content() -> None
             "session_phase": "regular",
             "market_regime": "trend_up",
             "volatility_state": "normal",
-            "macro_regime": "quiet",
         },
         "numeric_features": {"return": 0.006, "atr_pct": 0.01, "range_position": 0.72},
     }

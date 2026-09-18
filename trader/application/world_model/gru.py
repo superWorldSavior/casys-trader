@@ -88,7 +88,7 @@ from trader.domain.world_feature_contract import (
 OUTCOME_CLASSES: tuple[str, str, str] = PREDICTION_CLASSES
 MODEL_ID = "online_gru_world_challenger"
 MODEL_VERSION = "v1"
-ENCODER_VERSION = "world_gru_encoder.v1"
+ENCODER_VERSION = "world_gru_encoder.v2"
 CONTEXT_GRU_ENCODER_IDENTITY = "world_gru_encoder.context.v1"
 GRAPH_GRU_ENCODER_IDENTITY = "world_gru_encoder.graph.v1"
 DEFAULT_DIRECTION_BAND = 0.005
@@ -106,7 +106,6 @@ _NUMERIC_SCALES: tuple[tuple[str, float], ...] = (
     ("volatility", 0.10),
     ("ohlc_volatility", 0.10),
     ("realized_volatility", 0.10),
-    ("family_consensus", 1.00),
     ("data_age_minutes", 240.00),
     ("open_close_return", 0.10),
     ("high_low_range_pct", 0.10),
@@ -119,18 +118,12 @@ _CATEGORICAL_KEYS = frozenset(
         "session_phase",
         "market_regime",
         "volatility_state",
-        "momentum_bucket",
         "return_bucket",
         "atr_bucket",
         "range_position_bucket",
-        "family_direction",
-        "family_consensus_bucket",
         "family_regime",
         "trend",
-        "macro_regime",
-        "geopolitical_risk_bucket",
         "data_freshness",
-        "source_status",
     }
 )
 _DEFAULT_HORIZONS = tuple(item.horizon_id for item in SUPPORTED_WORLD_HORIZONS)

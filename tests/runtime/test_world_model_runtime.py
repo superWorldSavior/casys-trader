@@ -1364,7 +1364,7 @@ def test_graph_enricher_appends_graph_without_mutating_market() -> None:
     enricher = WorldGraphEpisodeEnricher(_unpublished_config())
     out = enricher.enrich((v1,))
     assert v1.episode_id == original_id == V1_EPISODE_ID
-    assert v1.observation.feature_contract_version == "world_feature.market.v1"
+    assert v1.observation.feature_contract_version == "world_feature.market.v2"
     assert len(out) == 2
     assert out[0].episode_id == V1_EPISODE_ID
     assert out[1].observation.feature_contract_version == GRAPH_FEATURE_CONTRACT_ID
@@ -1444,7 +1444,7 @@ def test_compose_and_runner_wire_graph_without_writing_until_due_cycle(tmp_path)
         triggered = runner.trigger(episodes=[_market_episode()], now=NOW)
         triggered["_thread"].join(timeout=2)  # type: ignore[index,union-attr]
         versions = {row["observation"]["feature_contract_version"] for row in store.list_eligible_episodes()}
-        assert "world_feature.market.v1" in versions
+        assert "world_feature.market.v2" in versions
         assert GRAPH_FEATURE_CONTRACT_ID in versions
         assert store.list_collecting_cohort_ids() == ()
         capture = runner.status()["capture"]

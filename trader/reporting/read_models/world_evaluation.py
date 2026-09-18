@@ -16,6 +16,8 @@ import json
 import math
 from typing import Any
 
+from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_ID
+
 CLASSES = ("DOWN", "FLAT", "UP")
 UNIFORM_BRIER = 2.0 / 3.0
 
@@ -440,7 +442,10 @@ def _group_ablation_anchors(
 
 
 def _market_lane_contract(row: _ScoredPrediction) -> bool:
-    return row.feature_contract_version == "world_feature.market.v1" and row.model_version == MARKET_MODEL_VERSION
+    return (
+        row.feature_contract_version == MARKET_FEATURE_CONTRACT_ID
+        and row.model_version == MARKET_MODEL_VERSION
+    )
 
 
 def _context_lane_contract(row: _ScoredPrediction) -> bool:

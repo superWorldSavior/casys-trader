@@ -28,7 +28,7 @@ def _prediction(**overrides):
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "world_feature.market.v1",
+            "feature_contract_version": "world_feature.market.v2",
         },
     }
     payload.update(overrides)
@@ -132,7 +132,7 @@ def test_context_ablation_joins_compact_predictions_to_canonical_episode_views()
             "symbol": "AAA",
             "bar_interval": "1h",
             "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-            "feature_contract_version": "world_feature.market.v1",
+            "feature_contract_version": "world_feature.market.v2",
         },
         {
             "episode_id": "episode-context",
@@ -391,7 +391,7 @@ def test_ablation_pairs_store_shaped_rows_and_rejects_nested_evidence_mismatch()
                 "symbol": "AAA",
                 "bar_interval": "1h",
                 "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
-                "feature_contract_version": "world_feature.market.v1",
+                "feature_contract_version": "world_feature.market.v2",
             },
             "prediction": {
                 "probabilities": {"DOWN": 0.2, "FLAT": 0.2, "UP": 0.6},
@@ -476,6 +476,36 @@ def test_unknown_feature_contract_is_excluded_from_context_ablation() -> None:
         "symbol": "AAA",
         "bar_interval": "1h",
         "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
+    }
+    context = _prediction(
+        prediction_id="v2",
+        episode_id="episode-context",
+        model_version="context.v1",
+        input={
+            "venue": "XTAI",
+            "symbol": "AAA",
+            "bar_interval": "1h",
+            "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
+            "feature_contract_version": "world_feature.context.v1",
+        },
+    )
+    result = evaluate_shadow(
+        [market, context],
+        [_outcome(), _outcome(event_id="outcome-context", episode_id="episode-context")],
+        minimum_paired_support=1,
+    )
+    assert result["context_ablation"]["excluded"]["feature_contract_mismatch"] == 1
+    assert result["context_ablation"]["families"][0]["matched_pairs"] == 0
+
+
+def test_legacy_v1_market_contract_is_excluded_from_context_ablation() -> None:
+    market = _prediction(prediction_id="v1")
+    market["input"] = {
+        "venue": "XTAI",
+        "symbol": "AAA",
+        "bar_interval": "1h",
+        "as_of_bar_ts": "2026-08-20T09:00:00+00:00",
+        "feature_contract_version": "world_feature.market.v1",
     }
     context = _prediction(
         prediction_id="v2",

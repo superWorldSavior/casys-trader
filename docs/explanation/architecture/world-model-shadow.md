@@ -188,7 +188,7 @@ Le YAML pilote matérialise deux `pipeline_pilot` distinctes. C1 ne porte
 
 | Lane | Famille | Rôle | Contrat / masque |
 |---|---|---|---|
-| `markov.market` | Markov | `primary_control` | `world_feature.market.v1` |
+| `markov.market` | Markov | `primary_control` | `world_feature.market.v2` |
 | `gru.market` | GRU froid | `secondary_challenger` | idem, `sequence_length=4` |
 | `markov.status_only` / `gru.status_only` | Markov / GRU | process / challenger | voie contexte, masque status |
 | `markov.company` / `gru.company` | Markov / GRU | process / challenger | company sidecar-prouvé |
@@ -199,7 +199,7 @@ Le YAML pilote matérialise deux `pipeline_pilot` distinctes. C1 ne porte
 
 Les GRU de cohorte sont **cold start** : `cold_gru_challenger` refuse de
 copier un prototype chaud. `sequence_length=4`, `seed=0`. Le GRU marché
-historique reste à 12 pas sur `world_feature.market.v1` ; ce n'est pas la
+historique reste à 12 pas sur `world_feature.market.v2` ; ce n'est pas la
 même identité que `gru.market` de C1.
 
 Une voie n'apprend que des épisodes admis de **sa** cohorte, après le

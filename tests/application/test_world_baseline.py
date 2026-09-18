@@ -48,19 +48,19 @@ def _with_context_categoricals(episode: WorldEpisode, **updates: str) -> WorldEp
 def _observation(
     *,
     at: str = "2026-01-01T00:00:00+00:00",
-    macro: str = "quiet",
+    trend: str = "up",
     regime: str = "trend_up",
 ) -> dict:
     return {
         "available_at": at,
-        "feature_contract_version": "world_feature.market.v1",
+        "feature_contract_version": "world_feature.market.v2",
         "categorical_features": {
             "asset_family": "equities",
             "venue": "NYSE",
             "session_phase": "regular",
             "market_regime": regime,
             "volatility_state": "normal",
-            "macro_regime": macro,
+            "trend": trend,
         },
         "numeric_features": {
             "return": 0.006,
@@ -142,7 +142,7 @@ def test_accepts_immutable_world_episode_and_emits_runner_safe_payload() -> None
         symbol="SPY",
         bar_interval="1h",
         as_of_bar_ts="2026-01-01T00:00:00+00:00",
-        feature_contract_version="world_feature.market.v1",
+        feature_contract_version="world_feature.market.v2",
         sampling_policy_version="first_fresh_bar.v1",
         anchor={
             "ts": "2026-01-01T00:00:00+00:00",
@@ -182,8 +182,8 @@ def test_accepts_immutable_world_episode_and_emits_runner_safe_payload() -> None
 
 def test_learning_uses_hierarchical_coarse_then_exact_backoff() -> None:
     model = _ready_model()
-    first = _observation(macro="quiet")
-    same_coarse_other_exact = _observation(at="2026-01-02T00:00:00+00:00", macro="event_risk")
+    first = _observation(trend="up")
+    same_coarse_other_exact = _observation(at="2026-01-02T00:00:00+00:00", trend="down")
 
     assert model.apply_outcome(_outcome("event-1"), first, available_through="2026-01-01T05:00:00+00:00").applied
     coarse = model.predict(same_coarse_other_exact, "elapsed_4h.v1")
@@ -202,7 +202,7 @@ def test_learning_uses_hierarchical_coarse_then_exact_backoff() -> None:
         available_through="2026-01-03T05:00:00+00:00",
     ).applied
     exact = model.predict(
-        _observation(at="2026-01-04T00:00:00+00:00", macro="event_risk"),
+        _observation(at="2026-01-04T00:00:00+00:00", trend="down"),
         "elapsed_4h.v1",
     )
     assert exact.tier == "exact"

@@ -47,10 +47,9 @@ def _episode(
     *,
     symbol: str = "SPY",
     market_regime: str = "trend_up",
-    macro_regime: str = "quiet",
     return_value: float = 0.006,
     available_after_hours: int = 0,
-    feature_contract_version: str = "world_feature.market.v1",
+    feature_contract_version: str = "world_feature.market.v2",
     sampling_policy_version: str = "first_fresh_bar.v1",
 ) -> WorldEpisode:
     as_of = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=hour)
@@ -80,8 +79,6 @@ def _episode(
                 "session_phase": "regular",
                 "market_regime": market_regime,
                 "volatility_state": "normal",
-                "macro_regime": macro_regime,
-                "geopolitical_risk_bucket": "low",
             },
             numeric_features={
                 "return": return_value,
@@ -218,7 +215,7 @@ def test_registered_future_episode_cannot_change_an_earlier_sequence() -> None:
     model = _model()
     first = _episode(0)
     middle = _episode(1, market_regime="range")
-    future = _episode(2, market_regime="trend_down", macro_regime="event_risk")
+    future = _episode(2, market_regime="trend_down")
 
     model.observe_episodes((first, middle))
     before = model.predict(middle, HORIZON_4H)
@@ -244,7 +241,7 @@ def test_same_availability_cutoff_never_admits_a_later_market_bar() -> None:
 
 
 def test_sequence_never_mixes_feature_or_sampling_contract_versions() -> None:
-    model = _model(accepted_feature_contracts=frozenset({"world_feature.market.v1", "world_feature.graph.v1"}))
+    model = _model(accepted_feature_contracts=frozenset({"world_feature.market.v2", "world_feature.graph.v1"}))
     first_v1 = _episode(0)
     incompatible = _episode(1, feature_contract_version="world_feature.graph.v1")
     target_v1 = _episode(2)

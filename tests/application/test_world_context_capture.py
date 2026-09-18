@@ -21,9 +21,8 @@ from trader.domain.world_episode import WorldEpisode
 
 
 CUTOFF = datetime(2026, 8, 22, 10, 5, tzinfo=timezone.utc)
-FROZEN_V1_FINGERPRINT = "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
-V1_EPISODE_ID = "world-episode:v1:e062e1a06696773cf4bc4ff7417faa716bf3862e08df0c1b3378418156f70411"
-V1_PAYLOAD_HASH = "e8e4a087c7776f8edd60770153f90a59c637f97c72f7002f6ce04d988be3de49"
+FROZEN_V1_FINGERPRINT = "4f00c35f1989b02ac504e9cf2c102c9b045f3eff74da22b5a4d31fb0e03738b6"
+V1_EPISODE_ID = "world-episode:v1:a228bc3d0bffc20d69bacda2edd133c902819de56427afece301a01af3d80809"
 
 
 class _FakeSource:

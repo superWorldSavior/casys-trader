@@ -26,7 +26,7 @@ from typing import Any
 WORLD_EPISODE_SCHEMA_VERSION = "world_episode.v1"
 WORLD_OUTCOME_SCHEMA_VERSION = "world_outcome.v1"
 WORLD_PREDICTION_SCHEMA_VERSION = "world_prediction.v1"
-MARKET_FEATURE_CONTRACT_ID = "world_feature.market.v1"
+MARKET_FEATURE_CONTRACT_ID = "world_feature.market.v2"
 CONTEXT_FEATURE_CONTRACT_ID = "world_feature.context.v1"
 GRAPH_FEATURE_CONTRACT_ID = "world_feature.graph.v1"
 CURRENT_FEATURE_CONTRACT_IDS = frozenset(

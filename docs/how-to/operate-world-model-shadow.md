@@ -266,7 +266,7 @@ ré-écrit pas d'épisode, et répare au plus les reçus d'availability. Relire
 ## Contrat live unique (cutover store frais)
 
 Les voies de capacité sont `market`, `context`, `macro_source` et `graph`.
-Les suffixes `.v1` des schémas payload (`world_feature.market.v1`,
+Les suffixes des schémas payload (`world_feature.market.v2`,
 `world_availability_receipt.v1`, `world_episode.v1`, `world_graph_snapshot.v1`,
 …) sont des **révisions de sérialisation**, pas des générations de capacité.
 

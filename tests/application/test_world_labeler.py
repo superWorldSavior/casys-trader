@@ -288,7 +288,7 @@ def test_world_episode_duck_type_and_world_outcome_projection_are_compatible() -
             symbol="SPY",
             bar_interval="1h",
             as_of_bar_ts=anchor_at,
-            feature_contract_version="world_feature.market.v1",
+            feature_contract_version="world_feature.market.v2",
             sampling_policy_version="fixed_cadence.v1",
             anchor=AnchorBar(anchor_at, 100.0, 101.0, 99.0, 100.0, 100.0, "yahoo"),
             available_at=anchor_at,

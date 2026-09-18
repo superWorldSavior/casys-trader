@@ -31,7 +31,7 @@ ou le portefeuille.
 | `interfaces/cli/world_model` | surface | adaptateur mince vers le projector reporting |
 
 Les voies de capacité live sont `market`, `context`, `macro_source` et
-`graph`. Les suffixes `.v1` des schémas payload (`world_feature.market.v1`,
+`graph`. Les suffixes des schémas payload (`world_feature.market.v2`,
 `world_availability_receipt.v1`, `world_episode.v1`, …) sont des révisions
 de sérialisation, pas des générations de capacité.
 

@@ -31,7 +31,7 @@ from trader.domain.world_episode import (
 
 WORLD_FEATURE_CONTRACT_SCHEMA = "world_feature_contract.v1"
 WORLD_FEATURE_MASK_SCHEMA = "world_feature_mask.v1"
-MARKET_ENCODER_IDENTITY = "world_feature_encoder.market.v1"
+MARKET_ENCODER_IDENTITY = "world_feature_encoder.market.v2"
 CONTEXT_ENCODER_IDENTITY = "world_feature_encoder.context.v1"
 GRAPH_ENCODER_IDENTITY = "world_feature_encoder.graph.v1"
 MARKET_FEATURE_GROUP_ID = "market"

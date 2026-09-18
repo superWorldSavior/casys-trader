@@ -111,7 +111,7 @@ def test_market_and_context_profiles_are_frozen_and_compatible_with_existing_epi
     assert v1.contract_id == MARKET_FEATURE_CONTRACT_ID
     assert v1.accepted_episode_contract == MARKET_FEATURE_CONTRACT_ID
     assert v1.projection_version == MARKET_FEATURE_CONTRACT_ID
-    assert v1.encoder_identity == MARKET_ENCODER_IDENTITY == "world_feature_encoder.market.v1"
+    assert v1.encoder_identity == MARKET_ENCODER_IDENTITY == "world_feature_encoder.market.v2"
     assert v1.vocabulary_version == MARKET_FEATURE_CONTRACT_ID
     assert v2.contract_id == CONTEXT_FEATURE_CONTRACT_ID
     assert v2.accepted_episode_contract == CONTEXT_FEATURE_CONTRACT_ID

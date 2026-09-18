@@ -1,5 +1,5 @@
 schema_version: world_shadow_pilot.v1
-content_sha256: "d7ef4755d869622bb978b8d42182199ae1341734d7ed83cf584e079ac6662dc3"
+content_sha256: "a904bcc419d56021d2de0c9619f8f3c53bf38c815e2ac5585e6cd1b47bf318f4"
 pilot_id: world_shadow_pilot.v1
 lifecycle_generation: 3
 authority: shadow_only
@@ -21,7 +21,7 @@ horizons: [elapsed_4h.v1, elapsed_1d.v1, elapsed_3d.v1]
 primary_horizon: elapsed_1d.v1
 label_contract: simple_return_band_50bp.v1
 sampling_policy_version: active_tradable_completed_bar.v1
-market_feature_contract: world_feature.market.v1
+market_feature_contract: world_feature.market.v2
 context_feature_contract: world_feature.context.v1
 graph_feature_contract: world_feature.graph.v1
 ontology_revision: semantic_catalog.v1

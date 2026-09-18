@@ -400,7 +400,7 @@ def test_repeated_poll_of_the_same_bar_keeps_one_context_row(tmp_path) -> None:
             (row.get("feature_contract_version") or row["observation"]["feature_contract_version"])
             for row in store.list_eligible_episodes()
         }
-        assert "world_feature.market.v1" in versions
+        assert "world_feature.market.v2" in versions
         assert CONTEXT_FEATURE_CONTRACT_ID in versions
         revised = daemon._trigger_world_model_shadow(
             runner=runner,
@@ -460,7 +460,7 @@ def test_context_enrichment_failure_keeps_market_and_is_visible(tmp_path) -> Non
         assert status["status"] == "partial"
         assert status["errors"][0]["stage"] == "context_enrich"
         assert store.counts()["episodes"] == 1
-        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "world_feature.market.v1"
+        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "world_feature.market.v2"
     finally:
         runner.stop()
         store.close()
@@ -738,7 +738,7 @@ def test_world_shadow_trigger_never_attaches_graph_on_the_cycle_thread(monkeypat
     assert result["triggered"] is True
     episodes = runner.calls[0]["episodes"]
     assert len(episodes) == 1
-    assert episodes[0].observation.feature_contract_version == "world_feature.market.v1"
+    assert episodes[0].observation.feature_contract_version == "world_feature.market.v2"
     assert getattr(episodes[0].observation, "graph", None) is None
 
 
@@ -779,7 +779,7 @@ def test_graph_enrichment_failure_keeps_market_and_is_visible(tmp_path) -> None:
         assert status["status"] == "partial"
         assert status["errors"][0]["stage"] == "graph_enrich"
         assert store.counts()["episodes"] == 1
-        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "world_feature.market.v1"
+        assert store.list_eligible_episodes()[0]["observation"]["feature_contract_version"] == "world_feature.market.v2"
         assert store.list_collecting_cohort_ids() == ()
     finally:
         runner.stop()
@@ -840,7 +840,7 @@ def test_due_unmapped_anchor_writes_missing_graph_without_fabricated_mic(tmp_pat
         versions = {
             (row.get("feature_contract_version") or row["observation"]["feature_contract_version"]) for row in rows
         }
-        assert "world_feature.market.v1" in versions
+        assert "world_feature.market.v2" in versions
         assert GRAPH_FEATURE_CONTRACT_ID in versions
         graph_rows = [
             row

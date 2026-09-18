@@ -24,6 +24,7 @@ from trader.domain.world_episode import (
 )
 from trader.infrastructure.state_db.connection import StateDb
 from trader.infrastructure.state_db.world_model_store import (
+    WORLD_EPISODES_MARKET_CONTRACT_DDL,
     WORLD_MODEL_MIGRATIONS,
     WORLD_MODEL_REQUIRED_TABLES,
     WORLD_MODEL_SCHEMA_VERSION,
@@ -825,7 +826,7 @@ def test_current_schema_is_a_single_fresh_definition() -> None:
     assert "world_episodes_context_canonical_first_write" in sql
     assert "world_episodes_graph_canonical_first_write" in sql
     assert "world_episodes_current_feature_contract" in sql
-    assert "world_feature.market.v1" in sql
+    assert "world_feature.market.v2" in sql
     assert "world_feature.context.v1" in sql
     assert "world_feature.graph.v1" in sql
     assert "study_cohort_id" in sql
@@ -842,6 +843,101 @@ def test_current_schema_is_a_single_fresh_definition() -> None:
     assert "world_pattern_lifecycle_events" in sql
     assert "idx_world_pattern_lifecycle_events_cohort_start" in sql
     assert "idx_world_pattern_lifecycle_events_evaluation_ready" in sql
+
+
+def test_precutover_v1_triggers_are_rewritten_on_open(tmp_path: Path) -> None:
+    """A store created before the v2 cutover keeps working after it.
+
+    The v1 DDL is ``IF NOT EXISTS``, so without the rewrite the legacy
+    triggers would reject every v2 insert with 'unsupported feature
+    contract' on the next open.
+    """
+
+    path = tmp_path / "world_model.db"
+    WorldModelStore(path).close()
+    legacy = [
+        statement.replace("'world_feature.market.v2'", "'world_feature.market.v1'")
+        for statement in WORLD_EPISODES_MARKET_CONTRACT_DDL
+    ]
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TRIGGER IF EXISTS world_episodes_current_feature_contract")
+        conn.execute("DROP TRIGGER IF EXISTS world_episodes_market_canonical_first_write")
+        conn.execute("DROP INDEX IF EXISTS idx_world_episodes_market_slot_candidates")
+        for statement in legacy:
+            conn.execute(statement)
+        conn.commit()
+        before = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='world_episodes_current_feature_contract'"
+        ).fetchone()[0]
+    assert "world_feature.market.v1" in before
+    store = WorldModelStore(path)
+    try:
+        for name in (
+            "world_episodes_current_feature_contract",
+            "world_episodes_market_canonical_first_write",
+            "idx_world_episodes_market_slot_candidates",
+        ):
+            sql = store._db.query_one(
+                "SELECT sql FROM sqlite_master WHERE name=?", (name,)
+            )["sql"]
+            assert sql is not None
+            assert "world_feature.market.v2" in sql
+            assert "world_feature.market.v1" not in sql
+        assert store.append_episode(_episode()) is True
+    finally:
+        store.close()
+
+
+def test_list_eligible_episodes_excludes_stale_contracts(tmp_path: Path) -> None:
+    from trader.infrastructure.state_db.world_model_store import (
+        ensure_world_episodes_market_contract_triggers,
+    )
+
+    path = tmp_path / "world_model.db"
+    store = WorldModelStore(path)
+    try:
+        episode = _episode()
+        episode["training_eligible"] = True
+        assert store.append_episode(episode) is True
+        # Simulate a pre-cutover row: the current trigger would reject it,
+        # so plant it while the trigger is down, then restore.
+        with store._db.transaction() as cur:
+            cur.execute("DROP TRIGGER IF EXISTS world_episodes_current_feature_contract")
+        # The domain itself rejects v1 contracts now, so the legacy blob is
+        # forged raw: only the row columns matter for the read filter.
+        legacy = _episode()
+        legacy["training_eligible"] = True
+        blob = json.dumps(legacy)
+        with store._db.transaction() as cur:
+            cur.execute(
+                """
+                INSERT INTO world_episodes (
+                    episode_id, symbol, observed_at, available_at,
+                    feature_contract_version, training_eligible,
+                    payload_json, payload_sha256,
+                    source_evidence_json, source_evidence_sha256,
+                    recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "episode-legacy-v1",
+                    "MSFT",
+                    "2026-08-22T00:00:00+00:00",
+                    "2026-08-22T00:00:00+00:00",
+                    "world_feature.market.v1",
+                    1,
+                    blob,
+                    hashlib.sha256(blob.encode("utf-8")).hexdigest(),
+                    "{}",
+                    hashlib.sha256(b"{}").hexdigest(),
+                    "2026-08-22T00:01:00+00:00",
+                ),
+            )
+        ensure_world_episodes_market_contract_triggers(store._db)
+        eligible = store.list_eligible_episodes()
+        assert [row["episode_id"] for row in eligible] == [episode["episode_id"]]
+    finally:
+        store.close()
 
 
 def test_unrecognized_migration_version_is_rejected_while_cold_and_exact_restart_work(

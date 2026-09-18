@@ -62,20 +62,13 @@ ALLOWED_CATEGORICAL_FEATURES = frozenset(
         "session_phase",
         "market_regime",
         "volatility_state",
-        "momentum_bucket",
         "return_bucket",
         "atr_bucket",
         "range_position_bucket",
-        "family_direction",
-        "family_consensus_bucket",
         "family_regime",
         "trend",
-        "macro_regime",
-        "geopolitical_risk_bucket",
         "data_freshness",
         "data_age_bucket",
-        "source_status",
-        "observation_quality",
     }
 )
 
@@ -91,7 +84,6 @@ ALLOWED_NUMERIC_FEATURES = frozenset(
         "volatility",
         "ohlc_volatility",
         "realized_volatility",
-        "family_consensus",
         "data_age_minutes",
         "open_close_return",
         "high_low_range_pct",
@@ -108,9 +100,7 @@ _CATEGORICAL_ALIASES = {
     "market_return_bucket": "return_bucket",
     "market_atr_bucket": "atr_bucket",
     "range_bucket": "range_position_bucket",
-    "family_consensus": "family_consensus_bucket",
     "freshness": "data_freshness",
-    "data_source_status": "source_status",
 }
 
 _NUMERIC_ALIASES = {
@@ -122,7 +112,6 @@ _NUMERIC_ALIASES = {
     "rvol": "relative_volume",
     "zscore": "z_score",
     "er": "efficiency_ratio",
-    "family_consensus_fraction": "family_consensus",
 }
 
 _NUMERIC_BUCKETS: dict[str, tuple[str, tuple[float, ...]]] = {
@@ -136,7 +125,6 @@ _NUMERIC_BUCKETS: dict[str, tuple[str, tuple[float, ...]]] = {
     "volatility": ("volatility_bucket", (0.005, 0.015, 0.03, 0.06)),
     "ohlc_volatility": ("ohlc_volatility_bucket", (0.005, 0.015, 0.03, 0.06)),
     "realized_volatility": ("realized_volatility_bucket", (0.005, 0.015, 0.03, 0.06)),
-    "family_consensus": ("family_consensus_bucket", (0.5, 0.67, 0.84)),
     "data_age_minutes": ("data_age_bucket", (5.0, 15.0, 60.0, 240.0)),
     "open_close_return": ("open_close_return_bucket", (-0.05, -0.015, -0.003, 0.003, 0.015, 0.05)),
     "high_low_range_pct": ("high_low_range_pct_bucket", (0.005, 0.015, 0.03, 0.06)),
@@ -147,12 +135,9 @@ _COARSE_FEATURES = frozenset(
         "session_phase",
         "market_regime",
         "volatility_state",
-        "momentum_bucket",
         "return_bucket",
         "atr_bucket",
         "range_position_bucket",
-        "family_direction",
-        "family_consensus_bucket",
         "z_score_bucket",
         "relative_volume_bucket",
         "efficiency_ratio_bucket",

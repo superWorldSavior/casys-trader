@@ -172,7 +172,7 @@ def test_four_model_identities_are_distinct_and_market_stays_frozen() -> None:
     v2_audit = markov_v2.predict_audit(v2, "elapsed_4h.v1")
     assert v1_audit.as_dict()["feature_contract_fingerprint"] == FEATURE_CONTRACT_FINGERPRINT
     assert v2_audit.as_dict()["feature_contract_fingerprint"] == FEATURE_CONTRACT_FINGERPRINT_CONTEXT
-    assert FEATURE_CONTRACT_FINGERPRINT == "2b4023b7bab99cd39f3592c45b7b8147ad94a7de18684b7896f6daf1a454603c"
+    assert FEATURE_CONTRACT_FINGERPRINT == "4f00c35f1989b02ac504e9cf2c102c9b045f3eff74da22b5a4d31fb0e03738b6"
 
 
 def test_market_and_context_predictors_do_not_learn_from_each_other() -> None:

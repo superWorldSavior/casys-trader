@@ -32,8 +32,8 @@ from trader.domain.world_episode import WorldObservation, canonical_json, world_
 UTC = timezone.utc
 CUTOFF = datetime(2026, 8, 22, 10, 5, tzinfo=UTC)
 
-V1_EPISODE_ID = "world-episode:v1:e062e1a06696773cf4bc4ff7417faa716bf3862e08df0c1b3378418156f70411"
-V1_PAYLOAD_HASH = "e8e4a087c7776f8edd60770153f90a59c637f97c72f7002f6ce04d988be3de49"
+V1_EPISODE_ID = "world-episode:v1:a228bc3d0bffc20d69bacda2edd133c902819de56427afece301a01af3d80809"
+V1_PAYLOAD_HASH = "178fe46c21e138c613b7bbf1b20049d39c50374e644cb42f89ec773985969bbf"
 
 
 def _capture_v1():
@@ -215,7 +215,7 @@ def test_market_observation_omits_context_and_keeps_frozen_identity() -> None:
         symbol="AAA",
         bar_interval="1h",
         as_of_bar_ts="2026-08-22T10:00:00+00:00",
-        feature_contract_version="world_feature.market.v1",
+        feature_contract_version="world_feature.market.v2",
         sampling_policy_version="active_tradable_completed_bar.v1",
     )
     replayed = WorldObservation.from_dict(episode.observation.to_dict())

@@ -44,7 +44,10 @@ from trader.domain.world_cohort import (
     world_cohort_event_payload_hash,
 )
 from trader.domain.world_episode import (
+    CONTEXT_FEATURE_CONTRACT_ID,
     CURRENT_FEATURE_CONTRACT_IDS,
+    GRAPH_FEATURE_CONTRACT_ID,
+    MARKET_FEATURE_CONTRACT_ID,
     OUTCOME_STATUSES,
     PREDICTION_CLASSES,
     PREDICTION_STATUSES,
@@ -76,9 +79,9 @@ from trader.infrastructure.state_db.world_prediction_tiers import (
     read_prediction_rows,
 )
 
-_MARKET_FEATURE_CONTRACT = "world_feature.market.v1"
-_CONTEXT_FEATURE_CONTRACT = "world_feature.context.v1"
-_GRAPH_FEATURE_CONTRACT = "world_feature.graph.v1"
+_MARKET_FEATURE_CONTRACT = MARKET_FEATURE_CONTRACT_ID
+_CONTEXT_FEATURE_CONTRACT = CONTEXT_FEATURE_CONTRACT_ID
+_GRAPH_FEATURE_CONTRACT = GRAPH_FEATURE_CONTRACT_ID
 _CURRENT_FEATURE_CONTRACTS = frozenset(CURRENT_FEATURE_CONTRACT_IDS)
 
 __all__ = [
@@ -94,6 +97,7 @@ __all__ = [
     "WorldModelSchemaMismatchError",
     "WorldModelStore",
     "apply_current_world_model_schema",
+    "ensure_world_episodes_market_contract_triggers",
     "ensure_world_prediction_identity_index",
     "ensure_world_prediction_recorded_at_index",
     "ensure_world_pattern_lifecycle_events_schema",
@@ -142,6 +146,7 @@ def _assert_current_world_model_schema(db: StateDb) -> None:
 
 def apply_current_world_model_schema(db: StateDb) -> None:
     db.apply_migrations(WORLD_MODEL_MIGRATIONS)
+    ensure_world_episodes_market_contract_triggers(db)
     ensure_world_pattern_lifecycle_events_schema(db)
     ensure_world_prediction_identity_index(db)
     ensure_world_prediction_recorded_at_index(db)
@@ -312,6 +317,98 @@ def ensure_world_prediction_recorded_at_index(db: StateDb) -> None:
         return
     with db.transaction() as cur:
         cur.execute(WORLD_PREDICTION_RECORDED_AT_INDEX_DDL)
+
+
+_TRIGGER_EPISODE_COLUMNS = frozenset(
+    {
+        "venue",
+        "symbol",
+        "bar_interval",
+        "feature_contract_version",
+        "sampling_policy_version",
+        "recorded_at",
+        "episode_id",
+        "as_of_bar_ts",
+    }
+)
+
+
+# Contract ids are interpolated, never hardcoded: the next bump must move the
+# triggers with it instead of silently stranding them on the old literal.
+WORLD_EPISODES_MARKET_CONTRACT_DDL: list[str] = [
+    f"""
+CREATE TRIGGER IF NOT EXISTS world_episodes_current_feature_contract
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version IS NULL
+               OR NEW.feature_contract_version NOT IN (
+                    '{MARKET_FEATURE_CONTRACT_ID}',
+                    '{CONTEXT_FEATURE_CONTRACT_ID}',
+                    '{GRAPH_FEATURE_CONTRACT_ID}'
+               )
+            BEGIN
+                SELECT RAISE(ABORT, 'unsupported feature contract');
+            END
+            """,
+    f"""
+CREATE TRIGGER IF NOT EXISTS world_episodes_market_canonical_first_write
+            BEFORE INSERT ON world_episodes
+            WHEN NEW.feature_contract_version = '{MARKET_FEATURE_CONTRACT_ID}'
+            BEGIN
+                SELECT RAISE(ABORT, 'market slot already exists')
+                WHERE EXISTS (
+                    SELECT 1 FROM world_episodes AS existing
+                    WHERE existing.symbol = NEW.symbol
+                      AND existing.venue IS NEW.venue
+                      AND existing.bar_interval IS NEW.bar_interval
+                      AND existing.feature_contract_version = '{MARKET_FEATURE_CONTRACT_ID}'
+                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
+                      AND existing.episode_id != NEW.episode_id
+                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
+                );
+            END
+            """,
+    f"""
+CREATE INDEX IF NOT EXISTS idx_world_episodes_market_slot_candidates
+            ON world_episodes(
+                venue,
+                symbol,
+                bar_interval,
+                feature_contract_version,
+                sampling_policy_version,
+                recorded_at,
+                episode_id
+            )
+            WHERE feature_contract_version = '{MARKET_FEATURE_CONTRACT_ID}'
+            """,
+]
+
+
+def ensure_world_episodes_market_contract_triggers(db: StateDb) -> None:
+    """Rewrite the market-contract triggers on already-applied v1 files.
+
+    The v1 DDL is ``IF NOT EXISTS``, so a store created before the v2
+    cutover keeps triggers allowlisting ``world_feature.market.v1`` and
+    would reject every v2 insert. Triggers and the partial index are
+    code-derived with no data of their own: dropping and recreating them
+    from the current constants converges old and new stores alike.
+    """
+
+    table = db.query_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_episodes'")
+    if table is None:
+        return
+    columns = {
+        str(row["name"]) for row in db.query_all("PRAGMA table_info(world_episodes)")
+    }
+    if not _TRIGGER_EPISODE_COLUMNS <= columns:
+        # Skeleton table (e.g. a foreign file): leave it for the schema
+        # mismatch assert that runs right after the ensure pass.
+        return
+    with db.transaction() as cur:
+        cur.execute("DROP TRIGGER IF EXISTS world_episodes_current_feature_contract")
+        cur.execute("DROP TRIGGER IF EXISTS world_episodes_market_canonical_first_write")
+        cur.execute("DROP INDEX IF EXISTS idx_world_episodes_market_slot_candidates")
+        for statement in WORLD_EPISODES_MARKET_CONTRACT_DDL:
+            cur.execute(statement)
 
 
 # This migration namespace belongs only to ``world_model.db``.  It must never
@@ -998,50 +1095,7 @@ CREATE TRIGGER IF NOT EXISTS world_relation_events_no_update
                 SELECT RAISE(ABORT, 'world_relation_events are append-only');
             END
             """,
-            """
-CREATE TRIGGER IF NOT EXISTS world_episodes_current_feature_contract
-            BEFORE INSERT ON world_episodes
-            WHEN NEW.feature_contract_version IS NULL
-               OR NEW.feature_contract_version NOT IN (
-                    'world_feature.market.v1',
-                    'world_feature.context.v1',
-                    'world_feature.graph.v1'
-               )
-            BEGIN
-                SELECT RAISE(ABORT, 'unsupported feature contract');
-            END
-            """,
-            """
-CREATE TRIGGER IF NOT EXISTS world_episodes_market_canonical_first_write
-            BEFORE INSERT ON world_episodes
-            WHEN NEW.feature_contract_version = 'world_feature.market.v1'
-            BEGIN
-                SELECT RAISE(ABORT, 'market slot already exists')
-                WHERE EXISTS (
-                    SELECT 1 FROM world_episodes AS existing
-                    WHERE existing.symbol = NEW.symbol
-                      AND existing.venue IS NEW.venue
-                      AND existing.bar_interval IS NEW.bar_interval
-                      AND existing.feature_contract_version = 'world_feature.market.v1'
-                      AND existing.sampling_policy_version IS NEW.sampling_policy_version
-                      AND existing.episode_id != NEW.episode_id
-                      AND existing.as_of_bar_ts IS NEW.as_of_bar_ts
-                );
-            END
-            """,
-            """
-CREATE INDEX IF NOT EXISTS idx_world_episodes_market_slot_candidates
-            ON world_episodes(
-                venue,
-                symbol,
-                bar_interval,
-                feature_contract_version,
-                sampling_policy_version,
-                recorded_at,
-                episode_id
-            )
-            WHERE feature_contract_version = 'world_feature.market.v1'
-            """,
+            *WORLD_EPISODES_MARKET_CONTRACT_DDL,
             *WORLD_PATTERN_LIFECYCLE_EVENTS_DDL,
             *WORLD_SCOPE_MAPPING_GENERATIONS_DDL,
         ],
@@ -2084,8 +2138,14 @@ class WorldModelStore:
         return True
 
     def list_eligible_episodes(self, *, limit: int | None = None) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM world_episodes WHERE training_eligible=1 ORDER BY observed_at, episode_id"
-        rows = self._db.query_all(*self._with_limit(sql, (), limit))
+        contracts = sorted(_CURRENT_FEATURE_CONTRACTS)
+        placeholders = ", ".join("?" for _ in contracts)
+        sql = (
+            "SELECT * FROM world_episodes WHERE training_eligible=1 "
+            f"AND feature_contract_version IN ({placeholders}) "
+            "ORDER BY observed_at, episode_id"
+        )
+        rows = self._db.query_all(*self._with_limit(sql, tuple(contracts), limit))
         return [self._episode_row(row) for row in rows]
 
     def list_pending_episodes(
