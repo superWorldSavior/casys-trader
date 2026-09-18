@@ -98,6 +98,7 @@ def test_situation_memory_ingest_persiste_event_class(tmp_path) -> None:
     notes = read_situation_notes(tmp_path / "memory.db")
     assert len(notes) == 1
     assert notes[0]["event_class"] == "capital"
+    assert notes[0]["venue"] == "EU"
 
 
 def test_ensure_notes_schema_migrates_but_never_creates(tmp_path) -> None:

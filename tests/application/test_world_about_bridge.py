@@ -278,6 +278,77 @@ def test_bridges_reject_unadmitted_ontology_revisions() -> None:
         )
 
 
+def _scope_mapping() -> WorldScopeMapping:
+    def entry(
+        venue: str, mic: str, symbol: str, country: str, region: str
+    ) -> WorldScopeMappingEntry:
+        return WorldScopeMappingEntry(
+            anchor=WorldMarketAnchorRef(market_venue=venue, instrument=symbol),
+            venue=WorldCanonicalScopeRef(kind="venue", entity_id=f"mic:{mic}"),
+            country=WorldCanonicalScopeRef(kind="country", entity_id=f"iso-3166:{country}"),
+            region=WorldCanonicalScopeRef(kind="region", entity_id=f"iso-un-m49:{region}"),
+            world=WorldCanonicalScopeRef(kind="world", entity_id="market"),
+            provider_proofs=("provider:listing",),
+            taxonomy_version="geo.v1",
+        )
+
+    return WorldScopeMapping(
+        mapping_id="world_scope_mapping.v1",
+        entries=(
+            entry("TW", "XTAI", "1301.TW", "TW", "030"),
+            entry("US", "XNAS", "AAPL", "US", "021"),
+            entry("US", "XNYS", "BRK", "US", "021"),
+            entry("EU", "XPAR", "AIR.PA", "FR", "150"),
+            entry("EU", "XETR", "SAP.DE", "DE", "150"),
+        ),
+    )
+
+
+def test_news_bridge_links_symbol_less_macro_to_finest_unambiguous_scope() -> None:
+    cases = {
+        "TW": "venue:mic:XTAI",
+        "US": "country:iso-3166:US",
+        "EU": "region:iso-un-m49:150",
+        "GLOBAL": "world:market",
+    }
+    for venue, expected_node in cases.items():
+        note = _note(
+            note_key=f"macro-{venue}",
+            symbols=[],
+            event_class="macro",
+            venue=venue,
+            point="Central bank holds rates amid sticky inflation.",
+        )
+        first = build_news_about([note], _scope_mapping(), ontology_revision=REVISION)
+        assert first.excluded == (), venue
+        assert len(first.drafts) == 1
+        draft = first.drafts[0]
+        assert draft.envelope.kind == "news_macro"
+        assert [relation.target.node_id for relation in draft.relations] == [expected_node]
+        assert draft.envelope.subjects[0].node_id == expected_node
+        second = build_news_about([note], _scope_mapping(), ontology_revision=REVISION)
+        assert second.drafts[0].envelope.artifact_id == draft.envelope.artifact_id
+        assert second.drafts[0].envelope.content_sha256 == draft.envelope.content_sha256
+
+
+def test_news_bridge_counts_macro_venue_exclusions() -> None:
+    build = build_news_about(
+        [
+            _note(note_key="blank", symbols=[], event_class="macro", venue="  "),
+            _note(note_key="unknown", symbols=[], event_class="macro", venue="JP"),
+            _note(note_key="micro", symbols=[], event_class="earnings", venue="US"),
+        ],
+        _scope_mapping(),
+        ontology_revision=REVISION,
+    )
+    assert build.drafts == ()
+    assert build.exclusion_counts == {
+        "missing_venue": 1,
+        "unmapped_venue": 1,
+        "no_symbols": 1,
+    }
+
+
 def test_news_bridge_folds_symbol_case_on_join() -> None:
     build = build_news_about(
         [_note(note_key="k1", symbols=["aapl"])], _mapping(), ontology_revision=REVISION

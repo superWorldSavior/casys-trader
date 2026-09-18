@@ -1,7 +1,10 @@
 """Pure situation/company briefs → ABOUT artifacts + relations builders.
 
 News side consumes ``situation_notes`` rows (one dated analyst assertion per
-row): one artifact per note, one ABOUT relation per mapped listing. Company
+row): one artifact per note, one ABOUT relation per mapped listing.
+Symbol-less ``macro`` notes resolve to the finest unambiguous scope for their
+brief venue (venue → country → region → world, derived from the mapping;
+``GLOBAL`` always resolves to the world node). Company
 side consumes the issuer registry + verified briefs: one artifact per brief,
 ABOUT to the company plus ABOUT to the bound listing. Every registry entry is
 a bound listing by construction (mapping-only included: the mapping anchor is
@@ -53,6 +56,8 @@ NEWS_EXCLUSION_REASONS = frozenset(
         "empty_point",
         "no_symbols",
         "unmapped_symbols",
+        "missing_venue",
+        "unmapped_venue",
         "missing_clocks",
         "invalid_window",
         "operational",
@@ -138,6 +143,36 @@ def _listing_index(mapping: WorldScopeMapping) -> dict[str, list[WorldEntityRef]
         bucket = index.setdefault(entry.anchor.instrument.strip().upper(), [])
         if ref not in bucket:
             bucket.append(ref)
+    return index
+
+
+def _venue_scope_index(mapping: WorldScopeMapping) -> dict[str, WorldEntityRef]:
+    """Finest unambiguous canonical scope per logical brief venue.
+
+    Derived from the mapping rows alone, no gazetteer: one distinct venue →
+    that venue, else one distinct country → that country, else one distinct
+    region → that region, else the world node. ``GLOBAL`` never reaches this
+    index (world by rule).
+    """
+
+    buckets: dict[str, list[tuple[str, str, str, str]]] = {}
+    for entry in mapping.entries:
+        key = entry.anchor.market_venue.strip().upper()
+        buckets.setdefault(key, []).append(entry.output_key())
+    index: dict[str, WorldEntityRef] = {}
+    for venue_key, outputs in buckets.items():
+        distinct = sorted(set(outputs))
+        venues = sorted({output[0] for output in distinct})
+        countries = sorted({output[1] for output in distinct})
+        regions = sorted({output[2] for output in distinct})
+        if len(venues) == 1:
+            index[venue_key] = WorldEntityRef(kind="venue", entity_id=venues[0])
+        elif len(countries) == 1:
+            index[venue_key] = WorldEntityRef(kind="country", entity_id=countries[0])
+        elif len(regions) == 1:
+            index[venue_key] = WorldEntityRef(kind="region", entity_id=regions[0])
+        else:
+            index[venue_key] = WorldEntityRef(kind="world", entity_id="market")
     return index
 
 
@@ -234,6 +269,7 @@ def build_news_about(
         raise TypeError("mapping must be WorldScopeMapping")
     revision = _admitted_revision(ontology_revision)
     index = _listing_index(mapping)
+    venue_scopes = _venue_scope_index(mapping)
     drafts: list[AboutArtifactDraft] = []
     excluded: list[AboutExclusion] = []
     for position, note in enumerate(notes):
@@ -254,9 +290,25 @@ def build_news_about(
         if not point.event_class:
             excluded.append(AboutExclusion(subject_key=note_key, reason="missing_event_class"))
             continue
+        scope_target: WorldEntityRef | None = None
         if not point.symbols:
-            excluded.append(AboutExclusion(subject_key=note_key, reason="no_symbols"))
-            continue
+            if point.event_class != "macro":
+                excluded.append(AboutExclusion(subject_key=note_key, reason="no_symbols"))
+                continue
+            raw_venue = note.get("venue")
+            venue_key = raw_venue.strip().upper() if isinstance(raw_venue, str) else ""
+            if not venue_key:
+                excluded.append(AboutExclusion(subject_key=note_key, reason="missing_venue"))
+                continue
+            if venue_key == "GLOBAL":
+                scope_target = WorldEntityRef(kind="world", entity_id="market")
+            else:
+                scope_target = venue_scopes.get(venue_key)
+                if scope_target is None:
+                    excluded.append(
+                        AboutExclusion(subject_key=note_key, reason="unmapped_venue", detail=venue_key)
+                    )
+                    continue
         try:
             ready_at = parse_utc_timestamp(note.get("valid_from") or note.get("as_of"), "ready_at")
         except (TypeError, ValueError):
@@ -271,9 +323,10 @@ def build_news_about(
         if valid_until is not None and valid_until <= ready_at:
             excluded.append(AboutExclusion(subject_key=note_key, reason="invalid_window"))
             continue
-        targets: list[WorldEntityRef] = []
-        for symbol in point.symbols:
-            targets.extend(index.get(symbol.strip().upper(), ()))
+        targets: list[WorldEntityRef] = [scope_target] if scope_target is not None else []
+        if scope_target is None:
+            for symbol in point.symbols:
+                targets.extend(index.get(symbol.strip().upper(), ()))
         if not targets:
             excluded.append(
                 AboutExclusion(
@@ -287,7 +340,7 @@ def build_news_about(
             excluded.append(AboutExclusion(subject_key=note_key, reason="empty_point", detail=str(exc)))
             continue
         artifact_id = knowledge_artifact_id("news_macro", note_key)
-        subjects = tuple(EntityRef(kind="instrument", entity_id=item.entity_id) for item in targets)
+        subjects = tuple(EntityRef(kind=item.kind, entity_id=item.entity_id) for item in targets)
         envelope = _artifact_envelope(
             kind="news_macro",
             artifact_id=artifact_id,

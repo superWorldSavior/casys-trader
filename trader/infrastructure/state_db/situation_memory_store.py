@@ -108,6 +108,7 @@ _NOTE_COLUMNS = """
 _BRIDGE_COLUMNS = (
     "note_key",
     "brief_id",
+    "venue",
     "as_of",
     "valid_from",
     "valid_until",
