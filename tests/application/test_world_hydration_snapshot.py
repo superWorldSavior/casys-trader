@@ -52,7 +52,7 @@ def _episode(at: datetime, market_return: float) -> WorldEpisode:
             available_at=at,
             captured_at=at + timedelta(minutes=1),
             freshness="fresh",
-            categorical_features={"market_regime": "trend_up", "volatility_state": "normal"},
+            categorical_features={"asset_family": "equities", "venue": "US"},
             numeric_features={"return": market_return, "atr_pct": 0.02},
         )
     )

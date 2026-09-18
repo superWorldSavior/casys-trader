@@ -90,30 +90,6 @@ ALLOWED_NUMERIC_FEATURES = frozenset(
     }
 )
 
-_CATEGORICAL_ALIASES = {
-    "family": "asset_family",
-    "market_family": "asset_family",
-    "interval": "bar_interval",
-    "session": "session_phase",
-    "regime": "market_regime",
-    "vol_state": "volatility_state",
-    "market_return_bucket": "return_bucket",
-    "market_atr_bucket": "atr_bucket",
-    "range_bucket": "range_position_bucket",
-    "freshness": "data_freshness",
-}
-
-_NUMERIC_ALIASES = {
-    "market_return": "return",
-    "return_1": "return",
-    "momentum": "return",
-    "atr": "atr_pct",
-    "relative_vol": "relative_volume",
-    "rvol": "relative_volume",
-    "zscore": "z_score",
-    "er": "efficiency_ratio",
-}
-
 _NUMERIC_BUCKETS: dict[str, tuple[str, tuple[float, ...]]] = {
     "return": ("return_bucket", (-0.05, -0.015, -0.003, 0.003, 0.015, 0.05)),
     "atr_pct": ("atr_bucket", (0.003, 0.008, 0.02, 0.05)),
@@ -567,8 +543,6 @@ def _is_forbidden_key(key: str, *, known_feature_keys: frozenset[str] | None = N
     known = known_feature_keys or (
         ALLOWED_CATEGORICAL_FEATURES
         | ALLOWED_NUMERIC_FEATURES
-        | frozenset(_CATEGORICAL_ALIASES)
-        | frozenset(_NUMERIC_ALIASES)
         | frozenset(bucket_key for bucket_key, _thresholds in _NUMERIC_BUCKETS.values())
     )
     if key in known:
@@ -858,8 +832,6 @@ def build_feature_state(
     known_keys = (
         allowed_cats
         | allowed_nums
-        | frozenset(_CATEGORICAL_ALIASES)
-        | frozenset(_NUMERIC_ALIASES)
         | frozenset(bucket_key for bucket_key, _thresholds in _NUMERIC_BUCKETS.values())
         | ALLOWED_CONTEXT_CATEGORICAL_FEATURES
         | ALLOWED_CONTEXT_NUMERIC_FEATURES
@@ -878,7 +850,6 @@ def build_feature_state(
     selected_numeric: dict[str, float] = {}
     for raw_key, raw_value in categorical.items():
         key = _normalise_key(raw_key)
-        key = _CATEGORICAL_ALIASES.get(key, key)
         if key not in allowed_cats:
             continue
         value = _normalise_scalar(raw_value)
@@ -890,7 +861,6 @@ def build_feature_state(
 
     for raw_key, raw_value in numeric.items():
         key = _normalise_key(raw_key)
-        key = _NUMERIC_ALIASES.get(key, key)
         if key not in allowed_nums:
             continue
         if raw_value is None:

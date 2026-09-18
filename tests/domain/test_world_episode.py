@@ -41,7 +41,7 @@ def _observation(**overrides: object) -> WorldObservation:
         "available_at": "2026-08-22T02:01:00+00:00",
         "captured_at": "2026-08-22T02:02:00+00:00",
         "freshness": Freshness(status="fresh", data_age_minutes=2.0),
-        "categorical_features": {"market_regime": "trending_up", "session_phase": "regular"},
+        "categorical_features": {"asset_family": "technology", "venue": "XTAI"},
         "numeric_features": {"return": 0.01, "atr_pct": 0.02, "range_position": 0.7},
     }
     values.update(overrides)
@@ -54,11 +54,20 @@ def test_action_portfolio_and_scheduler_fields_cannot_enter_features() -> None:
             _observation(numeric_features={key: 1.0})
 
     with pytest.raises(ValueError, match="forbidden"):
-        _observation(categorical_features={"market_regime": {"task_id": "42"}})
+        _observation(categorical_features={"venue": {"task_id": "42"}})
 
     for key in ("mandate_role", "memory_available", "macro_event_bucket"):
         with pytest.raises(ValueError, match="whitelisted"):
             _observation(categorical_features={key: "present"})
+
+
+def test_legacy_market_nomenclature_is_rejected_from_storage_admission() -> None:
+    for key in ("regime", "market_regime", "session_phase", "family_regime", "candlestick_signal"):
+        with pytest.raises(ValueError, match="whitelisted"):
+            _observation(categorical_features={key: "present"})
+    for key in ("momentum", "return_1h", "return_1d", "atr", "volume_zscore", "gap_return"):
+        with pytest.raises(ValueError, match="whitelisted"):
+            _observation(numeric_features={key: 1.0})
 
 
 def test_observation_rejects_naive_timestamps_and_nonfinite_features() -> None:

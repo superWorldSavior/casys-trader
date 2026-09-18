@@ -33,7 +33,7 @@ UTC = timezone.utc
 CUTOFF = datetime(2026, 8, 22, 10, 5, tzinfo=UTC)
 
 V1_EPISODE_ID = "world-episode:v1:a228bc3d0bffc20d69bacda2edd133c902819de56427afece301a01af3d80809"
-V1_PAYLOAD_HASH = "178fe46c21e138c613b7bbf1b20049d39c50374e644cb42f89ec773985969bbf"
+V1_PAYLOAD_HASH = "96a18d86ae97468a25d09aa7f78fc526bf32f6745066ef361652189911710caa"
 
 
 def _capture_v1():
@@ -210,6 +210,7 @@ def test_market_observation_omits_context_and_keeps_frozen_identity() -> None:
     assert episode.observation.context is None
     assert episode.episode_id == V1_EPISODE_ID
     assert episode.payload_hash == V1_PAYLOAD_HASH
+    assert dict(episode.observation.categorical_features) == {"asset_family": "equity", "venue": "XTAI"}
     assert episode.episode_id == world_episode_id(
         venue="XTAI",
         symbol="AAA",

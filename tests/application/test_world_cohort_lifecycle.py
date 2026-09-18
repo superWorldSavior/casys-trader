@@ -190,10 +190,6 @@ def _episode(*, venue: str, symbol: str, contract: str, at: datetime = CAPTURE, 
             categorical_features={
                 "asset_family": "equities",
                 "venue": venue,
-                "bar_interval": interval,
-                "session_phase": "regular",
-                "market_regime": "trend_up",
-                "volatility_state": "normal",
             },
             numeric_features={"return": 0.01, "atr_pct": 0.01},
         )

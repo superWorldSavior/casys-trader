@@ -44,75 +44,33 @@ PREDICTION_STATUSES = frozenset({"warming_up", "shadow_only"})
 PREDICTION_TIERS = frozenset({"uniform", "global", "coarse", "exact"})
 SIMPLE_RETURN_DIRECTION_BAND = 0.005
 
-# The initial feature contract intentionally remains small and semantic.  A
-# new feature requires an explicit contract-version bump rather than silently
-# widening a historical vector.
+# Storage admission vocabulary: exactly what the capture pipeline writes.
+# Unused market-domain nomenclature is rejected, not admitted — a new
+# feature requires an explicit contract-version bump rather than silently
+# widening a historical vector. Projection-only keys (buckets, data_age_*)
+# belong to the encoder vocabulary in encoding.py, never here: admission
+# is what is stored, projection is what the models read.
 ALLOWED_CATEGORICAL_FEATURES = frozenset(
     {
         "asset_family",
         "venue",
-        "bar_interval",
-        "session_phase",
-        "market_regime",
-        "volatility_state",
-        "momentum_bucket",
-        "return_bucket",
-        "atr_bucket",
-        "range_position_bucket",
-        "family_direction",
-        "family_consensus_bucket",
-        "macro_regime",
-        "geopolitical_risk_bucket",
-        "data_freshness",
-        "source_status",
-        # Existing market-domain nomenclature retained for a lossless market
-        # projection; capture policy decides which of these enter a baseline.
-        "regime",
-        "vol_state",
-        "candlestick_signal",
-        "chart_breakout",
-        "market_status",
-        "family_regime",
-        "situation_regime",
-        "trend",
-        "cross_asset_regime",
     }
 )
 
 ALLOWED_NUMERIC_FEATURES = frozenset(
     {
         "return",
-        "return_1h",
-        "return_4h",
-        "return_1d",
-        "return_5d",
-        "momentum",
-        "momentum_1h",
-        "momentum_4h",
-        "momentum_1d",
         "volatility",
         "ohlc_volatility",
         "realized_volatility",
-        "atr",
         "atr_pct",
         "relative_volume",
-        "volume_zscore",
         "z_score",
         "efficiency_ratio",
-        "autocorrelation",
-        "relative_strength",
-        "spread_zscore",
-        "candle_body_ratio",
-        "candle_wick_skew",
         "trend_slope",
         "range_position",
         "high_low_range_pct",
         "open_close_return",
-        "gap_return",
-        "close_to_sma",
-        "family_momentum",
-        "cross_asset_return",
-        "macro_surprise",
     }
 )
 

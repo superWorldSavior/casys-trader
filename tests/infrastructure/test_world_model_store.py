@@ -59,7 +59,7 @@ def _observation(**overrides: object) -> WorldObservation:
         "captured_at": "2026-08-22T00:01:00+00:00",
         "freshness": "fresh",
         "categorical_features": {"venue": "US"},
-        "numeric_features": {"return_1h": 0.01},
+        "numeric_features": {"return": 0.01},
     }
     values.update(overrides)
     return WorldObservation(**values)  # type: ignore[arg-type]
@@ -143,10 +143,10 @@ def test_episode_exact_replay_is_noop_and_content_change_fails_closed(store: Wor
     stored = store.get_episode(DEFAULT_EPISODE_ID)
     assert stored is not None
     assert stored["training_eligible"] is True
-    assert stored["episode"]["observation"]["numeric_features"]["return_1h"] == 0.01
+    assert stored["episode"]["observation"]["numeric_features"]["return"] == 0.01
 
     conflicting = deepcopy(episode)
-    conflicting["observation"]["numeric_features"]["return_1h"] = -0.01  # type: ignore[index]
+    conflicting["observation"]["numeric_features"]["return"] = -0.01  # type: ignore[index]
     with pytest.raises(WorldModelConflictError, match="different canonical content"):
         store.append_episode(conflicting)
 
@@ -363,7 +363,7 @@ def test_store_accepts_domain_records_and_preserves_domain_ids(store: WorldModel
         captured_at="2026-08-22T00:01:00+00:00",
         freshness="fresh",
         categorical_features={"venue": "US"},
-        numeric_features={"return_1h": 0.01},
+        numeric_features={"return": 0.01},
     )
     episode = WorldEpisode(observation=observation)
     horizon = OutcomeHorizon("elapsed_4h.v1", 4 * 60 * 60)

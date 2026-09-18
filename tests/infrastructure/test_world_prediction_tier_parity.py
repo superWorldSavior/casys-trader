@@ -1301,7 +1301,7 @@ def _runtime_episode(*, symbol: str, at: datetime = LIVE_NOW) -> WorldEpisode:
             available_at=at,
             captured_at=at + timedelta(minutes=1),
             freshness="fresh",
-            categorical_features={"market_regime": "trend_up", "volatility_state": "normal"},
+            categorical_features={"asset_family": "equities", "venue": "US"},
             numeric_features={"return": 0.01, "atr_pct": 0.02},
         )
     )

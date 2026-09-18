@@ -39,15 +39,6 @@ SAMPLING_POLICY_VERSION = "active_tradable_completed_bar.v1"
 _CATEGORICAL_METADATA_ALIASES: tuple[tuple[str, str], ...] = (
     ("asset_family", "asset_family"),
     ("venue", "venue"),
-    ("session_phase", "session_phase"),
-    ("market_session", "session_phase"),
-    ("session", "session_phase"),
-    ("market_regime", "market_regime"),
-    ("regime", "regime"),
-    ("family_regime", "family_regime"),
-    ("volatility_state", "volatility_state"),
-    ("vol_state", "vol_state"),
-    ("trend", "trend"),
 )
 _TIMESTAMP_SEMANTICS = {
     "bar_close": "bar_close",

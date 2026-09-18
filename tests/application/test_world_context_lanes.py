@@ -540,10 +540,6 @@ def _cohort_market_episode(at, *, symbol: str = "AAPL", market_return: float = 0
             categorical_features={
                 "asset_family": "equities",
                 "venue": "US",
-                "bar_interval": "1h",
-                "session_phase": "regular",
-                "market_regime": "trend_up" if market_return >= 0 else "trend_down",
-                "volatility_state": "normal",
             },
             numeric_features={"return": market_return, "atr_pct": 0.01},
         )

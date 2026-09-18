@@ -205,7 +205,7 @@ def _observation(*, symbol: str, as_of: datetime, **overrides: object) -> WorldO
         "available_at": as_of,
         "captured_at": as_of,
         "freshness": {"status": "fresh", "data_age_minutes": 5.0},
-        "categorical_features": {"venue": "TW", "bar_interval": "1h"},
+        "categorical_features": {"venue": "TW", "asset_family": "semiconductors"},
         "numeric_features": {"return": 0.01},
     }
     values.update(overrides)

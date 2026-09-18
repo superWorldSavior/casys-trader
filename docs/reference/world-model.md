@@ -65,6 +65,11 @@ PnL, ni de mémoire Brain/Univers.
   `efficiency_ratio`, `trend_slope`, `ohlc_volatility`, `atr_pct`,
   `range_position` — calculées sur l'historique causal tenu (≤ 20 barres
   terminées à l'ancre, jamais une barre future).
+- Admission strictement limitée à ce qui est écrit : 12 numériques (les 7
+  ci-dessus + `return`, `realized_volatility`, `relative_volume`,
+  `open_close_return`, `high_low_range_pct`) et 2 catégorielles
+  (`asset_family`, `venue`). Toute autre clé échoue à la construction de
+  l'observation, à l'écriture comme à la relecture.
 
 ## Horizons et labels
 

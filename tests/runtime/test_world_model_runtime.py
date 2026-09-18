@@ -53,10 +53,6 @@ def _domain_episode(at: datetime, *, symbol: str = "SPY", market_return: float =
             categorical_features={
                 "asset_family": "equities",
                 "venue": "US",
-                "bar_interval": "1h",
-                "session_phase": "regular",
-                "market_regime": "trend_up" if market_return >= 0 else "trend_down",
-                "volatility_state": "normal",
             },
             numeric_features={"return": market_return, "atr_pct": 0.01},
         )
@@ -740,10 +736,6 @@ def test_real_domain_store_labeler_and_restart_rehydrate_all_models(tmp_path) ->
         categorical_features={
             "asset_family": "equities",
             "venue": "US",
-            "bar_interval": "1h",
-            "session_phase": "regular",
-            "market_regime": "trend_up",
-            "volatility_state": "normal",
         },
         numeric_features={"return": 0.01, "atr_pct": 0.01},
     )

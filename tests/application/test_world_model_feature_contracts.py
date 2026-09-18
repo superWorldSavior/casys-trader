@@ -479,6 +479,21 @@ def test_encoder_fingerprints_stay_frozen_and_distinct_from_domain_contracts() -
     assert type(v3) is WorldFeatureContract
 
 
+def test_legacy_alias_keys_are_dropped_not_remapped() -> None:
+    state = build_feature_state(
+        {
+            "categorical_features": {"family": "technology", "venue": "XTAI"},
+            "numeric_features": {"momentum": 0.05, "atr": 1.2, "return": 0.01},
+        }
+    )
+    assert state.numeric_values["return"] == pytest.approx(0.01)
+    assert "momentum" not in state.numeric_values
+    assert "atr" not in state.numeric_values
+    assert "atr_pct" not in state.numeric_values
+    assert "asset_family" not in state.categorical_values
+    assert state.categorical_values["venue"] == "xtai"
+
+
 def test_lane_profiles_bind_frozen_market_and_joint_masks() -> None:
     market = world_lane_encoder_profile("market")
     joint = world_lane_encoder_profile("joint")

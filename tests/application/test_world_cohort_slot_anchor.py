@@ -116,10 +116,6 @@ def _episode(
             categorical_features={
                 "asset_family": "equities",
                 "venue": "US",
-                "bar_interval": interval,
-                "session_phase": "regular",
-                "market_regime": "trend_up",
-                "volatility_state": "normal",
             },
             numeric_features={"return": 0.01, "atr_pct": 0.01},
         )

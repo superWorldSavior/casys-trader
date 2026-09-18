@@ -46,7 +46,7 @@ def _episode(
     hour: int,
     *,
     symbol: str = "SPY",
-    market_regime: str = "trend_up",
+    asset_family: str = "equities",
     return_value: float = 0.006,
     available_after_hours: int = 0,
     feature_contract_version: str = "world_feature.market.v2",
@@ -75,10 +75,8 @@ def _episode(
             captured_at=_iso(available_at + timedelta(minutes=1)),
             freshness={"status": "fresh", "data_age_minutes": 1.0},
             categorical_features={
-                "asset_family": "equities",
-                "session_phase": "regular",
-                "market_regime": market_regime,
-                "volatility_state": "normal",
+                "asset_family": asset_family,
+                "venue": "XNYS",
             },
             numeric_features={
                 "return": return_value,
@@ -214,8 +212,8 @@ def test_label_cutoff_and_prediction_cutoff_prevent_future_label_leakage() -> No
 def test_registered_future_episode_cannot_change_an_earlier_sequence() -> None:
     model = _model()
     first = _episode(0)
-    middle = _episode(1, market_regime="range")
-    future = _episode(2, market_regime="trend_down")
+    middle = _episode(1, asset_family="commodities")
+    future = _episode(2, asset_family="rates")
 
     model.observe_episodes((first, middle))
     before = model.predict(middle, HORIZON_4H)
@@ -273,7 +271,7 @@ def test_online_bptt_can_learn_a_repeated_market_direction_without_authority() -
 
 
 def test_horizons_are_isolated_and_replay_is_order_independent() -> None:
-    episodes = (_episode(0), _episode(1, return_value=-0.006), _episode(2, market_regime="range"))
+    episodes = (_episode(0), _episode(1, return_value=-0.006), _episode(2, asset_family="commodities"))
     outcomes = (
         _outcome(episodes[0], simple_return=0.01, available_after_hours=4),
         _outcome(episodes[1], simple_return=-0.01, available_after_hours=5),
@@ -289,7 +287,7 @@ def test_horizons_are_isolated_and_replay_is_order_independent() -> None:
     assert replayed.support(HORIZON_4H) == 2
     assert replayed.training_steps(HORIZON_4H) == 2
     assert replayed.model_fingerprint(HORIZON_4H) == direct.model_fingerprint(HORIZON_4H)
-    target = _episode(8, market_regime="trend_down")
+    target = _episode(8, asset_family="rates")
     assert replayed.predict(target, HORIZON_4H).to_dict() == direct.predict(target, HORIZON_4H).to_dict()
 
     assert direct.support(HORIZON_1D) == 0

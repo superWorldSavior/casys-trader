@@ -48,19 +48,14 @@ def _with_context_categoricals(episode: WorldEpisode, **updates: str) -> WorldEp
 def _observation(
     *,
     at: str = "2026-01-01T00:00:00+00:00",
-    trend: str = "up",
-    regime: str = "trend_up",
+    family: str = "technology",
 ) -> dict:
     return {
         "available_at": at,
         "feature_contract_version": "world_feature.market.v2",
         "categorical_features": {
-            "asset_family": "equities",
+            "asset_family": family,
             "venue": "NYSE",
-            "session_phase": "regular",
-            "market_regime": regime,
-            "volatility_state": "normal",
-            "trend": trend,
         },
         "numeric_features": {
             "return": 0.006,
@@ -156,7 +151,7 @@ def test_accepts_immutable_world_episode_and_emits_runner_safe_payload() -> None
         available_at="2026-01-01T00:00:00+00:00",
         captured_at="2026-01-01T00:01:00+00:00",
         freshness={"status": "fresh", "data_age_minutes": 1.0},
-        categorical_features={"asset_family": "equities", "market_regime": "trend_up"},
+        categorical_features={"asset_family": "equities", "venue": "XNYS"},
         numeric_features={"return": 0.006, "atr_pct": 0.01},
     )
     episode = WorldEpisode(observation)
@@ -177,13 +172,13 @@ def test_accepts_immutable_world_episode_and_emits_runner_safe_payload() -> None
     assert state.features["data_freshness"] == "fresh"
     assert "data_age_bucket" in state.features
     with pytest.raises(TypeError):
-        state.features["market_regime"] = "mutated"  # type: ignore[index]
+        state.features["venue"] = "mutated"  # type: ignore[index]
 
 
 def test_learning_uses_hierarchical_coarse_then_exact_backoff() -> None:
     model = _ready_model()
-    first = _observation(trend="up")
-    same_coarse_other_exact = _observation(at="2026-01-02T00:00:00+00:00", trend="down")
+    first = _observation(family="technology")
+    same_coarse_other_exact = _observation(at="2026-01-02T00:00:00+00:00", family="energy")
 
     assert model.apply_outcome(_outcome("event-1"), first, available_through="2026-01-01T05:00:00+00:00").applied
     coarse = model.predict(same_coarse_other_exact, "elapsed_4h.v1")
@@ -202,7 +197,7 @@ def test_learning_uses_hierarchical_coarse_then_exact_backoff() -> None:
         available_through="2026-01-03T05:00:00+00:00",
     ).applied
     exact = model.predict(
-        _observation(at="2026-01-04T00:00:00+00:00", trend="down"),
+        _observation(at="2026-01-04T00:00:00+00:00", family="energy"),
         "elapsed_4h.v1",
     )
     assert exact.tier == "exact"
@@ -536,9 +531,6 @@ def test_cold_markov_graph_topology_status_only_is_constructible_and_isolated() 
         "categorical_features": {
             "asset_family": "equities",
             "venue": "XNYS",
-            "session_phase": "regular",
-            "market_regime": "trend_up",
-            "volatility_state": "normal",
         },
         "numeric_features": {"return": 0.006, "atr_pct": 0.01, "range_position": 0.72},
         "graph_features": {
