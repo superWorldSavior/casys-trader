@@ -42,7 +42,12 @@ from trader.application.world_model.pattern_service import (
 )
 from trader.domain.world_availability import AvailabilityEvidence
 from trader.domain.world_cohort import CohortPhase, WorldCohort, WorldCohortId
-from trader.domain.world_episode import canonical_sha256, parse_bar_interval, parse_utc_timestamp
+from trader.domain.world_episode import (
+    CONTEXT_FEATURE_CONTRACT_ID,
+    canonical_sha256,
+    parse_bar_interval,
+    parse_utc_timestamp,
+)
 from trader.domain.world_feature_contract import graph_content_mask, graph_feature_contract
 from trader.domain.world_pattern import EXPLICIT_GRAPH_PATTERN_MODEL_IDENTITY, PatternDiscoveryCompleted
 
@@ -250,9 +255,14 @@ def pattern_evaluation_dataset_fingerprint(
     )
 
 
-def _graph_only(cohort: WorldCohort) -> bool:
-    lane_ids = tuple(lane.lane_id for lane in cohort.manifest.lanes)
-    return bool(lane_ids) and all(lane_id.endswith(".graph") for lane_id in lane_ids)
+def _has_graph_lanes(cohort: WorldCohort) -> bool:
+    return cohort.manifest.has_graph_lanes()
+
+
+def _has_context_control_lane(cohort: WorldCohort) -> bool:
+    return any(
+        lane.feature_contract_id == CONTEXT_FEATURE_CONTRACT_ID for lane in cohort.manifest.lanes
+    )
 
 
 def _collection_window_elapsed(cohort: WorldCohort, now: datetime) -> bool:
@@ -341,7 +351,7 @@ class PatternShadowWorkflow:
         stages: list[PatternShadowStageResult] = []
         stages.append(self._close_ended_evaluations(resolved_as_of))
         try:
-            graph_cohorts = tuple(filter(_graph_only, self.cohorts.list_collecting_cohorts()))
+            graph_cohorts = tuple(filter(_has_graph_lanes, self.cohorts.list_collecting_cohorts()))
         except Exception as exc:  # noqa: BLE001 - shadow workflow is fail-open
             stages.append(PatternShadowStageResult("cohort_select", "failed", error=_error(exc)))
             return PatternShadowWorkflowResult(resolved_as_of, "partial", tuple(stages))
@@ -353,6 +363,18 @@ class PatternShadowWorkflow:
             return PatternShadowWorkflowResult(resolved_as_of, "skipped", tuple(stages))
 
         cohort = graph_cohorts[0]
+        if not _has_context_control_lane(cohort):
+            stages.append(
+                PatternShadowStageResult(
+                    "cohort_select", "skipped", reason="graph_cohort_missing_context_control"
+                )
+            )
+            return PatternShadowWorkflowResult(
+                resolved_as_of,
+                "skipped",
+                tuple(stages),
+                evaluation_cohort_id=cohort.cohort_id,
+            )
         started = cohort.started_event
         if started is None:
             stages.append(PatternShadowStageResult("cohort_select", "skipped", reason="missing_started_event"))

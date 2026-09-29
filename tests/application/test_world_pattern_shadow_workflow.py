@@ -44,6 +44,7 @@ from trader.application.world_model.pattern_shadow_workflow import (
 from trader.domain.world_cohort import (
     CloseWorldCohort,
     CohortPhase,
+    RegisterWorldCohort,
     WorldCohort,
     WorldCohortEvent,
     WorldCohortEventEnvelope,
@@ -232,7 +233,7 @@ def _collecting_graph() -> tuple[object, WorldCohort]:
     report = _activate(cohort_service=service, now=BOOT)
     graph_id = next(item["cohort_id"] for item in report.cohorts if item["key"] == "graph")
     registered = store.load(WorldCohortId(graph_id))
-    service.arm(_arm_command(registered.manifest, sensors=("graph",)))
+    service.arm(_arm_command(registered.manifest, sensors=("graph", "company", "macro")))
     service.start(_start_command(registered.manifest))
     return store, store.load(WorldCohortId(graph_id))
 
@@ -399,6 +400,32 @@ def test_missing_or_ambiguous_graph_cohort_skips_before_discovery(cohorts, reaso
 
     assert result.status == "skipped"
     assert _stage(result, "cohort_select").reason == reason
+    assert calls == []
+
+
+def test_graph_cohort_without_context_control_skips_before_discovery() -> None:
+    from tests.read_models.test_world_graph_report import _graph_manifest
+
+    service, store = _pilot_service()
+    full = _graph_manifest()
+    manifest = _graph_manifest(
+        market_feature_contract="world_feature.market.v2",
+        context_feature_contract="world_feature.graph.v1",
+        sensor_requirements=tuple(
+            item for item in full.sensor_requirements if item.sensor_id == "graph"
+        ),
+        lanes=tuple(lane for lane in full.lanes if lane.lane_id.endswith(".graph")),
+    )
+    service.register(RegisterWorldCohort(manifest=manifest))
+    service.arm(_arm_command(manifest, sensors=("graph",)))
+    service.start(_start_command(manifest))
+    legacy = store.load(WorldCohortId(manifest.cohort_id))
+    workflow, *_rest, calls = _workflow(query=_Query((legacy,), store))
+
+    result = workflow.run(BOOT)
+
+    assert result.status == "skipped"
+    assert _stage(result, "cohort_select").reason == "graph_cohort_missing_context_control"
     assert calls == []
 
 

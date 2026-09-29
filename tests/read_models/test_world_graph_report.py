@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from tests.domain.test_world_cohort import COHORT_ID, _lane, _manifest
+from tests.domain.test_world_cohort import COHORT_ID, JOINT_MASK, V2, _lane, _manifest
 from trader.application.world_model.cohort_service import WorldCohortService
 from trader.domain.world_cohort import (
     ArmWorldCohort,
@@ -45,7 +45,8 @@ _CLAIM = {
 def _graph_manifest(**overrides: object):
     values: dict[str, object] = {
         "cohort_id": GRAPH_COHORT_ID,
-        "context_feature_contract": V3.contract_id,
+        "market_feature_contract": V3.contract_id,
+        "context_feature_contract": V2.contract_id,
         "scope_mapping": {
             "mapping_id": WORLD_SCOPE_MAPPING_ID,
             "mapping_sha256": _scope_mapping().content_sha256,
@@ -58,6 +59,20 @@ def _graph_manifest(**overrides: object):
                 mode="required",
                 lane_ids=("markov.graph", "gru.graph"),
             ),
+            WorldSensorRequirement(
+                sensor_id="company",
+                source_contract_id="company_intelligence_brief.v1",
+                projection_contract_id="company_context_projection.v1",
+                mode="required",
+                lane_ids=("markov.joint", "gru.joint"),
+            ),
+            WorldSensorRequirement(
+                sensor_id="macro",
+                source_contract_id="world_macro_source.v1",
+                projection_contract_id="macro_context_projection.v1",
+                mode="required",
+                lane_ids=("markov.joint", "gru.joint"),
+            ),
         ),
         "lanes": (
             _lane("markov.graph", contract=V3, mask=TOPOLOGY, role="primary_control"),
@@ -67,6 +82,15 @@ def _graph_manifest(**overrides: object):
                 contract=V3,
                 mask=CONTENT,
                 role="pilot_treatment",
+                sequence_length=4,
+            ),
+            _lane("markov.joint", contract=V2, mask=JOINT_MASK, role="process_control"),
+            _lane(
+                "gru.joint",
+                family="gru",
+                contract=V2,
+                mask=JOINT_MASK,
+                role="process_control",
                 sequence_length=4,
             ),
         ),

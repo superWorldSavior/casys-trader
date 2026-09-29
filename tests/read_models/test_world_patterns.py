@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +47,12 @@ from trader.reporting.read_models.world_patterns import (
 UTC = timezone.utc
 COHORT_ID = "world_cohort:graph_pilot"
 CLOSED_AT = datetime(2026, 9, 4, tzinfo=UTC)
+# Production shape: episodes carry the region venue (EU/TW/US) while graph
+# instrument entities carry the MIC (mic:XTAI:...); prospective matching runs
+# strictly after the next bar boundary, so occurrence cutoffs never equal the
+# bar they score.
+_REGION = "TW"
+_BAR_LAG = timedelta(minutes=15)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GRAPH_CONFIG = yaml.safe_load((REPO_ROOT / "config" / "world_graph.yaml").read_text(encoding="utf-8"))
 ASSESSMENT_CONCLUSIONS = frozenset(
@@ -89,7 +95,7 @@ def _iso(value: datetime) -> str:
 
 def _store_market_episode(symbol: str, *, as_of: datetime = CUTOFF) -> dict[str, Any]:
     observation = WorldObservation(
-        venue="XTAI",
+        venue=_REGION,
         symbol=symbol,
         bar_interval="1h",
         as_of_bar_ts=as_of,
@@ -181,6 +187,7 @@ def _context_prediction(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     episode_id = _episode_id(symbol, contract="v2")
+    bar_ts = cutoff_at - _BAR_LAG
     payload = {
         "prediction_id": f"world-prediction:v1:{canonical_sha256({'v2': symbol, 'cutoff': _iso(cutoff_at)})}",
         "episode_id": episode_id,
@@ -193,12 +200,12 @@ def _context_prediction(
         "model_kind": "hierarchical_dirichlet_world_baseline@context.v1",
         "model_version": "context.v1",
         "probabilities": probabilities,
-        "venue": "XTAI",
+        "venue": _REGION,
         "symbol": symbol,
         "bar_interval": "1h",
-        "as_of_bar_ts": _iso(cutoff_at),
-        "predicted_at": _iso(cutoff_at),
-        "ready_at": _iso(cutoff_at),
+        "as_of_bar_ts": _iso(bar_ts),
+        "predicted_at": _iso(bar_ts),
+        "ready_at": _iso(bar_ts),
         "study_cohort_id": COHORT_ID,
     }
     if extra:
@@ -225,6 +232,34 @@ def _topology_prediction(
     return payload
 
 
+def _bar_episode(
+    episode_id: str,
+    symbol: str,
+    *,
+    contract_version: str,
+    as_of_bar_ts: str,
+) -> dict[str, Any]:
+    return {
+        "episode_id": episode_id,
+        "observation": {
+            "venue": _REGION,
+            "symbol": symbol,
+            "bar_interval": "1h",
+            "as_of_bar_ts": as_of_bar_ts,
+            "feature_contract_version": contract_version,
+        },
+    }
+
+
+def _occurrence_episode(occurrence: PatternOccurrence, symbol: str) -> dict[str, Any]:
+    return _bar_episode(
+        occurrence.spec.forecast.episode_id,
+        symbol,
+        contract_version="world_feature.graph.v1",
+        as_of_bar_ts=_iso(occurrence.cutoff_at - _BAR_LAG),
+    )
+
+
 def _matched_family(
     *,
     closed: bool = True,
@@ -234,6 +269,7 @@ def _matched_family(
     invalidate: bool = False,
     mismatch_outcome: bool = False,
     single: bool = False,
+    prediction_episodes: bool = True,
 ) -> dict[str, Any]:
     instruments = _INSTRUMENTS[:1] if single else _INSTRUMENTS
     evaluating = _evaluating()
@@ -246,6 +282,14 @@ def _matched_family(
     occurrence_events: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     predictions: list[dict[str, Any]] = []
+    episodes: list[dict[str, Any]] = []
+    seen_episodes: set[str] = set()
+
+    def _remember_episode(episode: dict[str, Any]) -> None:
+        if episode["episode_id"] not in seen_episodes:
+            seen_episodes.add(episode["episode_id"])
+            episodes.append(episode)
+
     record_on = evaluating
     for symbol, probabilities, endpoint in instruments:
         occurrence, outcome_payload = _linked_occurrence(
@@ -255,6 +299,7 @@ def _matched_family(
             endpoint_close=endpoint,
         )
         occurrence_events.extend(event.to_dict() for event in occurrence.events)
+        _remember_episode(_occurrence_episode(occurrence, symbol))
         if mismatch_outcome:
             outcome_payload = {**outcome_payload, "source_raw_sha256": "d" * 64}
         outcomes.append(outcome_payload)
@@ -286,7 +331,18 @@ def _matched_family(
         )
         hypothesis_events.extend(event.to_dict() for event in _closed(other).events)
         occurrence_events.extend(event.to_dict() for event in noise[0].events)
+        _remember_episode(_occurrence_episode(noise[0], "2330"))
         outcomes.append(noise[1])
+    if prediction_episodes:
+        for prediction in predictions:
+            _remember_episode(
+                _bar_episode(
+                    prediction["episode_id"],
+                    prediction["symbol"],
+                    contract_version=prediction["feature_contract_version"],
+                    as_of_bar_ts=prediction["as_of_bar_ts"],
+                )
+            )
     return {
         "status": "loaded",
         "exists": True,
@@ -296,7 +352,7 @@ def _matched_family(
         "outcome_links": [],
         "outcomes": outcomes,
         "predictions": predictions,
-        "episodes": [],
+        "episodes": episodes,
     }
 
 
@@ -397,7 +453,7 @@ def test_report_schema_keeps_shadow_only_claims_and_closed_conclusions() -> None
 
 
 def test_report_rejoins_compact_predictions_to_their_canonical_episodes() -> None:
-    expanded = _matched_family()
+    expanded = _matched_family(prediction_episodes=False)
     compact = dict(expanded)
     episodes: list[dict[str, Any]] = []
     predictions: list[dict[str, Any]] = []
@@ -422,7 +478,7 @@ def test_report_rejoins_compact_predictions_to_their_canonical_episodes() -> Non
         ):
             prediction.pop(field, None)
         predictions.append(prediction)
-    compact["episodes"] = episodes
+    compact["episodes"] = episodes + expanded["episodes"]
     compact["predictions"] = predictions
 
     expected = project_world_pattern_report(expanded)
@@ -437,7 +493,7 @@ def test_matched_context_graph_sets_pair_same_anchor_and_horizon() -> None:
     report = project_world_pattern_report(_matched_family())
     assert report["matched_sets"]
     for row in report["matched_sets"]:
-        assert row["venue"] == "XTAI"
+        assert row["venue"] == _REGION
         assert row["horizon_id"] == "elapsed_1d.v1"
         assert row["context_feature_contract_id"] == "world_feature.context.v1"
         assert row["graph_feature_contract_id"] == "world_feature.graph.v1"
@@ -451,6 +507,29 @@ def test_matched_context_graph_sets_pair_same_anchor_and_horizon() -> None:
     assert assessment["unique_support"] == 5
     assert assessment["lift_vs_context"]["mean_delta"] < 0.0
     assert assessment["log_loss"]["graph"] < assessment["log_loss"]["context"]
+
+
+def test_pairing_uses_episode_bar_despite_mic_venue_and_post_bar_cutoff() -> None:
+    ledger = _matched_family(single=True, include_topology=False, include_without_event=False)
+    recorded = next(
+        row for row in ledger["occurrence_events"] if row["event_type"] == "pattern_occurrence_recorded"
+    )
+    occurrence = recorded["occurrence"]
+    mic = occurrence["instrument"]["entity_id"].split(":")[1]
+    episode = next(
+        row for row in ledger["episodes"] if row["episode_id"] == occurrence["forecast"]["episode_id"]
+    )
+    observation = episode["observation"]
+    # Production shape: graph entity venue (MIC) differs from the episode
+    # region venue, and the matching cutoff trails the bar it scores.
+    assert mic != observation["venue"]
+    assert occurrence["cutoff_at"] != observation["as_of_bar_ts"]
+    report = project_world_pattern_report(ledger)
+    assert report["matched_sets"]
+    assert "absent_context_member" not in report["exclusions"]
+    assert "occurrence_episode_missing" not in report["exclusions"]
+    assert "occurrence_bar_unreadable" not in report["exclusions"]
+    assert report["matched_sets"][0]["as_of_bar_ts"] == observation["as_of_bar_ts"]
 
 
 def test_canonical_world_outcome_is_verified_id_digest_horizon() -> None:
@@ -604,7 +683,10 @@ def test_not_supported_when_graph_does_not_beat_context() -> None:
             _context_prediction(symbol="2330", probabilities=_CONTEXT_POOR["2330"]),
             _context_prediction(symbol="2454", probabilities=_CONTEXT_POOR["2454"]),
         ],
-        "episodes": [],
+        "episodes": [
+            _occurrence_episode(occurrence, "2330"),
+            _occurrence_episode(second, "2454"),
+        ],
     }
     report = project_world_pattern_report(ledger)
     assessment = _assessment(report)
@@ -662,7 +744,7 @@ def test_query_indexed_pattern_columns_override_nested_json(tmp_path: Path) -> N
                 },
                 "study_cohort_id": COHORT_ID,
                 "lane_id": "markov.market",
-                "input": {"venue": "XTAI", "symbol": "2330", "bar_interval": "1h", "as_of_bar_ts": v2["as_of_bar_ts"]},
+                "input": {"venue": _REGION, "symbol": "2330", "bar_interval": "1h", "as_of_bar_ts": v2["as_of_bar_ts"]},
             }
         )
         connection = sqlite3.connect(db_path)

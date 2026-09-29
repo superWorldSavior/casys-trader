@@ -734,9 +734,7 @@ def test_mapping_rotation_during_successor_window_reuses_successor_not_a_second_
     assert rotated_ids == successor_ids
     collecting = store.list_collecting_cohorts()
     graph_collecting = [
-        cohort
-        for cohort in collecting
-        if cohort.manifest.lanes and all(lane.lane_id.endswith(".graph") for lane in cohort.manifest.lanes)
+        cohort for cohort in collecting if cohort.manifest.has_graph_lanes()
     ]
     assert [cohort.cohort_id for cohort in graph_collecting] == [successor_ids["graph"]]
     loaded = store.load(WorldCohortId(successor_ids["graph"]))
@@ -1096,7 +1094,7 @@ def test_expired_prior_lifecycle_mapping_cohort_is_closed_without_touching_unrel
     graph_collecting = [
         cohort
         for cohort in store.list_collecting_cohorts()
-        if cohort.manifest.lanes and all(lane.lane_id.endswith(".graph") for lane in cohort.manifest.lanes)
+        if cohort.manifest.has_graph_lanes()
         and cohort.manifest.question != "manual graph cohort must stay collecting"
     ]
     assert [cohort.cohort_id for cohort in graph_collecting] == [successor_ids["graph"]]
@@ -1161,7 +1159,7 @@ def test_collection_window_stays_open_at_fixed_end_and_closes_after() -> None:
     graph_collecting = [
         cohort.cohort_id
         for cohort in store.list_collecting_cohorts()
-        if cohort.manifest.lanes and all(lane.lane_id.endswith(".graph") for lane in cohort.manifest.lanes)
+        if cohort.manifest.has_graph_lanes()
     ]
     assert graph_collecting == [successor_ids["graph"]]
 

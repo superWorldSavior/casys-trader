@@ -253,6 +253,7 @@ def project_world_pattern_report(
         pair = _score_occurrence(
             occurrence,
             hypotheses=hypotheses,
+            episodes=episode_by_id,
             outcome_by_event=outcome_by_event,
             context_by_slot=context_by_slot,
             topology_by_slot=topology_by_slot,
@@ -532,6 +533,7 @@ def _score_occurrence(
     occurrence: PatternOccurrence,
     *,
     hypotheses: Mapping[str, PatternHypothesis],
+    episodes: Mapping[str, Mapping[str, Any]],
     outcome_by_event: Mapping[str, Mapping[str, Any]],
     context_by_slot: Mapping[tuple[str, str, datetime, str], Sequence[Mapping[str, Any]]],
     topology_by_slot: Mapping[tuple[str, str, datetime, str], Sequence[Mapping[str, Any]]],
@@ -544,13 +546,16 @@ def _score_occurrence(
         excluded[join_exclusion] += 1
         return None
     horizon_id = occurrence.spec.forecast.horizon_id
-    instrument = occurrence.instrument.entity_id
-    parsed = _instrument_slot(instrument)
-    if parsed is None:
-        excluded["invalid_instrument_identity"] += 1
+    episode = episodes.get(occurrence.spec.forecast.episode_id)
+    if not isinstance(episode, Mapping):
+        excluded["occurrence_episode_missing"] += 1
         return None
-    venue, symbol = parsed
-    slot = (venue, symbol, occurrence.cutoff_at, horizon_id)
+    bar = _episode_bar(episode)
+    if bar is None:
+        excluded["occurrence_bar_unreadable"] += 1
+        return None
+    venue, symbol, as_of = bar
+    slot = (venue, symbol, as_of, horizon_id)
     link = occurrence.active_outcome_link(horizon_id)
     if link is None:
         excluded["outcome_link_missing"] += 1
@@ -618,7 +623,7 @@ def _score_occurrence(
         occurrence_id=occurrence.occurrence_id,
         venue=venue,
         symbol=symbol,
-        cutoff_at=occurrence.cutoff_at,
+        cutoff_at=as_of,
         horizon_id=horizon_id,
         graph_probabilities=graph_probabilities,
         context_probabilities=context_probabilities,
@@ -1196,13 +1201,23 @@ def _prediction_contract(
     return _text(observation.get("feature_contract_id") or observation.get("feature_contract_version"))
 
 
-def _instrument_slot(entity_id: str) -> tuple[str, str] | None:
-    if not entity_id.startswith("mic:") or ":symbol:" not in entity_id:
+def _episode_bar(episode: Mapping[str, Any]) -> tuple[str, str, datetime] | None:
+    """Bar identity of an episode: (venue, symbol, as_of_bar_ts).
+
+    Occurrences pair with controls on the bar their forecast episode anchors.
+    The graph instrument entity (mic:...) and the post-bar matching cutoff live
+    in a different key space than episode-anchored predictions and can never
+    join with them.
+    """
+
+    observation = episode.get("observation")
+    source = observation if isinstance(observation, Mapping) else episode
+    venue = _text(source.get("venue")) or _text(episode.get("venue"))
+    symbol = _text(source.get("symbol")) or _text(episode.get("symbol"))
+    as_of = _timestamp(source, "as_of_bar_ts") or _timestamp(episode, "as_of_bar_ts")
+    if venue is None or symbol is None or as_of is None:
         return None
-    venue, symbol = entity_id[len("mic:") :].split(":symbol:", 1)
-    if not venue or not symbol:
-        return None
-    return venue, symbol
+    return (venue, symbol, as_of)
 
 
 def _anchor_key(pair: _ScoredPair) -> tuple[str, str, datetime]:

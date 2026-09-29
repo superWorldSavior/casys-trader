@@ -89,7 +89,7 @@ WORLD_SHADOW_PILOT_CONFIG_NAME = "world_shadow_pilot.yaml"
 WORLD_SHADOW_PILOT_ACTIVATION_FLAG = "CASYS_WORLD_SHADOW_PILOT_ACTIVATION"
 WORLD_SHADOW_PILOT_PRIOR_ID = "world_shadow_pilot.v1"
 _C1_LOGICAL = ("market", "status_only", "company", "macro", "joint")
-_GRAPH_LOGICAL = ("graph",)
+_GRAPH_LOGICAL = ("graph", "joint")
 _GRU_SEQUENCE_LENGTH = 4
 
 
@@ -301,8 +301,10 @@ def _logical_name(lane_id: str) -> str:
     return lane_id.rsplit(".", 1)[-1]
 
 
-def _role_for(lane_id: str, *, graph: bool) -> str:
+def _role_for(lane_id: str, *, graph: bool, graph_cohort: bool = False) -> str:
     family, logical = lane_id.split(".", 1)
+    if graph_cohort and not graph:
+        return "process_control"
     if family == "gru" and not graph:
         return "secondary_challenger"
     if graph:
@@ -320,7 +322,7 @@ def _encoder_kind(logical: str, *, family: str) -> str:
     return "topology_status_only" if family == "markov" else "graph_content"
 
 
-def _lane(family: str, logical: str) -> WorldLaneDefinition:
+def _lane(family: str, logical: str, *, graph_cohort: bool = False) -> WorldLaneDefinition:
     profile = world_lane_encoder_profile(_encoder_kind(logical, family=family))
     lane_id = f"{family}.{logical}"
     sequence_length = None if family == "markov" else _GRU_SEQUENCE_LENGTH
@@ -343,7 +345,7 @@ def _lane(family: str, logical: str) -> WorldLaneDefinition:
                 "seed": 0,
             }
         ),
-        role=_role_for(lane_id, graph=logical == "graph"),
+        role=_role_for(lane_id, graph=logical == "graph", graph_cohort=graph_cohort),
     )
 
 
@@ -475,16 +477,25 @@ def _materialize_manifest(
         raise ValueError(f"{key} must declare families and logical_lanes")
     if "graph" in logicals:
         if tuple(logicals) != _GRAPH_LOGICAL:
-            raise ValueError("graph cohort must keep graph lanes off technical C1")
+            raise ValueError("graph cohort must declare exactly graph/joint lanes")
     elif tuple(logicals) != _C1_LOGICAL:
         raise ValueError("technical C1 must declare market/status_only/company/macro/joint")
-    lanes = tuple(_lane(family, logical) for family in families for logical in logicals)
     graph = "graph" in logicals
-    context_contract = (
-        GRAPH_FEATURE_CONTRACT_ID
-        if graph
-        else _required_text(config.payload.get("context_feature_contract"), "context_feature_contract")
-    )
+    lanes = tuple(_lane(family, logical, graph_cohort=graph) for family in families for logical in logicals)
+    if graph:
+        # Declared contracts gate lane contracts: the pattern cohort pairs
+        # graph treatment lanes with a joint-context control lane.
+        market_contract = GRAPH_FEATURE_CONTRACT_ID
+        context_contract = _required_text(
+            config.payload.get("context_feature_contract"), "context_feature_contract"
+        )
+    else:
+        market_contract = _required_text(
+            config.payload.get("market_feature_contract"), "market_feature_contract"
+        )
+        context_contract = _required_text(
+            config.payload.get("context_feature_contract"), "context_feature_contract"
+        )
     if graph:
         declared = _required_text(
             spec.get("ontology_revision") or MARKET_ONTOLOGY_REVISION,
@@ -518,10 +529,7 @@ def _materialize_manifest(
             config.payload.get("sampling_policy_version"),
             "sampling_policy_version",
         ),
-        market_feature_contract=_required_text(
-            config.payload.get("market_feature_contract"),
-            "market_feature_contract",
-        ),
+        market_feature_contract=market_contract,
         context_feature_contract=context_contract,
         ontology_revision=ontology_revision,
         scope_mapping={

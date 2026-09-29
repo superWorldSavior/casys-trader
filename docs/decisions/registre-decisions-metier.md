@@ -611,3 +611,41 @@ n'a d'effet qu'après redémarrage du daemon.
 
 **Points ouverts.** Jointure pré-décision durable et politique d'exécution
 shadow pré-enregistrée : hors périmètre jusqu'à une décision métier séparée.
+
+---
+
+## D20 — Appariement pattern sur la barre de l'épisode + contrôle contexte joint  🛠 implémenté (2026-09-29)
+**Contexte.** Le report pattern n'a jamais scoré un seul matched set en
+production : le slot occurrence était construit depuis l'entité graphe
+(`mic:XPAR:…`) et le cutoff de matching (as_of + 15 min par design), tandis
+que les prédictions contrôles sont ancrées épisode (`EU`, `as_of_bar_ts`).
+Venue et temps ne pouvaient jamais matcher. De plus les cohortes pattern ne
+déclaraient que des lanes graphe, donc aucun contrôle `world_feature.context.v1`
+n'était rattaché à la cohorte d'évaluation. Les fixtures de test masquaient le
+bug (venue MIC des deux côtés, cutoff égal à la barre).
+
+**Décision.** (1) Le read model apparie chaque occurrence sur la barre de son
+épisode de forecast (`venue`, `symbol`, `as_of_bar_ts` de l'épisode graphe),
+identité causale exacte partagée avec les épisodes frères contexte (vérifié :
+100 % des barres d'occurrence ont un frère contexte). (2) La cohorte pilote
+graphe déclare `graph` + `joint` : les lanes `markov.joint`/`gru.joint`
+(contrat contexte, rôle `process_control`) fournissent le contrôle apparié
+requis par le report ; génération pilote 10. (3) Le workflow shadow refuse
+loud (`graph_cohort_missing_context_control`) une cohorte graphe sans lane
+contrôle contexte au lieu de collecter des occurrences inscorables. Les
+cohortes pré-génération-10 ne scoreront jamais (manifestes append-only) :
+fix-forward uniquement.
+
+**Owners.** `reporting/read_models/world_patterns` (clé de jointure) ;
+`application/world_model/pilot_activation` (lanes cohorte graphe) ;
+`application/world_model/pattern_shadow_workflow` (garde fail-fast) ;
+`config/world_shadow_pilot.yaml` (génération 10).
+
+**Politique.** Pas de mapping MIC↔région ad hoc, pas de tolérance temporelle,
+pas de fallback hors-cohorte : l'appariement reste une égalité exacte sur la
+clé de barre. Toute lane ajoutée à une cohorte graphe doit garder une lane
+contrôle de contrat contexte, sinon l'activation échoue.
+
+**Points ouverts.** Unification long terme de l'identité instrument
+(entités graphe vs épisodes) : une clé canonique unique tuerait toute la
+classe de bugs ; chantier séparé, non bloquant depuis D20.
