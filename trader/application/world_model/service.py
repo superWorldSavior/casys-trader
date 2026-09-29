@@ -20,9 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from trader.application.world_model.encoding import (
+    PredictorIdentityCollisionError,
     common_training_replay_key,
     feature_contract_version_of,
     observation_market_anchor,
+    predictor_runtime_key,
 )
 from trader.application.world_model.hydration_snapshot import (
     SNAPSHOT_FORMAT_VERSION,
@@ -378,21 +380,16 @@ def _predictor_accepts(predictor: object, episode: object) -> bool:
         return False
 
 
-def _predictor_identity(predictor: object) -> tuple[str, str]:
+def _predictor_identity(predictor: object) -> tuple[str, str, str, str]:
     """Return a stable runtime identity for one shadow predictor.
 
-    Real multi-model predictors are expected to expose ``model_id`` and
-    ``model_version``.  The class-based fallback keeps older injected test
-    doubles and single-model adapters backward compatible without conflating
-    two real challengers.
+    Lane predictors are keyed by study lineage first so the same lane shared
+    by two cohorts (or two generations) stays two independent predictors;
+    background predictors without lineage fall back to (model_id,
+    model_version).
     """
 
-    model_id = str(getattr(predictor, "model_id", "") or "").strip()
-    model_version = str(getattr(predictor, "model_version", "") or "").strip()
-    if not model_id:
-        predictor_type = type(predictor)
-        model_id = f"{predictor_type.__module__}.{predictor_type.__qualname__}"
-    return model_id, model_version or "unversioned"
+    return predictor_runtime_key(predictor)
 
 
 def _prediction_model_identity(value: object) -> tuple[str | None, str | None]:
@@ -477,8 +474,24 @@ class WorldModelService:
         normalized = _normalise_horizons(horizons)
         configured = ([predictor] if predictor is not None else []) + list(predictors or ())
         identities = [_predictor_identity(item) for item in configured]
-        if len(set(identities)) != len(identities):
-            raise ValueError("shadow predictors must have unique model_id/model_version identities")
+        seen: dict[tuple[str, str, str, str], int] = {}
+        for position, identity in enumerate(identities):
+            if identity in seen:
+                study_cohort_id, lane_id, model_id, model_version = identity
+                raise PredictorIdentityCollisionError(
+                    code="predictor_identity_collision",
+                    context={
+                        "key": list(identity),
+                        "study_cohort_id": study_cohort_id,
+                        "lane_id": lane_id,
+                        "model_id": model_id,
+                        "model_version": model_version,
+                        "positions": [seen[identity], position],
+                    },
+                    recovery="pass each (study_cohort_id, lane_id) predictor once; "
+                    "background predictors must keep unique (model_id, model_version)",
+                )
+            seen[identity] = position
         self.store = store
         self.predictors = tuple(configured)
         # Retain the original attribute for compatibility with older callers;
@@ -855,8 +868,10 @@ class WorldModelService:
                 continue
             if not self._predictor_sees_episode(predictor, episode, horizon=horizon):
                 continue
-            model_id, model_version = self._predictor_identities[id(predictor)]
-            key = (identifier, horizon, model_id, model_version)
+            study_cohort_id, lane_id, model_id, model_version = self._predictor_identities[
+                id(predictor)
+            ]
+            key = (identifier, horizon, study_cohort_id, lane_id, model_id, model_version)
             if key in self._prediction_keys:
                 report["predictions_existing"] = int(report["predictions_existing"]) + 1
                 continue
@@ -969,8 +984,9 @@ class WorldModelService:
         if self._prediction_keys_hydrated:
             return
         try:
-            # Startup deduplication needs four indexed identity columns, never
-            # the historical JSON payloads (the dominant bytes in this table).
+            # Startup deduplication needs six indexed identity columns (study
+            # lineage included), never the historical JSON payloads (the
+            # dominant bytes in this table).
             rows = self.store.list_prediction_identities()
             for row in list(rows or []):
                 identifier = _episode_id(row)
@@ -978,15 +994,19 @@ class WorldModelService:
                 if not identifier or not horizon:
                     continue
                 model_id, model_version = _prediction_model_identity(row)
+                row_cohort = _field(row, "study_cohort_id") or ""
+                row_lane = _field(row, "lane_id") or ""
                 candidates = [
                     identity
                     for identity in self._predictor_identities.values()
-                    if (model_id is None or identity[0] == model_id)
-                    and (model_version is None or identity[1] == model_version)
+                    if identity[0] == row_cohort
+                    and identity[1] == row_lane
+                    and (model_id is None or identity[2] == model_id)
+                    and (model_version is None or identity[3] == model_version)
                 ]
                 if len(candidates) == 1:
                     identity = candidates[0]
-                    self._prediction_keys.add((identifier, horizon, identity[0], identity[1]))
+                    self._prediction_keys.add((identifier, horizon, *identity))
             self._prediction_keys_hydrated = True
         except Exception as exc:  # noqa: BLE001
             self._error(report, stage="list_prediction_identities", error=exc)
@@ -1013,7 +1033,7 @@ class WorldModelService:
                 continue
             if not self._predictor_sees_episode(predictor, episode):
                 continue
-            model_id, model_version = self._predictor_identities[id(predictor)]
+            _, _, model_id, model_version = self._predictor_identities[id(predictor)]
             try:
                 observe(_clone(episode))
             except Exception as exc:  # noqa: BLE001 - one challenger never blocks another
@@ -1041,9 +1061,18 @@ class WorldModelService:
 
         A single legacy predictor without the snapshot protocol (or without
         ``reset_for_replay``) disables snapshots: a partial restore could
-        silently diverge from a replay.
+        silently diverge from a replay. Snapshot entries are keyed by
+        (model_id, model_version), so a model pair shared by two study
+        lineages also disables snapshots: replay from the ledger heals
+        each predictor independently.
         """
 
+        seen: set[tuple[str, str]] = set()
+        for predictor in self._snapshot_scoped_predictors():
+            pair = self._predictor_identities[id(predictor)][2:]
+            if pair in seen:
+                return "snapshot_predictor_set_ambiguous"
+            seen.add(pair)
         for predictor in self._snapshot_scoped_predictors():
             if not callable(getattr(predictor, "reset_for_replay", None)):
                 break
@@ -1055,7 +1084,7 @@ class WorldModelService:
                 break
         else:
             return None
-        model_id, model_version = self._predictor_identities[id(predictor)]
+        _, _, model_id, model_version = self._predictor_identities[id(predictor)]
         return f"snapshot_predictor_unsupported:{model_id}:{model_version}"
 
     def _warn_snapshot_once(self, key: str, message: str) -> None:
@@ -1155,8 +1184,8 @@ class WorldModelService:
                 identity = self._predictor_identities[id(predictor)]
                 contract = predictor.snapshot_contract
                 if not isinstance(contract, dict):
-                    raise SnapshotError(f"snapshot_predictor_unsupported:{identity[0]}:{identity[1]}")
-                contracts[identity] = contract
+                    raise SnapshotError(f"snapshot_predictor_unsupported:{identity[2]}:{identity[3]}")
+                contracts[identity[2:]] = contract
         except SnapshotError as exc:
             self._warn_snapshot_once(exc.reason, f"snapshot restore skipped ({exc.reason}); replaying from the ledger")
             report["model_snapshot"] = {"restored": False, "reason": exc.reason}
@@ -1177,7 +1206,9 @@ class WorldModelService:
         if mismatch is not None:
             report["model_snapshot"] = {"restored": False, "reason": mismatch}
             return None
-        by_identity = {self._predictor_identities[id(predictor)]: predictor for predictor in scoped}
+        by_identity = {
+            self._predictor_identities[id(predictor)][2:]: predictor for predictor in scoped
+        }
         try:
             entries = payload["predictors"]
             assert isinstance(entries, list)
@@ -1242,7 +1273,7 @@ class WorldModelService:
         try:
             entries = []
             for predictor in self._snapshot_scoped_predictors():
-                model_id, model_version = self._predictor_identities[id(predictor)]
+                _, _, model_id, model_version = self._predictor_identities[id(predictor)]
                 entries.append(
                     {
                         "model_id": model_id,
@@ -1447,7 +1478,7 @@ class WorldModelService:
             reset = getattr(predictor, "reset_for_replay", None)
             if not callable(reset):
                 continue
-            model_id, model_version = self._predictor_identities[id(predictor)]
+            _, _, model_id, model_version = self._predictor_identities[id(predictor)]
             try:
                 reset()
             except Exception as exc:  # noqa: BLE001
@@ -1516,7 +1547,7 @@ class WorldModelService:
                     continue
                 if not self._predictor_sees_episode(predictor, episode, horizon=_horizon_id(row)):
                     continue
-                model_id, model_version = self._predictor_identities[id(predictor)]
+                _, _, model_id, model_version = self._predictor_identities[id(predictor)]
                 try:
                     applied = self._call_baseline_apply(predictor.apply_outcome, label, episode, now)
                 except Exception as exc:  # noqa: BLE001
@@ -1770,7 +1801,7 @@ class WorldModelService:
                 continue
             if not self._predictor_sees_episode(predictor, episode, horizon=horizon):
                 continue
-            model_id, model_version = self._predictor_identities[id(predictor)]
+            _, _, model_id, model_version = self._predictor_identities[id(predictor)]
             try:
                 applied = self._call_baseline_apply(apply_outcome, outcome, episode, now)
             except Exception as exc:  # noqa: BLE001
@@ -1806,7 +1837,7 @@ class WorldModelService:
         if not isinstance(counts, dict):
             counts = {}
             report[by_model_key] = counts
-        model_id, model_version = self._predictor_identities[id(predictor)]
+        _, _, model_id, model_version = self._predictor_identities[id(predictor)]
         key = f"{model_id}@{model_version}"
         counts[key] = int(counts.get(key, 0)) + 1
 

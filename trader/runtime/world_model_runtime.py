@@ -19,6 +19,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trader.application.world_model.encoding import (
+    PredictorIdentityCollisionError,
+    predictor_runtime_key,
+)
 from trader.application.world_model.scope_mapping_ports import WorldScopeMappingGenerationQuery
 from trader.application.world_model.service import (
     DEFAULT_HORIZONS,
@@ -200,6 +204,13 @@ class WorldModelBackgroundRunner:
                             lifecycle_status = report["pattern_lifecycle"].get("status")
                         if lifecycle_status == "partial":
                             report["status"] = "partial"
+                            self._warn(
+                                {
+                                    "stage": "pattern_lifecycle",
+                                    "status": lifecycle_status,
+                                    "lifecycle": report["pattern_lifecycle"],
+                                }
+                            )
                     except Exception as exc:  # noqa: BLE001 - pattern shadow cannot affect Trader
                         self._background_error(report, stage="pattern_lifecycle", error=exc)
                 if report["errors"]:
@@ -928,13 +939,8 @@ def _wire_cohort_service(store: object, cohort_service: object | None) -> object
     return WorldCohortService(repository=store, query=store)  # type: ignore[arg-type]
 
 
-def _predictor_key(predictor: object) -> tuple[str, str]:
-    model_id = str(getattr(predictor, "model_id", "") or "").strip()
-    model_version = str(getattr(predictor, "model_version", "") or "").strip()
-    if not model_id:
-        predictor_type = type(predictor)
-        model_id = f"{predictor_type.__module__}.{predictor_type.__qualname__}"
-    return model_id, model_version or "unversioned"
+def _predictor_key(predictor: object) -> tuple[str, str, str, str]:
+    return predictor_runtime_key(predictor)
 
 
 def _mint_collecting_cohort_predictors(store: object, cohort_service: object | None) -> tuple[object, ...]:
@@ -1011,7 +1017,19 @@ class WorldModelRuntime(WorldModelService):
         for item in _mint_collecting_cohort_predictors(store, resolved):
             key = _predictor_key(item)
             if key in taken:
-                continue
+                study_cohort_id, lane_id, model_id, model_version = key
+                raise PredictorIdentityCollisionError(
+                    code="predictor_identity_collision",
+                    context={
+                        "key": list(key),
+                        "study_cohort_id": study_cohort_id,
+                        "lane_id": lane_id,
+                        "model_id": model_id,
+                        "model_version": model_version,
+                    },
+                    recovery="minted predictors must have distinct (study_cohort_id, lane_id); "
+                    "check cohort manifests for duplicate lanes",
+                )
             taken.add(key)
             extras.append(item)
         super().__init__(

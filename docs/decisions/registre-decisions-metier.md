@@ -649,3 +649,37 @@ contrôle de contrat contexte, sinon l'activation échoue.
 **Points ouverts.** Unification long terme de l'identité instrument
 (entités graphe vs épisodes) : une clé canonique unique tuerait toute la
 classe de bugs ; chantier séparé, non bloquant depuis D20.
+
+## D21 — Lignée prédicteur (cohorte,lane) + contrôle contexte unique  🛠 implémenté (2026-09-29)
+**Contexte.** Revue externe de D20 (`37dddb2`) : le rapport restait à
+`0 matched set` car (P0-1) la dedup runtime indexée par
+`(model_id,model_version)` faisait voler les prédictions entre cohortes
+sœurs (preuve prod : C1 `…5e47303fef`, 1816 slots, 0 prédiction depuis le
+23/09), et (P0-2) deux lanes contexte (`markov.joint` + `gru.joint`)
+rendaient le contrôle ambigu (`len(context_rows)>1` strict).
+
+**Décision.** (1) L'identité runtime d'un prédicteur est
+`(study_cohort_id,lane_id)` quand la lane existe, repli
+`(model_id,model_version)` sinon ; toute collision silencieuse devient une
+erreur codée `predictor_identity_collision` (état persistant, `prediction_id`
+et snapshot incluent la lignée). (2) Une cohorte graphe déclare EXACTEMENT
+une lane contrôle contexte : `markov.joint` (baseline stable) ; l'activation
+échoue si le compte ≠ 1 ; génération pilote 11. (3) Nouveau stage workflow
+`control_production` : une fois l'évaluation démarrée et des slots admis, le
+contrôle doit avoir ≥ 1 prédiction persistée (hot+froid), sinon `failed`
+(`control_predictions_missing`) → workflow `partial` + warn runtime. Les
+lectures d'identités dégradent explicitement sur schéma legacy (4 clés).
+
+**Owners.** `application/world_model/encoding` (clé runtime, collision) ;
+`domain/world_episode` (`prediction_id` ligné) ;
+`application/world_model/service` + `runtime/world_model_runtime` (dedup) ;
+`application/world_model/pilot_activation` (single control, gen 11) ;
+`application/world_model/pattern_shadow_workflow` (stage `control_production`) ;
+`infrastructure/state_db/world_model_store` (`count_study_predictions`) ;
+`infrastructure/state_db/world_prediction_reader` (identités 6 colonnes).
+
+**Politique.** Jamais de `continue` silencieux sur collision d'identité :
+erreur codée avec `code` + `context` + `recovery`. Jamais de contrôle
+implicite : une lane contexte manquante ou non productive est `failed`,
+pas `completed`. Cohortes gen ≤ 10 jamais scorables (append-only) :
+fix-forward, rollout = clore gen10 + restart → gen11.

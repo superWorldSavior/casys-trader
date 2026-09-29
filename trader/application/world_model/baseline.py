@@ -43,6 +43,7 @@ from trader.application.world_model.encoding import (
     canonical_training_label_evidence,
     comparison_lineage,
     iso_utc,
+    lane_prediction_lineage,
     normalise_horizon_id,
     observation_market_anchor,
     optional_model_timestamp,
@@ -461,6 +462,7 @@ class HierarchicalDirichletWorldBaseline:
             model_fingerprint=self.model_fingerprint(horizon_key),
             comparison_batch_id=batch_id,
             comparison_cohort_fingerprint=cohort,
+            **lane_prediction_lineage(self),
         )
 
     def predict_audit(

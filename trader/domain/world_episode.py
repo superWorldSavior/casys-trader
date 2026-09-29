@@ -1415,6 +1415,8 @@ def world_prediction_id(
     training_cutoff: datetime | str | None = None,
     comparison_batch_id: str | None = None,
     comparison_cohort_fingerprint: str | None = None,
+    study_cohort_id: str | None = None,
+    lane_id: str | None = None,
 ) -> str:
     """Return a deterministic ID for a prediction over an immutable feature view."""
 
@@ -1437,6 +1439,10 @@ def world_prediction_id(
         identity["comparison_cohort_fingerprint"] = _required_text(
             comparison_cohort_fingerprint, "comparison_cohort_fingerprint"
         )
+    if study_cohort_id is not None:
+        identity["study_cohort_id"] = _required_text(study_cohort_id, "study_cohort_id")
+    if lane_id is not None:
+        identity["lane_id"] = _required_text(lane_id, "lane_id")
     return f"world-prediction:v1:{canonical_sha256(identity)}"
 
 
@@ -1490,6 +1496,8 @@ class WorldPrediction:
     model_fingerprint: str | None = None
     comparison_batch_id: str | None = None
     comparison_cohort_fingerprint: str | None = None
+    study_cohort_id: str | None = None
+    lane_id: str | None = None
     recommendation: str = "NO_GO"
     authority: str = "shadow_only"
     decision_effect: str = "none"
@@ -1518,6 +1526,20 @@ class WorldPrediction:
                 self,
                 "comparison_cohort_fingerprint",
                 _required_text(self.comparison_cohort_fingerprint, "comparison_cohort_fingerprint"),
+            )
+        if (self.study_cohort_id is None) != (self.lane_id is None):
+            raise ValueError("study_cohort_id and lane_id must be set together")
+        if self.study_cohort_id is not None:
+            object.__setattr__(
+                self,
+                "study_cohort_id",
+                _required_text(self.study_cohort_id, "study_cohort_id"),
+            )
+        if self.lane_id is not None:
+            object.__setattr__(
+                self,
+                "lane_id",
+                _required_text(self.lane_id, "lane_id"),
             )
 
         status = _required_text(self.status, "status").lower()
@@ -1573,6 +1595,8 @@ class WorldPrediction:
             training_cutoff=self.training_cutoff,
             comparison_batch_id=self.comparison_batch_id,
             comparison_cohort_fingerprint=self.comparison_cohort_fingerprint,
+            study_cohort_id=self.study_cohort_id,
+            lane_id=self.lane_id,
         )
 
     @property
@@ -1580,7 +1604,7 @@ class WorldPrediction:
         return canonical_sha256(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": WORLD_PREDICTION_SCHEMA_VERSION,
             "prediction_id": self.prediction_id,
             "episode_id": self.episode_id,
@@ -1606,6 +1630,10 @@ class WorldPrediction:
             "authority": self.authority,
             "decision_effect": self.decision_effect,
         }
+        if self.study_cohort_id is not None:
+            payload["study_cohort_id"] = self.study_cohort_id
+            payload["lane_id"] = self.lane_id
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> WorldPrediction:
@@ -1631,6 +1659,8 @@ class WorldPrediction:
             model_fingerprint=value.get("model_fingerprint"),
             comparison_batch_id=value.get("comparison_batch_id"),
             comparison_cohort_fingerprint=value.get("comparison_cohort_fingerprint"),
+            study_cohort_id=value.get("study_cohort_id"),
+            lane_id=value.get("lane_id"),
             recommendation=value.get("recommendation", "NO_GO"),
             authority=value.get("authority", "shadow_only"),
             decision_effect=value.get("decision_effect", "none"),

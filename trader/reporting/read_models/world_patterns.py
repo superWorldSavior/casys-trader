@@ -75,7 +75,7 @@ class _ScoredPair:
     occurrence_id: str
     venue: str
     symbol: str
-    cutoff_at: datetime
+    as_of_bar_ts: datetime
     horizon_id: str
     graph_probabilities: tuple[float, float, float]
     context_probabilities: tuple[float, float, float]
@@ -269,7 +269,7 @@ def project_world_pattern_report(
                 "occurrence_id": pair.occurrence_id,
                 "venue": pair.venue,
                 "symbol": pair.symbol,
-                "as_of_bar_ts": pair.cutoff_at.isoformat(),
+                "as_of_bar_ts": pair.as_of_bar_ts.isoformat(),
                 "horizon_id": pair.horizon_id,
                 "context_prediction_id": pair.context_prediction_id,
                 "graph_prediction_id": pair.graph_prediction_id,
@@ -623,7 +623,7 @@ def _score_occurrence(
         occurrence_id=occurrence.occurrence_id,
         venue=venue,
         symbol=symbol,
-        cutoff_at=as_of,
+        as_of_bar_ts=as_of,
         horizon_id=horizon_id,
         graph_probabilities=graph_probabilities,
         context_probabilities=context_probabilities,
@@ -949,7 +949,7 @@ def _block_time_shift(pairs: Sequence[_ScoredPair]) -> dict[str, Any]:
         grouped[_venue_session(pair)].append(pair)
     deltas: list[float] = []
     for block in grouped.values():
-        ordered = sorted(block, key=lambda item: (item.cutoff_at, item.symbol, item.occurrence_id))
+        ordered = sorted(block, key=lambda item: (item.as_of_bar_ts, item.symbol, item.occurrence_id))
         if len(ordered) < 2:
             continue
         shifted_targets = [ordered[(index - 1) % len(ordered)].target_index for index in range(len(ordered))]
@@ -1221,11 +1221,11 @@ def _episode_bar(episode: Mapping[str, Any]) -> tuple[str, str, datetime] | None
 
 
 def _anchor_key(pair: _ScoredPair) -> tuple[str, str, datetime]:
-    return (pair.venue, pair.symbol, pair.cutoff_at)
+    return (pair.venue, pair.symbol, pair.as_of_bar_ts)
 
 
 def _venue_session(pair: _ScoredPair) -> str:
-    return f"{pair.venue}:{pair.cutoff_at.date().isoformat()}"
+    return f"{pair.venue}:{pair.as_of_bar_ts.date().isoformat()}"
 
 
 def _forecast_probabilities(value: Mapping[str, Any]) -> tuple[float, float, float] | None:

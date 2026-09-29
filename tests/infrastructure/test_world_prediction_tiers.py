@@ -303,6 +303,8 @@ def test_cold_schema_is_outside_versioned_migration_and_legacy_hot_only_reads(tm
                 "horizon_code": "elapsed_4h.v1",
                 "model_kind": "markov",
                 "model_version": "markov-v1",
+                "study_cohort_id": None,
+                "lane_id": None,
             }
         ]
     finally:
@@ -644,6 +646,8 @@ def test_distinct_ids_sharing_business_tuple_remain_distinct(tmp_path: Path) -> 
                 "horizon_code": "elapsed_4h.v1",
                 "model_kind": "markov",
                 "model_version": "markov-v1",
+                "study_cohort_id": "cohort-a",
+                "lane_id": "lane-a",
             }
         ]
         assert "payload_json" not in identities[0]
@@ -1178,6 +1182,8 @@ def test_overlapping_json_mismatch_is_rejected_without_hydrating_count(tmp_path:
                 "horizon_code": "elapsed_4h.v1",
                 "model_kind": "markov",
                 "model_version": "markov-v1",
+                "study_cohort_id": "cohort-a",
+                "lane_id": "lane-a",
             }
         ]
         with pytest.raises(PredictionReadUnavailable):

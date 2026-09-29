@@ -1858,6 +1858,33 @@ class WorldModelStore:
 
         return self._append_prediction(prediction, live=True)
 
+    def count_study_predictions(
+        self, study_cohort_id: str, *, feature_contract_fingerprint: str | None = None
+    ) -> int:
+        """Count hot+cold predictions attached to one study cohort, optionally by contract."""
+
+        cohort = _required_text(study_cohort_id, field="study_cohort_id")
+        clauses = ["study_cohort_id = ?"]
+        params: list[str] = [cohort]
+        if feature_contract_fingerprint is not None:
+            clauses.append("feature_contract_fingerprint = ?")
+            params.append(_required_text(feature_contract_fingerprint, field="feature_contract_fingerprint"))
+        where = " AND ".join(clauses)
+        total = 0
+        tables = ["world_shadow_predictions"]
+        cold = self._db.query_one(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'world_prediction_cold_index'"
+        )
+        if cold is not None:
+            tables.append("world_prediction_cold_index")
+        for table in tables:
+            row = self._db.query_one(
+                f"SELECT COUNT(*) AS total FROM {table} WHERE {where}",  # noqa: S608 -- constants only
+                tuple(params),
+            )
+            total += int(row["total"]) if row is not None else 0
+        return total
+
     def append_legacy_prediction(self, prediction: Any) -> bool:
         """Persist a historical or fixture mapping without the live canonical contract."""
 

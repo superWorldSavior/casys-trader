@@ -78,24 +78,35 @@ def read_prediction_identities(connection: sqlite3.Connection | sqlite3.Cursor) 
 
     executor = _executor(connection)
     try:
+        hot_columns = _table_columns(executor, "world_shadow_predictions")
+        lineage = {"study_cohort_id", "lane_id"} <= hot_columns
+        base_cols = "episode_id, horizon_code, model_kind, model_version"
+        full_cols = base_cols + ", study_cohort_id, lane_id"
         if cold_catalog_present(executor):
             validate_registered_cold_storage(executor)
             _assert_no_divergent_duplicates(executor)
+            cols = full_cols if lineage else base_cols
             sql = (
-                "SELECT episode_id, horizon_code, model_kind, model_version FROM ("
-                "SELECT episode_id, horizon_code, model_kind, model_version FROM world_shadow_predictions "
+                f"SELECT {cols} FROM ("
+                f"SELECT {cols} FROM world_shadow_predictions "
                 "UNION "
-                "SELECT episode_id, horizon_code, model_kind, model_version FROM world_prediction_cold_index"
-                ") ORDER BY episode_id, horizon_code, model_kind, model_version"
+                f"SELECT {cols} FROM world_prediction_cold_index"
+                f") ORDER BY {cols}"
+            )
+        elif lineage:
+            sql = (
+                f"SELECT DISTINCT {full_cols} "
+                "FROM world_shadow_predictions "
+                f"ORDER BY {full_cols}"
             )
         else:
             sql = (
-                "SELECT DISTINCT episode_id, horizon_code, model_kind, model_version "
+                f"SELECT DISTINCT {base_cols} "
                 "FROM world_shadow_predictions "
-                "ORDER BY episode_id, horizon_code, model_kind, model_version"
+                f"ORDER BY {base_cols}"
             )
         rows = list(executor.execute(sql))
-        return [
+        identities = [
             {
                 "episode_id": _row_get(row, "episode_id", 0),
                 "horizon_code": _row_get(row, "horizon_code", 1),
@@ -104,6 +115,11 @@ def read_prediction_identities(connection: sqlite3.Connection | sqlite3.Cursor) 
             }
             for row in rows
         ]
+        if lineage:
+            for identity, row in zip(identities, rows, strict=True):
+                identity["study_cohort_id"] = _row_get(row, "study_cohort_id", 4)
+                identity["lane_id"] = _row_get(row, "lane_id", 5)
+        return identities
     except PredictionReadUnavailable:
         raise
     except (OSError, sqlite3.Error) as exc:

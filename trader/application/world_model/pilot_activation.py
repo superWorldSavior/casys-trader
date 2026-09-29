@@ -35,7 +35,10 @@ from trader.application.world_model.cohort_ports import (
     WorldRuntimeIdentityPort,
 )
 from trader.application.world_model.cohort_service import WorldCohortService
-from trader.application.world_model.encoding import world_lane_encoder_profile
+from trader.application.world_model.encoding import (
+    PredictorIdentityCollisionError,
+    world_lane_encoder_profile,
+)
 from trader.application.world_model.gru import MODEL_ID as GRU_MODEL_ID
 from trader.application.world_model.runtime_identity import MeasuredWorldRuntimeIdentityService
 from trader.application.world_model.scope_mapping_ports import WorldScopeMappingGenerationRepository
@@ -66,6 +69,7 @@ from trader.domain.world_cohort import (
 )
 from trader.domain.world_episode import SUPPORTED_WORLD_HORIZONS, canonical_sha256, parse_utc_timestamp
 from trader.domain.world_feature_contract import (
+    CONTEXT_FEATURE_CONTRACT_ID,
     GRAPH_FEATURE_CONTRACT_ID,
     MARKET_ONTOLOGY_REVISION,
     WORLD_SCOPE_MAPPING_ID,
@@ -481,7 +485,25 @@ def _materialize_manifest(
     elif tuple(logicals) != _C1_LOGICAL:
         raise ValueError("technical C1 must declare market/status_only/company/macro/joint")
     graph = "graph" in logicals
-    lanes = tuple(_lane(family, logical, graph_cohort=graph) for family in families for logical in logicals)
+    # The pattern study pairs its graph treatment against exactly one
+    # flat-context control: the stable markov baseline. A second context
+    # lane would make every control slot ambiguous in the report.
+    lanes = tuple(
+        _lane(family, logical, graph_cohort=graph)
+        for family, logical in _lane_pairs_for_spec(families, logicals)
+    )
+    if graph:
+        context_lanes = tuple(
+            lane.lane_id
+            for lane in lanes
+            if lane.feature_contract_id == CONTEXT_FEATURE_CONTRACT_ID
+        )
+        if len(context_lanes) != 1:
+            raise PredictorIdentityCollisionError(
+                code="graph_cohort_context_lane_count",
+                context={"cohort_key": key, "context_lanes": list(context_lanes)},
+                recovery="declare families including markov so the graph cohort mints exactly markov.joint",
+            )
     if graph:
         # Declared contracts gate lane contracts: the pattern cohort pairs
         # graph treatment lanes with a joint-context control lane.
@@ -610,11 +632,26 @@ def _cohort_report(
     }
 
 
+def _lane_pairs_for_spec(
+    families: tuple[str, ...], logicals: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
+    graph = "graph" in logicals
+    return tuple(
+        (family, logical)
+        for family in families
+        for logical in logicals
+        if not (graph and logical == "joint" and family != "markov")
+    )
+
+
 def _lane_signature_for_spec(spec: Mapping[str, Any]) -> tuple[str, ...]:
     families = tuple(_required_text(item, "families[]") for item in spec.get("families") or ())
     logicals = tuple(_required_text(item, "logical_lanes[]") for item in spec.get("logical_lanes") or ())
     return world_cohort_lane_signature(
-        tuple(_lane(family, logical) for family in families for logical in logicals)
+        tuple(
+            _lane(family, logical, graph_cohort="graph" in logicals)
+            for family, logical in _lane_pairs_for_spec(families, logicals)
+        )
     )
 
 

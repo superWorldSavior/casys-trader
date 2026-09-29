@@ -448,6 +448,57 @@ def bound_encoder_profile(
     return profile
 
 
+class PredictorIdentityCollisionError(ValueError):
+    """Two predictors claim the same runtime identity.
+
+    Machine-readable: ``code`` classifies the fault, ``context`` carries the
+    colliding key and owners, ``recovery`` tells the operator what to do.
+    """
+
+    def __init__(
+        self, *, code: str, context: Mapping[str, object], recovery: str
+    ) -> None:
+        self.code = code
+        self.context = dict(context)
+        self.recovery = recovery
+        super().__init__(f"{code}: {self.context} (recovery: {recovery})")
+
+
+def predictor_runtime_key(predictor: object) -> tuple[str, str, str, str]:
+    """Return the dedup identity of one shadow predictor.
+
+    Lane predictors are keyed by study lineage first: the same lane shared by
+    two cohorts (or two generations) mints two independent predictors. The
+    model pair stays in the key so background predictors without lineage still
+    dedup on (model_id, model_version).
+    """
+
+    model_id = str(getattr(predictor, "model_id", "") or "").strip()
+    model_version = str(getattr(predictor, "model_version", "") or "").strip()
+    if not model_id:
+        predictor_type = type(predictor)
+        model_id = f"{predictor_type.__module__}.{predictor_type.__qualname__}"
+    lane_identity = getattr(predictor, "lane_identity", None)
+    study_cohort_id = str(getattr(lane_identity, "study_cohort_id", "") or "").strip()
+    lane_id = str(getattr(lane_identity, "lane_id", "") or "").strip()
+    return (study_cohort_id, lane_id, model_id, model_version or "unversioned")
+
+
+def lane_prediction_lineage(predictor: object) -> dict[str, str]:
+    """Return the study lineage a lane predictor stamps on its predictions.
+
+    Empty for background predictors without lane identity: their prediction
+    ids keep the legacy cohort-blind shape.
+    """
+
+    lane_identity = getattr(predictor, "lane_identity", None)
+    study_cohort_id = getattr(lane_identity, "study_cohort_id", None)
+    lane_id = getattr(lane_identity, "lane_id", None)
+    if not study_cohort_id or not lane_id:
+        return {}
+    return {"study_cohort_id": str(study_cohort_id), "lane_id": str(lane_id)}
+
+
 def bind_cold_lane_identity(
     *,
     lane_id: str,

@@ -105,7 +105,7 @@ def test_committed_pilot_config_is_versioned_hashed_shadow_only_and_operator_aut
     assert payload["schema_version"] == WORLD_SHADOW_PILOT_SCHEMA == "world_shadow_pilot.v1"
     assert payload["pilot_id"] == "world_shadow_pilot.v1"
     assert "supersedes_pilot_id" not in payload
-    assert payload["lifecycle_generation"] == 10
+    assert payload["lifecycle_generation"] == 11
     assert payload["authority"] == "shadow_only"
     assert payload["decision_effect"] == "none"
     assert payload["recommendation"] == "NO_GO"
@@ -242,15 +242,17 @@ def test_technical_c1_excludes_graph_and_graph_cohort_is_its_own_graph_lane() ->
     expected_c1 = {f"{family}.{logical}" for family in ("markov", "gru") for logical in C1_LOGICAL}
     assert c1_ids == expected_c1
     assert not any("graph" in lane_id.split(".") for lane_id in c1_ids)
-    expected_graph = {f"{family}.{logical}" for family in ("markov", "gru") for logical in GRAPH_LOGICAL}
+    expected_graph = {"markov.graph", "gru.graph", "markov.joint"}
     assert graph_ids == expected_graph
     graph_contracts = {lane.lane_id: lane.feature_contract_id for lane in graph.manifest.lanes}
     assert graph_contracts["markov.joint"] == "world_feature.context.v1"
-    assert graph_contracts["gru.joint"] == "world_feature.context.v1"
     graph_roles = {lane.lane_id: lane.role for lane in graph.manifest.lanes}
     assert graph_roles["markov.graph"] is LaneRole.PRIMARY_CONTROL
+    context_lanes = [
+        lane.lane_id for lane in graph.manifest.lanes if lane.feature_contract_id == "world_feature.context.v1"
+    ]
+    assert context_lanes == ["markov.joint"]
     assert graph_roles["markov.joint"] is LaneRole.PROCESS_CONTROL
-    assert graph_roles["gru.joint"] is LaneRole.PROCESS_CONTROL
     families = {lane.lane_id: lane.model_family for lane in (*c1.manifest.lanes, *graph.manifest.lanes)}
     assert families["markov.market"] is ModelFamily.MARKOV
     assert families["gru.joint"] is ModelFamily.GRU
@@ -287,7 +289,7 @@ def test_env_and_config_disable_skip_register_without_raising() -> None:
 
 def test_next_cohort_can_add_three_day_metric_while_one_day_stays_primary(tmp_path: Path) -> None:
     payload = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
-    assert payload["lifecycle_generation"] == 10
+    assert payload["lifecycle_generation"] == 11
     assert payload["horizons"] == ["elapsed_4h.v1", "elapsed_1d.v1", "elapsed_3d.v1"]
     assert payload["primary_horizon"] == "elapsed_1d.v1"
     config_dir = _write_hashed_pilot_config(tmp_path / "next", payload)

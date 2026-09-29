@@ -196,6 +196,36 @@ def test_prediction_is_three_class_and_permanently_shadow_only() -> None:
         )
 
 
+def _prediction(**overrides: object) -> WorldPrediction:
+    values: dict[str, object] = {
+        "episode_id": _observation().episode_id,
+        "horizon_id": "elapsed_4h.v1",
+        "model_id": "baseline",
+        "model_version": "v1",
+        "feature_hash": "abc",
+        "created_at": "2026-08-22T02:02:00+00:00",
+        "probabilities": {"DOWN": 0.2, "FLAT": 0.5, "UP": 0.3},
+        "status": "shadow_only",
+    }
+    values.update(overrides)
+    return WorldPrediction(**values)  # type: ignore[arg-type]
+
+
+def test_prediction_id_is_scoped_by_study_lineage() -> None:
+    first = _prediction(study_cohort_id="world_cohort:v1:aaaa", lane_id="markov.joint")
+    second = _prediction(study_cohort_id="world_cohort:v1:bbbb", lane_id="markov.joint")
+    assert first.prediction_id != second.prediction_id
+    assert first.to_dict()["study_cohort_id"] == "world_cohort:v1:aaaa"
+    assert first.to_dict()["lane_id"] == "markov.joint"
+
+
+def test_prediction_id_without_lineage_keeps_legacy_identity() -> None:
+    assert (
+        _prediction().prediction_id
+        == "world-prediction:v1:ddda920bcf1c206fc314198a43417264a522d31e0e7c278cd897b594a5db100b"
+    )
+
+
 def test_world_outcome_from_dict_adapts_nested_labeler_payload() -> None:
     payload = {
         "episode_id": "episode-nested",

@@ -318,6 +318,53 @@ def _stage(result, name: str):
     return next(item for item in result.stages if item.stage == name)
 
 
+class _ControlCountQuery:
+    """Cohort query stub proving real prediction production (or its absence)."""
+
+    def __init__(self, slots: tuple[object, ...], count: int) -> None:
+        self._slots = slots
+        self._count = count
+
+    def list_slots(self, _cohort_id):
+        return self._slots
+
+    def count_study_predictions(self, _study_cohort_id, *, feature_contract_fingerprint=None):
+        assert feature_contract_fingerprint
+        return self._count
+
+
+def test_control_production_skips_before_evaluation_starts() -> None:
+    workflow, graph, *_ = _workflow()
+    stage = workflow._check_control_production(graph, evaluation_started=False)
+    assert stage.stage == "control_production"
+    assert stage.status == "completed"
+    assert stage.reason == "evaluation_not_started"
+
+
+def test_control_production_without_query_capability_is_explicit_unchecked() -> None:
+    workflow, graph, *_ = _workflow()
+    stage = workflow._check_control_production(graph, evaluation_started=True)
+    assert stage.stage == "control_production"
+    assert stage.status == "completed"
+    assert stage.reason == "control_production_unchecked"
+
+
+def test_control_production_fails_loud_when_admitted_slots_have_no_control_prediction() -> None:
+    workflow, graph, *_ = _workflow(query=_ControlCountQuery((object(),), 0))
+    stage = workflow._check_control_production(graph, evaluation_started=True)
+    assert stage.stage == "control_production"
+    assert stage.status == "failed"
+    assert (stage.error or {}).get("code") == "control_predictions_missing"
+
+
+def test_control_production_passes_when_control_predictions_exist() -> None:
+    workflow, graph, *_ = _workflow(query=_ControlCountQuery((object(),), 2))
+    stage = workflow._check_control_production(graph, evaluation_started=True)
+    assert stage.stage == "control_production"
+    assert stage.status == "completed"
+    assert stage.reason is None
+
+
 def test_first_run_freezes_window_registers_then_evaluates_and_links_last() -> None:
     workflow, graph, lifecycle, discovery, evaluation, outcomes, _patterns, pattern_store, calls = _workflow()
 
@@ -424,7 +471,7 @@ def test_graph_cohort_without_context_control_skips_before_discovery() -> None:
 
     result = workflow.run(BOOT)
 
-    assert result.status == "skipped"
+    assert result.status == "partial"
     assert _stage(result, "cohort_select").reason == "graph_cohort_missing_context_control"
     assert calls == []
 

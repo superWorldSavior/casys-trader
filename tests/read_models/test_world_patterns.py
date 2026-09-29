@@ -532,6 +532,30 @@ def test_pairing_uses_episode_bar_despite_mic_venue_and_post_bar_cutoff() -> Non
     assert report["matched_sets"][0]["as_of_bar_ts"] == observation["as_of_bar_ts"]
 
 
+def test_production_shaped_predictions_with_lineage_still_pair() -> None:
+    ledger = _matched_family(single=True, include_topology=False, include_without_event=False)
+    for prediction in ledger["predictions"]:
+        prediction["lane_id"] = "markov.joint"
+        prediction["study_cohort_id"] = COHORT_ID
+        prediction["manifest_sha256"] = "c" * 64
+        prediction["feature_contract_fingerprint"] = "d" * 64
+        prediction["feature_mask_fingerprint"] = "e" * 64
+    report = project_world_pattern_report(ledger)
+    assert report["matched_sets"]
+    assert report["exclusions"] == {}
+
+
+def test_two_context_lanes_on_one_slot_stay_strictly_ambiguous() -> None:
+    ledger = _matched_family(single=True, include_topology=False, include_without_event=False)
+    clone = dict(ledger["predictions"][0])
+    clone["prediction_id"] = f"world-prediction:v1:{canonical_sha256({'second': 'lane'})}"
+    clone["lane_id"] = "gru.joint"
+    ledger["predictions"].append(clone)
+    report = project_world_pattern_report(ledger)
+    assert report["matched_sets"] == []
+    assert report["exclusions"] == {"ambiguous_context_member": 2}
+
+
 def test_canonical_world_outcome_is_verified_id_digest_horizon() -> None:
     ledger = _matched_family(include_topology=False, include_without_event=False, single=True)
     report = project_world_pattern_report(ledger)

@@ -146,11 +146,26 @@ def recorded_sort_key(row: Mapping[str, Any]) -> tuple[object, ...]:
 
 def expected_identities(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     unique = {
-        (row["episode_id"], row["horizon_code"], row.get("model_kind"), row.get("model_version")) for row in rows
+        (
+            row["episode_id"],
+            row["horizon_code"],
+            row.get("model_kind"),
+            row.get("model_version"),
+            row.get("study_cohort_id"),
+            row.get("lane_id"),
+        )
+        for row in rows
     }
     ordered = sorted(
         unique,
-        key=lambda item: (_sqlite_asc(item[0]), _sqlite_asc(item[1]), _sqlite_asc(item[2]), _sqlite_asc(item[3])),
+        key=lambda item: (
+            _sqlite_asc(item[0]),
+            _sqlite_asc(item[1]),
+            _sqlite_asc(item[2]),
+            _sqlite_asc(item[3]),
+            _sqlite_asc(item[4]),
+            _sqlite_asc(item[5]),
+        ),
     )
     return [
         {
@@ -158,8 +173,10 @@ def expected_identities(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
             "horizon_code": horizon_code,
             "model_kind": model_kind,
             "model_version": model_version,
+            "study_cohort_id": study_cohort_id,
+            "lane_id": lane_id,
         }
-        for episode_id, horizon_code, model_kind, model_version in ordered
+        for episode_id, horizon_code, model_kind, model_version, study_cohort_id, lane_id in ordered
     ]
 
 

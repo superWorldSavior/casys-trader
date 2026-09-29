@@ -321,6 +321,8 @@ def test_predictions_are_immutable_and_listed_deterministically(store: WorldMode
             "horizon_code": "elapsed_4h.v1",
             "model_kind": "markov",
             "model_version": "markov-v1",
+            "study_cohort_id": None,
+            "lane_id": None,
         }
     ]
     plan = store._db.query_all(
@@ -340,6 +342,27 @@ def test_predictions_are_immutable_and_listed_deterministically(store: WorldMode
     no_horizon.pop("horizon_id")
     with pytest.raises(ValueError, match="requires horizon_code"):
         store.append_legacy_prediction(no_horizon)
+
+
+def test_count_study_predictions_counts_hot_by_cohort_and_contract(store: WorldModelStore) -> None:
+    assert store.append_episode(_episode())
+    cohort_a = "world_cohort:v1:" + "a" * 64
+    cohort_b = "world_cohort:v1:" + "b" * 64
+    assert store.append_legacy_prediction(
+        _prediction("count-a1", study_cohort_id=cohort_a, feature_contract_fingerprint="fp-joint")
+    )
+    assert store.append_legacy_prediction(
+        _prediction("count-a2", study_cohort_id=cohort_a, feature_contract_fingerprint="fp-graph")
+    )
+    assert store.append_legacy_prediction(
+        _prediction("count-b1", study_cohort_id=cohort_b, feature_contract_fingerprint="fp-joint")
+    )
+
+    assert store.count_study_predictions(cohort_a) == 2
+    assert store.count_study_predictions(cohort_a, feature_contract_fingerprint="fp-joint") == 1
+    assert store.count_study_predictions(cohort_a, feature_contract_fingerprint="fp-graph") == 1
+    assert store.count_study_predictions(cohort_b) == 1
+    assert store.count_study_predictions("world_cohort:v1:" + "c" * 64) == 0
 
 
 def test_store_accepts_domain_records_and_preserves_domain_ids(store: WorldModelStore) -> None:

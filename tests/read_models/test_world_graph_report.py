@@ -64,14 +64,14 @@ def _graph_manifest(**overrides: object):
                 source_contract_id="company_intelligence_brief.v1",
                 projection_contract_id="company_context_projection.v1",
                 mode="required",
-                lane_ids=("markov.joint", "gru.joint"),
+                lane_ids=("markov.joint",),
             ),
             WorldSensorRequirement(
                 sensor_id="macro",
                 source_contract_id="world_macro_source.v1",
                 projection_contract_id="macro_context_projection.v1",
                 mode="required",
-                lane_ids=("markov.joint", "gru.joint"),
+                lane_ids=("markov.joint",),
             ),
         ),
         "lanes": (
@@ -85,14 +85,6 @@ def _graph_manifest(**overrides: object):
                 sequence_length=4,
             ),
             _lane("markov.joint", contract=V2, mask=JOINT_MASK, role="process_control"),
-            _lane(
-                "gru.joint",
-                family="gru",
-                contract=V2,
-                mask=JOINT_MASK,
-                role="process_control",
-                sequence_length=4,
-            ),
         ),
         "contrasts": (
             WorldContrastDefinition(

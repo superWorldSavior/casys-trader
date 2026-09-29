@@ -346,6 +346,62 @@ class PatternShadowWorkflow:
             return PatternShadowStageResult("evaluation_close", "skipped", reason="none_due")
         return PatternShadowStageResult("evaluation_close", "completed", reason="closed")
 
+    def _check_control_production(
+        self, cohort: WorldCohort, *, evaluation_started: bool
+    ) -> PatternShadowStageResult:
+        """Prove the graph cohort's context control produces predictions in production.
+
+        Manifest + admitted slots are only intent. This stage queries the real prediction
+        store: once evaluation started and slots were admitted, the context lane must have
+        at least one persisted prediction, else something silently dropped it (the exact
+        P0-1 failure mode). A missing query capability degrades to an explicit skip, not
+        a fake pass.
+        """
+
+        if not _has_graph_lanes(cohort):
+            return PatternShadowStageResult("control_production", "completed", reason="no_graph_lanes")
+        if not evaluation_started:
+            return PatternShadowStageResult(
+                "control_production", "completed", reason="evaluation_not_started"
+            )
+        count_query = getattr(self.cohorts, "count_study_predictions", None)
+        slot_query = getattr(self.cohorts, "list_slots", None)
+        if not callable(count_query) or not callable(slot_query):
+            return PatternShadowStageResult(
+                "control_production", "completed", reason="control_production_unchecked"
+            )
+        try:
+            slots = slot_query(WorldCohortId(cohort.cohort_id))
+            if not list(slots):
+                return PatternShadowStageResult(
+                    "control_production", "completed", reason="no_admitted_slots"
+                )
+            produced = 0
+            for lane in cohort.manifest.lanes:
+                if lane.role != "process_control":
+                    continue
+                produced += int(
+                    count_query(
+                        str(cohort.cohort_id),
+                        feature_contract_fingerprint=lane.feature_contract_fingerprint,
+                    )
+                    or 0
+                )
+            if produced == 0:
+                return PatternShadowStageResult(
+                    "control_production",
+                    "failed",
+                    error={
+                        "code": "control_predictions_missing",
+                        "study_cohort_id": str(cohort.cohort_id),
+                        "context": "admitted slots exist but no process_control prediction persisted",
+                        "recovery": "check runtime dedup collisions and predictor identity lineage",
+                    },
+                )
+            return PatternShadowStageResult("control_production", "completed")
+        except Exception as exc:  # noqa: BLE001 - guard cannot affect Trader
+            return PatternShadowStageResult("control_production", "failed", error=_error(exc))
+
     def run(self, as_of: datetime | str) -> PatternShadowWorkflowResult:
         resolved_as_of = parse_utc_timestamp(as_of, "as_of")
         stages: list[PatternShadowStageResult] = []
@@ -371,7 +427,7 @@ class PatternShadowWorkflow:
             )
             return PatternShadowWorkflowResult(
                 resolved_as_of,
-                "skipped",
+                "partial",
                 tuple(stages),
                 evaluation_cohort_id=cohort.cohort_id,
             )
@@ -591,6 +647,8 @@ class PatternShadowWorkflow:
             stages.append(PatternShadowStageResult("outcome_link", "completed"))
         except Exception as exc:  # noqa: BLE001 - outcome linking cannot affect Trader
             stages.append(PatternShadowStageResult("outcome_link", "failed", error=_error(exc)))
+
+        stages.append(self._check_control_production(cohort, evaluation_started=marker is not None))
 
         incompatible = any(
             item.stage == "evaluation" and item.reason == "all_records_incompatible" for item in stages

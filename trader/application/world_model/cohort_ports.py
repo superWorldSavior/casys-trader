@@ -71,6 +71,12 @@ class WorldCohortRepository(Protocol):
 class WorldCohortQuery(Protocol):
     def list_slots(self, cohort_id: WorldCohortId) -> tuple[WorldCohortSlot, ...]: ...
 
+    def count_study_predictions(
+        self, study_cohort_id: str, *, feature_contract_fingerprint: str | None = None
+    ) -> int:
+        """Hot+cold predictions attached to one study cohort, optionally by contract."""
+        ...
+
     def list_collecting_cohorts(self) -> tuple[WorldCohort, ...]:
         """Reconstructed collecting aggregates. Never registers, arms, or starts."""
         ...

@@ -58,6 +58,7 @@ from trader.application.world_model.encoding import (
     common_training_replay_key,
     comparison_lineage,
     feature_contract_version_of,
+    lane_prediction_lineage,
     normalise_horizon_id,
     observation_market_anchor,
     outcome_horizon_id,
@@ -711,6 +712,7 @@ class OnlineGRUWorldChallenger:
             model_fingerprint=self.model_fingerprint(horizon_key),
             comparison_batch_id=batch_id,
             comparison_cohort_fingerprint=cohort,
+            **lane_prediction_lineage(self),
         )
 
     def predict_proba(
