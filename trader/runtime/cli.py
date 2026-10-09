@@ -392,6 +392,14 @@ def _cmd_world_pattern(args: argparse.Namespace) -> int:
     return code
 
 
+def _cmd_world_dynamics(args: argparse.Namespace) -> int:
+    from trader.interfaces.cli.world_dynamics import dispatch_world_dynamics
+
+    payload, code = dispatch_world_dynamics(args, state_dir=daemon.STATE_DIR)
+    _print_json(payload)
+    return code
+
+
 def _dashboard_url(path: object) -> str:
     return f"http://127.0.0.1:8137/{getattr(path, 'name', path)}"
 
@@ -1102,6 +1110,25 @@ def build_parser() -> argparse.ArgumentParser:
     world_status = world_sub.add_parser("status", help="couverture et métriques préquentielles")
     world_status.add_argument("--json", action="store_true")
     world_status.set_defaults(func=_cmd_world_status)
+
+    from trader.application.world_model.capture import SAMPLING_POLICY_VERSION
+    from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_ID
+
+    dynamics = world_sub.add_parser("dynamics", help="replay borné et trajectoires OHLCV simulées hors ligne")
+    dynamics.add_argument("--venue", required=True)
+    dynamics.add_argument("--symbol", required=True)
+    dynamics.add_argument("--interval", default="1h")
+    dynamics.add_argument("--market-contract-version", default=MARKET_FEATURE_CONTRACT_ID)
+    dynamics.add_argument("--sampling-policy-version", default=SAMPLING_POLICY_VERSION)
+    dynamics.add_argument("--start", required=True, help="début inclusif des ancres ; horodatage UTC explicite")
+    dynamics.add_argument("--as-of", required=True, help="cutoff causal ; horodatage UTC explicite")
+    dynamics.add_argument("--limit", type=int, default=5000, help="borne des épisodes ; maximum 20000")
+    dynamics.add_argument("--steps", type=int, default=4, help="barres futures simulées ; maximum 12")
+    dynamics.add_argument("--paths", type=int, default=200, help="trajectoires simulées ; maximum 1000")
+    dynamics.add_argument("--min-support", type=int, default=40)
+    dynamics.add_argument("--seed", type=int, default=0)
+    dynamics.add_argument("--json", action="store_true")
+    dynamics.set_defaults(func=_cmd_world_dynamics)
 
     from trader.interfaces.cli.world_model import WORLD_COHORT_INVALIDATION_REASONS
 

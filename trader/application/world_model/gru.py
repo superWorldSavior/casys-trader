@@ -79,6 +79,12 @@ from trader.domain.world_episode import (
     canonical_sha256,
     parse_utc_timestamp,
 )
+from trader.application.world_model.gru_kernel import (
+    accumulate_gru_gradients,
+    apply_gradients,
+    gru_forward,
+    initial_recurrent_parameters,
+)
 from trader.domain.world_feature_contract import (
     GRAPH_FEATURE_CONTRACT_ID,
     WorldFeatureContract,
@@ -1003,26 +1009,13 @@ class OnlineGRUWorldChallenger:
         seed_material = f"{self.seed}:{horizon_id}:{self.input_size}:{self.hidden_size}".encode("utf-8")
         horizon_seed = int.from_bytes(sha256(seed_material).digest()[:8], "big", signed=False)
         rng = np.random.default_rng(horizon_seed)
-        input_scale = 1.0 / math.sqrt(self.input_size + self.hidden_size)
-        recurrent_scale = 1.0 / math.sqrt(2 * self.hidden_size)
         output_scale = 1.0 / math.sqrt(self.hidden_size + len(OUTCOME_CLASSES))
-
-        def normal(shape: tuple[int, ...], scale: float) -> np.ndarray:
-            return np.asarray(rng.normal(0.0, scale, size=shape), dtype=np.float64)
-
-        return {
-            "Wz": normal((self.input_size, self.hidden_size), input_scale),
-            "Uz": normal((self.hidden_size, self.hidden_size), recurrent_scale),
-            "bz": np.zeros(self.hidden_size, dtype=np.float64),
-            "Wr": normal((self.input_size, self.hidden_size), input_scale),
-            "Ur": normal((self.hidden_size, self.hidden_size), recurrent_scale),
-            "br": np.zeros(self.hidden_size, dtype=np.float64),
-            "Wh": normal((self.input_size, self.hidden_size), input_scale),
-            "Uh": normal((self.hidden_size, self.hidden_size), recurrent_scale),
-            "bh": np.zeros(self.hidden_size, dtype=np.float64),
-            "Wo": normal((self.hidden_size, len(OUTCOME_CLASSES)), output_scale),
-            "bo": np.zeros(len(OUTCOME_CLASSES), dtype=np.float64),
-        }
+        parameters = initial_recurrent_parameters(rng, self.input_size, self.hidden_size)
+        parameters["Wo"] = np.asarray(
+            rng.normal(0.0, output_scale, size=(self.hidden_size, len(OUTCOME_CLASSES))), dtype=np.float64
+        )
+        parameters["bo"] = np.zeros(len(OUTCOME_CLASSES), dtype=np.float64)
+        return parameters
 
     def _sequence_market_anchors(self, metadata: SequenceMetadata) -> tuple[tuple[str, str, str, str], ...]:
         anchors: list[tuple[str, str, str, str]] = []
@@ -1144,50 +1137,8 @@ class OnlineGRUWorldChallenger:
         gradients["bo"] += d_logits
         d_hidden = d_logits @ parameters["Wo"].T
 
-        # ``cache`` contains None for left padding.  Those steps preserve
-        # hidden state and therefore contribute neither a gate gradient nor a
-        # learned-bias drift at cold start.
-        for item in reversed(cache):
-            if item is None:
-                continue
-            x, h_prev, z, r, candidate = item
-            d_candidate = d_hidden * (1.0 - z)
-            d_update = d_hidden * (h_prev - candidate)
-            d_prev = d_hidden * z
-
-            d_candidate_pre = d_candidate * (1.0 - candidate * candidate)
-            gradients["Wh"] += np.outer(x, d_candidate_pre)
-            gradients["Uh"] += np.outer(r * h_prev, d_candidate_pre)
-            gradients["bh"] += d_candidate_pre
-            d_reset_times_prev = d_candidate_pre @ parameters["Uh"].T
-            d_reset = d_reset_times_prev * h_prev
-            d_prev += d_reset_times_prev * r
-
-            d_reset_pre = d_reset * r * (1.0 - r)
-            gradients["Wr"] += np.outer(x, d_reset_pre)
-            gradients["Ur"] += np.outer(h_prev, d_reset_pre)
-            gradients["br"] += d_reset_pre
-            d_prev += d_reset_pre @ parameters["Ur"].T
-
-            d_update_pre = d_update * z * (1.0 - z)
-            gradients["Wz"] += np.outer(x, d_update_pre)
-            gradients["Uz"] += np.outer(h_prev, d_update_pre)
-            gradients["bz"] += d_update_pre
-            d_prev += d_update_pre @ parameters["Uz"].T
-            d_hidden = d_prev
-
-        squared_norm = sum(float(np.sum(gradient * gradient)) for gradient in gradients.values())
-        global_norm = math.sqrt(squared_norm)
-        if not math.isfinite(global_norm):
-            raise FloatingPointError("non-finite GRU gradient")
-        scale = 1.0 if global_norm <= self.gradient_clip else self.gradient_clip / global_norm
-        updated = {
-            name: parameters[name] - self.learning_rate * scale * gradient for name, gradient in gradients.items()
-        }
-        for value in updated.values():
-            if not np.all(np.isfinite(value)):
-                raise FloatingPointError("non-finite GRU parameter after update")
-        parameters.update(updated)
+        accumulate_gru_gradients(parameters, cache, d_hidden, gradients)
+        apply_gradients(parameters, gradients, learning_rate=self.learning_rate, gradient_clip=self.gradient_clip)
 
     def _forward(
         self,
@@ -1195,23 +1146,7 @@ class OnlineGRUWorldChallenger:
         matrix: np.ndarray,
         mask: np.ndarray,
     ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None]]:
-        hidden = np.zeros(self.hidden_size, dtype=np.float64)
-        cache: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None] = []
-        for x, valid in zip(matrix, mask, strict=True):
-            if not bool(valid):
-                cache.append(None)
-                continue
-            previous = hidden
-            update = self._sigmoid(x @ parameters["Wz"] + previous @ parameters["Uz"] + parameters["bz"])
-            reset = self._sigmoid(x @ parameters["Wr"] + previous @ parameters["Ur"] + parameters["br"])
-            candidate = np.tanh(x @ parameters["Wh"] + (reset * previous) @ parameters["Uh"] + parameters["bh"])
-            hidden = (1.0 - update) * candidate + update * previous
-            cache.append((x, previous, update, reset, candidate))
-        return hidden, cache
-
-    @staticmethod
-    def _sigmoid(value: np.ndarray) -> np.ndarray:
-        return 1.0 / (1.0 + np.exp(-np.clip(value, -50.0, 50.0)))
+        return gru_forward(parameters, matrix, mask, self.hidden_size)
 
     @staticmethod
     def _softmax(logits: np.ndarray) -> np.ndarray:

@@ -131,6 +131,36 @@ def _model(**overrides: object) -> OnlineGRUWorldChallenger:
     return OnlineGRUWorldChallenger(**settings)
 
 
+def test_shared_kernel_preserves_pre_extraction_classifier_golden_bytes() -> None:
+    """Captured before kernel extraction; protects both warm and cold horizons."""
+    from hashlib import sha256
+
+    model = _model()
+    episodes = [_episode(index, return_value=value) for index, value in enumerate([0.006, -0.012, 0.021, 0.003])]
+    model.observe_episodes(episodes)
+    for episode, value in zip(episodes, [0.01, -0.02, 0.03, 0.0], strict=True):
+        model.apply_outcome(_outcome(episode, simple_return=value), episode)
+    expected = {
+        HORIZON_4H: (
+            "52a97cda2fa1bc113c2efcb3dd738a1a74bfcde10b1e78b91b5f51392c3a645b",
+            "968dfe3896b530573a128a1ae95fd41c26c3793fe1c93640cf24e99f31168be6",
+            {"DOWN": 0.3333023839529715, "FLAT": 0.27901362483095615, "UP": 0.3876839912160724},
+        ),
+        HORIZON_1D: (
+            "66856eaf3e20f8833ffd945eeaefb25feb2401c66aeab9fc82a94095d0dd2a64",
+            "eaf58698be6dfa052f54db0b7c60dc8ea1d264843684e0af187f82d2f196b832",
+            {"DOWN": 1 / 3, "FLAT": 1 / 3, "UP": 1 / 3},
+        ),
+    }
+    for horizon, (fingerprint, parameter_digest, probabilities) in expected.items():
+        prediction = model.predict(episodes[-1], horizon, prediction_at=_outcome(episodes[-1]).available_at)
+        parameters = model._states[horizon].parameters
+        raw = b"".join(name.encode() + matrix.tobytes() for name, matrix in sorted(parameters.items()))
+        assert sha256(raw).hexdigest() == parameter_digest
+        assert prediction.model_fingerprint == fingerprint
+        assert dict(prediction.probabilities) == probabilities
+
+
 def test_cold_start_allows_padded_sequence_and_is_permanently_shadow_only() -> None:
     model = _model()
     episode = _episode(0)
