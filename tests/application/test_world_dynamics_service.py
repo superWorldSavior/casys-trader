@@ -9,7 +9,7 @@ import pytest
 
 from trader.application.world_model.dynamics_model import OnlineOHLCVDynamicsModel
 from trader.application.world_model.dynamics_service import DynamicsReplayRequest, run_dynamics_replay
-from trader.domain.world_dynamics import EpisodeEvidence
+from trader.domain.world_dynamics import EpisodeEvidence, ObservedDynamicsBar
 from trader.domain.world_episode import AnchorBar, WorldEpisode
 from tests.domain.test_world_dynamics import T0, _episode
 
@@ -46,7 +46,7 @@ def test_replay_is_deterministic_and_keeps_learning_before_prediction() -> None:
     for origin in first.evaluation_origins:
         assert origin.training_cutoff <= origin.prediction_at
         assert origin.support < first.support
-        for target_id in origin.target_episode_ids:
+        for target_id in origin.target_evidence_ids:
             target = by_id[target_id]
             assert target.effective_available_at > origin.prediction_at
             assert target.episode.observation.completed_bar_end_at > origin.prediction_at
@@ -92,11 +92,11 @@ def test_delayed_target_is_not_learned_before_recorded_availability() -> None:
     delayed = EpisodeEvidence(rows[56].episode, rows[60].recorded_at)
     modified = rows[:56] + (delayed,) + rows[57:]
     result = run_dynamics_replay(modified, _request(rows, steps=1))
-    earlier = {origin.episode_id: origin for origin in result.evaluation_origins}
+    earlier = {origin.evidence_id: origin for origin in result.evaluation_origins}
     before_delay = normal.evaluation_origins[0]
     at_next = next(origin for origin in normal.evaluation_origins
-                   if origin.episode_id == rows[57].episode.episode_id)
-    assert earlier[at_next.episode_id].support < at_next.support
+                   if origin.evidence_id == rows[57].episode.episode_id)
+    assert earlier[at_next.evidence_id].support < at_next.support
     assert before_delay.prediction_at < delayed.effective_available_at
     assert dict(result.exclusions)["evaluation_target_already_completed"] >= 1
 
@@ -157,6 +157,37 @@ def test_empty_cold_and_mixed_source_results_are_explicit() -> None:
         observation.anchor, source="other-feed"))), rows[-1].recorded_at)
     with pytest.raises(ValueError, match="one exact"):
         run_dynamics_replay(rows + (other,), _request(rows))
+
+
+def test_retrieved_history_trains_now_without_claiming_past_forecasts() -> None:
+    episodes = _series(24)
+    captured = episodes[-1].effective_available_at
+    recorded = captured + timedelta(seconds=5)
+    bars = tuple(ObservedDynamicsBar(
+        row.venue, row.symbol, row.bar_interval, row.anchor, captured, recorded,
+    ) for row in episodes)
+    result = run_dynamics_replay(bars, DynamicsReplayRequest(recorded, paths=20, min_support=8))
+    assert result.status == "ready"
+    assert result.read_evidence == 24 and result.support == 23
+    assert result.training_cutoff == recorded
+    assert not result.evaluation_origins and not result.scores
+    assert all(path.origin_evidence_kind == "observed_market_bar" for path in result.trajectories)
+    assert all(path.prediction_at == recorded for path in result.trajectories)
+    assert dict(result.exclusions)["evaluation_target_already_completed"] > 0
+
+
+def test_labels_fetched_together_are_trained_in_completed_bar_order() -> None:
+    episodes = _series(24)
+    captured = episodes[-1].effective_available_at
+    bars = tuple(ObservedDynamicsBar(
+        row.venue, row.symbol, row.bar_interval, row.anchor, captured, captured,
+    ) for row in episodes)
+    expected = OnlineOHLCVDynamicsModel(minimum_support=8, seed=0)
+    for target_index in range(1, len(bars)):
+        expected.update(tuple(row.anchor for row in bars[max(0, target_index - 20):target_index]),
+                        bars[target_index].anchor)
+    result = run_dynamics_replay(tuple(reversed(bars)), DynamicsReplayRequest(captured, paths=20, min_support=8))
+    assert result.model_fingerprint == expected.fingerprint()
 
 
 @pytest.mark.parametrize("kwargs", [dict(steps=0), dict(paths=1), dict(min_support=257), dict(seed=-1)])

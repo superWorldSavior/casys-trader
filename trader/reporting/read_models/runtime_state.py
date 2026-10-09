@@ -14,6 +14,7 @@ from trader.planning.indicator_watch import is_armed_plan as _is_armed_plan
 from trader.reporting.read_models.universe_pipeline import (
     load_universe_pipeline as _load_universe_pipeline_safe,
 )
+from trader.reporting.read_models.world_dynamics_status import read_world_dynamics_status
 from trader.support.coercion import (
     dict_list as _safe_list_of_dicts,
     finite_float as _safe_float,
@@ -588,6 +589,7 @@ def load_runtime_state(
         "source": source,
         "starting_cash": starting_cash,
         "daemon_status": status if isinstance(status, dict) else {},
+        "world_dynamics": read_world_dynamics_status(state_dir_path),
         "kpis": kpis_value,
         "kpis_source": kpis_source,
         "attribution": attribution_value,

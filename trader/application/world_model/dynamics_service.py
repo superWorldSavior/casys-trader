@@ -16,8 +16,10 @@ from trader.application.world_model.dynamics_model import (
 )
 from trader.application.world_model.dynamics_ports import OHLCVDynamicsModel
 from trader.domain.world_dynamics import (
+    DynamicsEvidence,
     EpisodeEvidence,
     NextBarTransition,
+    ObservedDynamicsBar,
     SimulatedBar,
     WorldTrajectory,
 )
@@ -59,14 +61,15 @@ class HorizonScore:
 
 @dataclass(frozen=True)
 class EvaluationOrigin:
-    episode_id: str
-    episode_hash: str
+    evidence_id: str
+    evidence_hash: str
+    evidence_kind: str
     prediction_at: datetime
     training_cutoff: datetime
     support: int
     model_fingerprint: str
     baseline_fingerprint: str
-    target_episode_ids: tuple[str, ...]
+    target_evidence_ids: tuple[str, ...]
     gru_return_crps: tuple[float, ...]
     baseline_return_crps: tuple[float, ...]
 
@@ -74,7 +77,7 @@ class EvaluationOrigin:
 @dataclass(frozen=True)
 class DynamicsReplayResult:
     status: str
-    read_episodes: int
+    read_evidence: int
     unique_anchors: int
     transitions: int
     exclusions: tuple[tuple[str, int], ...]
@@ -97,41 +100,38 @@ class _SampledPath:
     bars: tuple[SimulatedBar, ...]
 
 
-def _series(evidence: EpisodeEvidence) -> tuple[str, ...]:
-    observation = evidence.episode.observation
-    return (
-        observation.venue, observation.symbol, observation.bar_interval,
-        observation.feature_contract_version, observation.sampling_policy_version,
-        observation.anchor.source, observation.anchor.timestamp_semantics,
-    )
+def _series(evidence: DynamicsEvidence) -> tuple[str, ...]:
+    return evidence.series_key
 
 
-def _end(evidence: EpisodeEvidence) -> datetime:
-    end_at = evidence.episode.observation.completed_bar_end_at
+def _end(evidence: DynamicsEvidence) -> datetime:
+    end_at = evidence.completed_end_at
     if end_at is None:
         raise ValueError("dynamics requires a provable completed bar")
     return end_at
 
 
 def _canonical_anchors(
-    evidence: Sequence[EpisodeEvidence], cutoff: datetime, exclusions: Counter[str],
-) -> tuple[EpisodeEvidence, ...]:
-    slots: dict[tuple[tuple[str, ...], datetime], list[EpisodeEvidence]] = {}
+    evidence: Sequence[DynamicsEvidence], cutoff: datetime, exclusions: Counter[str],
+) -> tuple[DynamicsEvidence, ...]:
+    slots: dict[tuple[tuple[str, ...], datetime], list[DynamicsEvidence]] = {}
     for row in evidence:
-        if not row.episode.training_eligible:
-            exclusions["ineligible_episode"] += 1
+        if type(row) not in (EpisodeEvidence, ObservedDynamicsBar):
+            raise TypeError("dynamics requires real episode or observed market bar evidence")
+        if not row.training_eligible:
+            exclusions["ineligible_evidence"] += 1
             continue
         if row.effective_available_at > cutoff or _end(row) > cutoff:
             exclusions["not_available_at_cutoff"] += 1
             continue
         slots.setdefault((_series(row), _end(row)), []).append(row)
-    selected: list[EpisodeEvidence] = []
+    selected: list[DynamicsEvidence] = []
     for rows in slots.values():
-        rows.sort(key=lambda row: (row.effective_available_at, row.episode.episode_id))
+        rows.sort(key=lambda row: (row.effective_available_at, row.evidence_id))
         first_clock = rows[0].effective_available_at
 
-        def values(row: EpisodeEvidence) -> tuple[float, ...]:
-            return tuple(getattr(row.episode.observation.anchor, field)
+        def values(row: DynamicsEvidence) -> tuple[float, ...]:
+            return tuple(getattr(row.anchor, field)
                          for field in ("open", "high", "low", "close", "volume"))
 
         first_values = {values(row) for row in rows if row.effective_available_at == first_clock}
@@ -146,13 +146,13 @@ def _canonical_anchors(
             reason = ("duplicate_identical_bar" if values(revision) == values(canonical)
                       else "conflicting_later_bar_revision")
             exclusions[reason] += 1
-    selected.sort(key=lambda row: (_end(row), _series(row), row.episode.episode_id))
+    selected.sort(key=lambda row: (_end(row), _series(row), row.evidence_id))
     return tuple(selected)
 
 
 def _history(
-    origin: EpisodeEvidence,
-    slots: dict[tuple[tuple[str, ...], datetime], EpisodeEvidence],
+    origin: DynamicsEvidence,
+    slots: dict[tuple[tuple[str, ...], datetime], DynamicsEvidence],
     interval: timedelta,
 ) -> tuple[AnchorBar, ...]:
     chain = [origin]
@@ -164,16 +164,16 @@ def _history(
         if earlier is None or earlier.effective_available_at > origin.effective_available_at:
             break
         chain.append(earlier)
-    return tuple(row.episode.observation.anchor for row in reversed(chain))
+    return tuple(row.anchor for row in reversed(chain))
 
 
 def _paths(
-    model: OHLCVDynamicsModel, history: Sequence[AnchorBar], origin: EpisodeEvidence,
+    model: OHLCVDynamicsModel, history: Sequence[AnchorBar], origin: DynamicsEvidence,
     request: DynamicsReplayRequest, interval: timedelta,
 ) -> tuple[_SampledPath, ...]:
     paths: list[_SampledPath] = []
     for path_index in range(request.paths):
-        seed_material = f"{request.seed}:{origin.episode.episode_id}:{model.model_id}:{path_index}".encode()
+        seed_material = f"{request.seed}:{origin.evidence_id}:{model.model_id}:{path_index}".encode()
         seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")
         rng = np.random.Generator(np.random.PCG64(seed))
         held: list[AnchorBar | SimulatedBar] = list(history)
@@ -198,7 +198,7 @@ def _sample_scores(samples: np.ndarray, actual: float) -> tuple[float, float, fl
 
 
 def run_dynamics_replay(
-    evidence: Sequence[EpisodeEvidence], request: DynamicsReplayRequest, *,
+    evidence: Sequence[DynamicsEvidence], request: DynamicsReplayRequest, *,
     model: OHLCVDynamicsModel | None = None,
     baseline: OHLCVDynamicsModel | None = None,
 ) -> DynamicsReplayResult:
@@ -215,7 +215,7 @@ def run_dynamics_replay(
     series = {_series(row) for row in anchors}
     if len(series) > 1:
         raise ValueError("dynamics replay requires one exact instrument/source/contract series")
-    interval = parse_bar_interval(anchors[0].episode.observation.bar_interval) if anchors else None
+    interval = parse_bar_interval(anchors[0].bar_interval) if anchors else None
     if anchors and interval is None:
         raise ValueError("invalid bar interval")
     slots = {(_series(row), _end(row)): row for row in anchors}
@@ -228,15 +228,15 @@ def run_dynamics_replay(
             transitions.append(NextBarTransition(source, target))
         except ValueError:
             exclusions["invalid_transition"] += 1
-    transitions.sort(key=lambda item: (item.label_available_at, item.transition_id))
-    histories = {row.episode.episode_id: _history(row, slots, interval) for row in anchors} if interval else {}
+    transitions.sort(key=lambda item: (item.label_available_at, _end(item.target), item.transition_id))
+    histories = {row.evidence_id: _history(row, slots, interval) for row in anchors} if interval else {}
     # Split by completed-bar time, never by response/label. Select a bounded,
     # evenly spaced set of late origins before inspecting future outcomes.
     heldout = anchors[max(1, int(len(anchors) * 0.7)):]
     if len(heldout) > request.max_evaluation_origins:
         indices = np.linspace(0, len(heldout) - 1, request.max_evaluation_origins, dtype=int)
         heldout = tuple(heldout[int(index)] for index in indices)
-    selected_ids = {row.episode.episode_id for row in heldout}
+    selected_ids = {row.evidence_id for row in heldout}
     observations = sorted(anchors, key=lambda row: (row.effective_available_at, _end(row)))
     trained = 0
     training_cutoff: datetime | None = None
@@ -247,8 +247,8 @@ def run_dynamics_replay(
         nonlocal trained, training_cutoff
         while trained < len(transitions) and transitions[trained].label_available_at <= cutoff:
             transition = transitions[trained]
-            held = histories[transition.source.episode.episode_id]
-            target = transition.target.episode.observation.anchor
+            held = histories[transition.source.evidence_id]
+            target = transition.target.anchor
             model.update(held, target)
             baseline.update(held, target)
             training_cutoff = transition.label_available_at
@@ -256,7 +256,7 @@ def run_dynamics_replay(
 
     for origin in observations:
         mature(origin.effective_available_at)
-        if origin.episode.episode_id not in selected_ids:
+        if origin.evidence_id not in selected_ids:
             continue
         if model.support < request.min_support or baseline.support < request.min_support:
             exclusions["evaluation_insufficient_support"] += 1
@@ -275,23 +275,23 @@ def run_dynamics_replay(
             continue
         crps_by_model: list[tuple[float, ...]] = []
         for challenger in (model, baseline):
-            simulated = _paths(challenger, histories[origin.episode.episode_id], origin, request, interval)
+            simulated = _paths(challenger, histories[origin.evidence_id], origin, request, interval)
             crps_values: list[float] = []
             for step, target in enumerate(targets, start=1):
-                anchor_close = origin.episode.observation.anchor.close
+                anchor_close = origin.anchor.close
                 samples = np.array([path.bars[step - 1].close / anchor_close - 1 for path in simulated])
-                actual = target.episode.observation.anchor.close / anchor_close - 1
+                actual = target.anchor.close / anchor_close - 1
                 values = _sample_scores(samples, actual)
                 measurements.setdefault((challenger.model_id, step), []).append(values)
                 crps_values.append(values[0])
             crps_by_model.append(tuple(crps_values))
         assert training_cutoff is not None
         evaluations.append(EvaluationOrigin(
-            episode_id=origin.episode.episode_id, episode_hash=origin.episode.payload_hash,
+            evidence_id=origin.evidence_id, evidence_hash=origin.payload_hash, evidence_kind=origin.kind,
             prediction_at=origin.effective_available_at, training_cutoff=training_cutoff,
             support=model.support, model_fingerprint=model.fingerprint(),
             baseline_fingerprint=baseline.fingerprint(),
-            target_episode_ids=tuple(row.episode.episode_id for row in targets),
+            target_evidence_ids=tuple(row.evidence_id for row in targets),
             gru_return_crps=crps_by_model[0], baseline_return_crps=crps_by_model[1],
         ))
     mature(request.as_of)
@@ -309,11 +309,10 @@ def run_dynamics_replay(
     else:
         assert training_cutoff is not None and interval is not None
         status = "ready"
-        simulated = _paths(model, histories[latest.episode.episode_id], latest, request, interval)
-        observation = latest.episode.observation
+        simulated = _paths(model, histories[latest.evidence_id], latest, request, interval)
         trajectories = tuple(WorldTrajectory(
-            origin_episode_id=latest.episode.episode_id, origin_episode_hash=latest.episode.payload_hash,
-            symbol=observation.symbol, venue=observation.venue, bar_interval=observation.bar_interval,
+            origin_evidence_id=latest.evidence_id, origin_evidence_hash=latest.payload_hash, origin_evidence_kind=latest.kind,
+            symbol=latest.symbol, venue=latest.venue, bar_interval=latest.bar_interval,
             origin_end_at=_end(latest), prediction_at=request.as_of, training_cutoff=training_cutoff,
             model_id=model.model_id, model_fingerprint=model.fingerprint(), seed=path.seed, bars=path.bars,
         ) for path in simulated)
@@ -322,5 +321,5 @@ def run_dynamics_replay(
         for key, count in exclusions.items() if count)), scores, tuple(evaluations), trajectories,
         model.model_id, model.fingerprint(), tuple(sorted(model.diagnostics().items())),
         model.support, model.residual_support, training_cutoff,
-        latest.episode.episode_id if latest else None, _end(latest) if latest else None,
+        latest.evidence_id if latest else None, _end(latest) if latest else None,
     )

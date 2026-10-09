@@ -8,6 +8,7 @@ stdlib-only and owns geometry, clocks, and immutable provenance only.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import math
@@ -16,8 +17,10 @@ from typing import Any
 from trader.domain.world_episode import (
     MARKET_FEATURE_CONTRACT_ID,
     WorldEpisode,
+    AnchorBar,
     bar_timestamp_on_canonical_grid,
     canonical_sha256,
+    completed_bar_cutoff,
     is_eligible_completed_bar,
     parse_bar_interval,
     parse_utc_timestamp,
@@ -25,9 +28,13 @@ from trader.domain.world_episode import (
 
 
 WORLD_DYNAMICS_TARGET_CONTRACT_VERSION = "next_completed_bar_ohlcv.v1"
-NEXT_BAR_TRANSITION_SCHEMA_VERSION = "world_next_bar_transition.v1"
+NEXT_BAR_TRANSITION_SCHEMA_VERSION = "world_next_bar_transition.v2"
 SIMULATED_BAR_SCHEMA_VERSION = "world_simulated_bar.v1"
-WORLD_TRAJECTORY_SCHEMA_VERSION = "world_trajectory.v1"
+WORLD_TRAJECTORY_SCHEMA_VERSION = "world_trajectory.v2"
+OBSERVED_DYNAMICS_BAR_SCHEMA_VERSION = "observed_dynamics_bar.v1"
+OBSERVED_DYNAMICS_FEATURE_CONTRACT_VERSION = "world_dynamics.market_bar.v1"
+OBSERVED_DYNAMICS_SAMPLING_POLICY_VERSION = "first_seen_completed_market_bar.v1"
+DYNAMICS_EVIDENCE_KINDS = frozenset({"world_episode", "observed_market_bar"})
 
 
 def _required_text(value: Any, name: str) -> str:
@@ -77,34 +84,235 @@ class EpisodeEvidence:
         # The constructor establishes the presence of both observation clocks.
         return max(observation.available_at, observation.captured_at, self.recorded_at)
 
+    @property
+    def evidence_id(self) -> str:
+        return self.episode.episode_id
+
+    @property
+    def payload_hash(self) -> str:
+        return self.episode.payload_hash
+
+    @property
+    def kind(self) -> str:
+        return "world_episode"
+
+    @property
+    def venue(self) -> str:
+        return self.episode.observation.venue
+
+    @property
+    def symbol(self) -> str:
+        return self.episode.observation.symbol
+
+    @property
+    def bar_interval(self) -> str:
+        return self.episode.observation.bar_interval
+
+    @property
+    def feature_contract_version(self) -> str:
+        return self.episode.observation.feature_contract_version
+
+    @property
+    def sampling_policy_version(self) -> str:
+        return self.episode.observation.sampling_policy_version
+
+    @property
+    def anchor(self) -> AnchorBar:
+        return self.episode.observation.anchor
+
+    @property
+    def training_eligible(self) -> bool:
+        return self.episode.training_eligible
+
+    @property
+    def completed_end_at(self) -> datetime | None:
+        return self.episode.observation.completed_bar_end_at
+
+    @property
+    def series_key(self) -> tuple[str, ...]:
+        return _dynamics_series_key(self)
+
+
+@dataclass(frozen=True)
+class ObservedDynamicsBar:
+    """A historical market bar first known at the current retrieval clock.
+
+    No historical provider availability or feature freshness is inferred.
+    Identical geometry keeps its identity; the journal preserves its original
+    first-seen receipt instead of minting a fresh receipt on every retrieval.
+    A revision to OHLCV evidence has a different identity.
+    """
+
+    venue: str
+    symbol: str
+    bar_interval: str
+    anchor: AnchorBar
+    first_seen_at: datetime | str
+    recorded_at: datetime | str
+
+    def __post_init__(self) -> None:
+        for name in ("venue", "symbol", "bar_interval"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        if type(self.anchor) is not AnchorBar:
+            raise TypeError("observed market bar requires a real AnchorBar")
+        for name in ("first_seen_at", "recorded_at"):
+            object.__setattr__(self, name, parse_utc_timestamp(getattr(self, name), name))
+        end_at = self.completed_end_at
+        if end_at is None or not is_eligible_completed_bar(
+            ts=self.anchor.ts,
+            bar_interval=self.bar_interval,
+            timestamp_semantics=self.anchor.timestamp_semantics,
+            end_at=end_at,
+            available_at=self.first_seen_at,
+        ):
+            raise ValueError("observed market bar requires a canonical completed bar known by first_seen_at")
+        if end_at > self.first_seen_at:
+            raise ValueError("observed market bar completion must not follow first_seen_at")
+        if self.recorded_at < self.first_seen_at:
+            raise ValueError("recorded_at must not precede first_seen_at")
+
+    @property
+    def kind(self) -> str:
+        return "observed_market_bar"
+
+    @property
+    def feature_contract_version(self) -> str:
+        return OBSERVED_DYNAMICS_FEATURE_CONTRACT_VERSION
+
+    @property
+    def sampling_policy_version(self) -> str:
+        return OBSERVED_DYNAMICS_SAMPLING_POLICY_VERSION
+
+    @property
+    def training_eligible(self) -> bool:
+        return True
+
+    @property
+    def completed_end_at(self) -> datetime | None:
+        return completed_bar_cutoff(
+            as_of_bar_ts=self.anchor.ts,
+            timestamp_semantics=self.anchor.timestamp_semantics,
+            bar_interval=self.bar_interval,
+        )
+
+    @property
+    def effective_available_at(self) -> datetime:
+        return self.recorded_at
+
+    @property
+    def series_key(self) -> tuple[str, ...]:
+        return _dynamics_series_key(self)
+
+    @property
+    def evidence_id(self) -> str:
+        identity = {
+            "schema_version": OBSERVED_DYNAMICS_BAR_SCHEMA_VERSION,
+            "series_key": self.series_key,
+            "anchor": self.anchor.to_dict(),
+        }
+        return "world-observed-dynamics-bar:v1:" + canonical_sha256(identity)
+
+    def _content_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": OBSERVED_DYNAMICS_BAR_SCHEMA_VERSION,
+            "kind": self.kind,
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "bar_interval": self.bar_interval,
+            "feature_contract_version": self.feature_contract_version,
+            "sampling_policy_version": self.sampling_policy_version,
+            "anchor": self.anchor.to_dict(),
+            "first_seen_at": _iso(self.first_seen_at),
+            "recorded_at": _iso(self.recorded_at),
+        }
+
+    @property
+    def payload_hash(self) -> str:
+        return canonical_sha256(self._content_payload())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self._content_payload(),
+            "evidence_id": self.evidence_id,
+            "payload_hash": self.payload_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> ObservedDynamicsBar:
+        if not isinstance(payload, Mapping):
+            raise TypeError("observed market bar payload must be a mapping")
+        expected = {
+            "schema_version", "kind", "venue", "symbol", "bar_interval",
+            "feature_contract_version", "sampling_policy_version", "anchor",
+            "first_seen_at", "recorded_at", "evidence_id", "payload_hash",
+        }
+        if set(payload) != expected:
+            raise ValueError("observed market bar payload must contain exactly its schema fields")
+        for name, required in (
+            ("schema_version", OBSERVED_DYNAMICS_BAR_SCHEMA_VERSION),
+            ("kind", "observed_market_bar"),
+            ("feature_contract_version", OBSERVED_DYNAMICS_FEATURE_CONTRACT_VERSION),
+            ("sampling_policy_version", OBSERVED_DYNAMICS_SAMPLING_POLICY_VERSION),
+        ):
+            if payload[name] != required:
+                raise ValueError(f"observed market bar {name} must be {required}")
+        anchor = payload["anchor"]
+        anchor_fields = {"ts", "open", "high", "low", "close", "volume", "source", "timestamp_semantics"}
+        if not isinstance(anchor, Mapping) or set(anchor) != anchor_fields:
+            raise ValueError("observed market bar anchor must contain exactly the AnchorBar fields")
+        evidence = cls(
+            venue=payload["venue"], symbol=payload["symbol"], bar_interval=payload["bar_interval"],
+            anchor=AnchorBar(**anchor), first_seen_at=payload["first_seen_at"], recorded_at=payload["recorded_at"],
+        )
+        if payload["evidence_id"] != evidence.evidence_id:
+            raise ValueError("observed market bar evidence_id does not match canonical identity")
+        if payload["payload_hash"] != evidence.payload_hash:
+            raise ValueError("observed market bar payload_hash does not match canonical content")
+        return evidence
+
+
+DynamicsEvidence = EpisodeEvidence | ObservedDynamicsBar
+
+
+def _dynamics_series_key(evidence: DynamicsEvidence) -> tuple[str, ...]:
+    return (
+        evidence.venue, evidence.symbol, evidence.bar_interval,
+        evidence.feature_contract_version, evidence.sampling_policy_version,
+        evidence.anchor.source, evidence.anchor.timestamp_semantics,
+    )
+
 
 @dataclass(frozen=True)
 class NextBarTransition:
     """An observed next-bar target, with no future features in its projection."""
 
-    source: EpisodeEvidence
-    target: EpisodeEvidence
+    source: DynamicsEvidence
+    target: DynamicsEvidence
 
     def __post_init__(self) -> None:
-        if type(self.source) is not EpisodeEvidence or type(self.target) is not EpisodeEvidence:
-            raise TypeError("source and target must be EpisodeEvidence")
+        allowed_types = (EpisodeEvidence, ObservedDynamicsBar)
+        if type(self.source) not in allowed_types or type(self.target) not in allowed_types:
+            raise TypeError("source and target must be EpisodeEvidence or ObservedDynamicsBar")
+        if type(self.source) is not type(self.target):
+            raise TypeError("source and target must have the same evidence type")
         for evidence in (self.source, self.target):
-            episode = evidence.episode
-            observation = episode.observation
-            if not episode.training_eligible:
-                raise ValueError("transition requires training-eligible real episodes")
-            if observation.feature_contract_version != MARKET_FEATURE_CONTRACT_ID:
+            if not evidence.training_eligible:
+                raise ValueError("transition requires training-eligible real market evidence")
+            expected_contract = (
+                MARKET_FEATURE_CONTRACT_ID if type(evidence) is EpisodeEvidence
+                else OBSERVED_DYNAMICS_FEATURE_CONTRACT_VERSION
+            )
+            if evidence.feature_contract_version != expected_contract:
                 raise ValueError("transition requires the market-only feature contract")
-            if observation.completed_bar_end_at is None or not is_eligible_completed_bar(
-                ts=observation.as_of_bar_ts,
-                bar_interval=observation.bar_interval,
-                timestamp_semantics=observation.anchor.timestamp_semantics,
-                end_at=observation.completed_bar_end_at,
-                available_at=observation.available_at,
+            if evidence.completed_end_at is None or not is_eligible_completed_bar(
+                ts=evidence.anchor.ts,
+                bar_interval=evidence.bar_interval,
+                timestamp_semantics=evidence.anchor.timestamp_semantics,
+                end_at=evidence.completed_end_at,
+                available_at=evidence.effective_available_at,
             ):
                 raise ValueError("transition requires canonical completed bars")
-        source = self.source.episode.observation
-        target = self.target.episode.observation
+        source, target = self.source, self.target
         for name in ("venue", "symbol", "bar_interval", "feature_contract_version", "sampling_policy_version"):
             if getattr(source, name) != getattr(target, name):
                 raise ValueError(f"transition {name} must match")
@@ -112,7 +320,7 @@ class NextBarTransition:
             if getattr(source.anchor, name) != getattr(target.anchor, name):
                 raise ValueError(f"transition anchor.{name} must match")
         duration = _positive_interval(source.bar_interval)
-        if target.completed_bar_end_at != source.completed_bar_end_at + duration:
+        if target.completed_end_at != source.completed_end_at + duration:
             raise ValueError("transition requires exactly adjacent completed bars")
         if self.source.effective_available_at > self.target.effective_available_at:
             raise ValueError("source evidence must be known by target availability")
@@ -123,18 +331,20 @@ class NextBarTransition:
 
     @property
     def transition_id(self) -> str:
-        return "world-next-bar-transition:v1:" + canonical_sha256(self.to_dict())
+        return "world-next-bar-transition:v2:" + canonical_sha256(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": NEXT_BAR_TRANSITION_SCHEMA_VERSION,
             "target_contract_version": WORLD_DYNAMICS_TARGET_CONTRACT_VERSION,
-            "source_episode_id": self.source.episode.episode_id,
-            "source_episode_hash": self.source.episode.payload_hash,
+            "source_evidence_id": self.source.evidence_id,
+            "source_evidence_hash": self.source.payload_hash,
+            "source_evidence_kind": self.source.kind,
             "source_available_at": _iso(self.source.effective_available_at),
-            "target_episode_id": self.target.episode.episode_id,
-            "target_episode_hash": self.target.episode.payload_hash,
-            "target_bar": self.target.episode.observation.anchor.to_dict(),
+            "target_evidence_id": self.target.evidence_id,
+            "target_evidence_hash": self.target.payload_hash,
+            "target_evidence_kind": self.target.kind,
+            "target_bar": self.target.anchor.to_dict(),
             "label_available_at": _iso(self.label_available_at),
         }
 
@@ -194,8 +404,9 @@ class SimulatedBar:
 class WorldTrajectory:
     """A market-only simulation with immutable origin and model provenance."""
 
-    origin_episode_id: str
-    origin_episode_hash: str
+    origin_evidence_id: str
+    origin_evidence_hash: str
+    origin_evidence_kind: str
     symbol: str
     venue: str
     bar_interval: str
@@ -209,8 +420,10 @@ class WorldTrajectory:
     context_policy: str = "market_only"
 
     def __post_init__(self) -> None:
-        for name in ("origin_episode_id", "origin_episode_hash", "symbol", "venue", "bar_interval", "model_id", "model_fingerprint"):
+        for name in ("origin_evidence_id", "origin_evidence_hash", "symbol", "venue", "bar_interval", "model_id", "model_fingerprint"):
             object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        if self.origin_evidence_kind not in DYNAMICS_EVIDENCE_KINDS:
+            raise ValueError("origin_evidence_kind must identify real dynamics evidence")
         for name in ("origin_end_at", "prediction_at", "training_cutoff"):
             object.__setattr__(self, name, parse_utc_timestamp(getattr(self, name), name))
         if self.prediction_at < self.origin_end_at:
@@ -236,11 +449,13 @@ class WorldTrajectory:
             expected_end += duration
             if bar.step_index != index or bar.end_at != expected_end:
                 raise ValueError("trajectory requires contiguous step indices and completed-bar times")
+        if bars[0].end_at <= self.prediction_at:
+            raise ValueError("prediction_at must precede the first simulated bar completion")
         object.__setattr__(self, "bars", bars)
 
     @property
     def trajectory_id(self) -> str:
-        return "world-trajectory:v1:" + canonical_sha256(self.to_dict())
+        return "world-trajectory:v2:" + canonical_sha256(self.to_dict())
 
     @property
     def authority(self) -> str:
@@ -259,8 +474,9 @@ class WorldTrajectory:
             "schema_version": WORLD_TRAJECTORY_SCHEMA_VERSION,
             "kind": "simulated_trajectory",
             "target_contract_version": WORLD_DYNAMICS_TARGET_CONTRACT_VERSION,
-            "origin_episode_id": self.origin_episode_id,
-            "origin_episode_hash": self.origin_episode_hash,
+            "origin_evidence_id": self.origin_evidence_id,
+            "origin_evidence_hash": self.origin_evidence_hash,
+            "origin_evidence_kind": self.origin_evidence_kind,
             "symbol": self.symbol,
             "venue": self.venue,
             "bar_interval": self.bar_interval,
@@ -280,9 +496,14 @@ class WorldTrajectory:
 
 __all__ = [
     "EpisodeEvidence",
+    "ObservedDynamicsBar",
+    "DynamicsEvidence",
     "NextBarTransition",
     "SimulatedBar",
     "WorldTrajectory",
     "WORLD_DYNAMICS_TARGET_CONTRACT_VERSION",
     "WORLD_TRAJECTORY_SCHEMA_VERSION",
+    "OBSERVED_DYNAMICS_BAR_SCHEMA_VERSION",
+    "OBSERVED_DYNAMICS_FEATURE_CONTRACT_VERSION",
+    "OBSERVED_DYNAMICS_SAMPLING_POLICY_VERSION",
 ]

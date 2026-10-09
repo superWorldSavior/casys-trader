@@ -10,6 +10,7 @@ from trader.infrastructure.state_db.world_model_query import HORIZONS, read_worl
 from trader.reporting.read_models.world_evaluation import evaluate_shadow
 from trader.reporting.read_models.world_impact import evaluate_world_shadow_impact
 from trader.reporting.read_models.world_macro_status import read_world_macro_status
+from trader.reporting.read_models.world_dynamics_status import read_world_dynamics_status
 
 _DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
@@ -60,6 +61,7 @@ def read_world_model_status(
         "exists": bool(ledger.get("exists")),
         "macro": macro,
         "resource_budget": _resource_budget_status(db_path),
+        "dynamics": read_world_dynamics_status(state_dir, now=now),
     }
     status = str(ledger.get("status") or "unavailable")
     if status == "not_started":

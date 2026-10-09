@@ -1,7 +1,8 @@
-"""Thin adapter for an offline World dynamics replay, evaluation, and rollout."""
+"""Thin adapter for saved automatic dynamics status and bounded ledger replay."""
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,17 @@ from trader.domain.world_cohort import COHORT_AUTHORITY, COHORT_DECISION_EFFECT,
 
 
 def dispatch_world_dynamics(args: Any, *, state_dir: str | Path) -> tuple[dict[str, Any], int]:
+    if getattr(args, "dynamics_command", None) == "status":
+        from trader.reporting.read_models.world_dynamics_status import read_world_dynamics_status
+
+        payload = read_world_dynamics_status(state_dir)
+        return {"command": "dynamics_status", **payload}, int(payload["status"] == "unavailable")
+    required = ("venue", "symbol", "start", "as_of")
+    missing = ["--" + field.replace("_", "-") for field in required if not getattr(args, field, None)]
+    if missing:
+        argparse.ArgumentParser(prog="casys-trader world dynamics").error(
+            "the following arguments are required: " + ", ".join(missing)
+        )
     from trader.reporting.read_models.world_dynamics import build_world_dynamics_payload
 
     try:

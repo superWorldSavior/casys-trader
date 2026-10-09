@@ -1,4 +1,4 @@
-# World dynamics : premier prototype OHLCV
+# World dynamics : apprentissage OHLCV automatique en shadow
 
 Le World Model existant prédit trois classes à des horizons fixes. Ce prototype
 ajoute un apprentissage de **transitions d'état OHLCV** et une simulation
@@ -8,7 +8,10 @@ communs marché/secteur, les événements futurs ou un état latent multimodal.
 
 ## Réemploi et frontières
 
-- `WorldEpisode` et `AnchorBar` restent les preuves réelles canoniques. Les
+- `WorldEpisode` et `AnchorBar` sont réutilisés pour le rejeu du ledger. La
+  collecte automatique utilise `ObservedDynamicsBar`, une preuve distincte
+  de barre réelle avec horloges de première réception et de persistance ;
+  elle ne fabrique pas d'épisode passé. Les
   cibles proviennent de deux ancres réellement adjacentes, avec mêmes
   instrument, intervalle, source, sémantique et contrats. Un trou ou une nuit
   ne deviennent jamais artificiellement « la prochaine barre ».
@@ -23,7 +26,8 @@ communs marché/secteur, les événements futurs ou un état latent multimodal.
   restent applicables ; aucun manifeste n'est réécrit pour les contourner.
 - Le domaine possède les invariants des transitions, barres simulées et
   trajectoires. L'application possède modèle, port de modèle et rejeu.
-  L'infrastructure lit un scope SQLite borné en lecture seule. Le reporting
+  L'infrastructure lit un scope SQLite borné en lecture seule, ou conserve
+  un journal OHLCV borné avec écriture atomique synchronisée. Le reporting
   compose et projette ; le CLI ne contient pas de SQL.
 - Aucun schéma de ledger, receipt, manifeste de cohorte ou chemin de décision
   live n'est ajouté. Les modèles simulés n'alimentent jamais l'apprentissage.
@@ -77,7 +81,53 @@ sans claim causal ou PnL. La grille simulée est à intervalle fixe et ne valide
 pas le calendrier d'ouverture de la bourse. Une origine dont la première
 barre suivante est déjà terminée au cutoff reçoit `stale_origin` sans rollout.
 
-## Commande
+## Activation et suivi automatiques
+
+Le daemon compose cette extension **par défaut** quand son World Model shadow
+est activé (`CASYS_WORLD_MODEL_SHADOW_ENABLED`, défaut `1`). Aucun lancement
+manuel de rejeu n'est nécessaire. Le même worker de fond reçoit les historiques
+OHLCV déjà récupérés par le cycle marché, sans nouvelle requête réseau ni appel
+Jev. `CASYS_WORLD_DYNAMICS_SHADOW_ENABLED=0` permet une désactivation explicite.
+Le code et cette variable sont lus au démarrage du daemon.
+
+```sh
+uv run casys-trader world dynamics status
+uv run casys-trader world dynamics status --json
+uv run casys-trader world status --json
+uv run casys-trader status --json
+```
+
+Le cockpit affiche également la ligne World Dynamics. Le suivi de Dynamics
+lit un petit statut enregistré, sans réentraînement ni lecture des historiques
+du journal. Le PID vivant et son appartenance au daemon sont vérifiés
+séparément : `worker_stopped` conserve le dernier rapport, sans annoncer un
+ancien résultat comme une activité actuelle.
+
+Le journal `state/world_dynamics/bars.json` conserve au plus **quatre séries
+épinglées et 256 barres par série**. Elles sont choisies au premier snapshot
+éligible, puis retrouvées au redémarrage. Les séries supplémentaires, trous,
+barres incomplètes et révisions exclues sont comptés. Le modèle est reconstruit
+déterministement sur cette fenêtre lorsque les preuves retenues changent ;
+un snapshot identique réutilise le résultat. La reprise conserve les premières
+horloges de réception, sans les réinitialiser. Aucune trajectoire synthétique
+ne devient une preuve d'apprentissage.
+
+La collecte initiale peut apprendre l'historique **maintenant**, mais cet
+historique n'est jamais scoré comme une prévision faite autrefois. La
+disponibilité vaut `max(first_seen_at, recorded_at)` pour ces preuves. Le
+worker génère 20 trajectoires de quatre étapes après 40 transitions adjacentes,
+avec au plus huit origines d'évaluation. Une origine devenue périmée perd ses
+trajectoires, même si aucun nouvel historique n'est arrivé.
+
+Le statut décrit `waiting_for_data`, `warming_up`, `ready`, `stale_origin`,
+`paused`, `disabled` ou une erreur explicite, avec les supports et raisons par
+série. Les rapports détaillés ont un chemin stable dans
+`state/world_dynamics/reports/`, indiqué par `series[].report_path`. Le statut
+global est `state/world_dynamics_status.json`. Le garde-fou de ressources du
+worker existant s'applique aussi à cette maintenance ; ses erreurs restent
+isolées du cycle de trading.
+
+## Rejeu manuel du ledger
 
 Depuis le checkout voulu, avec son propre `state/world_model.db` :
 
@@ -101,17 +151,16 @@ d'exemples. `no_data`, `insufficient_support` et `stale_origin` sont des
 résultats descriptifs ; une corruption ou un dépassement de borne est une
 erreur explicite.
 
-## Limite actuelle des données et place de Jev
+## Historique du ledger et place de Jev
 
 Le ledger capture une ancre par passage, pas la bande OHLCV complète. Sur la
 lecture du 9 octobre pour `TW/8046.TW/15m`, du 20 septembre au cutoff du
 9 octobre à 12 h UTC, sept ancres éligibles donnaient **zéro transition
 adjacente**, donc `insufficient_support`. Ce constat concerne ce scope précis.
-Les providers existants donnent des historiques en mémoire, mais ils ne
-constituent pas un archive point-in-time persistant avec preuve de première
-disponibilité. L'étape de collecte doit conserver ces barres réelles avec
-leurs horloges ; un téléchargement actuel ne doit pas devenir une observation
-présumée connue dans le passé. Le prototype ne fabrique pas ce support.
+Le nouveau journal automatique conserve désormais les historiques en mémoire
+avec leur première disponibilité réellement observée. Il ne transforme pas un
+téléchargement actuel en preuve connue dans le passé et n'étend pas le ledger
+des épisodes pour y injecter ces barres historiques.
 
 Jev a aussi été examiné à partir d'un benchmark local séparé du 20 septembre
 2026, hors du périmètre de ce prototype. Il mesurait une prévision directe :
@@ -134,6 +183,8 @@ Sources vérifiées : [primitives TypeSafe](https://docs.typesafe.ai/primitives)
 
 ## Vérifications du 9 octobre
 
+Au premier commit du prototype, avant l'activation automatique :
+
 - 129 tests ciblés passent dans le checkout principal : domaine, modèles,
   causalité du rejeu, lecteur, CLI réel et frontières DDD.
 - Ruff passe sur tous les chemins modifiés. Le lint global rencontre cinq
@@ -143,4 +194,10 @@ Sources vérifiées : [primitives TypeSafe](https://docs.typesafe.ai/primitives)
   ont été relancés dans un processus neuf après stabilisation des fichiers.
 - Une lecture seule du ledger réel et un appel au CLI installé confirment
   le résultat `insufficient_support` du scope décrit ci-dessus.
-- Aucun appel payant Jev, nouveau paquet ou redémarrage du démon.
+
+Pour l'activation automatique, **303 tests ciblés passent sur le contenu exact
+du commit**, ainsi que Ruff sur les chemins concernés. Ils couvrent aussi la
+composition réelle du worker : bootstrap, réception dupliquée, reprise
+déterministe, panne de capture indépendante, journal corrompu, pause de
+ressources et désactivation. Aucun appel payant Jev ni nouveau paquet. Le
+daemon courant est vérifié séparément de l'intégration du code.

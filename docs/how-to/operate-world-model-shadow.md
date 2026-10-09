@@ -27,6 +27,7 @@ pas** `world_model.db` ni `state/world_macro/` :
 uv run casys-trader world status --json
 uv run casys-trader world macro status --json
 uv run casys-trader world graph status --json
+uv run casys-trader world dynamics status --json
 ```
 
 `world status` (`schema_version=world_model_status.v1`) porte aussi le bloc
@@ -50,6 +51,32 @@ macro. Champs à lire en premier :
 disque (taille logique / on-disk de `world_model.db` et octets libres). Cette
 lecture **ne crée pas** la base. `status=skipped` veut dire que le prochain
 batch d'écriture shadow serait sauté, pas que le Trader s'est arrêté.
+
+### Dynamics OHLCV automatique
+
+L'apprentissage OHLCV tourne automatiquement dans le worker World Model dès
+le prochain snapshot marché, par défaut au démarrage du daemon. Il utilise les
+historiques déjà récupérés, avec une limite de quatre séries épinglées et 256
+barres par série. Il reprend leurs premières horloges de réception après un
+redémarrage et ne recalcule le modèle que lorsque les preuves retenues changent.
+
+```bash
+uv run casys-trader world dynamics status
+uv run casys-trader world dynamics status --json
+uv run casys-trader status --json
+```
+
+Le statut courant et le cockpit montrent l'état de Dynamics. Le rapport détaille
+le support, les transitions nouvelles, les exclusions, les raisons d'attente et
+les chemins des rapports par série. `ready` indique des trajectoires shadow
+disponibles ; `warming_up` indique un support insuffisant, `stale_origin` une
+origine périmée et `paused` une pause du garde-fou de ressources. Le lecteur
+affiche `worker_stopped` si le processus propriétaire n'est plus le daemon
+vivant, tout en conservant le dernier rapport.
+
+`CASYS_WORLD_DYNAMICS_SHADOW_ENABLED=0` désactive explicitement cette extension
+au prochain démarrage. Le drapeau World Model principal s'applique également.
+Voir [le contrat et les limites Dynamics](../explanation/world-dynamics-prototype.md).
 
 ### Cohortes (status + rapport)
 

@@ -307,6 +307,8 @@ def _cmd_diagnostics_hard_stops(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
+    from trader.reporting.read_models.world_dynamics_status import read_world_dynamics_status
+
     payload = {
         "daemon_status": _read_state_json("daemon_status.json"),
         "current_report": _read_state_json("current_report.json"),
@@ -314,6 +316,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         "broker": _read_broker_state(),
         "scheduler": _read_scheduler_state(),
         "trade_plans": _read_trade_plans_state(),
+        "world_dynamics": read_world_dynamics_status(daemon.STATE_DIR),
     }
     if args.json:
         _print_json(payload)
@@ -331,6 +334,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(f"model_calls: {calls_text}")
     print(f"cash: {broker.get('cash') if isinstance(broker, dict) else None}")
     print("positions:", ", ".join(positions.keys()) if positions else "none")
+    dynamics = payload["world_dynamics"]
+    print(f"world_dynamics: {dynamics.get('status')} shadow_only reason={dynamics.get('reason')}")
+    print(f"world_dynamics_status: {dynamics['report_command']}")
     return 0
 
 
@@ -349,6 +355,10 @@ def _cmd_world_status(args: argparse.Namespace) -> int:
             f"episodes={counts.get('episodes', 0)} labels={counts.get('outcome_events', 0)} "
             f"predictions={counts.get('predictions', 0)} matched={evaluation.get('matched', 0)}"
         )
+        dynamics = payload.get("dynamics", {})
+        print(f"world_dynamics: {dynamics.get('status', 'not_started')} shadow_only "
+              f"reason={dynamics.get('reason', 'status_not_written')}")
+        print("world_dynamics_status: casys-trader world dynamics status --json")
     return 0 if payload.get("status") not in {"unavailable", "schema_unavailable"} else 1
 
 
@@ -1114,14 +1124,16 @@ def build_parser() -> argparse.ArgumentParser:
     from trader.application.world_model.capture import SAMPLING_POLICY_VERSION
     from trader.domain.world_episode import MARKET_FEATURE_CONTRACT_ID
 
-    dynamics = world_sub.add_parser("dynamics", help="replay borné et trajectoires OHLCV simulées hors ligne")
-    dynamics.add_argument("--venue", required=True)
-    dynamics.add_argument("--symbol", required=True)
+    dynamics = world_sub.add_parser("dynamics", help="statut du worker automatique ou replay OHLCV borné")
+    dynamics.add_argument("dynamics_command", nargs="?", choices=("status",),
+                          help="status : dernier rapport du worker automatique, sans entraînement")
+    dynamics.add_argument("--venue")
+    dynamics.add_argument("--symbol")
     dynamics.add_argument("--interval", default="1h")
     dynamics.add_argument("--market-contract-version", default=MARKET_FEATURE_CONTRACT_ID)
     dynamics.add_argument("--sampling-policy-version", default=SAMPLING_POLICY_VERSION)
-    dynamics.add_argument("--start", required=True, help="début inclusif des ancres ; horodatage UTC explicite")
-    dynamics.add_argument("--as-of", required=True, help="cutoff causal ; horodatage UTC explicite")
+    dynamics.add_argument("--start", help="début inclusif des ancres ; horodatage UTC explicite ; requis pour replay")
+    dynamics.add_argument("--as-of", help="cutoff causal ; horodatage UTC explicite ; requis pour replay")
     dynamics.add_argument("--limit", type=int, default=5000, help="borne des épisodes ; maximum 20000")
     dynamics.add_argument("--steps", type=int, default=4, help="barres futures simulées ; maximum 12")
     dynamics.add_argument("--paths", type=int, default=200, help="trajectoires simulées ; maximum 1000")

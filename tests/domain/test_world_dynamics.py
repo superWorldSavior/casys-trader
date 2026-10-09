@@ -9,6 +9,7 @@ import pytest
 from trader.domain.world_dynamics import (
     EpisodeEvidence,
     NextBarTransition,
+    ObservedDynamicsBar,
     SimulatedBar,
     WorldTrajectory,
     WORLD_DYNAMICS_TARGET_CONTRACT_VERSION,
@@ -69,8 +70,9 @@ def _bar(step_index: int = 1, **changes: object) -> SimulatedBar:
 def _trajectory(**changes: object) -> WorldTrajectory:
     episode = _episode()
     fields = {
-        "origin_episode_id": episode.episode_id,
-        "origin_episode_hash": episode.payload_hash,
+        "origin_evidence_id": episode.episode_id,
+        "origin_evidence_hash": episode.payload_hash,
+        "origin_evidence_kind": "world_episode",
         "symbol": "2330.TW",
         "venue": "XTAI",
         "bar_interval": "1h",
@@ -114,7 +116,9 @@ def test_next_bar_target_has_deterministic_provenance_without_target_features() 
     assert transition.transition_id != NextBarTransition(_evidence(), _evidence(1, delay_seconds=50)).transition_id
     payload = transition.to_dict()
     assert payload["target_contract_version"] == WORLD_DYNAMICS_TARGET_CONTRACT_VERSION
-    assert payload["source_episode_hash"] == transition.source.episode.payload_hash
+    assert payload["source_evidence_hash"] == transition.source.episode.payload_hash
+    assert payload["source_evidence_kind"] == "world_episode"
+    assert payload["schema_version"] == "world_next_bar_transition.v2"
     assert payload["target_bar"]["close"] == 102.0
     assert "numeric_features" not in json.dumps(payload)
     assert "observation" not in payload
@@ -229,6 +233,9 @@ def test_trajectory_serialization_is_immutable_and_permanently_shadow_only() -> 
     assert payload["recommendation"] == "NO_GO"
     assert payload["context_policy"] == "market_only"
     assert payload["kind"] == "simulated_trajectory"
+    assert payload["schema_version"] == "world_trajectory.v2"
+    assert payload["origin_evidence_kind"] == "world_episode"
+    assert "origin_episode_id" not in payload
     payload["bars"][0]["close"] = 1
     assert trajectory.bars[0].close == 103
     with pytest.raises(FrozenInstanceError):
@@ -249,6 +256,9 @@ def test_trajectory_serialization_is_immutable_and_permanently_shadow_only() -> 
         ({"origin_end_at": T0 + timedelta(seconds=1)}, "canonical bar grid"),
         ({"bar_interval": "unknown"}, "supported positive"),
         ({"context_policy": "frozen_context"}, "market_only"),
+        ({"origin_evidence_kind": "simulated_bar"}, "real dynamics evidence"),
+        ({"prediction_at": T0 + timedelta(hours=1)}, "first simulated bar"),
+        ({"prediction_at": T0 + timedelta(hours=2)}, "first simulated bar"),
     ],
 )
 def test_trajectory_rejects_future_training_noncontiguous_paths_and_implicit_context(changes: dict[str, object], message: str) -> None:
@@ -262,3 +272,171 @@ def test_trajectory_rejects_real_anchors_and_episodes_as_simulated_bars() -> Non
             _trajectory(bars=(real,))
     # Labels available exactly at the declared forecast cutoff can be consumed.
     assert _trajectory(training_cutoff=T0 + timedelta(seconds=30)).training_cutoff == T0 + timedelta(seconds=30)
+
+
+def _observed(hour: int = 0, **changes: object) -> ObservedDynamicsBar:
+    fields = {
+        "venue": "XTAI",
+        "symbol": "2330.TW",
+        "bar_interval": "1h",
+        "anchor": _episode(hour).observation.anchor,
+        "first_seen_at": T0 + timedelta(hours=3, seconds=10),
+        "recorded_at": T0 + timedelta(hours=3, seconds=20),
+    }
+    fields.update(changes)
+    return ObservedDynamicsBar(**fields)
+
+
+def test_observed_bar_records_historical_geometry_as_known_now_without_freshness() -> None:
+    observed = _observed()
+    assert observed.anchor.ts == T0
+    assert observed.completed_end_at == T0
+    assert observed.effective_available_at == T0 + timedelta(hours=3, seconds=20)
+    assert observed.training_eligible is True
+    assert observed.kind == "observed_market_bar"
+    assert observed.feature_contract_version != MARKET_FEATURE_CONTRACT_ID
+    assert observed.sampling_policy_version == "first_seen_completed_market_bar.v1"
+    assert not hasattr(observed, "episode")
+    assert not hasattr(observed, "freshness")
+    payload = observed.to_dict()
+    assert payload["schema_version"] == "observed_dynamics_bar.v1"
+    assert "available_at" not in payload
+    assert "freshness" not in payload
+    assert "captured_at" not in payload
+    assert "numeric_features" not in payload
+
+
+def test_observed_bar_serialization_has_stable_identity_and_verified_clock_hash() -> None:
+    observed = _observed()
+    assert ObservedDynamicsBar.from_dict(json.loads(json.dumps(observed.to_dict()))) == observed
+    later_receipt = _observed(first_seen_at=T0 + timedelta(hours=4), recorded_at=T0 + timedelta(hours=4, seconds=10))
+    assert later_receipt.evidence_id == observed.evidence_id
+    assert later_receipt.payload_hash != observed.payload_hash
+    revised = _observed(anchor=replace(observed.anchor, close=102.5))
+    assert revised.evidence_id != observed.evidence_id
+    assert revised.payload_hash != observed.payload_hash
+    with pytest.raises(FrozenInstanceError):
+        observed.first_seen_at = T0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema_version", "world_episode.v1", "schema_version"),
+        ("kind", "world_episode", "kind"),
+        ("feature_contract_version", MARKET_FEATURE_CONTRACT_ID, "feature_contract_version"),
+        ("sampling_policy_version", "legacy_policy", "sampling_policy_version"),
+        ("evidence_id", "wrong-id", "evidence_id"),
+        ("payload_hash", "wrong-hash", "payload_hash"),
+    ],
+)
+def test_observed_bar_from_dict_rejects_contract_or_provenance_tampering(field: str, value: str, message: str) -> None:
+    payload = _observed().to_dict()
+    payload[field] = value
+    with pytest.raises(ValueError, match=message):
+        ObservedDynamicsBar.from_dict(payload)
+
+
+def test_observed_bar_from_dict_rejects_hidden_fields_and_missing_receipt_hash() -> None:
+    for change in (lambda payload: payload.update(freshness="fresh"), lambda payload: payload.pop("payload_hash")):
+        payload = _observed().to_dict()
+        change(payload)
+        with pytest.raises(ValueError, match="exactly its schema fields"):
+            ObservedDynamicsBar.from_dict(payload)
+    payload = _observed().to_dict()
+    payload["anchor"]["available_at"] = T0.isoformat()
+    with pytest.raises(ValueError, match="exactly the AnchorBar fields"):
+        ObservedDynamicsBar.from_dict(payload)
+
+
+def test_observed_bar_rejects_future_incomplete_offgrid_and_backdated_receipts() -> None:
+    with pytest.raises(ValueError, match="completed bar"):
+        _observed(4)
+    with pytest.raises(ValueError, match="completed bar"):
+        _observed(anchor=replace(_observed().anchor, timestamp_semantics="unknown"))
+    with pytest.raises(ValueError, match="completed bar"):
+        _observed(anchor=replace(_observed().anchor, ts=T0 + timedelta(minutes=1)))
+    with pytest.raises(ValueError, match="recorded_at must not precede"):
+        _observed(recorded_at=T0 + timedelta(hours=3, seconds=9))
+    with pytest.raises(ValueError, match="timezone"):
+        _observed(first_seen_at="2026-10-09T09:00:10")
+    with pytest.raises(ValueError, match="completed bar"):
+        _observed(anchor=replace(_observed().anchor, timestamp_semantics="bar_start"), first_seen_at=T0, recorded_at=T0)
+
+
+def test_observed_bar_rejects_simulated_and_mapped_anchor_impostors() -> None:
+    for impostor in (_bar(), _observed().anchor.to_dict(), _episode()):
+        with pytest.raises(TypeError, match="real AnchorBar"):
+            _observed(anchor=impostor)
+
+
+def test_evidence_types_share_read_only_geometry_and_provenance_properties() -> None:
+    episode, observed = _evidence(), _observed()
+    for evidence in (episode, observed):
+        assert evidence.evidence_id
+        assert len(evidence.payload_hash) == 64
+        assert evidence.venue == "XTAI"
+        assert evidence.symbol == "2330.TW"
+        assert evidence.bar_interval == "1h"
+        assert evidence.anchor.close == 102
+        assert evidence.completed_end_at == T0
+        assert evidence.training_eligible is True
+        assert evidence.feature_contract_version
+        assert evidence.sampling_policy_version
+        assert evidence.series_key == (
+            evidence.venue, evidence.symbol, evidence.bar_interval,
+            evidence.feature_contract_version, evidence.sampling_policy_version,
+            evidence.anchor.source, evidence.anchor.timestamp_semantics,
+        )
+        with pytest.raises((FrozenInstanceError, AttributeError)):
+            evidence.evidence_id = "changed"
+
+
+def test_next_bar_transition_accepts_same_receipt_time_bootstrap_but_never_crosses_evidence_types() -> None:
+    source, target = _observed(), _observed(1)
+    transition = NextBarTransition(source, target)
+    assert transition.label_available_at == target.recorded_at
+    assert transition.transition_id.startswith("world-next-bar-transition:v2:")
+    payload = transition.to_dict()
+    assert payload["source_evidence_id"] == source.evidence_id
+    assert payload["target_evidence_id"] == target.evidence_id
+    assert payload["source_evidence_kind"] == payload["target_evidence_kind"] == "observed_market_bar"
+    assert "source_episode_id" not in payload
+    with pytest.raises(TypeError, match="same evidence type"):
+        NextBarTransition(_evidence(), target)
+    with pytest.raises(TypeError, match="same evidence type"):
+        NextBarTransition(source, _evidence(1))
+    with pytest.raises(ValueError, match="exactly adjacent"):
+        NextBarTransition(source, _observed(2))
+    with pytest.raises(ValueError, match="known by target availability"):
+        NextBarTransition(_observed(recorded_at=T0 + timedelta(hours=3, seconds=30)), target)
+
+
+def test_trajectory_provenance_distinguishes_observed_bars_from_real_episodes() -> None:
+    observed = _observed(first_seen_at=T0 + timedelta(seconds=10), recorded_at=T0 + timedelta(seconds=20))
+    trajectory = _trajectory(
+        origin_evidence_id=observed.evidence_id,
+        origin_evidence_hash=observed.payload_hash,
+        origin_evidence_kind=observed.kind,
+    )
+    assert trajectory.trajectory_id.startswith("world-trajectory:v2:")
+    assert trajectory.to_dict()["origin_evidence_kind"] == "observed_market_bar"
+    assert not hasattr(trajectory, "origin_episode_id")
+
+
+def test_observed_market_bar_boundary_rejects_subclass_impostors() -> None:
+    class FakeAnchor(AnchorBar):
+        pass
+
+    class FakeObserved(ObservedDynamicsBar):
+        pass
+
+    anchor_fields = _observed().anchor.to_dict()
+    with pytest.raises(TypeError, match="real AnchorBar"):
+        _observed(anchor=FakeAnchor(**anchor_fields))
+    fake = FakeObserved(
+        venue="XTAI", symbol="2330.TW", bar_interval="1h",
+        anchor=_observed().anchor, first_seen_at=T0, recorded_at=T0,
+    )
+    with pytest.raises(TypeError, match="EpisodeEvidence or ObservedDynamicsBar"):
+        NextBarTransition(fake, _observed(1))

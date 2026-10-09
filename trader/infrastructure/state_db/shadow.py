@@ -34,7 +34,15 @@ def _write_text(path: str, data: str, encoding: str = "utf-8") -> None:
 # ---------------------------------------------------------------------------
 
 
-def write_json_atomic(path: Path, data: dict) -> None:
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_json_atomic(path: Path, data: dict, *, durable: bool = False) -> None:
     """Écrit *data* dans *path* de façon atomique via un fichier temporaire unique.
 
     Étapes :
@@ -52,19 +60,34 @@ def write_json_atomic(path: Path, data: dict) -> None:
     Args:
         path: chemin cible (ex. ``state/broker.json``).
         data: dict sérialisable en JSON.
+        durable: synchroniser le fichier et ses entrées de répertoire avant
+            retour ; réservé aux preuves qui autorisent un apprentissage.
     """
     path = Path(path)
     pid = os.getpid()
     tid = threading.get_ident()
     tmp = path.with_name(f"{path.name}.{pid}.{tid}.tmp")
 
+    missing_parents = []
+    if durable:
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
     path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = json.dumps(data, indent=2, ensure_ascii=False)
 
     try:
         _write_text(str(tmp), payload)
+        if durable:
+            with tmp.open("rb") as handle:
+                os.fsync(handle.fileno())
         os.replace(tmp, path)
+        if durable:
+            _sync_directory(path.parent)
+            for created in missing_parents:
+                _sync_directory(created.parent)
     except Exception as exc:
         log.warning("[state_db] shadow échec %s: %s", path.name, exc)
         try:

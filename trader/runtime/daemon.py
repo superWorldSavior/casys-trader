@@ -2996,12 +2996,20 @@ def main(
                     type(exc).__name__,
                     exc,
                 )
+            from trader.runtime.world_dynamics_runtime import compose_world_dynamics_runtime
+
+            dynamics_workflow = compose_world_dynamics_runtime(
+                state_dir=STATE_DIR,
+                enabled=_env_int("CASYS_WORLD_DYNAMICS_SHADOW_ENABLED", 1) == 1,
+                logger=log,
+            )
             _world_model_runner = WorldModelBackgroundRunner(
                 runtime=_world_model_runtime,
                 logger=log,
                 context_enricher=context_enricher,
                 graph_enricher=graph_enricher,
                 pattern_workflow=pattern_workflow,
+                dynamics_workflow=dynamics_workflow,
                 resource_guard=_world_resource_guard,
                 state_dir=STATE_DIR,
             )
@@ -3013,11 +3021,12 @@ def main(
             if graph_enricher is not None:
                 _world_model_lane_count += 2
             log.info(
-                "[world_model_shadow] enabled db=%s authority=shadow_only context=%s graph=%s patterns=%s lanes=%s resource_budget=%s",
+                "[world_model_shadow] enabled db=%s authority=shadow_only context=%s graph=%s patterns=%s dynamics=%s lanes=%s resource_budget=%s",
                 STATE_DIR / "world_model.db",
                 int(_world_model_context),
                 int(graph_enricher is not None),
                 int(pattern_workflow is not None),
+                int(dynamics_workflow is not None),
                 _world_model_lane_count,
                 "on" if _world_resource_guard is not None else "off",
             )

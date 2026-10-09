@@ -65,6 +65,9 @@ def build_view(
         if isinstance(state.get("daemon_status"), dict)
         else {}
     )
+    world_dynamics = (
+        state.get("world_dynamics") if isinstance(state.get("world_dynamics"), dict) else {}
+    )
     equity_curve = [
         _safe_float(value, default=None) for value in (state.get("equity_curve") or [])
     ]
@@ -242,6 +245,12 @@ def build_view(
         (calls, palette["kpi_default"]),
         ("   Source : ", "bold"),
         (source, palette["dim"]),
+        "\n",
+        ("World dynamics shadow : ", "bold"),
+        (str(world_dynamics.get("status", "not_started")), palette["status_phase"]),
+        ("   Dernière exécution : ", "bold"),
+        (_format_datetime(world_dynamics.get("last_run_at")), palette["dim"]),
+        ("   casys-trader world dynamics status", palette["dim"]),
     )
 
     header_panel = Panel(

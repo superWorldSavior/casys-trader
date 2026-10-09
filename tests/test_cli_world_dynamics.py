@@ -156,7 +156,7 @@ def test_cli_real_empty_ledger_is_a_descriptive_no_data_result(monkeypatch, caps
     assert cli.main(_ARGS) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "no_data"
-    assert payload["data"]["read_episodes"] == 0
+    assert payload["data"]["read_evidence"] == 0
     assert payload["rollout"]["paths"] == 0
     assert path.read_bytes() == before
 
@@ -172,7 +172,7 @@ def test_cli_real_replay_returns_simulations_and_preserves_the_ledger(monkeypatc
         == 0
     )
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["read_episodes"] == 8
+    assert payload["data"]["read_evidence"] == 8
     assert payload["data"]["adjacent_transitions"] == 7
     assert payload["rollout"]["paths"] == 20
     assert len(payload["rollout"]["distribution"]) == 2

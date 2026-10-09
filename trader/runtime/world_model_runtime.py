@@ -60,6 +60,7 @@ class WorldModelBackgroundRunner:
         context_enricher: WorldContextEpisodeEnricher | None = None,
         graph_enricher: WorldGraphEpisodeEnricher | None = None,
         pattern_workflow: object | None = None,
+        dynamics_workflow: object | None = None,
         resource_guard: object | None = None,
         state_dir: str | Path | None = None,
     ) -> None:
@@ -71,6 +72,7 @@ class WorldModelBackgroundRunner:
         self.context_enricher = context_enricher
         self.graph_enricher = graph_enricher
         self.pattern_workflow = pattern_workflow
+        self.dynamics_workflow = dynamics_workflow
         self.resource_guard = resource_guard
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -165,6 +167,11 @@ class WorldModelBackgroundRunner:
                 "errors": [],
             }
             skip_writes = self._apply_resource_budget(report, now=current.now)
+            if skip_writes and self.dynamics_workflow is not None:
+                try:
+                    self.dynamics_workflow.skip(reason="world_model_resource_budget")
+                except Exception as exc:  # noqa: BLE001 - operational status cannot block Trader
+                    self._background_error(report, stage="dynamics_status", error=exc)
             if not skip_writes:
                 try:
                     report["mature"] = self.runtime.mature_pending(
@@ -194,6 +201,17 @@ class WorldModelBackgroundRunner:
                     report["capture"] = self._capture_and_predict(capture_snapshot)
                 except Exception as exc:  # noqa: BLE001 - still attempt capture after a maturity failure
                     self._background_error(report, stage="capture", error=exc)
+                if self.dynamics_workflow is not None:
+                    try:
+                        dynamics = self.dynamics_workflow.run(
+                            episodes=tuple(_clone(episode) for episode in current.episodes),
+                            bars_by_symbol=_clone(current.bars_by_symbol), now=current.now,
+                        )
+                        report["dynamics"] = dynamics.to_dict()
+                        if report["dynamics"].get("status") == "partial":
+                            report["status"] = "partial"
+                    except Exception as exc:  # noqa: BLE001 - dynamics failure cannot affect Trader
+                        self._background_error(report, stage="dynamics", error=exc)
                 if self.pattern_workflow is not None:
                     try:
                         lifecycle = self.pattern_workflow.run(current.now)
